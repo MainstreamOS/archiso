@@ -80,9 +80,13 @@ glfw-wayland
 # GPU & display
 # ==============================================================================
 mesa
+mesa-utils
 vulkan-radeon
 vulkan-intel
 vulkan-swrast
+vulkan-icd-loader
+vulkan-tools
+libva-mesa-driver
 
 # ==============================================================================
 # Display manager
