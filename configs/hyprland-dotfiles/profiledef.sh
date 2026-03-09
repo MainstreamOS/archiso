@@ -25,6 +25,7 @@ file_permissions=(
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
   ["/usr/local/bin/calamares-launch"]="0:0:755"
   ["/home/liveuser"]="1000:1000:750"
+  ["/home/liveuser/.bash_profile"]="1000:1000:644"
   ["/home/liveuser/.config"]="1000:1000:755"
   ["/home/liveuser/.config/hypr"]="1000:1000:755"
   ["/home/liveuser/.config/hypr/hyprland.conf"]="1000:1000:644"
