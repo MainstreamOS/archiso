@@ -82,7 +82,6 @@ glfw-wayland
 mesa
 vulkan-radeon
 vulkan-intel
-libva-mesa-driver
 vulkan-swrast
 
 # ==============================================================================
