@@ -237,6 +237,8 @@ btrfs-progs
 e2fsprogs
 f2fs-tools
 xfsprogs
+mkinitcpio-nfs-utils
+nbd
 cryptsetup
 lvm2
 gptfdisk
