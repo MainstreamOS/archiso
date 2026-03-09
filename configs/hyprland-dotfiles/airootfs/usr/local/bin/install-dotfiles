@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# =============================================================================
+# install-dotfiles
+# Runs inside the Calamares chroot to install illogical-impulse dotfiles
+# (gregorytrentmartinjr/dots-hyprland, branch: newcustom)
+#
+# This script:
+#   1. Finds the newly created user (uid 1000)
+#   2. Installs AUR packages (via yay, as build user or new user)
+#   3. Copies dotfiles config files into /etc/skel and new user's home
+#   4. Installs system-level files (polkit rules, services, etc.)
+#   5. Drops a first-login helper for user-specific setup (gsettings, etc.)
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log()  { echo "[install-dotfiles] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+die()  { log "ERROR: $*" >&2; exit 1; }
+
+run_as_user() {
+    # Run command as the new user (uid 1000)
+    sudo -u "$NEW_USER" --preserve-env=HOME,USER,LOGNAME bash -c "$*"
+}
+
+run_as_builduser() {
+    sudo -u builduser --preserve-env=HOME bash -c "$*"
+}
+
+# ---------------------------------------------------------------------------
+# Find the new user
+# ---------------------------------------------------------------------------
+NEW_USER=$(getent passwd 1000 2>/dev/null | cut -d: -f1) || true
+if [[ -z "$NEW_USER" ]]; then
+    warn "No user with uid 1000 found – skipping dotfiles setup."
+    warn "The dotfiles-first-login script will attempt setup on first login."
+    exit 0
+fi
+
+NEW_USER_HOME=$(getent passwd "$NEW_USER" | cut -d: -f6)
+info "Target user: $NEW_USER (home: $NEW_USER_HOME)"
+
+# Make sure builduser has sudo (needed for yay)
+echo "%builduser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builduser-tmp 2>/dev/null || true
+echo "%wheel ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/wheel-tmp 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Ensure yay is available
+# ---------------------------------------------------------------------------
+if ! command -v yay &>/dev/null; then
+    info "Installing yay..."
+    # Ensure builduser exists
+    useradd -m -G wheel builduser 2>/dev/null || true
+    rm -rf /tmp/yay-build
+    mkdir -p /tmp/yay-build
+    chown builduser:builduser /tmp/yay-build
+    run_as_builduser "git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-build 2>&1"
+    run_as_builduser "cd /tmp/yay-build && makepkg -si --noconfirm 2>&1"
+    rm -rf /tmp/yay-build
+fi
+
+# ---------------------------------------------------------------------------
+# Clone dotfiles repo
+# ---------------------------------------------------------------------------
+DOTFILES_DIR="/opt/dots-hyprland"
+DOTFILES_REPO="https://github.com/gregorytrentmartinjr/dots-hyprland.git"
+DOTFILES_BRANCH="newcustom"
+
+if [[ ! -d "$DOTFILES_DIR/.git" ]]; then
+    info "Cloning dotfiles repo..."
+    git clone --depth=1 --branch "$DOTFILES_BRANCH" "$DOTFILES_REPO" "$DOTFILES_DIR"
+fi
+chown -R "$NEW_USER:$NEW_USER" "$DOTFILES_DIR"
+
+# Also place a copy in the user's home for ongoing use
+USER_DOTFILES="$NEW_USER_HOME/dots-hyprland"
+if [[ ! -d "$USER_DOTFILES" ]]; then
+    cp -a "$DOTFILES_DIR" "$USER_DOTFILES"
+    chown -R "$NEW_USER:$NEW_USER" "$USER_DOTFILES"
+fi
+
+# ---------------------------------------------------------------------------
+# Install AUR meta-packages via yay
+# (equivalent to ./setup install-deps on Arch)
+# ---------------------------------------------------------------------------
+info "Installing AUR packages..."
+
+# Ensure new user is in wheel group for sudo
+usermod -aG wheel,video,input "$NEW_USER" 2>/dev/null || true
+# Add i2c group
+groupadd i2c 2>/dev/null || true
+usermod -aG i2c "$NEW_USER" 2>/dev/null || true
+
+# Install each meta-package PKGBUILD from the dotfiles repo
+METAPKGS=(
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-audio"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-backlight"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-basic"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-fonts-themes"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-gnome"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-hyprland"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-kde"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-portal"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-python"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-screencapture"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-toolkit"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-widgets"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-microtex-git"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-quickshell-git"
+    "$USER_DOTFILES/sdata/dist-arch/illogical-impulse-extras"
+)
+
+# Also add bibata cursor if not installed
+if [[ ! -f /usr/share/icons/Bibata-Modern-Classic/index.theme ]]; then
+    METAPKGS+=("$USER_DOTFILES/sdata/dist-arch/illogical-impulse-bibata-modern-classic-bin")
+fi
+
+for pkgdir in "${METAPKGS[@]}"; do
+    if [[ ! -f "$pkgdir/PKGBUILD" ]]; then
+        warn "PKGBUILD not found: $pkgdir – skipping"
+        continue
+    fi
+    info "Installing meta-package: $(basename "$pkgdir")"
+    chown -R "$NEW_USER:$NEW_USER" "$pkgdir"
+    # Source PKGBUILD to get dep list, install deps first
+    (
+        cd "$pkgdir"
+        source ./PKGBUILD 2>/dev/null || true
+        for dep in "${depends[@]:-}"; do
+            run_as_user "yay -S --sudoloop --needed --noconfirm --asdeps '$dep' 2>&1" || \
+                warn "Failed to install dep: $dep (will continue)"
+        done
+        for dep in "${optdepends[@]:-}"; do
+            pkg="${dep%%:*}"
+            run_as_user "yay -S --sudoloop --needed --noconfirm --asdeps '$pkg' 2>&1" || true
+        done
+    )
+    # Build and install the meta-package itself
+    run_as_user "cd '$pkgdir' && makepkg -Afsi --noconfirm 2>&1" || \
+        warn "Failed to build $(basename "$pkgdir")"
+done
+
+# plasma-browser-integration (optional, ~600 MiB) - install non-interactively
+pacman -S --needed --noconfirm plasma-browser-integration 2>/dev/null || \
+    warn "plasma-browser-integration not installed (optional)"
+
+# ---------------------------------------------------------------------------
+# System-level setup (equivalent to ./setup install-setups)
+# ---------------------------------------------------------------------------
+info "Running system setup..."
+
+# GPU driver detection & install (auto, based on lspci)
+GPU_LINES=$(lspci -nn 2>/dev/null | grep -iE 'vga|3d|display' || echo "")
+if echo "$GPU_LINES" | grep -qi 'nvidia'; then
+    info "NVIDIA GPU detected – installing drivers"
+    pacman -S --needed --noconfirm nvidia-dkms nvidia-utils nvidia-settings egl-wayland || \
+        warn "NVIDIA driver install failed"
+    mkdir -p /etc/modprobe.d
+    echo "options nvidia_drm modeset=1 fbdev=1" > /etc/modprobe.d/nvidia.conf
+fi
+if echo "$GPU_LINES" | grep -qi 'amd\|ati\|radeon'; then
+    info "AMD GPU detected – ensuring mesa/vulkan-radeon"
+    pacman -S --needed --noconfirm mesa vulkan-radeon libva-mesa-driver || true
+fi
+if echo "$GPU_LINES" | grep -qi 'intel'; then
+    info "Intel GPU detected – ensuring mesa/vulkan-intel"
+    pacman -S --needed --noconfirm mesa vulkan-intel intel-media-driver || true
+fi
+
+# polkit: SDDM background helper
+SDDM_HELPER="$USER_DOTFILES/dots/.config/quickshell/ii/scripts/colors/sddm-bg-helper.sh"
+if [[ -f "$SDDM_HELPER" ]]; then
+    install -m 755 "$SDDM_HELPER" /usr/local/bin/sddm-bg-helper
+fi
+POLKIT_DIR="$USER_DOTFILES/sdata/polkit"
+if [[ -d "$POLKIT_DIR" ]]; then
+    install -m 644 "$POLKIT_DIR"/*.policy /usr/share/polkit-1/actions/ 2>/dev/null || true
+    install -m 644 "$POLKIT_DIR"/*.rules  /usr/share/polkit-1/rules.d/ 2>/dev/null || true
+    if [[ -f "$POLKIT_DIR/power-key-helper.sh" ]]; then
+        install -m 755 "$POLKIT_DIR/power-key-helper.sh" /usr/local/bin/power-key-helper
+    fi
+fi
+
+# Power key default (suspend)
+mkdir -p /etc/systemd/logind.conf.d
+cat > /etc/systemd/logind.conf.d/10-power-key.conf <<'EOF'
+[Login]
+HandlePowerKey=suspend
+EOF
+
+# kill-fprintd service (fix fingerprint sleep bug)
+cat > /etc/systemd/system/kill-fprintd.service <<'EOF'
+[Unit]
+Description=Kill fprintd before sleep
+Before=sleep.target
+
+[Service]
+ExecStart=/usr/bin/killall fprintd
+
+[Install]
+WantedBy=sleep.target
+EOF
+systemctl enable kill-fprintd.service 2>/dev/null || true
+
+# ydotool service
+if [[ -f /usr/lib/systemd/system/ydotool.service ]]; then
+    ln -sf /usr/lib/systemd/{system,user}/ydotool.service 2>/dev/null || true
+fi
+
+# i2c
+echo i2c-dev > /etc/modules-load.d/i2c-dev.conf
+
+# Bluetooth auto-enable
+if [[ -f /etc/bluetooth/main.conf ]]; then
+    sed -i 's/^#*AutoEnable\s*=.*/AutoEnable=true/' /etc/bluetooth/main.conf
+    grep -q '^AutoEnable' /etc/bluetooth/main.conf || \
+        sed -i '/^\[Policy\]/a AutoEnable=true' /etc/bluetooth/main.conf
+fi
+
+# sudo pwfeedback
+echo 'Defaults pwfeedback' > /etc/sudoers.d/pwfeedback
+chmod 0440 /etc/sudoers.d/pwfeedback
+
+# nss-mdns for printer discovery
+sed -i "s/^hosts:.*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/" \
+    /etc/nsswitch.conf 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Copy dotfiles to user home and /etc/skel
+# (equivalent to ./setup install-files)
+# ---------------------------------------------------------------------------
+info "Copying dotfiles to user home..."
+
+DOTS_SRC="$USER_DOTFILES/dots"
+
+# Create XDG directories
+sudo -u "$NEW_USER" mkdir -p \
+    "$NEW_USER_HOME/.config" \
+    "$NEW_USER_HOME/.local/share" \
+    "$NEW_USER_HOME/.local/bin" \
+    "$NEW_USER_HOME/Pictures/Wallpapers" \
+    "$NEW_USER_HOME/Downloads" \
+    "$NEW_USER_HOME/Documents"
+
+# Copy .config contents
+if [[ -d "$DOTS_SRC/.config" ]]; then
+    for item in "$DOTS_SRC/.config/"*; do
+        name=$(basename "$item")
+        dest="$NEW_USER_HOME/.config/$name"
+        if [[ -d "$item" ]]; then
+            cp -a "$item" "$dest"
+        else
+            cp -a "$item" "$dest"
+        fi
+    done
+    chown -R "$NEW_USER:$NEW_USER" "$NEW_USER_HOME/.config"
+fi
+
+# Copy any toplevel dotfiles from dots/
+for item in "$DOTS_SRC"/.[!.]* "$DOTS_SRC"/..?*; do
+    [[ -e "$item" ]] || continue
+    name=$(basename "$item")
+    [[ "$name" == ".config" ]] && continue
+    cp -a "$item" "$NEW_USER_HOME/$name"
+    chown -R "$NEW_USER:$NEW_USER" "$NEW_USER_HOME/$name"
+done
+
+# Copy to /etc/skel as well so future users get it
+mkdir -p /etc/skel/.config
+if [[ -d "$DOTS_SRC/.config" ]]; then
+    cp -a "$DOTS_SRC/.config/." /etc/skel/.config/
+fi
+
+# Install Google Sans Flex font (fetch from GitHub)
+FONT_DIR="/usr/share/fonts/google-sans-flex"
+if [[ ! -d "$FONT_DIR" ]]; then
+    info "Installing Google Sans Flex font..."
+    mkdir -p "$FONT_DIR"
+    curl -sL "https://github.com/end-4/dots-hyprland/raw/main/.local/share/fonts/GoogleSansFlex.woff2" \
+        -o "$FONT_DIR/GoogleSansFlex.woff2" || \
+    warn "Could not download Google Sans Flex – skipping"
+    fc-cache -f 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# First-login setup marker
+# ---------------------------------------------------------------------------
+# Drop a flag file so dotfiles-first-login.sh knows it needs to run
+# user-specific commands (gsettings, systemctl --user, etc.)
+touch "$NEW_USER_HOME/.dotfiles-pending-user-setup"
+chown "$NEW_USER:$NEW_USER" "$NEW_USER_HOME/.dotfiles-pending-user-setup"
+
+# ---------------------------------------------------------------------------
+# Clean up
+# ---------------------------------------------------------------------------
+rm -f /etc/sudoers.d/wheel-tmp 2>/dev/null || true
+
+info "Dotfiles installation complete."
+info "On first login, the user-specific setup will run automatically."

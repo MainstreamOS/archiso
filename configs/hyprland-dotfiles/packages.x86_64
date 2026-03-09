@@ -1,0 +1,255 @@
+# ==============================================================================
+# Base system & archiso essentials
+# ==============================================================================
+base
+linux
+linux-firmware
+linux-firmware-marvell
+amd-ucode
+intel-ucode
+mkinitcpio
+mkinitcpio-archiso
+arch-install-scripts
+archinstall
+sudo
+bash
+
+# ==============================================================================
+# Boot
+# ==============================================================================
+grub
+efibootmgr
+refind
+syslinux
+mtools
+dosfstools
+exfatprogs
+ntfs-3g
+
+# ==============================================================================
+# Networking (WiFi / Ethernet)
+# ==============================================================================
+networkmanager
+network-manager-applet
+nm-connection-editor
+iwd
+wpa_supplicant
+wireless_tools
+wireless-regdb
+iw
+dhcpcd
+ndisc6
+modemmanager
+usb_modeswitch
+nss-mdns
+avahi
+bind
+nmap
+
+# ==============================================================================
+# Bluetooth
+# ==============================================================================
+bluez
+bluez-utils
+bluedevil
+
+# ==============================================================================
+# Printing
+# ==============================================================================
+cups
+cups-pdf
+cups-filters
+system-config-printer
+gutenprint
+hplip
+ghostscript
+gsfonts
+nss-mdns
+
+# ==============================================================================
+# Display server / Wayland
+# ==============================================================================
+wayland
+xorg-xwayland
+wayland-protocols
+qt5-wayland
+qt6-wayland
+glfw-wayland
+
+# ==============================================================================
+# GPU & display
+# ==============================================================================
+mesa
+vulkan-radeon
+vulkan-intel
+xf86-video-vmware
+
+# ==============================================================================
+# Display manager
+# ==============================================================================
+sddm
+qt6-5compat
+qt6-declarative
+
+# ==============================================================================
+# Hyprland & compositor stack (live desktop)
+# ==============================================================================
+hyprland
+hypridle
+hyprlock
+hyprpicker
+hyprsunset
+xdg-desktop-portal
+xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk
+xdg-desktop-portal-kde
+xdg-utils
+
+# ==============================================================================
+# Audio (PipeWire)
+# ==============================================================================
+pipewire
+pipewire-audio
+pipewire-alsa
+pipewire-jack
+pipewire-pulse
+wireplumber
+pavucontrol-qt
+alsa-utils
+playerctl
+
+# ==============================================================================
+# Fonts (needed for live & installed system)
+# ==============================================================================
+fontconfig
+ttf-jetbrains-mono-nerd
+ttf-liberation
+noto-fonts
+noto-fonts-emoji
+papirus-icon-theme
+
+# ==============================================================================
+# Terminals
+# ==============================================================================
+kitty
+foot-terminfo
+
+# ==============================================================================
+# File manager & utilities
+# ==============================================================================
+nautilus
+gvfs
+gvfs-smb
+gvfs-mtp
+ffmpegthumbnailer
+ntfs-3g
+udisks2
+udiskie
+
+# ==============================================================================
+# Clipboard
+# ==============================================================================
+wl-clipboard
+cliphist
+
+# ==============================================================================
+# Launcher / widgets
+# ==============================================================================
+fuzzel
+wlogout
+rofi-wayland
+
+# ==============================================================================
+# Screenshot / screen capture
+# ==============================================================================
+slurp
+grim
+swappy
+wf-recorder
+
+# ==============================================================================
+# Theming
+# ==============================================================================
+breeze
+qt6ct
+kvantum
+
+# ==============================================================================
+# Shell
+# ==============================================================================
+fish
+zsh
+starship
+eza
+
+# ==============================================================================
+# Python / build deps (needed for dotfiles setup)
+# ==============================================================================
+python
+python-pip
+python-gobject
+gtk4
+libadwaita
+libsoup3
+clang
+cmake
+base-devel
+git
+
+# ==============================================================================
+# System utilities
+# ==============================================================================
+bc
+curl
+wget
+rsync
+jq
+ripgrep
+imagemagick
+upower
+brightnessctl
+ddcutil
+geoclue
+flatpak
+polkit-kde-agent
+gnome-keyring
+plasma-nm
+networkmanager
+libdbusmenu-gtk3
+
+# ==============================================================================
+# Calamares installer
+# ==============================================================================
+calamares
+
+# ==============================================================================
+# Live environment extras
+# ==============================================================================
+nano
+vim
+less
+man-db
+openssh
+htop
+gpm
+tmux
+squashfs-tools
+btrfs-progs
+e2fsprogs
+f2fs-tools
+xfsprogs
+cryptsetup
+lvm2
+gptfdisk
+parted
+memtest86+
+memtest86+-efi
+livecd-sounds
+terminus-font
+foot
+reflector
+
+# ==============================================================================
+# AUR helper build deps
+# ==============================================================================
+go

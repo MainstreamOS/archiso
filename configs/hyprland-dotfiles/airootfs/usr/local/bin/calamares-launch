@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Launch Calamares installer (run as liveuser, elevates internally)
+if [ "$(id -u)" -eq 0 ]; then
+    exec calamares
+else
+    exec pkexec calamares
+fi

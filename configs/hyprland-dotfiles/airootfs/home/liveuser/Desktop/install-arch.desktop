@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install Arch Linux
+Comment=Launch the Arch Linux Hyprland installer
+Exec=/usr/local/bin/calamares-launch
+Icon=calamares
+Terminal=false
+Categories=System;

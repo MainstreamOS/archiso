@@ -1,0 +1,27 @@
+---
+componentName: hyprland
+
+strings:
+    productName: Arch Linux Hyprland
+    shortProductName: Arch Hyprland
+    version: Rolling
+    shortVersion: Rolling
+    versionedName: Arch Linux Hyprland (Rolling)
+    shortVersionedName: Arch Hyprland
+    bootloaderEntryName: Arch Linux Hyprland
+    productUrl: https://archlinux.org
+    supportUrl: https://wiki.archlinux.org
+    knownIssuesUrl: https://github.com/gregorytrentmartinjr/dots-hyprland/issues
+    releaseNotesUrl: https://github.com/gregorytrentmartinjr/dots-hyprland/releases
+
+images:
+    productLogo: "logo.png"
+    productIcon: "logo.png"
+    productWelcome: "welcome.png"
+
+slideshow: "show.qml"
+
+style:
+    sidebarBackground: "#292b2e"
+    sidebarText: "#ffffff"
+    sidebarTextSelect: "#1793d1"
