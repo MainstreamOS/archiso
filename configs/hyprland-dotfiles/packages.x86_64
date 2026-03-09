@@ -82,7 +82,8 @@ glfw-wayland
 mesa
 vulkan-radeon
 vulkan-intel
-xf86-video-vmware
+libva-mesa-driver
+vulkan-swrast
 
 # ==============================================================================
 # Display manager
@@ -156,7 +157,6 @@ cliphist
 # Launcher / widgets
 # ==============================================================================
 fuzzel
-wlogout
 rofi-wayland
 
 # ==============================================================================
