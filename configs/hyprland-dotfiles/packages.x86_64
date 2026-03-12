@@ -1,3 +1,4 @@
+
 # ==============================================================================
 # Base system & archiso essentials
 # ==============================================================================
@@ -94,6 +95,7 @@ libva-mesa-driver
 sddm
 qt6-5compat
 qt6-declarative
+qt6-svg
 
 # ==============================================================================
 # Hyprland & compositor stack (live desktop)
@@ -103,11 +105,13 @@ hypridle
 hyprlock
 hyprpicker
 hyprsunset
+hyprshot
 xdg-desktop-portal
 xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
 xdg-desktop-portal-kde
 xdg-utils
+quickshell
 
 # ==============================================================================
 # Audio (PipeWire)
@@ -161,6 +165,11 @@ cliphist
 # ==============================================================================
 fuzzel
 rofi-wayland
+waybar
+mako
+fastfetch
+swww
+nwg-look
 
 # ==============================================================================
 # Screenshot / screen capture
@@ -198,6 +207,7 @@ clang
 cmake
 base-devel
 git
+go
 
 # ==============================================================================
 # System utilities
@@ -254,7 +264,4 @@ terminus-font
 foot
 reflector
 
-# ==============================================================================
-# AUR helper build deps
-# ==============================================================================
-go
+
