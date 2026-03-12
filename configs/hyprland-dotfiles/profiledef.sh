@@ -8,11 +8,8 @@ iso_application="Arch Linux Hyprland Dotfiles Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="arch"
 buildmodes=('iso')
-bootmodes=('bios.syslinux.mbr'
-           'bios.syslinux.eltorito'
-           'uefi-ia32.systemd-boot.esp'
-           'uefi-x64.systemd-boot.esp'
-           'uefi-x64.systemd-boot.eltorito')
+bootmodes=('bios.syslinux'
+           'uefi.systemd-boot')
 pacman_conf="pacman.conf"
 airootfs_image_type="squashfs"
 airootfs_image_tool_options=('-comp' 'xz' '-Xbcj' 'x86' '-b' '1M' '-Xdict-size' '1M')
@@ -24,14 +21,14 @@ file_permissions=(
   ["/usr/local/bin/install-dotfiles"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
   ["/usr/local/bin/calamares-launch"]="0:0:755"
-  ["/home/liveuser"]="1000:1000:750"
-  ["/home/liveuser/.bash_profile"]="1000:1000:644"
-  ["/home/liveuser/.config"]="1000:1000:755"
-  ["/home/liveuser/.config/hypr"]="1000:1000:755"
-  ["/home/liveuser/.config/hypr/hyprland.conf"]="1000:1000:644"
-  ["/home/liveuser/.config/kitty"]="1000:1000:755"
-  ["/home/liveuser/.config/kitty/kitty.conf"]="1000:1000:644"
+  ["/etc/skel/.bash_profile"]="0:0:644"
+  ["/etc/skel/.config"]="0:0:755"
+  ["/etc/skel/.config/hypr"]="0:0:755"
+  ["/etc/skel/.config/hypr/hyprland.conf"]="0:0:644"
+  ["/etc/skel/.config/kitty"]="0:0:755"
+  ["/etc/skel/.config/kitty/kitty.conf"]="0:0:644"
   ["/home/liveuser/Desktop"]="1000:1000:755"
   ["/home/liveuser/Desktop/install-arch.desktop"]="1000:1000:755"
   ["/etc/sudoers.d/g_wheel"]="0:0:440"
+  ["/etc/skel/.config/hypr/scripts/init-qs.sh"]="0:0:755"
 )
