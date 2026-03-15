@@ -6,9 +6,8 @@
 # Handles user-specific setup that requires a real D-Bus session:
 #   - gsettings
 #   - systemctl --user
-#   - uv python venv
+#   - uv python venv at ~/.local/state/quickshell/.venv
 # =============================================================================
-
 MARKER="$HOME/.dotfiles-pending-user-setup"
 [[ -f "$MARKER" ]] || return 0
 [[ -n "$WAYLAND_DISPLAY" || -n "$DISPLAY" ]] || return 0
@@ -19,68 +18,100 @@ rm -f "$MARKER"
 DOTFILES_DIR="$HOME/dots-hyprland"
 [[ -d "$DOTFILES_DIR" ]] || DOTFILES_DIR="/opt/dots-hyprland"
 
+# The venv must live here — this is what env.conf sets ILLOGICAL_IMPULSE_VIRTUAL_ENV to
+VENV_PATH="$HOME/.local/state/quickshell/.venv"
+
 # Run in background to not block the login
 (
     sleep 5  # Let the session fully start
 
+    # ---------------------------------------------------------------------------
     # gsettings configuration
+    # ---------------------------------------------------------------------------
     if command -v gsettings &>/dev/null; then
         gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
     fi
 
+    # ---------------------------------------------------------------------------
     # ydotool user service
-    if systemctl --user status ydotool.service &>/dev/null 2>&1 || \
-       systemctl --user list-unit-files ydotool.service &>/dev/null 2>&1; then
+    # ---------------------------------------------------------------------------
+    if systemctl --user list-unit-files ydotool.service &>/dev/null 2>&1; then
         systemctl --user enable ydotool --now 2>/dev/null || true
     fi
 
-    # Install Python uv venv packages (needed by quickshell)
+    # ---------------------------------------------------------------------------
+    # Python uv venv setup
+    # UV_PROJECT_ENVIRONMENT tells uv exactly where to create the venv
+    # Must match ILLOGICAL_IMPULSE_VIRTUAL_ENV in env.conf
+    # ---------------------------------------------------------------------------
     if command -v uv &>/dev/null && [[ -d "$DOTFILES_DIR/sdata/uv" ]]; then
-        cd "$DOTFILES_DIR/sdata/uv" || true
-        uv sync 2>/dev/null || true
+        echo "[first-login] Setting up Python venv at $VENV_PATH..."
+        mkdir -p "$(dirname "$VENV_PATH")"
+        REQUIREMENTS="$DOTFILES_DIR/sdata/uv/requirements.txt"
+        if [[ -f "$REQUIREMENTS" ]]; then
+            # Use uv pip install with requirements.txt — more reliable than uv sync
+            # since pyproject.toml is at repo root, not in sdata/uv/
+            # Step 1: Create the venv explicitly
+            uv venv "$VENV_PATH" 2>/dev/null || true
+            # Step 2: Install packages using --python to target venv directly
+            uv pip install --python "$VENV_PATH/bin/python" \
+                -r "$REQUIREMENTS" 2>/dev/null || true
+            echo "[first-login] Venv setup complete at $VENV_PATH"
+        else
+            echo "[first-login] WARNING: requirements.txt not found at $REQUIREMENTS"
+        fi
+    else
+        echo "[first-login] WARNING: uv not found or sdata/uv missing — venv not created"
     fi
 
-    # Set ILLOGICAL_IMPULSE_VIRTUAL_ENV for shell configs
-    UV_VENV=$(python3 -c "import os; print(os.path.expanduser('$DOTFILES_DIR/.venv'))" 2>/dev/null || true)
-    if [[ -d "$DOTFILES_DIR/.venv" ]]; then
-        VENV_PATH="$DOTFILES_DIR/.venv"
-    elif [[ -d "$HOME/.local/share/illogical-impulse/venv" ]]; then
-        VENV_PATH="$HOME/.local/share/illogical-impulse/venv"
+    # ---------------------------------------------------------------------------
+    # Export ILLOGICAL_IMPULSE_VIRTUAL_ENV to shell configs
+    # (env.conf handles Hyprland, these handle terminal sessions)
+    # ---------------------------------------------------------------------------
+    FISH_ENV_DIR="$HOME/.config/fish/conf.d"
+    mkdir -p "$FISH_ENV_DIR"
+    echo "set -gx ILLOGICAL_IMPULSE_VIRTUAL_ENV '$VENV_PATH'" \
+        > "$FISH_ENV_DIR/illogical-impulse-venv.fish"
+    echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
+        >> "$HOME/.bashrc"
+    echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
+        >> "$HOME/.zshrc"
+
+    # ---------------------------------------------------------------------------
+    # Generate initial color scheme from wallpaper now that venv exists
+    # ---------------------------------------------------------------------------
+    DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
+        echo "[first-login] Generating initial color scheme..."
+        mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
+        matugen image "$DEFAULT_WALL" 2>/dev/null || true
+        # Run full color generation pipeline
+        if [[ -f "$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
+            bash "$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh" \
+                --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+        fi
+        echo "[first-login] Color scheme generated."
     fi
 
-    if [[ -n "${VENV_PATH:-}" ]]; then
-        # Write to fish config
-        FISH_ENV_DIR="$HOME/.config/fish/conf.d"
-        mkdir -p "$FISH_ENV_DIR"
-        echo "set -gx ILLOGICAL_IMPULSE_VIRTUAL_ENV '$VENV_PATH'" \
-            > "$FISH_ENV_DIR/illogical-impulse-venv.fish"
-        # Write to bash/zsh
-        echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
-            >> "$HOME/.bashrc"
-        echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
-            >> "$HOME/.zshrc"
-    fi
-
-    # Notify user via a desktop notification (if notify-send available)
+    # ---------------------------------------------------------------------------
+    # Notify user
+    # ---------------------------------------------------------------------------
     if command -v notify-send &>/dev/null; then
         notify-send "Arch Hyprland Setup" \
             "Desktop environment setup complete! Enjoy your Hyprland system." \
             --icon=system-software-install 2>/dev/null || true
     fi
 
-    # Show a brief summary in the terminal if any session is running
     echo ""
     echo "================================================================"
     echo " Arch Linux Hyprland - First Login Setup Complete"
     echo "================================================================"
     echo " Dotfiles: ~/dots-hyprland (branch: newcustom)"
+    echo " Venv: $VENV_PATH"
     echo " Press Super+Return for terminal"
     echo " Press Super+R for app launcher"
-    echo " Press Super+Shift+C to re-open Calamares (if needed)"
     echo "================================================================"
-
 ) &>/tmp/dotfiles-first-login.log &
-
 disown

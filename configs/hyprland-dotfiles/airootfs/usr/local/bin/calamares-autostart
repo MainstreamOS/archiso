@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# =============================================================================
+# calamares-autostart
+# Only launches Calamares if we are running in a live ISO environment.
+# This script is safe to leave in exec-once — it exits silently on an
+# installed system where calamares is no longer present.
+# =============================================================================
+
+# Check 1: calamares binary must exist
+if ! command -v calamares &>/dev/null; then
+    exit 0
+fi
+
+# Check 2: mkinitcpio-archiso must be installed (live ISO only)
+if ! pacman -Q mkinitcpio-archiso &>/dev/null; then
+    exit 0
+fi
+
+# Check 3: must not be running on an installed system
+# (live ISO has /run/archiso/bootmnt, installed systems don't)
+if [[ ! -d "/run/archiso" ]]; then
+    exit 0
+fi
+
+# All checks passed — we are on the live ISO, launch Calamares
+exec sudo -E /usr/bin/calamares

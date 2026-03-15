@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-install (Chroot Environment Preparation)
+# =============================================================================
+
+set -euo pipefail
+
+log()  { echo "[pre-install] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+# --- 1. Keyring & Mirror Sync ---
+# Since we are already in the chroot, we initialize the keys for the target system
+info "Initializing Arch Linux keyring..."
+pacman-key --init
+pacman-key --populate archlinux
+
+# Only sync package databases if network is available
+info "Checking network connectivity..."
+if ping -c1 -W3 archlinux.org &>/dev/null; then
+    info "Network available — syncing package databases..."
+    pacman -Sy --noconfirm
+else
+    warn "No network detected — skipping database sync. Packages will use cached data."
+fi
+
+# --- 2. Archiso Cleanup ---
+# We must remove these because they point to the live environment's
+# read-only filesystem, which causes mkinitcpio to fail on the new SSD.
+info "Removing live-session hardware configurations..."
+
+# Remove archiso-specific mkinitcpio hooks
+if [ -f "/etc/mkinitcpio.conf.d/archiso.conf" ]; then
+    rm -f /etc/mkinitcpio.conf.d/archiso.conf
+fi
+
+# NOTE: We intentionally do NOT delete /etc/mkinitcpio.d/linux.preset here.
+# install-limine will reinstall the linux kernel which recreates it, and
+# post-install owns the final mkinitcpio -P call after all config is in place.
+
+info "Pre-install environment is ready."

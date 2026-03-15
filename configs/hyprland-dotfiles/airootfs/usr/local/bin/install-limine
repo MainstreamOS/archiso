@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# =============================================================================
+# install-limine (Unified EFI/BIOS & Hardware-Aware Setup)
+# =============================================================================
+
+set -euo pipefail
+
+log()  { echo "[install-limine] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+# --- 0. Kernel & Environment Setup ---
+info "Removing archiso mkinitcpio configs..."
+rm -f /etc/mkinitcpio.conf.d/archiso.conf || true
+rm -f /etc/mkinitcpio.d/linux.preset || true
+
+# Only reinstall linux kernel if network is available
+info "Checking network connectivity..."
+if ping -c1 -W3 archlinux.org &>/dev/null; then
+    info "Network available — reinstalling linux kernel..."
+    # The --overwrite "*" ensures we clean up any symlink mess from the live environment
+    pacman -S --noconfirm --overwrite "*" linux linux-headers
+else
+    warn "No network detected — skipping kernel reinstall. Using kernel from squashfs."
+fi
+
+# NOTE: mkinitcpio -P is intentionally NOT called here.
+# post-install runs after this and modifies mkinitcpio.conf (GPU modules, resume hook),
+# so it owns the final mkinitcpio -P call to avoid building the initramfs twice.
+
+# --- 1. Hardware Detection ---
+# Get the real root partition and its PARTUUID
+# We use lsblk because it is more reliable in a chroot than blkid
+ROOT_PART_DEV=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
+ROOT_PARTUUID=$(lsblk -dno PARTUUID "$ROOT_PART_DEV")
+
+if [ -d "/boot/efi" ]; then
+    BOOT_PATH="/boot/efi"
+    IS_UEFI=true
+    EFI_DEV=$(findmnt -n -o SOURCE /boot/efi)
+    TARGET_DISK=$(lsblk -no PKNAME "$EFI_DEV")
+else
+    BOOT_PATH="/boot"
+    IS_UEFI=false
+    TARGET_DISK=$(lsblk -no PKNAME "$ROOT_PART_DEV")
+fi
+
+# Ensure TARGET_DISK has the /dev/ prefix
+[[ "$TARGET_DISK" != /* ]] && TARGET_DISK="/dev/$TARGET_DISK"
+
+info "Target Disk: $TARGET_DISK"
+info "Detected Root PARTUUID: $ROOT_PARTUUID"
+info "Boot Path: $BOOT_PATH (UEFI: $IS_UEFI)"
+
+# --- 2. Kernel & Initramfs Sync (Required for boot():/// syntax) ---
+if [ "$IS_UEFI" = true ]; then
+    info "Syncing kernel and initramfs to EFI partition..."
+    # We copy them from /boot (BTRFS) to /boot/efi (FAT32) so Limine can see them
+    cp -f /boot/vmlinuz-linux "$BOOT_PATH/" || exit 1
+    cp -f /boot/initramfs-linux.img "$BOOT_PATH/" || exit 1
+fi
+
+# --- 3. Installation ---
+if [ "$IS_UEFI" = true ]; then
+    info "Force-creating EFI directory structure..."
+    mkdir -p "$BOOT_PATH/EFI/limine" || exit 1
+    mkdir -p "$BOOT_PATH/EFI/BOOT" || exit 1
+
+    info "Copying Limine binaries..."
+    if [ -f "/usr/share/limine/BOOTX64.EFI" ]; then
+        cp -f /usr/share/limine/BOOTX64.EFI "$BOOT_PATH/EFI/limine/"
+        cp -f /usr/share/limine/BOOTX64.EFI "$BOOT_PATH/EFI/BOOT/BOOTX64.EFI"
+    else
+        log "CRITICAL: /usr/share/limine/BOOTX64.EFI missing in chroot!"
+        exit 1
+    fi
+
+    PART_NUM=$(lsblk -no PARTN "$EFI_DEV")
+    efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
+        --label "Arch Linux (Limine)" \
+        --loader "\\EFI\\limine\\BOOTX64.EFI" \
+        --unicode 2>/dev/null || true
+else
+    info "Installing BIOS MBR..."
+    # Use modern limine CLI syntax
+    limine bios-install "$TARGET_DISK" || true
+fi
+
+# --- 4. Configuration Deployment ---
+TEMPLATE="/etc/limine.conf.template"
+
+if [ -f "$TEMPLATE" ]; then
+    info "Deploying configuration..."
+    # 1. Replace placeholder with real PARTUUID
+    # 2. Ensure subvol=@ (matching your working system)
+    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" | \
+    sed "s/subvol=\/@/subvol=@/g" > "$BOOT_PATH/limine.conf"
+
+    # Redundant copy for EFI internal path
+    if [ "$IS_UEFI" = true ]; then
+        cp -f "$BOOT_PATH/limine.conf" "$BOOT_PATH/EFI/limine/limine.conf" || true
+    fi
+else
+    log "ERROR: Template missing at $TEMPLATE"
+    exit 1
+fi
+
+info "Limine installation complete."

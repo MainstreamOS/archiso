@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# =============================================================================
+# install-yay (Universal PTY-Free AUR Helper Bootstrap)
+# =============================================================================
+
+set -euo pipefail
+
+log()  { echo "[install-yay] $*"; }
+info() { log "INFO:  $*"; }
+die()  { log "FATAL: $*"; exit 1; }
+
+# --- 1. Network Check ---
+info "Checking network connectivity..."
+if ! ping -c1 -W5 aur.archlinux.org &>/dev/null; then
+    die "No network connectivity. Cannot reach AUR. Aborting."
+fi
+info "Network OK."
+
+# --- 2. Build Environment Setup ---
+info "Ensuring temporary build user exists..."
+if ! id "builduser" &>/dev/null; then
+    useradd -m -G wheel builduser
+fi
+
+info "Configuring temporary sudo privileges..."
+echo "builduser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builduser
+chmod 440 /etc/sudoers.d/builduser
+
+info "Installing build dependencies..."
+pacman -S --needed --noconfirm base-devel git
+
+# --- 3. Build and Install yay-bin ---
+info "Building yay-bin from AUR..."
+BUILD_DIR="/tmp/yay-build"
+
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+chown -R builduser:builduser "$BUILD_DIR"
+
+# Clone and build in a single self-contained subshell per command
+# so the working directory is explicit and not inherited from root
+info "Cloning yay-bin..."
+if ! su builduser -c "git clone https://aur.archlinux.org/yay-bin.git '$BUILD_DIR'"; then
+    die "git clone of yay-bin failed. Aborting."
+fi
+
+# Verify clone produced files before attempting build
+if [[ -z "$(ls -A "$BUILD_DIR")" ]]; then
+    die "Clone directory is empty after git clone. Aborting."
+fi
+
+info "Building and installing yay-bin..."
+if ! su builduser -c "cd '$BUILD_DIR' && makepkg -si --noconfirm"; then
+    die "makepkg failed for yay-bin. Aborting."
+fi
+
+# --- 4. Cleanup ---
+info "Cleaning up build files..."
+rm -rf "$BUILD_DIR"
+
+info "yay-bin installation complete."

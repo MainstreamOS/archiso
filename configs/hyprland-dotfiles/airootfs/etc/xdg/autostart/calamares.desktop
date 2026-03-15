@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Calamares Installer
+GenericName=System Installer
+Comment=Install Arch Linux with Hyprland dotfiles
+Exec=/usr/local/bin/calamares-launch
+Icon=calamares
+NoDisplay=true
+Terminal=false
+Categories=System;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

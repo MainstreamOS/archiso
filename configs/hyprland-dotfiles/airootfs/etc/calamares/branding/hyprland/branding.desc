@@ -1,6 +1,10 @@
 ---
 componentName: hyprland
 
+windowSize: 1100px,620px
+
+sidebar: qml,top
+
 strings:
     productName: Arch Linux Hyprland
     shortProductName: Arch Hyprland
@@ -22,6 +26,9 @@ images:
 slideshow: "show.qml"
 
 style:
-    sidebarBackground: "#292b2e"
-    sidebarText: "#ffffff"
-    sidebarTextSelect: "#1793d1"
+    # Material You dark surface colors from default wallpaper palette
+    sidebarBackground:        "#1c1b1f"
+    sidebarText:              "#cac4d0"
+    sidebarTextSelect:        "#d0bcff"
+    sidebarBackgroundCurrent: "#2d2a3e"
+    sidebarTextCurrent:       "#d0bcff"

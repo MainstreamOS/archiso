@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Launch Calamares installer (run as liveuser, elevates via sudo)
-if [ "$(id -u)" -eq 0 ]; then
-    exec calamares
-else
-    exec sudo -E /usr/bin/calamares
-fi

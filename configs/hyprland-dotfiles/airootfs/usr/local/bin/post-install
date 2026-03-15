@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# =============================================================================
+# post-install (Universal GPU, SDDM-Hyprland, Speed & Cleanup)
+# =============================================================================
+
+set -euo pipefail
+
+log()  { echo "[post-install] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+# ---------------------------------------------------------------------------
+# 1. IDENTIFY USERS (SAFETY CHECK)
+# ---------------------------------------------------------------------------
+# Identify the actual user created by Calamares (UID 1000)
+MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vE '(liveuser|builduser|nobody|root)' | head -n 1 || true)
+MAIN_USER_HOME="/home/$MAIN_USER"
+
+info "Verifying target environment..."
+if [[ -z "$MAIN_USER" ]]; then
+    log "ERROR: Primary user (UID 1000) not detected. Check Calamares logs."
+elif [[ "$MAIN_USER" == "builduser" ]]; then
+    log "WARNING: UID 1000 is 'builduser'. Skipping account purge to prevent lockout."
+fi
+
+# ---------------------------------------------------------------------------
+# 2. THE CALAMARES & BOOT PURGE
+# ---------------------------------------------------------------------------
+info "Removing installer artifacts and masking redundant setup..."
+
+# Remove Calamares and its autostart triggers
+pacman -Rs --noconfirm calamares || true
+rm -f /etc/xdg/autostart/calamares* || true
+rm -f /usr/share/applications/calamares.desktop || true
+
+if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
+    rm -rf "$MAIN_USER_HOME/.config/autostart/calamares"* || true
+    rm -f "$MAIN_USER_HOME/Desktop/install-arch.desktop" || true
+fi
+
+# ---------------------------------------------------------------------------
+# 3. SPEED & SILENCE + LIVE SERVICE CLEANUP
+# ---------------------------------------------------------------------------
+info "Optimizing boot services and disabling live-only services..."
+
+# Speed fixes
+systemctl disable systemd-time-wait-sync.service || true
+systemctl disable NetworkManager-wait-online.service || true
+
+# Disable live-only services that get copied from the squashfs
+for svc in \
+    pacman-init.service \
+    iwd.service \
+    wpa_supplicant.service \
+    sshd.service \
+    reflector.service \
+    reflector.timer \
+    systemd-networkd.service \
+    systemd-networkd-persistent-storage.service \
+    lvm2-monitor.service \
+    systemd-udev-settle.service \
+    systemd-resolved.service \
+    ModemManager.service; do
+    if systemctl is-enabled "$svc" &>/dev/null; then
+        info "Disabling live service: $svc"
+        systemctl disable "$svc" || true
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 4. MKINITCPIO & HYBRID GPU DETECTION (Early KMS)
+# ---------------------------------------------------------------------------
+info "Applying silent boot fixes and detecting hardware..."
+
+# Force remove 'resume' hook to stop the hibernation scan (speeds up boot)
+sed -i 's/\bresume\b//g' /etc/mkinitcpio.conf
+find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/\bresume\b//g' {} +
+
+# Hybrid GPU Detection logic for Early KMS
+# Use || true on the grep so set -e doesn't fire if no GPU matches
+GPU_INFO=$(lspci 2>/dev/null | grep -E "VGA|3D" || true)
+MODULE_LIST=""
+
+if echo "$GPU_INFO" | grep -iq "Intel"; then
+    info "Intel iGPU detected."
+    MODULE_LIST+="i915 "
+fi
+
+if echo "$GPU_INFO" | grep -iqE "AMD|ATI"; then
+    info "AMD GPU detected."
+    MODULE_LIST+="amdgpu "
+    # Apply RDNA specific environment variables
+    cat >> /etc/environment <<EOF
+WLR_RENDERER=vulkan
+AMD_VULKAN_ICD=RADV
+WLR_NO_HARDWARE_CURSORS=1
+EOF
+fi
+
+if echo "$GPU_INFO" | grep -iq "NVIDIA"; then
+    info "NVIDIA GPU detected."
+    MODULE_LIST+="nvidia nvidia_modeset nvidia_uvm nvidia_drm "
+    mkdir -p /etc/modprobe.d
+    echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+fi
+
+if [[ -z "$GPU_INFO" ]]; then
+    warn "lspci returned no GPU info — skipping Early KMS module injection."
+fi
+
+# Inject detected modules into mkinitcpio.conf
+if [[ -n "$MODULE_LIST" ]]; then
+    info "Configuring Early KMS for: $MODULE_LIST"
+    sed -i "s/^MODULES=(/MODULES=($MODULE_LIST/" /etc/mkinitcpio.conf
+fi
+
+# Regenerate initramfs — this is the single authoritative mkinitcpio -P call
+# (install-limine intentionally skips this so all config is in place first)
+info "Regenerating initramfs..."
+mkinitcpio -P
+
+# ---------------------------------------------------------------------------
+# 5. SDDM THEME, WAYLAND CONFIG & BTRFS FIXES
+# ---------------------------------------------------------------------------
+info "Installing pixie SDDM theme..."
+
+SDDM_THEME_DIR="/usr/share/sddm/themes/pixie"
+if ping -c1 -W3 github.com &>/dev/null; then
+    if git clone --depth=1 https://github.com/gregorytrentmartinjr/pixie-sddm.git "$SDDM_THEME_DIR"; then
+        info "pixie SDDM theme installed successfully."
+    else
+        warn "Failed to clone pixie-sddm — SDDM will use default theme."
+    fi
+else
+    warn "No network — skipping pixie SDDM theme install."
+fi
+
+info "Configuring SDDM-Hyprland and correcting fstab..."
+
+# SDDM Wayland Handshake + pixie theme
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/10-wayland.conf <<SDDMEOF
+[General]
+DisplayServer=wayland
+GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
+
+[Wayland]
+CompositorCommand=Hyprland
+
+[Theme]
+Current=pixie
+SDDMEOF
+
+# Fix Btrfs subvolume naming mismatch (@ vs /@)
+sed -i 's|subvol=/@|subvol=@|g' /etc/fstab || true
+
+# ---------------------------------------------------------------------------
+# 5b. SDDM BACKGROUND POLKIT SETUP
+# ---------------------------------------------------------------------------
+# Install the polkit helper + rules so wallpaper switches can update the
+# SDDM login screen background without a password prompt
+DOTFILES_REPO="/tmp/dotfiles-setup"
+if [[ -d "$DOTFILES_REPO" ]]; then
+    info "Installing SDDM background polkit helper..."
+
+    HELPER_SRC="$DOTFILES_REPO/dots/.config/quickshell/ii/scripts/colors/sddm-bg-helper.sh"
+    POLICY_SRC="$DOTFILES_REPO/sdata/polkit/org.illogicalimpulse.sddm-bg.policy"
+    RULES_SRC="$DOTFILES_REPO/sdata/polkit/50-sddm-bg.rules"
+
+    if [[ -f "$HELPER_SRC" ]]; then
+        cp "$HELPER_SRC" /usr/local/bin/sddm-bg-helper
+        chmod 755 /usr/local/bin/sddm-bg-helper
+        info "sddm-bg-helper installed."
+    else
+        warn "sddm-bg-helper.sh not found in dotfiles repo — SDDM background updates may prompt for password."
+    fi
+
+    if [[ -f "$POLICY_SRC" ]]; then
+        mkdir -p /usr/share/polkit-1/actions
+        cp "$POLICY_SRC" /usr/share/polkit-1/actions/
+        info "Polkit policy installed."
+    fi
+
+    if [[ -f "$RULES_SRC" ]]; then
+        mkdir -p /usr/share/polkit-1/rules.d
+        cp "$RULES_SRC" /usr/share/polkit-1/rules.d/
+        info "Polkit rules installed."
+    fi
+else
+    warn "/tmp/dotfiles-setup not found — skipping SDDM polkit setup."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. CLEANUP BUILDUSER
+# ---------------------------------------------------------------------------
+# Precision purge: Only remove builduser if it isn't our primary account
+if id "builduser" &>/dev/null && [[ "$MAIN_USER" != "builduser" ]]; then
+    info "Purging temporary build user..."
+    userdel -rf builduser || true
+fi
+
+rm -f /etc/sudoers.d/builduser /etc/sudoers.d/g_wheel 2>/dev/null || true
+rm -f /var/lib/pacman/db.lck 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 6b. PACMAN KEYRING INITIALIZATION
+# ---------------------------------------------------------------------------
+# Initialize the pacman keyring on the installed system so pacman can
+# verify and install packages after first boot without keyring errors.
+info "Initializing pacman keyring..."
+pacman-key --init 2>/dev/null || true
+pacman-key --populate archlinux 2>/dev/null || true
+info "Pacman keyring initialized."
+
+# ---------------------------------------------------------------------------
+# 7. SERVICES, SHELL & FINAL PERMISSIONS
+# ---------------------------------------------------------------------------
+info "Enabling core services and finalizing user shell..."
+systemctl set-default graphical.target
+systemctl enable sddm.service -f
+
+for svc in NetworkManager bluetooth; do
+    systemctl enable "$svc" 2>/dev/null || true
+done
+
+if [[ -n "$MAIN_USER" ]]; then
+    # Add to essential groups
+    groupadd -f render
+    groupadd -f video
+    usermod -aG video,render,wheel "$MAIN_USER"
+
+    # Change user shell to Zsh if installed
+    if [ -f /usr/bin/zsh ]; then
+        info "Setting default shell to Zsh for $MAIN_USER..."
+        chsh -s /usr/bin/zsh "$MAIN_USER" || true
+    fi
+
+    # Final ownership guarantee
+    chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
+
+    # Add hyprpolkitagent autostart if not already present in dotfiles
+    EXECS_CONF="$MAIN_USER_HOME/.config/hypr/custom/execs.conf"
+    if [[ -f "$EXECS_CONF" ]] && ! grep -q "hyprpolkitagent" "$EXECS_CONF"; then
+        info "Adding hyprpolkitagent to Hyprland autostart..."
+        echo "exec-once = hyprpolkitagent" >> "$EXECS_CONF"
+    elif [[ ! -f "$EXECS_CONF" ]]; then
+        warn "Could not find $EXECS_CONF — hyprpolkitagent will not autostart."
+    fi
+
+    # ---------------------------------------------------------------------------
+    # Deploy dotfiles-first-login so it runs on first login via profile.d
+    # ---------------------------------------------------------------------------
+    if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
+        info "Deploying dotfiles-first-login to profile.d..."
+        cp /usr/local/bin/dotfiles-first-login /etc/profile.d/dotfiles-first-login.sh
+        chmod +x /etc/profile.d/dotfiles-first-login.sh
+    else
+        warn "dotfiles-first-login not found in /usr/local/bin — skipping profile.d deploy."
+    fi
+
+    # ---------------------------------------------------------------------------
+    # Fix Nautilus home directory and set as default file manager
+    # ---------------------------------------------------------------------------
+    info "Configuring Nautilus as default file manager..."
+
+    # Generate XDG user directories (creates ~/Downloads, ~/Documents etc.)
+    # Run as the real user so paths resolve correctly
+    su -s /bin/bash "$MAIN_USER" -c "xdg-user-dirs-update --force" || true
+
+    # Set Nautilus as default file manager
+    su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Nautilus.desktop inode/directory" || true
+
+    # Set gsettings defaults for Nautilus
+    su -s /bin/bash "$MAIN_USER" -c "
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u '$MAIN_USER')/bus
+        gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
+        gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view' 2>/dev/null || true
+        gsettings set org.gnome.nautilus.preferences show-hidden-files false 2>/dev/null || true
+    " || true
+
+    # Rebuild font cache as the target user so custom fonts are found
+    info "Rebuilding font cache for $MAIN_USER..."
+    su -s /bin/bash "$MAIN_USER" -c "fc-cache -fv" 2>/dev/null || true
+
+    # Generate initial matugen color scheme from default wallpaper
+    # This ensures theming works correctly on first login without requiring
+    # the user to manually set a wallpaper
+    DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
+        info "Generating initial Material You colors from default wallpaper..."
+        # Create output directory for quickshell generated files
+        mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
+        chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
+        # Run matugen as the target user
+        su -s /bin/bash "$MAIN_USER" -c "matugen image '$DEFAULT_WALL'" 2>/dev/null ||             warn "matugen failed — colors will be generated on first login."
+        info "Initial color scheme generated."
+    else
+        warn "Default wallpaper or matugen not found — skipping initial color generation."
+    fi
+
+    # Create the marker file so the first-login script knows to run
+    touch "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
+    chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
+    info "Created first-login marker for $MAIN_USER."
+
+    # Preserve the cloned dotfiles repo so first-login script can find it
+    if [[ -d /tmp/dotfiles-setup ]]; then
+        info "Preserving dotfiles repo to $MAIN_USER_HOME/dots-hyprland..."
+        cp -a /tmp/dotfiles-setup "$MAIN_USER_HOME/dots-hyprland"
+        chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/dots-hyprland"
+    else
+        warn "/tmp/dotfiles-setup not found — first-login uv venv setup may be skipped."
+    fi
+fi
+
+info "Post-install synchronization complete. System is ready for reboot."

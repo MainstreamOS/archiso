@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# =============================================================================
+# live-setup
+# Runs once on first boot of the live ISO to set the wallpaper and
+# generate Material You colors so the desktop looks correct immediately.
+# This script is safe — it checks for the live ISO environment before running.
+# =============================================================================
+
+# Only run on the live ISO
+if [[ ! -d "/run/archiso" ]]; then
+    exit 0
+fi
+
+# Only run if this is liveuser's first session
+MARKER="$HOME/.live-setup-done"
+[[ -f "$MARKER" ]] && exit 0
+touch "$MARKER"
+
+DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
+
+# Wait for Hyprland and Quickshell to fully initialize
+sleep 4
+
+# Start swww daemon if not running
+if ! pgrep -x swww-daemon &>/dev/null; then
+    swww-daemon &
+    sleep 1
+fi
+
+# Set the wallpaper
+if [[ -f "$DEFAULT_WALL" ]]; then
+    swww img "$DEFAULT_WALL" --transition-type fade --transition-duration 1 2>/dev/null || true
+fi
+
+# Generate Material You colors if matugen and venv are available
+if command -v matugen &>/dev/null && [[ -f "$DEFAULT_WALL" ]]; then
+    # Create output directories
+    mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
+
+    # Run matugen for hyprland/quickshell color templates
+    matugen image "$DEFAULT_WALL" 2>/dev/null || true
+
+    # Run full switchwall pipeline if venv is available
+    if [[ -n "$ILLOGICAL_IMPULSE_VIRTUAL_ENV" ]] && \
+       [[ -d "$ILLOGICAL_IMPULSE_VIRTUAL_ENV" ]] && \
+       [[ -f "$SWITCHWALL" ]]; then
+        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+    fi
+fi
+
+# Rebuild font cache for the live user
+fc-cache -fv 2>/dev/null || true
+
+# Reload Hyprland config to pick up new colors
+sleep 1
+hyprctl reload 2>/dev/null || true

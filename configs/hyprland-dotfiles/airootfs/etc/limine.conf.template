@@ -1,0 +1,7 @@
+timeout: 5
+
+/:Arch Linux
+    protocol: linux
+    kernel_path: boot():///vmlinuz-linux
+    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw noresume quiet loglevel=0 systemd.show_status=false rd.systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 nvidia_drm.modeset=1 amdgpu.modeset=1 i915.modeset=1 nowatchdog nmi_watchdog=0 printk.devkmsg=off systemd.log_level=0 systemd.log_target=null
+    module_path: boot():///initramfs-linux.img

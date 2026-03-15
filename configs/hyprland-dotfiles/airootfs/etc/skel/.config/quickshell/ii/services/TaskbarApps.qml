@@ -1,0 +1,81 @@
+pragma Singleton
+
+import qs.modules.common
+import QtQuick
+import Quickshell
+import Quickshell.Wayland
+
+Singleton {
+    id: root
+
+    function isPinned(appId) {
+        return Config.options.dock.pinnedApps.some(id => id.toLowerCase() === appId.toLowerCase());
+    }
+
+    function reorderPinned(from, to) {
+        var arr = Config.options.dock.pinnedApps.slice();
+        var item = arr.splice(from, 1)[0];
+        arr.splice(to, 0, item);
+        Config.options.dock.pinnedApps = arr;
+    }
+
+    function togglePin(appId) {
+        if (root.isPinned(appId)) {
+            Config.options.dock.pinnedApps = Config.options.dock.pinnedApps.filter(id => id.toLowerCase() !== appId.toLowerCase())
+        } else {
+            Config.options.dock.pinnedApps = Config.options.dock.pinnedApps.concat([appId])
+        }
+    }
+
+    property list<var> apps: {
+        var map = new Map();
+
+        // Pinned apps
+        const pinnedApps = Config.options?.dock.pinnedApps ?? [];
+        for (const appId of pinnedApps) {
+            if (!map.has(appId.toLowerCase())) map.set(appId.toLowerCase(), ({
+                pinned: true,
+                toplevels: [],
+                originalId: appId
+            }));
+        }
+
+        // Separator
+        if (pinnedApps.length > 0) {
+            map.set("SEPARATOR", { pinned: false, toplevels: [], originalId: "SEPARATOR" });
+        }
+
+        // Ignored apps
+        const ignoredRegexStrings = Config.options?.dock.ignoredAppRegexes ?? [];
+        const ignoredRegexes = ignoredRegexStrings.map(pattern => new RegExp(pattern, "i"));
+        // Open windows
+        for (const toplevel of ToplevelManager.toplevels.values) {
+            if (ignoredRegexes.some(re => re.test(toplevel.appId))) continue;
+            if (!map.has(toplevel.appId.toLowerCase())) map.set(toplevel.appId.toLowerCase(), ({
+                pinned: false,
+                toplevels: [],
+                originalId: toplevel.appId
+            }));
+            map.get(toplevel.appId.toLowerCase()).toplevels.push(toplevel);
+        }
+
+        var values = [];
+
+        for (const [key, value] of map) {
+            values.push(appEntryComp.createObject(null, { appId: value.originalId, toplevels: value.toplevels, pinned: value.pinned }));
+        }
+
+        return values;
+    }
+
+    component TaskbarAppEntry: QtObject {
+        id: wrapper
+        required property string appId
+        required property list<var> toplevels
+        required property bool pinned
+    }
+    Component {
+        id: appEntryComp
+        TaskbarAppEntry {}
+    }
+}

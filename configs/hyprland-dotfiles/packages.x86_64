@@ -5,6 +5,9 @@
 base
 linux
 linux-firmware
+linux-firmware-amdgpu
+linux-firmware-intel
+linux-firmware-nvidia
 linux-firmware-marvell
 amd-ucode
 intel-ucode
@@ -14,25 +17,24 @@ arch-install-scripts
 archinstall
 sudo
 bash
+pv
 
 # ==============================================================================
 # Boot
 # ==============================================================================
-grub
+limine
 efibootmgr
-refind
 syslinux
 mtools
 dosfstools
 exfatprogs
-ntfs-3g
 
 # ==============================================================================
 # Networking (WiFi / Ethernet)
 # ==============================================================================
 networkmanager
 network-manager-applet
-nm-connection-editor
+# nm-connection-editor removed — desktop icon not needed
 iwd
 wpa_supplicant
 wireless_tools
@@ -52,7 +54,7 @@ nmap
 # ==============================================================================
 bluez
 bluez-utils
-bluedevil
+# bluedevil removed — KDE-only Bluetooth manager, redundant with bluez-utils
 
 # ==============================================================================
 # Printing
@@ -62,10 +64,9 @@ cups-pdf
 cups-filters
 system-config-printer
 gutenprint
-hplip
+# hplip removed — desktop icon not needed
 ghostscript
 gsfonts
-nss-mdns
 
 # ==============================================================================
 # Display server / Wayland
@@ -88,6 +89,7 @@ vulkan-swrast
 vulkan-icd-loader
 vulkan-tools
 libva-mesa-driver
+intel-media-driver
 
 # ==============================================================================
 # Display manager
@@ -111,7 +113,38 @@ xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
 xdg-desktop-portal-kde
 xdg-utils
-quickshell
+# quickshell replaced by illogical-impulse-quickshell-git below
+
+# ==============================================================================
+# illogical-impulse meta-packages (pre-built, from local repo)
+# Provides end4's custom quickshell build with Polkit support + full stack
+# Requires [illogical-impulse] repo in pacman.conf pointing to:
+#   /usr/local/share/pkgs  (populated by build-packages.sh)
+# ==============================================================================
+illogical-impulse-audio
+illogical-impulse-backlight
+illogical-impulse-basic
+illogical-impulse-fonts-themes
+illogical-impulse-gnome
+illogical-impulse-hyprland
+illogical-impulse-kde
+illogical-impulse-portal
+illogical-impulse-python
+illogical-impulse-screencapture
+illogical-impulse-toolkit
+illogical-impulse-widgets
+illogical-impulse-microtex-git
+illogical-impulse-quickshell-git
+illogical-impulse-extras
+illogical-impulse-bibata-modern-classic-bin
+illogical-impulse-google-sans-flex
+
+# ==============================================================================
+# Explicit providers (prevents interactive prompts during mkarchiso build)
+# ==============================================================================
+iptables-nft
+qt6-multimedia-ffmpeg
+tesseract-data-eng
 
 # ==============================================================================
 # Audio (PipeWire)
@@ -164,12 +197,12 @@ cliphist
 # Launcher / widgets
 # ==============================================================================
 fuzzel
-rofi-wayland
-waybar
-mako
+# rofi-wayland removed — desktop icon not needed
+# waybar removed — replaced by Quickshell illogical-impulse bar
+# mako removed — conflicts with Quickshell built-in notification implementation
 fastfetch
 swww
-nwg-look
+# nwg-look removed — GTK theme configurator, not needed post-install
 
 # ==============================================================================
 # Screenshot / screen capture
@@ -224,10 +257,9 @@ brightnessctl
 ddcutil
 geoclue
 flatpak
-polkit-kde-agent
+hyprpolkitagent
 gnome-keyring
-plasma-nm
-networkmanager
+# plasma-nm removed — KDE NetworkManager plasmoid, redundant with network-manager-applet
 libdbusmenu-gtk3
 
 # ==============================================================================
@@ -239,11 +271,11 @@ calamares
 # Live environment extras
 # ==============================================================================
 nano
-vim
+# vim removed — desktop icon not needed
 less
 man-db
 openssh
-htop
+# htop removed — desktop icon not needed
 gpm
 tmux
 squashfs-tools
@@ -261,7 +293,6 @@ memtest86+
 memtest86+-efi
 livecd-sounds
 terminus-font
-foot
+# foot removed — desktop icon not needed
 reflector
-
-
+edk2-shell
