@@ -11,13 +11,13 @@ sidebar:    qml,top
 navigation: widget
 
 strings:
-    productName:         Arch Linux Hyprland
+    productName:         Mainstream
     shortProductName:    Arch Hyprland
     version:             Rolling
     shortVersion:        Rolling
-    versionedName:       Arch Linux Hyprland (Rolling)
+    versionedName:       Mainstream (Rolling)
     shortVersionedName:  Arch Hyprland
-    bootloaderEntryName: Arch Linux Hyprland
+    bootloaderEntryName: Mainstream
     productUrl:          https://archlinux.org
     supportUrl:          https://wiki.archlinux.org
     knownIssuesUrl:      https://github.com/gregorytrentmartinjr/dots-hyprland/issues

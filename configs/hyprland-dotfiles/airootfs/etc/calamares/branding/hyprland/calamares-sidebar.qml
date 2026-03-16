@@ -1,6 +1,6 @@
 /* =============================================================================
  * calamares-sidebar.qml
- * Arch Linux Hyprland Dotfiles Installer — Top Navigation Rail
+ * Mainstream Dotfiles Installer — Top Navigation Rail
  *
  * Styled to match the illogical-impulse (ii) dots-hyprland NavigationRail
  * found in modules/common/widgets/NavigationRailButton.qml and

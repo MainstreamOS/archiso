@@ -3,8 +3,8 @@
 
 iso_name="arch-hyprland"
 iso_label="ARCH_HYPR_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
-iso_publisher="Arch Linux Hyprland"
-iso_application="Arch Linux Hyprland Dotfiles Installer"
+iso_publisher="Mainstream"
+iso_application="Mainstream Dotfiles Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="arch"
 buildmodes=('iso')

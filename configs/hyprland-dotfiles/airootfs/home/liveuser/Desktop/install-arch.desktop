@@ -2,7 +2,7 @@
 Version=1.0
 Type=Application
 Name=Install Arch Linux
-Comment=Launch the Arch Linux Hyprland installer
+Comment=Launch the Mainstream installer
 Exec=/usr/local/bin/calamares-launch
 Icon=calamares
 Terminal=false

@@ -1,5 +1,5 @@
 /* =============================================================================
- * show.qml — Arch Linux Hyprland Dotfiles Installer Slideshow
+ * show.qml — Mainstream Dotfiles Installer Slideshow
  *
  * Displayed during the exec (installation) phase.
  * Styled to match the illogical-impulse (ii) dark M3 theme.
@@ -71,7 +71,7 @@ Presentation {
 
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text:             "Installing Arch Linux Hyprland"
+                    text:             "Installing Mainstream"
                     font.pixelSize:   26
                     font.weight:      Font.Medium
                     color:            presentation.colOnSurface
