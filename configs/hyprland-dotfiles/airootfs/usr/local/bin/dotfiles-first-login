@@ -38,7 +38,7 @@ SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
     # This doesn't need the venv — just matugen itself
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
-        matugen image "$DEFAULT_WALL" 2>/dev/null || true
+        matugen image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
         echo "[first-login] Basic colors generated via matugen."
     fi
 

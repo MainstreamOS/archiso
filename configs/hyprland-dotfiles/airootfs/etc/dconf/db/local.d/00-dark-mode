@@ -1,0 +1,7 @@
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='adw-gtk3-dark'
+icon-theme='Papirus-Dark'
+font-name='Google Sans Flex Medium 11 @opsz=11,wght=500'
+cursor-theme='Bibata-Modern-Classic'
+cursor-size=24
