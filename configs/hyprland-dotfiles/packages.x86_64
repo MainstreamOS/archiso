@@ -175,6 +175,11 @@ wget
 # Calamares installer (live only — removed by packages.conf on install)
 # ==============================================================================
 calamares
+kcrash
+kpmcore
+qt6-declarative
+yaml-cpp
+kcoreaddons
 
 # ==============================================================================
 # Live environment extras (live only — removed by packages.conf on install)
