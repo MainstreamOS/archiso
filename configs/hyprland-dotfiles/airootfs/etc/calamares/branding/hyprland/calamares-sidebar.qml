@@ -29,17 +29,17 @@ Rectangle {
     readonly property color colOutline:      "#948f94"   // outline
     readonly property color colPrimary:      "#cbc4cb"   // primary
 
-    // ── Installer steps — matches the `show` sequences in settings.conf ─────
-    // ViewManager indices: 0=welcome 1=locale 2=keyboard 3=partition
-    //                      4=users   5=summary               6=finished
-    readonly property var stepDefs: [
-        { label: "Welcome",    icon: "waving_hand"  },
-        { label: "Location",   icon: "language"     },
-        { label: "Keyboard",   icon: "keyboard"     },
-        { label: "Partitions", icon: "storage"      },
-        { label: "Users",      icon: "person"       },
-        { label: "Summary",    icon: "fact_check"   },
-        { label: "Finish",     icon: "check_circle" }
+    // ── Icon mapping by step index — names come dynamically from ViewManager ─
+    // Icons correspond to the `show` sequence in settings.conf:
+    //   0=welcome 1=locale 2=keyboard 3=partition 4=users 5=summary 6=finished
+    readonly property var stepIcons: [
+        "waving_hand",   // Welcome
+        "language",      // Location
+        "keyboard",      // Keyboard
+        "storage",       // Partitions
+        "person",        // Users
+        "fact_check",    // Summary
+        "check_circle"   // Finish
     ]
 
     // Current step from Calamares — updates automatically as user progresses
@@ -97,7 +97,7 @@ Rectangle {
             spacing:          0
 
             Repeater {
-                model: root.stepDefs.length
+                model: ViewManager
 
                 delegate: Item {
                     id: stepDel
@@ -110,7 +110,7 @@ Rectangle {
 
                     // Size: pill + optional right connector
                     implicitWidth:  stepPill.implicitWidth
-                                    + (stepIdx < root.stepDefs.length - 1
+                                    + (stepIdx < ViewManager.count - 1
                                        ? connector.implicitWidth + 4
                                        : 0)
                     implicitHeight: 56
@@ -148,7 +148,7 @@ Rectangle {
                                     "opsz": 18
                                 })
                                 renderType:        Text.NativeRendering
-                                text:              root.stepDefs[stepDel.stepIdx].icon
+                                text:              root.stepIcons[stepDel.stepIdx] || "radio_button_unchecked"
                                 color:             stepDel.isCurrent   ? root.colOnSecCont
                                                  : stepDel.isCompleted ? root.colOnSurface
                                                  :                       root.colOnSurfaceVar
@@ -156,9 +156,9 @@ Rectangle {
                                 Behavior on color { ColorAnimation { duration: 200 } }
                             }
 
-                            // Step label
+                            // Step label — name comes directly from ViewManager model
                             Text {
-                                text:            root.stepDefs[stepDel.stepIdx].label
+                                text:            display
                                 font.pixelSize:  13
                                 font.weight:     stepDel.isCurrent ? Font.Medium : Font.Normal
                                 renderType:      Text.NativeRendering
@@ -175,7 +175,7 @@ Rectangle {
                     // Mirrors the progress line pattern in the ii settings panel
                     Rectangle {
                         id: connector
-                        visible:        stepDel.stepIdx < root.stepDefs.length - 1
+                        visible:        stepDel.stepIdx < ViewManager.count - 1
                         anchors {
                             left:           stepPill.right
                             leftMargin:     4
