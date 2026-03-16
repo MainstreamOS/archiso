@@ -77,7 +77,7 @@ Rectangle {
             }
 
             Text {
-                text:            "Arch Hyprland"
+                text:            "Mainstream"
                 font.pixelSize:  14
                 font.weight:     Font.Medium
                 color:           root.colOnSurface
@@ -135,8 +135,9 @@ Rectangle {
                         // ── Icon + label row (mirrors NavigationRailButton expanded mode)
                         Row {
                             id: pillContent
-                            anchors.centerIn: parent
-                            spacing: 6
+                            anchors.centerIn:      parent
+                            spacing:               6
+                            verticalItemAlignment: Qt.AlignVCenter
 
                             // Material Symbols Rounded icon via OpenType ligature
                             Text {
