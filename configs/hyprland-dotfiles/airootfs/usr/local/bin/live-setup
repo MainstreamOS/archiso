@@ -18,34 +18,51 @@ touch "$MARKER"
 
 DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
+# init-qs.sh always creates the venv here; don't rely on it exporting the var
+# to our environment (we are a separate exec-once process)
+VENV_PATH="$HOME/.local/state/quickshell/.venv"
 
-# Wait for Hyprland and Quickshell to fully initialize
-sleep 4
+# Wait for Hyprland to be ready (socket responsive) instead of a fixed sleep
+for i in $(seq 1 30); do
+    hyprctl version &>/dev/null && break
+    sleep 1
+done
 
-# Start swww daemon if not running
+# Start swww daemon if not already running
 if ! pgrep -x swww-daemon &>/dev/null; then
     swww-daemon &
-    sleep 1
 fi
+
+# Poll until swww-daemon is actually connected to Wayland (up to 10s)
+for i in $(seq 1 20); do
+    swww query &>/dev/null && break
+    sleep 0.5
+done
 
 # Set the wallpaper
 if [[ -f "$DEFAULT_WALL" ]]; then
     swww img "$DEFAULT_WALL" --transition-type fade --transition-duration 1 2>/dev/null || true
 fi
 
-# Generate Material You colors if matugen and venv are available
+# Generate Material You colors
 if command -v matugen &>/dev/null && [[ -f "$DEFAULT_WALL" ]]; then
-    # Create output directories
     mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
 
-    # Run matugen for hyprland/quickshell color templates
-    matugen image "$DEFAULT_WALL" 2>/dev/null || true
+    # Wait up to 60s for init-qs.sh to finish creating the Python venv
+    for i in $(seq 1 60); do
+        [[ -f "$VENV_PATH/bin/python" ]] && break
+        sleep 1
+    done
 
-    # Run full switchwall pipeline if venv is available
-    if [[ -n "$ILLOGICAL_IMPULSE_VIRTUAL_ENV" ]] && \
-       [[ -d "$ILLOGICAL_IMPULSE_VIRTUAL_ENV" ]] && \
-       [[ -f "$SWITCHWALL" ]]; then
+    if [[ -f "$VENV_PATH/bin/python" && -f "$SWITCHWALL" ]]; then
+        # Run the full Material You pipeline.
+        # ILLOGICAL_IMPULSE_VIRTUAL_ENV must be exported so switchwall.sh
+        # can source the venv's activate script.
+        export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
         bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+    else
+        # Fallback: generate basic Hyprland/SCSS colors without the Python step
+        matugen image "$DEFAULT_WALL" 2>/dev/null || true
     fi
 fi
 
@@ -53,5 +70,4 @@ fi
 fc-cache -fv 2>/dev/null || true
 
 # Reload Hyprland config to pick up new colors
-sleep 1
 hyprctl reload 2>/dev/null || true
