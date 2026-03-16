@@ -43,9 +43,14 @@ fi
 # ---------------------------------------------------------------------------
 info "Optimizing boot services and disabling live-only services..."
 
-# Speed fixes
+# Speed fixes — disable/mask services that add latency on the installed system
 systemctl disable systemd-time-wait-sync.service || true
 systemctl disable NetworkManager-wait-online.service || true
+# debug-shell is only useful for emergency TTY debugging; safe to mask normally
+systemctl mask debug-shell.service || true
+# systemd-oomd reacts to memory pressure but can cause latency; zram handles
+# memory pressure instead so oomd is redundant
+systemctl mask systemd-oomd.service || true
 
 # Disable live-only services that get copied from the squashfs
 for svc in \
@@ -225,6 +230,28 @@ compression-algorithm = zstd
 ZRAMEOF
     info "zram configured."
 fi
+
+# ---------------------------------------------------------------------------
+# 6d. SYSCTL PERFORMANCE TUNING
+# ---------------------------------------------------------------------------
+info "Applying sysctl performance tuning..."
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-performance.conf << 'SYSCTLEOF'
+# Keep more data in RAM — less aggressive swapping to zram
+vm.swappiness = 10
+
+# Start flushing dirty pages earlier to avoid big write spikes
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 15
+
+# Retain more dentries/inodes in cache — faster file lookups
+vm.vfs_cache_pressure = 50
+
+# Raise inotify watch limit for Quickshell file watchers
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+SYSCTLEOF
+info "sysctl tuning applied."
 
 # ---------------------------------------------------------------------------
 # 7. SERVICES, SHELL & FINAL PERMISSIONS
