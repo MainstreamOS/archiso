@@ -1,34 +1,40 @@
 ---
 componentName: hyprland
 
-windowSize: 1100px,620px
+### WINDOW CONFIGURATION
+windowExpanding:    normal
+windowSize:         1100px,620px
+windowPlacement:    center
 
-sidebar: qml,top
+### PANELS — custom QML nav rail at top, widget nav buttons at bottom
+sidebar:    qml,top
+navigation: widget
 
 strings:
-    productName: Arch Linux Hyprland
-    shortProductName: Arch Hyprland
-    version: Rolling
-    shortVersion: Rolling
-    versionedName: Arch Linux Hyprland (Rolling)
-    shortVersionedName: Arch Hyprland
+    productName:         Arch Linux Hyprland
+    shortProductName:    Arch Hyprland
+    version:             Rolling
+    shortVersion:        Rolling
+    versionedName:       Arch Linux Hyprland (Rolling)
+    shortVersionedName:  Arch Hyprland
     bootloaderEntryName: Arch Linux Hyprland
-    productUrl: https://archlinux.org
-    supportUrl: https://wiki.archlinux.org
-    knownIssuesUrl: https://github.com/gregorytrentmartinjr/dots-hyprland/issues
-    releaseNotesUrl: https://github.com/gregorytrentmartinjr/dots-hyprland/releases
+    productUrl:          https://archlinux.org
+    supportUrl:          https://wiki.archlinux.org
+    knownIssuesUrl:      https://github.com/gregorytrentmartinjr/dots-hyprland/issues
+    releaseNotesUrl:     https://github.com/gregorytrentmartinjr/dots-hyprland/releases
 
 images:
-    productLogo: "logo.png"
-    productIcon: "logo.png"
+    productLogo:    "logo.png"
+    productIcon:    "logo.png"
     productWelcome: "welcome.png"
 
-slideshow: "show.qml"
+slideshow:    "show.qml"
+slideshowAPI: 2
 
+# These style keys apply to the fallback widget sidebar only.
+# The QML sidebar (calamares-sidebar.qml) defines its own colors inline.
 style:
-    # Material You dark surface colors from default wallpaper palette
-    sidebarBackground:        "#1c1b1f"
-    sidebarText:              "#cac4d0"
-    sidebarTextSelect:        "#d0bcff"
-    sidebarBackgroundCurrent: "#2d2a3e"
-    sidebarTextCurrent:       "#d0bcff"
+    SidebarBackground:        "#1c1b1c"
+    SidebarText:              "#cbc5ca"
+    SidebarTextCurrent:       "#ece6e9"
+    SidebarBackgroundCurrent: "#4d4b4d"

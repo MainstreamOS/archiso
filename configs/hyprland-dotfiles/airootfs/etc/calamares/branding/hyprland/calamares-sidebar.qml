@@ -1,148 +1,202 @@
-/* Calamares sidebar — Material You dark theme
-   Matches end-4/dots-hyprland illogical-impulse aesthetic
-*/
-
-import io.calamares.ui 1.0
-import io.calamares.core 1.0
+/* =============================================================================
+ * calamares-sidebar.qml
+ * Arch Linux Hyprland Dotfiles Installer — Top Navigation Rail
+ *
+ * Styled to match the illogical-impulse (ii) dots-hyprland NavigationRail
+ * found in modules/common/widgets/NavigationRailButton.qml and
+ * modules/common/widgets/NavigationRailTabArray.qml.
+ *
+ * Color system: Material Design 3 dark scheme (from ii Appearance.qml).
+ * Icons: Material Symbols Rounded (variable font, ligature rendering).
+ *        Provided by the illogical-impulse-fonts-themes package on the live ISO.
+ * =========================================================================== */
 
 import QtQuick 2.15
-import QtQuick.Layouts 1.3
-import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import io.calamares.core 1.0
+import io.calamares.ui 1.0
 
 Rectangle {
-    id: sideBar
-    color: "#1c1b1f"
-    height: 52
-    width: parent ? parent.width : 1100
+    id: root
 
-    // Subtle bottom border
+    // ── M3 dark color tokens (ii dots — Appearance.qml m3colors / colors) ──
+    readonly property color colBg:           "#1c1b1c"   // surfaceContainerLow
+    readonly property color colOnSurface:    "#e6e1e1"   // onBackground
+    readonly property color colOnSurfaceVar: "#cbc5ca"   // onSurfaceVariant
+    readonly property color colSecCont:      "#4d4b4d"   // secondaryContainer
+    readonly property color colOnSecCont:    "#ece6e9"   // onSecondaryContainer
+    readonly property color colOutlineVar:   "#49464a"   // outlineVariant
+    readonly property color colOutline:      "#948f94"   // outline
+    readonly property color colPrimary:      "#cbc4cb"   // primary
+
+    // ── Installer steps — matches the `show` sequences in settings.conf ─────
+    // ViewManager indices: 0=welcome 1=locale 2=keyboard 3=partition
+    //                      4=users   5=summary               6=finished
+    readonly property var stepDefs: [
+        { label: "Welcome",    icon: "waving_hand"  },
+        { label: "Location",   icon: "language"     },
+        { label: "Keyboard",   icon: "keyboard"     },
+        { label: "Partitions", icon: "storage"      },
+        { label: "Users",      icon: "person"       },
+        { label: "Summary",    icon: "fact_check"   },
+        { label: "Finish",     icon: "check_circle" }
+    ]
+
+    // Current step from Calamares — updates automatically as user progresses
+    readonly property int currentStep: ViewManager.currentStepIndex
+
+    // ── Root geometry ────────────────────────────────────────────────────────
+    implicitHeight: 56
+    color: colBg
+
+    // Bottom separator — mirrors the outlineVariant divider in ii panels
     Rectangle {
-        anchors.bottom: parent.bottom
-        width: parent.width
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
         height: 1
-        color: "#49454f"
-        opacity: 0.5
+        color: root.colOutlineVar
     }
 
+    // ── Layout ───────────────────────────────────────────────────────────────
     RowLayout {
-        anchors.fill: parent
-        anchors.leftMargin: 16
-        anchors.rightMargin: 16
-        spacing: 4
+        anchors { fill: parent; leftMargin: 20; rightMargin: 20 }
+        spacing: 0
 
-        // Logo
-        Image {
-            Layout.alignment: Qt.AlignVCenter
-            Layout.rightMargin: 8
-            id: logo
-            width: 28
-            height: 28
-            source: "file:/" + Branding.imagePath(Branding.ProductLogo)
-            sourceSize.width: width
-            sourceSize.height: height
-            smooth: true
+        // ── Logo + product name (left) ────────────────────────────────────
+        RowLayout {
+            Layout.preferredWidth: 175
+            Layout.alignment:      Qt.AlignVCenter
+            spacing: 10
+
+            Image {
+                Layout.preferredWidth:  26
+                Layout.preferredHeight: 26
+                fillMode:  Image.PreserveAspectFit
+                source:    Qt.resolvedUrl("logo.png")
+                smooth:    true
+                mipmap:    true
+            }
+
+            Text {
+                text:            "Arch Hyprland"
+                font.pixelSize:  14
+                font.weight:     Font.Medium
+                color:           root.colOnSurface
+                renderType:      Text.NativeRendering
+            }
         }
 
-        // Product name
-        Text {
+        // ── Left flex spacer ──────────────────────────────────────────────
+        Item { Layout.fillWidth: true }
+
+        // ── Step pills (centered) ─────────────────────────────────────────
+        // Each delegate is an Item containing: [pill rectangle] + [connector]
+        // The animated sliding highlight beneath the active pill is handled
+        // by the pill's own color Behavior, matching NavigationRailTabArray.
+        RowLayout {
             Layout.alignment: Qt.AlignVCenter
-            Layout.rightMargin: 16
-            text: Branding.shortProductName
-            color: "#e6e1e5"
-            font.pixelSize: 13
-            font.weight: Font.Medium
-            font.family: "Google Sans Flex, Rubik, Noto Sans"
-        }
+            spacing:          0
 
-        // Thin divider
-        Rectangle {
-            Layout.alignment: Qt.AlignVCenter
-            width: 1
-            height: 24
-            color: "#49454f"
-            Layout.rightMargin: 8
-        }
+            Repeater {
+                model: root.stepDefs.length
 
-        // Step pills
-        Repeater {
-            model: ViewManager
-            delegate: Item {
-                Layout.alignment: Qt.AlignVCenter
-                Layout.fillWidth: true
-                height: 36
+                delegate: Item {
+                    id: stepDel
 
-                Rectangle {
-                    id: pill
-                    anchors.fill: parent
-                    radius: 18
-                    color: index === ViewManager.currentStepIndex
-                        ? "#2d2a3e"
-                        : "transparent"
+                    // Per-step state — all bindings re-evaluate when currentStep changes
+                    readonly property int  stepIdx:     index
+                    readonly property bool isCurrent:   stepIdx === root.currentStep
+                    readonly property bool isCompleted: stepIdx <  root.currentStep
+                    readonly property bool isFuture:    stepIdx >  root.currentStep
 
-                    // Active indicator line at bottom
+                    // Size: pill + optional right connector
+                    implicitWidth:  stepPill.implicitWidth
+                                    + (stepIdx < root.stepDefs.length - 1
+                                       ? connector.implicitWidth + 4
+                                       : 0)
+                    implicitHeight: 56
+
+                    // ── Step pill ─────────────────────────────────────────
                     Rectangle {
-                        visible: index === ViewManager.currentStepIndex
-                        anchors.bottom: parent.bottom
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: parent.width * 0.6
-                        height: 2
-                        radius: 1
-                        color: "#d0bcff"
-                    }
+                        id: stepPill
+                        anchors {
+                            left:           parent.left
+                            verticalCenter: parent.verticalCenter
+                        }
+                        implicitWidth:  pillContent.implicitWidth + 24
+                        implicitHeight: 36
+                        radius:         9999    // full pill — Appearance.rounding.full
 
-                    // Step number bubble
-                    Rectangle {
-                        id: stepNum
-                        visible: index !== ViewManager.currentStepIndex
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 20
-                        height: 20
-                        radius: 10
-                        color: index < ViewManager.currentStepIndex
-                            ? "#d0bcff"
-                            : "#312e3b"
+                        // Active → secondaryContainer fill; idle → transparent
+                        color: stepDel.isCurrent ? root.colSecCont : "transparent"
+                        Behavior on color {
+                            ColorAnimation { duration: 200 }
+                        }
 
-                        Text {
+                        // ── Icon + label row (mirrors NavigationRailButton expanded mode)
+                        Row {
+                            id: pillContent
                             anchors.centerIn: parent
-                            text: (index + 1).toString()
-                            color: index < ViewManager.currentStepIndex
-                                ? "#381e72"
-                                : "#79747e"
-                            font.pixelSize: 10
-                            font.weight: Font.Bold
-                            font.family: "Google Sans Flex, Rubik, Noto Sans"
+                            spacing: 6
+
+                            // Material Symbols Rounded icon via OpenType ligature
+                            Text {
+                                font.family:       "Material Symbols Rounded"
+                                font.pixelSize:    18
+                                // Variable-font axes: FILL animates outline↔filled
+                                font.variableAxes: ({
+                                    "FILL": (stepDel.isCurrent || stepDel.isCompleted) ? 1 : 0,
+                                    "opsz": 18
+                                })
+                                renderType:        Text.NativeRendering
+                                text:              root.stepDefs[stepDel.stepIdx].icon
+                                color:             stepDel.isCurrent   ? root.colOnSecCont
+                                                 : stepDel.isCompleted ? root.colOnSurface
+                                                 :                       root.colOnSurfaceVar
+                                opacity:           stepDel.isFuture ? 0.45 : 1.0
+                                Behavior on color { ColorAnimation { duration: 200 } }
+                            }
+
+                            // Step label
+                            Text {
+                                text:            root.stepDefs[stepDel.stepIdx].label
+                                font.pixelSize:  13
+                                font.weight:     stepDel.isCurrent ? Font.Medium : Font.Normal
+                                renderType:      Text.NativeRendering
+                                color:           stepDel.isCurrent   ? root.colOnSecCont
+                                               : stepDel.isCompleted ? root.colOnSurface
+                                               :                       root.colOnSurfaceVar
+                                opacity:         stepDel.isFuture ? 0.45 : 1.0
+                                Behavior on color { ColorAnimation { duration: 200 } }
+                            }
                         }
                     }
 
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: index !== ViewManager.currentStepIndex
-                            ? stepNum.right
-                            : parent.left
-                        anchors.leftMargin: index !== ViewManager.currentStepIndex ? 6 : 12
-                        anchors.right: parent.right
-                        anchors.rightMargin: 8
-                        text: display
-                        elide: Text.ElideRight
-                        color: index === ViewManager.currentStepIndex
-                            ? "#d0bcff"
-                            : index < ViewManager.currentStepIndex
-                                ? "#cac4d0"
-                                : "#79747e"
-                        font.pixelSize: index === ViewManager.currentStepIndex ? 13 : 12
-                        font.weight: index === ViewManager.currentStepIndex
-                            ? Font.Medium
-                            : Font.Normal
-                        font.family: "Google Sans Flex, Rubik, Noto Sans"
-                    }
-
-                    Behavior on color {
-                        ColorAnimation { duration: 200 }
+                    // ── Connector line between steps ──────────────────────
+                    // Mirrors the progress line pattern in the ii settings panel
+                    Rectangle {
+                        id: connector
+                        visible:        stepDel.stepIdx < root.stepDefs.length - 1
+                        anchors {
+                            left:           stepPill.right
+                            leftMargin:     4
+                            verticalCenter: parent.verticalCenter
+                        }
+                        implicitWidth:  18
+                        height:         1
+                        radius:         1
+                        color:          stepDel.isCompleted ? root.colOutline : root.colOutlineVar
+                        opacity:        stepDel.isFuture    ? 0.3            : 1.0
+                        Behavior on color   { ColorAnimation { duration: 200 } }
+                        Behavior on opacity { NumberAnimation { duration: 200 } }
                     }
                 }
             }
         }
+
+        // ── Right flex spacer ─────────────────────────────────────────────
+        Item { Layout.fillWidth: true }
+
+        // ── Right balance — mirrors the logo area width so steps stay centred
+        Item { Layout.preferredWidth: 175 }
     }
 }

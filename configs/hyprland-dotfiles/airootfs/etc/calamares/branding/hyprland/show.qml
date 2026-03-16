@@ -1,405 +1,312 @@
-/* Calamares slideshow — Material You dark theme
-   Matches end-4/dots-hyprland illogical-impulse aesthetic
-*/
+/* =============================================================================
+ * show.qml — Arch Linux Hyprland Dotfiles Installer Slideshow
+ *
+ * Displayed during the exec (installation) phase.
+ * Styled to match the illogical-impulse (ii) dark M3 theme.
+ * Uses slideshowAPI: 2 (async load, onActivate / onLeave lifecycle).
+ * =========================================================================== */
+
 import QtQuick 2.15
+import QtQuick.Layouts 1.15
 import calamares.slideshow 1.0
 
 Presentation {
     id: presentation
 
-    function next() { presentation.goToNextSlide() }
+    // ── M3 dark color tokens ─────────────────────────────────────────────────
+    readonly property color colBg:           "#141313"
+    readonly property color colSurface:      "#1c1b1c"
+    readonly property color colSurfaceHigh:  "#2b2a2a"
+    readonly property color colOnSurface:    "#e6e1e1"
+    readonly property color colOnSurfaceVar: "#cbc5ca"
+    readonly property color colPrimary:      "#cbc4cb"
+    readonly property color colSecCont:      "#4d4b4d"
+    readonly property color colOnSecCont:    "#ece6e9"
+    readonly property color colOutlineVar:   "#49464a"
 
+    // ── Slideshow lifecycle (API v2) ─────────────────────────────────────────
     Timer {
-        id: timer
+        id: slideTimer
         interval: 6000
-        repeat: true
-        running: false
-        onTriggered: presentation.next()
+        repeat:   true
+        running:  false
+        onTriggered: presentation.goToNextSlide()
     }
-    onActivate: { timer.running = true }
-    onLeave:    { timer.running = false }
 
-    // ── Slide 1: Welcome ──────────────────────────────────────────────────
+    function onActivate() { slideTimer.running = true  }
+    function onLeave()    { slideTimer.running = false }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // SLIDE 1 — Welcome
+    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        anchors.fill: parent
-
         Rectangle {
             anchors.fill: parent
-            color: "#1c1b1f"
-        }
+            color: presentation.colBg
 
-        Image {
-            anchors.fill: parent
-            source: "welcome.png"
-            fillMode: Image.PreserveAspectCrop
-            opacity: 0.08
-        }
+            // Faint branded background
+            Image {
+                anchors.fill:    parent
+                source:          "welcome.png"
+                fillMode:        Image.PreserveAspectCrop
+                opacity:         0.07
+                smooth:          true
+            }
 
-        // Decorative accent circle
+            ColumnLayout {
+                anchors.centerIn: parent
+                spacing:          20
+                width:            Math.min(parent.width * 0.72, 580)
+
+                // Product icon
+                Image {
+                    Layout.alignment:       Qt.AlignHCenter
+                    Layout.preferredWidth:  64
+                    Layout.preferredHeight: 64
+                    source:                 "logo.png"
+                    fillMode:              Image.PreserveAspectFit
+                    smooth:                true
+                    mipmap:                true
+                }
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text:             "Installing Arch Linux Hyprland"
+                    font.pixelSize:   26
+                    font.weight:      Font.Medium
+                    color:            presentation.colOnSurface
+                    renderType:       Text.NativeRendering
+                }
+
+                Text {
+                    Layout.alignment:    Qt.AlignHCenter
+                    Layout.fillWidth:    true
+                    text:                "Setting up your system with Hyprland + illogical-impulse dotfiles"
+                    font.pixelSize:      15
+                    color:               presentation.colOnSurfaceVar
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode:            Text.WordWrap
+                    renderType:          Text.NativeRendering
+                }
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // SLIDE 2 — What's being installed
+    // ════════════════════════════════════════════════════════════════════════
+    Slide {
         Rectangle {
-            width: 300
-            height: 300
-            radius: 150
-            color: "#d0bcff"
-            opacity: 0.05
-            anchors.right: parent.right
-            anchors.rightMargin: -60
-            anchors.verticalCenter: parent.verticalCenter
-        }
+            anchors.fill: parent
+            color: presentation.colBg
 
-        Column {
-            anchors.centerIn: parent
-            spacing: 16
+            ColumnLayout {
+                anchors.centerIn: parent
+                spacing:          24
+                width:            Math.min(parent.width * 0.72, 560)
 
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Arch Linux Hyprland"
-                font.pixelSize: 36
-                font.weight: Font.Light
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#e6e1e5"
-                letterSpacing: -0.5
-            }
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text:             "What's being installed"
+                    font.pixelSize:   22
+                    font.weight:      Font.Medium
+                    color:            presentation.colOnSurface
+                    renderType:       Text.NativeRendering
+                }
 
-            Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 48
-                height: 3
-                radius: 2
-                color: "#d0bcff"
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "illogical-impulse dotfiles"
-                font.pixelSize: 18
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#d0bcff"
-                font.weight: Font.Medium
-            }
-
-            Item { height: 8 }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Setting up your system — this may take a few minutes"
-                font.pixelSize: 14
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#79747e"
-            }
-        }
-
-        // Slide indicator dots
-        Row {
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 20
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 8
-            Repeater {
-                model: 4
+                // Card-style list
                 Rectangle {
-                    width: index === 0 ? 24 : 8
-                    height: 8
-                    radius: 4
-                    color: index === 0 ? "#d0bcff" : "#49454f"
-                    Behavior on width { NumberAnimation { duration: 200 } }
-                }
-            }
-        }
-    }
+                    Layout.fillWidth: true
+                    implicitHeight:   itemCol.implicitHeight + 32
+                    color:            presentation.colSurface
+                    radius:           17
 
-    // ── Slide 2: What's included ──────────────────────────────────────────
-    Slide {
-        anchors.fill: parent
+                    ColumnLayout {
+                        id: itemCol
+                        anchors { fill: parent; margins: 16 }
+                        spacing: 12
 
-        Rectangle {
-            anchors.fill: parent
-            color: "#1c1b1f"
-        }
+                        Repeater {
+                            model: [
+                                { icon: "desktop_windows", text: "Hyprland window manager"              },
+                                { icon: "view_quilt",      text: "Quickshell status bar & shell"        },
+                                { icon: "graphic_eq",      text: "PipeWire full audio stack"            },
+                                { icon: "bluetooth",       text: "Bluetooth & printing support"         },
+                                { icon: "wifi",            text: "NetworkManager for WiFi"              },
+                                { icon: "palette",         text: "illogical-impulse dotfiles & themes"  }
+                            ]
 
-        Column {
-            anchors.centerIn: parent
-            spacing: 20
-            width: 560
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "What's being installed"
-                font.pixelSize: 26
-                font.weight: Font.Light
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#e6e1e5"
-            }
-
-            Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 40
-                height: 3
-                radius: 2
-                color: "#d0bcff"
-            }
-
-            Grid {
-                anchors.horizontalCenter: parent.horizontalCenter
-                columns: 2
-                spacing: 12
-                width: parent.width
-
-                Repeater {
-                    model: [
-                        "Hyprland compositor",
-                        "Quickshell status bar",
-                        "PipeWire audio stack",
-                        "Bluetooth & printing",
-                        "NetworkManager",
-                        "Material You theming",
-                        "matugen color engine",
-                        "illogical-impulse dotfiles"
-                    ]
-                    delegate: Rectangle {
-                        width: 260
-                        height: 40
-                        radius: 20
-                        color: "#2a2831"
-                        border.color: "#312e3b"
-                        border.width: 1
-
-                        Row {
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.leftMargin: 14
-                            spacing: 10
-
-                            Rectangle {
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: "#d0bcff"
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Text {
-                                text: modelData
-                                color: "#cac4d0"
-                                font.pixelSize: 13
-                                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Row {
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 20
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 8
-            Repeater {
-                model: 4
-                Rectangle {
-                    width: index === 1 ? 24 : 8
-                    height: 8
-                    radius: 4
-                    color: index === 1 ? "#d0bcff" : "#49454f"
-                }
-            }
-        }
-    }
-
-    // ── Slide 3: matugen theming ──────────────────────────────────────────
-    Slide {
-        anchors.fill: parent
-
-        Rectangle {
-            anchors.fill: parent
-            color: "#1c1b1f"
-        }
-
-        Column {
-            anchors.centerIn: parent
-            spacing: 20
-            width: 500
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Adaptive theming with matugen"
-                font.pixelSize: 26
-                font.weight: Font.Light
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#e6e1e5"
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                width: parent.width
-            }
-
-            Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 40
-                height: 3
-                radius: 2
-                color: "#d0bcff"
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Your desktop colors are generated from your wallpaper using Google's Material You algorithm. Change your wallpaper and the entire system theme updates automatically."
-                font.pixelSize: 14
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#79747e"
-                wrapMode: Text.WordWrap
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                lineHeight: 1.5
-            }
-
-            // Color palette preview
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 8
-                Repeater {
-                    model: ["#d0bcff", "#ccc2dc", "#efb8c8", "#67523d", "#846CA7", "#9c8ab4"]
-                    Rectangle {
-                        width: 40
-                        height: 40
-                        radius: 20
-                        color: modelData
-                    }
-                }
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Default palette from default wallpaper"
-                font.pixelSize: 11
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#49454f"
-            }
-        }
-
-        Row {
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 20
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 8
-            Repeater {
-                model: 4
-                Rectangle {
-                    width: index === 2 ? 24 : 8
-                    height: 8
-                    radius: 4
-                    color: index === 2 ? "#d0bcff" : "#49454f"
-                }
-            }
-        }
-    }
-
-    // ── Slide 4: After installation ───────────────────────────────────────
-    Slide {
-        anchors.fill: parent
-
-        Rectangle {
-            anchors.fill: parent
-            color: "#1c1b1f"
-        }
-
-        Column {
-            anchors.centerIn: parent
-            spacing: 20
-            width: 500
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "After installation"
-                font.pixelSize: 26
-                font.weight: Font.Light
-                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                color: "#e6e1e5"
-            }
-
-            Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 40
-                height: 3
-                radius: 2
-                color: "#d0bcff"
-            }
-
-            Column {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 12
-                width: parent.width
-
-                Repeater {
-                    model: [
-                        ["Super + Return", "Open terminal"],
-                        ["Super + R", "App launcher"],
-                        ["Super + E", "File manager"],
-                        ["Super + Q", "Close window"],
-                        ["Right sidebar", "Wallpaper & theme switcher"]
-                    ]
-                    delegate: Rectangle {
-                        width: parent.width
-                        height: 42
-                        radius: 12
-                        color: "#2a2831"
-
-                        Row {
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.leftMargin: 16
-                            anchors.right: parent.right
-                            anchors.rightMargin: 16
-                            spacing: 0
-
-                            Rectangle {
-                                width: keybind.width + 20
-                                height: 26
-                                radius: 6
-                                color: "#312e3b"
-                                border.color: "#49454f"
-                                border.width: 1
-                                anchors.verticalCenter: parent.verticalCenter
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
 
                                 Text {
-                                    id: keybind
-                                    anchors.centerIn: parent
-                                    text: modelData[0]
-                                    color: "#d0bcff"
-                                    font.pixelSize: 12
-                                    font.family: "JetBrains Mono NF, monospace"
-                                    font.weight: Font.Medium
+                                    font.family:       "Material Symbols Rounded"
+                                    font.pixelSize:    18
+                                    font.variableAxes: ({ "FILL": 1, "opsz": 18 })
+                                    text:              modelData.icon
+                                    color:             presentation.colPrimary
+                                    renderType:        Text.NativeRendering
                                 }
-                            }
 
-                            Item { width: 12 }
-
-                            Text {
-                                text: modelData[1]
-                                color: "#cac4d0"
-                                font.pixelSize: 13
-                                font.family: "Google Sans Flex, Rubik, Noto Sans"
-                                anchors.verticalCenter: parent.verticalCenter
+                                Text {
+                                    Layout.fillWidth: true
+                                    text:             modelData.text
+                                    font.pixelSize:   14
+                                    color:            presentation.colOnSurfaceVar
+                                    renderType:       Text.NativeRendering
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
 
-        Row {
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 20
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 8
-            Repeater {
-                model: 4
+    // ════════════════════════════════════════════════════════════════════════
+    // SLIDE 3 — After installation
+    // ════════════════════════════════════════════════════════════════════════
+    Slide {
+        Rectangle {
+            anchors.fill: parent
+            color: presentation.colBg
+
+            ColumnLayout {
+                anchors.centerIn: parent
+                spacing:          24
+                width:            Math.min(parent.width * 0.72, 560)
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text:             "After installation"
+                    font.pixelSize:   22
+                    font.weight:      Font.Medium
+                    color:            presentation.colOnSurface
+                    renderType:       Text.NativeRendering
+                }
+
                 Rectangle {
-                    width: index === 3 ? 24 : 8
-                    height: 8
-                    radius: 4
-                    color: index === 3 ? "#d0bcff" : "#49454f"
+                    Layout.fillWidth: true
+                    implicitHeight:   afterCol.implicitHeight + 32
+                    color:            presentation.colSurface
+                    radius:           17
+
+                    ColumnLayout {
+                        id: afterCol
+                        anchors { fill: parent; margins: 16 }
+                        spacing: 12
+
+                        Repeater {
+                            model: [
+                                { icon: "download",         text: "AUR packages install automatically on first boot"   },
+                                { icon: "settings_suggest", text: "Services configured: SDDM, NetworkManager, cups…"   },
+                                { icon: "wifi_tethering",   text: "Internet required on first boot to finish setup"    },
+                                { icon: "open_in_new",      text: "github.com/gregorytrentmartinjr/dots-hyprland"      }
+                            ]
+
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+
+                                Text {
+                                    font.family:       "Material Symbols Rounded"
+                                    font.pixelSize:    18
+                                    font.variableAxes: ({ "FILL": 1, "opsz": 18 })
+                                    text:              modelData.icon
+                                    color:             presentation.colPrimary
+                                    renderType:        Text.NativeRendering
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text:             modelData.text
+                                    font.pixelSize:   14
+                                    color:            presentation.colOnSurfaceVar
+                                    wrapMode:         Text.WordWrap
+                                    renderType:       Text.NativeRendering
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // SLIDE 4 — Key bindings quick reference
+    // ════════════════════════════════════════════════════════════════════════
+    Slide {
+        Rectangle {
+            anchors.fill: parent
+            color: presentation.colBg
+
+            ColumnLayout {
+                anchors.centerIn: parent
+                spacing:          24
+                width:            Math.min(parent.width * 0.72, 560)
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text:             "Quick reference"
+                    font.pixelSize:   22
+                    font.weight:      Font.Medium
+                    color:            presentation.colOnSurface
+                    renderType:       Text.NativeRendering
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight:   keysCol.implicitHeight + 32
+                    color:            presentation.colSurface
+                    radius:           17
+
+                    ColumnLayout {
+                        id: keysCol
+                        anchors { fill: parent; margins: 16 }
+                        spacing: 10
+
+                        Repeater {
+                            model: [
+                                { key: "Super + Return",   action: "Open terminal (kitty)"     },
+                                { key: "Super + R",        action: "App launcher"               },
+                                { key: "Super + Q",        action: "Close window"               },
+                                { key: "Super + 1-3",      action: "Switch workspace"           },
+                                { key: "Super + Shift + C","action": "Reopen Calamares"         }
+                            ]
+
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+
+                                Rectangle {
+                                    implicitWidth:  keyLabel.implicitWidth + 16
+                                    implicitHeight: keyLabel.implicitHeight + 8
+                                    color:          presentation.colSurfaceHigh
+                                    radius:         6
+
+                                    Text {
+                                        id: keyLabel
+                                        anchors.centerIn: parent
+                                        text:             modelData.key
+                                        font.pixelSize:   12
+                                        font.weight:      Font.Medium
+                                        color:            presentation.colPrimary
+                                        renderType:       Text.NativeRendering
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text:             modelData.action
+                                    font.pixelSize:   14
+                                    color:            presentation.colOnSurfaceVar
+                                    renderType:       Text.NativeRendering
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
