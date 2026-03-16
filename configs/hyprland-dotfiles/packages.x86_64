@@ -1,106 +1,94 @@
 
 # ==============================================================================
-# Base system & archiso essentials
+# Base system
 # ==============================================================================
 base
+base-devel
 linux
 linux-firmware
-linux-firmware-amdgpu
-linux-firmware-intel
-linux-firmware-nvidia
-linux-firmware-marvell
+sudo
+git
+
+# ==============================================================================
+# CPU microcode (both for hardware compatibility)
+# ==============================================================================
 amd-ucode
 intel-ucode
-mkinitcpio
-mkinitcpio-archiso
-arch-install-scripts
-archinstall
-sudo
-bash
-pv
+
+# ==============================================================================
+# Firmware
+# ==============================================================================
+sof-firmware
 
 # ==============================================================================
 # Boot
 # ==============================================================================
 limine
 efibootmgr
+mkinitcpio
+mkinitcpio-busybox
+udev
+
+# ==============================================================================
+# archiso essentials (live ISO only — removed by packages.conf on install)
+# ==============================================================================
+mkinitcpio-archiso
+arch-install-scripts
+archinstall
 syslinux
 mtools
 dosfstools
-exfatprogs
+squashfs-tools
+mkinitcpio-nfs-utils
+nbd
+memtest86+
+memtest86+-efi
+livecd-sounds
+edk2-shell
+reflector
+pv
+# gpm removed — libnewt dependency, cannot be removed via packages.conf
 
 # ==============================================================================
-# Networking (WiFi / Ethernet)
+# Networking
 # ==============================================================================
 networkmanager
-network-manager-applet
-# nm-connection-editor removed — desktop icon not needed
-iwd
 wpa_supplicant
-wireless_tools
 wireless-regdb
-iw
-dhcpcd
-ndisc6
-modemmanager
-usb_modeswitch
-nss-mdns
-avahi
-bind
-nmap
 
 # ==============================================================================
 # Bluetooth
 # ==============================================================================
 bluez
 bluez-utils
-# bluedevil removed — KDE-only Bluetooth manager, redundant with bluez-utils
 
 # ==============================================================================
 # Printing
 # ==============================================================================
 cups
-cups-pdf
-cups-filters
+cups-pk-helper
 system-config-printer
-gutenprint
-# hplip removed — desktop icon not needed
-ghostscript
-gsfonts
 
 # ==============================================================================
 # Display server / Wayland
 # ==============================================================================
-wayland
 xorg-xwayland
-wayland-protocols
-qt5-wayland
-qt6-wayland
-glfw-wayland
 
 # ==============================================================================
 # GPU & display
 # ==============================================================================
 mesa
-mesa-utils
 vulkan-radeon
 vulkan-intel
-vulkan-swrast
-vulkan-icd-loader
-vulkan-tools
-libva-mesa-driver
 intel-media-driver
 
 # ==============================================================================
 # Display manager
 # ==============================================================================
 sddm
-qt6-5compat
-qt6-declarative
-qt6-svg
 
 # ==============================================================================
-# Hyprland & compositor stack (live desktop)
+# Hyprland & compositor stack
 # ==============================================================================
 hyprland
 hypridle
@@ -111,15 +99,11 @@ hyprshot
 xdg-desktop-portal
 xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
-xdg-desktop-portal-kde
+# xdg-desktop-portal-kde removed — KDE portal not needed
 xdg-utils
-# quickshell replaced by illogical-impulse-quickshell-git below
 
 # ==============================================================================
 # illogical-impulse meta-packages (pre-built, from local repo)
-# Provides end4's custom quickshell build with Polkit support + full stack
-# Requires [illogical-impulse] repo in pacman.conf pointing to:
-#   /usr/local/share/pkgs  (populated by build-packages.sh)
 # ==============================================================================
 illogical-impulse-audio
 illogical-impulse-backlight
@@ -127,7 +111,6 @@ illogical-impulse-basic
 illogical-impulse-fonts-themes
 illogical-impulse-gnome
 illogical-impulse-hyprland
-illogical-impulse-kde
 illogical-impulse-portal
 illogical-impulse-python
 illogical-impulse-screencapture
@@ -150,149 +133,54 @@ tesseract-data-eng
 # Audio (PipeWire)
 # ==============================================================================
 pipewire
-pipewire-audio
 pipewire-alsa
 pipewire-jack
-pipewire-pulse
-wireplumber
-pavucontrol-qt
-alsa-utils
-playerctl
+gst-plugin-pipewire
 
 # ==============================================================================
-# Fonts (needed for live & installed system)
+# Filesystem tools
 # ==============================================================================
-fontconfig
-ttf-jetbrains-mono-nerd
-ttf-liberation
-noto-fonts
-noto-fonts-emoji
-papirus-icon-theme
-
-# ==============================================================================
-# Terminals
-# ==============================================================================
-kitty
-foot-terminfo
-
-# ==============================================================================
-# File manager & utilities
-# ==============================================================================
-nautilus
-gvfs
-gvfs-smb
-gvfs-mtp
-ffmpegthumbnailer
+btrfs-progs
 ntfs-3g
+cryptsetup
+lvm2
+parted
+e2fsprogs
 udisks2
-udiskie
 
 # ==============================================================================
-# Clipboard
+# Snapshots (Btrfs snapper + limine integration)
 # ==============================================================================
-wl-clipboard
-cliphist
-
-# ==============================================================================
-# Launcher / widgets
-# ==============================================================================
-fuzzel
-# rofi-wayland removed — desktop icon not needed
-# waybar removed — replaced by Quickshell illogical-impulse bar
-# mako removed — conflicts with Quickshell built-in notification implementation
-fastfetch
-swww
-# nwg-look removed — GTK theme configurator, not needed post-install
-
-# ==============================================================================
-# Screenshot / screen capture
-# ==============================================================================
-slurp
-grim
-swappy
-wf-recorder
-
-# ==============================================================================
-# Theming
-# ==============================================================================
-breeze
-qt6ct
-kvantum
-
-# ==============================================================================
-# Shell
-# ==============================================================================
-fish
-zsh
-starship
-eza
-
-# ==============================================================================
-# Python / build deps (needed for dotfiles setup)
-# ==============================================================================
-python
-python-pip
-python-gobject
-gtk4
-libadwaita
-libsoup3
-clang
-cmake
-base-devel
-git
-go
+snapper
+snap-pac
+# limine-mkinitcpio-hook and limine-snapper-sync are installed by post-install
+# They must NOT be in the live ISO — limine-mkinitcpio-hook breaks mkinitcpio in the archiso chroot
 
 # ==============================================================================
 # System utilities
 # ==============================================================================
+upower
+brightnessctl
+hyprpolkitagent
+gnome-keyring
+zram-generator
+imagemagick
+jq
+rsync
 bc
 curl
 wget
-rsync
-jq
-ripgrep
-imagemagick
-upower
-brightnessctl
-ddcutil
-geoclue
-flatpak
-hyprpolkitagent
-gnome-keyring
-# plasma-nm removed — KDE NetworkManager plasmoid, redundant with network-manager-applet
-libdbusmenu-gtk3
 
 # ==============================================================================
-# Calamares installer
+# Calamares installer (live only — removed by packages.conf on install)
 # ==============================================================================
 calamares
 
 # ==============================================================================
-# Live environment extras
+# Live environment extras (live only — removed by packages.conf on install)
 # ==============================================================================
 nano
-# vim removed — desktop icon not needed
+openssh
 less
 man-db
-openssh
-# htop removed — desktop icon not needed
-gpm
-tmux
-squashfs-tools
-btrfs-progs
-e2fsprogs
-f2fs-tools
-xfsprogs
-mkinitcpio-nfs-utils
-nbd
-cryptsetup
-lvm2
-gptfdisk
-parted
-memtest86+
-memtest86+-efi
-livecd-sounds
 terminus-font
-# foot removed — desktop icon not needed
-reflector
-edk2-shell

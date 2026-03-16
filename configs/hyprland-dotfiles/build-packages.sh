@@ -84,6 +84,8 @@ METAPKGS=(
 AUR_DEPS=(
     "calamares::calamares"  # AUR-only, git repo requires auth — uses yay cache fallback
     "ttf-google-sans"
+    "limine-mkinitcpio-hook"
+    "limine-snapper-sync"
     "topgrade"
     "wlogout"
     "adw-gtk-theme-git"
@@ -225,7 +227,7 @@ fi
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
     makepkg --noconfirm --needed --nodeps 2>&1
 BUILDSCRIPT
-chmod +x "$BUILD_SCRIPT"
+chmod 755 "$BUILD_SCRIPT"
 chown "$BUILD_USER":"$BUILD_USER" "$BUILD_SCRIPT"
 
 # ---------------------------------------------------------------------------
@@ -332,7 +334,7 @@ PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
     makepkg -s --noconfirm --needed --skippgpcheck 2>&1
 rm -rf "$WORK"
 AURSCRIPT
-chmod +x "$AUR_SCRIPT"
+chmod 755 "$AUR_SCRIPT"
 chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 
 for entry in "${AUR_DEPS[@]}"; do
@@ -454,6 +456,22 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         if [[ -f "$EXECS_CONF" ]] && ! grep -q "live-setup" "$EXECS_CONF"; then
             info "Adding live-setup to skel execs.conf..."
             echo "exec-once = /usr/local/bin/live-setup" >> "$EXECS_CONF"
+        fi
+
+        # Add dotfiles-first-login as exec-once so Hyprland triggers it directly
+        # This ensures WAYLAND_DISPLAY is set — profile.d alone is not reliable
+        if [[ -f "$EXECS_CONF" ]] && ! grep -q "dotfiles-first-login" "$EXECS_CONF"; then
+            info "Adding dotfiles-first-login to skel execs.conf..."
+            echo "exec-once = bash /etc/profile.d/dotfiles-first-login.sh" >> "$EXECS_CONF"
+        fi
+
+        # Deploy init-qs.sh to skel scripts directory
+        SCRIPTS_DIR="$SKEL_DIR/.config/hypr/scripts"
+        mkdir -p "$SCRIPTS_DIR"
+        if [[ -f "$SCRIPT_DIR/../airootfs/etc/skel/.config/hypr/scripts/init-qs.sh" ]]; then
+            cp "$SCRIPT_DIR/../airootfs/etc/skel/.config/hypr/scripts/init-qs.sh" "$SCRIPTS_DIR/"
+            chmod 755 "$SCRIPTS_DIR/init-qs.sh"
+            info "init-qs.sh deployed to skel."
         fi
 
         info "Dotfiles deployed to skel."

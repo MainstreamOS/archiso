@@ -1,7 +1,21 @@
 timeout: 5
 
-/:Arch Linux
+# Catppuccin Frappe theme
+term_background: 303446
+term_foreground: c6d0f5
+term_background_bright: 626880
+term_foreground_bright: c6d0f5
+term_palette: 303446;e78284;a6d189;e5c890;8caaee;f4b8e4;81c8be;c6d0f5
+term_palette_bright: 626880;e78284;a6d189;e5c890;8caaee;f4b8e4;81c8be;c6d0f5
+backdrop: 303446
+
+/Arch Linux
     protocol: linux
     kernel_path: boot():///vmlinuz-linux
-    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw noresume quiet loglevel=0 systemd.show_status=false rd.systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 nvidia_drm.modeset=1 amdgpu.modeset=1 i915.modeset=1 nowatchdog nmi_watchdog=0 printk.devkmsg=off systemd.log_level=0 systemd.log_target=null
+    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw zswap.enabled=0 quiet loglevel=0 systemd.show_status=false rd.systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 nowatchdog nmi_watchdog=0 printk.devkmsg=off systemd.log_level=0 systemd.log_target=null
     module_path: boot():///initramfs-linux.img
+
+# --- Snapper Snapshots (auto-generated below) ---
+# SNAPPER_ENTRIES_START
+
+# SNAPPER_ENTRIES_END

@@ -3,10 +3,6 @@
 # dotfiles-first-login
 # Installed as /etc/profile.d/dotfiles-first-login.sh
 # Runs once on first interactive login after installation.
-# Handles user-specific setup that requires a real D-Bus session:
-#   - gsettings
-#   - systemctl --user
-#   - uv python venv at ~/.local/state/quickshell/.venv
 # =============================================================================
 MARKER="$HOME/.dotfiles-pending-user-setup"
 [[ -f "$MARKER" ]] || return 0
@@ -18,100 +14,102 @@ rm -f "$MARKER"
 DOTFILES_DIR="$HOME/dots-hyprland"
 [[ -d "$DOTFILES_DIR" ]] || DOTFILES_DIR="/opt/dots-hyprland"
 
-# The venv must live here — this is what env.conf sets ILLOGICAL_IMPULSE_VIRTUAL_ENV to
 VENV_PATH="$HOME/.local/state/quickshell/.venv"
+DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 
-# Run in background to not block the login
+# ---------------------------------------------------------------------------
+# PHASE 1: Immediate — runs fast, no venv needed
+# Fix dark mode and initial colors RIGHT NOW before anything else
+# ---------------------------------------------------------------------------
 (
-    sleep 5  # Let the session fully start
+    sleep 3
 
-    # ---------------------------------------------------------------------------
-    # gsettings configuration
-    # ---------------------------------------------------------------------------
+    # Fix dark mode immediately
     if command -v gsettings &>/dev/null; then
-        gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
+        echo "[first-login] Dark mode set."
     fi
 
-    # ---------------------------------------------------------------------------
+    # Run matugen immediately for basic color templates (hyprland colors, fuzzel, gtk)
+    # This doesn't need the venv — just matugen itself
+    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
+        mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
+        matugen image "$DEFAULT_WALL" 2>/dev/null || true
+        echo "[first-login] Basic colors generated via matugen."
+    fi
+
+    # Reload Hyprland config to pick up new colors
+    sleep 1
+    hyprctl reload 2>/dev/null || true
+
+) &>/tmp/dotfiles-first-login-phase1.log &
+disown
+
+# ---------------------------------------------------------------------------
+# PHASE 2: Slow — venv setup + full color pipeline
+# Runs in background, takes 2-3 minutes
+# ---------------------------------------------------------------------------
+(
+    sleep 5
+
     # ydotool user service
-    # ---------------------------------------------------------------------------
     if systemctl --user list-unit-files ydotool.service &>/dev/null 2>&1; then
         systemctl --user enable ydotool --now 2>/dev/null || true
     fi
 
-    # ---------------------------------------------------------------------------
-    # Python uv venv setup
-    # UV_PROJECT_ENVIRONMENT tells uv exactly where to create the venv
-    # Must match ILLOGICAL_IMPULSE_VIRTUAL_ENV in env.conf
-    # ---------------------------------------------------------------------------
-    if command -v uv &>/dev/null && [[ -d "$DOTFILES_DIR/sdata/uv" ]]; then
-        echo "[first-login] Setting up Python venv at $VENV_PATH..."
+    # Create venv if it doesn't exist yet
+    if [[ ! -f "$VENV_PATH/bin/python" ]]; then
+        echo "[first-login] Creating Python venv at $VENV_PATH..."
         mkdir -p "$(dirname "$VENV_PATH")"
         REQUIREMENTS="$DOTFILES_DIR/sdata/uv/requirements.txt"
-        if [[ -f "$REQUIREMENTS" ]]; then
-            # Use uv pip install with requirements.txt — more reliable than uv sync
-            # since pyproject.toml is at repo root, not in sdata/uv/
-            # Step 1: Create the venv explicitly
-            uv venv "$VENV_PATH" 2>/dev/null || true
-            # Step 2: Install packages using --python to target venv directly
-            uv pip install --python "$VENV_PATH/bin/python" \
-                -r "$REQUIREMENTS" 2>/dev/null || true
-            echo "[first-login] Venv setup complete at $VENV_PATH"
+
+        if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+            uv venv "$VENV_PATH"
+            uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+            echo "[first-login] Venv created."
         else
-            echo "[first-login] WARNING: requirements.txt not found at $REQUIREMENTS"
+            echo "[first-login] WARNING: uv or requirements.txt not found"
         fi
     else
-        echo "[first-login] WARNING: uv not found or sdata/uv missing — venv not created"
+        echo "[first-login] Venv already exists at $VENV_PATH"
     fi
 
-    # ---------------------------------------------------------------------------
-    # Export ILLOGICAL_IMPULSE_VIRTUAL_ENV to shell configs
-    # (env.conf handles Hyprland, these handle terminal sessions)
-    # ---------------------------------------------------------------------------
+    # Write env var to shell configs
     FISH_ENV_DIR="$HOME/.config/fish/conf.d"
     mkdir -p "$FISH_ENV_DIR"
     echo "set -gx ILLOGICAL_IMPULSE_VIRTUAL_ENV '$VENV_PATH'" \
         > "$FISH_ENV_DIR/illogical-impulse-venv.fish"
-    echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
-        >> "$HOME/.bashrc"
-    echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" \
-        >> "$HOME/.zshrc"
+    grep -q "ILLOGICAL_IMPULSE_VIRTUAL_ENV" "$HOME/.bashrc" 2>/dev/null || \
+        echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" >> "$HOME/.bashrc"
 
-    # ---------------------------------------------------------------------------
-    # Generate initial color scheme from wallpaper now that venv exists
-    # ---------------------------------------------------------------------------
-    DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
-    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
-        echo "[first-login] Generating initial color scheme..."
-        mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
-        matugen image "$DEFAULT_WALL" 2>/dev/null || true
-        # Run full color generation pipeline
-        if [[ -f "$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
-            bash "$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh" \
-                --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
-        fi
-        echo "[first-login] Color scheme generated."
+    # Run full switchwall pipeline now that venv exists
+    # This generates terminal/kitty-theme.conf and material_colors.scss
+    if [[ -f "$VENV_PATH/bin/python" ]] && [[ -f "$SWITCHWALL" ]]; then
+        echo "[first-login] Running full color pipeline..."
+        export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
+        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+        echo "[first-login] Full color pipeline complete."
+
+        # Restart Quickshell to pick up kitty-theme.conf
+        pkill qs 2>/dev/null || true
+        sleep 2
+        qs -c ii &>/dev/null &
+        disown
+        echo "[first-login] Quickshell restarted with updated colors."
     fi
 
-    # ---------------------------------------------------------------------------
     # Notify user
-    # ---------------------------------------------------------------------------
     if command -v notify-send &>/dev/null; then
-        notify-send "Arch Hyprland Setup" \
-            "Desktop environment setup complete! Enjoy your Hyprland system." \
+        notify-send "Setup Complete" \
+            "Your Hyprland desktop is fully configured!" \
             --icon=system-software-install 2>/dev/null || true
     fi
 
-    echo ""
-    echo "================================================================"
-    echo " Arch Linux Hyprland - First Login Setup Complete"
-    echo "================================================================"
-    echo " Dotfiles: ~/dots-hyprland (branch: newcustom)"
-    echo " Venv: $VENV_PATH"
-    echo " Press Super+Return for terminal"
-    echo " Press Super+R for app launcher"
-    echo "================================================================"
+    echo "[first-login] All done."
+
 ) &>/tmp/dotfiles-first-login.log &
 disown

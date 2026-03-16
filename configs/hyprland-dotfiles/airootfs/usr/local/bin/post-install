@@ -213,6 +213,20 @@ pacman-key --populate archlinux 2>/dev/null || true
 info "Pacman keyring initialized."
 
 # ---------------------------------------------------------------------------
+# 6c. ZRAM CONFIGURATION
+# ---------------------------------------------------------------------------
+# zram-generator needs a config file to create compressed swap in RAM
+if command -v zram-generator &>/dev/null || pacman -Q zram-generator &>/dev/null 2>&1; then
+    info "Configuring zram swap..."
+    cat > /etc/systemd/zram-generator.conf << 'ZRAMEOF'
+[zram0]
+zram-size = min(ram, 8192)
+compression-algorithm = zstd
+ZRAMEOF
+    info "zram configured."
+fi
+
+# ---------------------------------------------------------------------------
 # 7. SERVICES, SHELL & FINAL PERMISSIONS
 # ---------------------------------------------------------------------------
 info "Enabling core services and finalizing user shell..."
@@ -278,6 +292,38 @@ if [[ -n "$MAIN_USER" ]]; then
         gsettings set org.gnome.nautilus.preferences show-hidden-files false 2>/dev/null || true
     " || true
 
+    # ---------------------------------------------------------------------------
+    # Create Python venv BEFORE first login so switchwall.sh works immediately
+    # ---------------------------------------------------------------------------
+    VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
+    REQUIREMENTS="/tmp/dotfiles-setup/sdata/uv/requirements.txt"
+
+    if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+        info "Creating Python venv at $VENV_PATH (as $MAIN_USER)..."
+        mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
+        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
+
+        # Write helper script to avoid quoting issues in su -c
+        VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
+        cat > "$VENV_HELPER" << VENVEOF
+#!/usr/bin/env bash
+uv venv "$VENV_PATH"
+uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+VENVEOF
+        chmod 755 "$VENV_HELPER"
+        chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
+
+        if su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1; then
+            chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
+            info "Python venv created successfully."
+        else
+            warn "venv creation failed — will retry on first login"
+        fi
+        rm -f "$VENV_HELPER"
+    else
+        warn "uv or requirements.txt not found — venv will be created on first login"
+    fi
+
     # Rebuild font cache as the target user so custom fonts are found
     info "Rebuilding font cache for $MAIN_USER..."
     su -s /bin/bash "$MAIN_USER" -c "fc-cache -fv" 2>/dev/null || true
@@ -286,13 +332,33 @@ if [[ -n "$MAIN_USER" ]]; then
     # This ensures theming works correctly on first login without requiring
     # the user to manually set a wallpaper
     DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+    SWITCHWALL="$MAIN_USER_HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
+    VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
+
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         info "Generating initial Material You colors from default wallpaper..."
-        # Create output directory for quickshell generated files
         mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
         chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
-        # Run matugen as the target user
-        su -s /bin/bash "$MAIN_USER" -c "matugen image '$DEFAULT_WALL'" 2>/dev/null ||             warn "matugen failed — colors will be generated on first login."
+
+        # Run full switchwall pipeline if venv is ready — generates all color files
+        # including material_colors.scss and terminal/kitty-theme.conf
+        if [[ -f "$VENV_PATH/bin/activate" ]] && [[ -f "$SWITCHWALL" ]]; then
+            info "Running full color pipeline via switchwall.sh..."
+            SW_HELPER="/tmp/switchwall-$MAIN_USER.sh"
+            cat > "$SW_HELPER" << SWEOF
+#!/usr/bin/env bash
+export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
+bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark
+SWEOF
+            chmod 755 "$SW_HELPER"
+            chown "$MAIN_USER:$MAIN_USER" "$SW_HELPER"
+            su -s /bin/bash "$MAIN_USER" -c "bash $SW_HELPER" 2>&1 ||                 warn "switchwall failed — falling back to matugen only"
+            rm -f "$SW_HELPER"
+        else
+            # Fallback: just run matugen for the basic color templates
+            su -s /bin/bash "$MAIN_USER" -c "matugen image $DEFAULT_WALL" 2>/dev/null || true
+            warn "Venv not ready — terminal colors will be set on first login"
+        fi
         info "Initial color scheme generated."
     else
         warn "Default wallpaper or matugen not found — skipping initial color generation."
@@ -311,6 +377,109 @@ if [[ -n "$MAIN_USER" ]]; then
     else
         warn "/tmp/dotfiles-setup not found — first-login uv venv setup may be skipped."
     fi
+fi
+# ---------------------------------------------------------------------------
+# KILL-FPRINTD SERVICE
+# ---------------------------------------------------------------------------
+# Kills fprintd before sleep to prevent fingerprint reader issues
+info "Creating kill-fprintd service..."
+cat > /etc/systemd/system/kill-fprintd.service << 'FPRINTEOF'
+[Unit]
+Description=Kill fprintd before sleep
+Before=sleep.target
+
+[Service]
+ExecStart=killall fprintd
+
+[Install]
+WantedBy=sleep.target
+FPRINTEOF
+systemctl enable kill-fprintd.service 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# INSTALL SNAPPER + LIMINE PACKAGES VIA YAY
+# ---------------------------------------------------------------------------
+# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso chroot)
+# and can't be in packages.conf install section (no db sync available)
+# So we install them here via yay which handles AUR + db sync
+if command -v yay &>/dev/null; then
+    info "Installing snapper and limine integration packages..."
+    su -s /bin/bash "$MAIN_USER" -c         "yay -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync"         2>/dev/null ||         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# SNAPPER + LIMINE-SNAPPER-SYNC SETUP
+# ---------------------------------------------------------------------------
+# Only configure snapper if the root filesystem is btrfs
+if findmnt -n -o FSTYPE / | grep -q btrfs; then
+    info "Btrfs detected — configuring snapper..."
+
+    # Create .snapshots subvolume if it doesn't exist
+    if ! btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Creating /.snapshots btrfs subvolume..."
+        btrfs subvolume create /.snapshots 2>/dev/null || true
+    fi
+
+    # Initialize snapper root config if not already present
+    if [[ ! -f /etc/snapper/configs/root ]]; then
+        info "Creating snapper root config..."
+        snapper -c root create-config / 2>/dev/null || true
+        # Set sensible snapshot limits
+        sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_LIMIT_WEEKLY=.*/TIMELINE_LIMIT_WEEKLY="0"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_LIMIT_MONTHLY=.*/TIMELINE_LIMIT_MONTHLY="0"/' /etc/snapper/configs/root 2>/dev/null || true
+        sed -i 's/^TIMELINE_LIMIT_YEARLY=.*/TIMELINE_LIMIT_YEARLY="0"/' /etc/snapper/configs/root 2>/dev/null || true
+        # Allow main user to manage snapshots without sudo
+        if [[ -n "$MAIN_USER" ]]; then
+            sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$MAIN_USER\"/" /etc/snapper/configs/root 2>/dev/null || true
+        fi
+    fi
+
+    # Initialize snapper home config if /home is btrfs
+    if findmnt -n -o FSTYPE /home | grep -q btrfs; then
+        if [[ ! -f /etc/snapper/configs/home ]]; then
+            info "Creating snapper home config..."
+            snapper -c home create-config /home 2>/dev/null || true
+        fi
+    fi
+
+    # Deploy limine-snapper-sync config
+    if command -v limine-snapper-sync &>/dev/null; then
+        info "Configuring limine-snapper-sync..."
+        cat > /etc/limine-snapper-sync.conf << 'LSSCONF'
+LIMIT_USAGE_PERCENT=85
+MAX_SNAPSHOT_ENTRIES=8
+ROOT_SUBVOLUME_PATH="/@"
+ROOT_SNAPSHOTS_PATH="/@/.snapshots"
+RESTORE_METHOD=replace
+SET_SNAPSHOT_AS_DEFAULT=no
+SNAPSHOT_FORMAT_CHOICE=2
+COMMANDS_BEFORE_SAVE="limine-reset-enroll"
+COMMANDS_AFTER_SAVE="limine-enroll-config"
+NOTIFICATION_ICON="/usr/share/icons/hicolor/128x128/apps/LimineSnapperSync.png"
+LSSCONF
+
+        # Run initial limine-snapper-sync
+        limine-snapper-sync 2>/dev/null || true
+        info "limine-snapper-sync configured."
+    else
+        warn "limine-snapper-sync not found — skipping Limine snapshot integration."
+    fi
+
+    # Enable snapper timers
+    systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
+
+    # Create initial "Fresh install" snapshot
+    snapper -c root create --description "Fresh install" 2>/dev/null || true
+
+    info "Snapper setup complete."
+else
+    info "Root filesystem is not btrfs — skipping snapper setup."
 fi
 
 info "Post-install synchronization complete. System is ready for reboot."

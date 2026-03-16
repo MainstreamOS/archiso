@@ -30,6 +30,7 @@ file_permissions=(
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
   ["/usr/local/bin/live-setup"]="0:0:755"
   ["/usr/local/bin/sddm-bg-helper"]="0:0:755"
+  ["/etc/skel/.config/hypr/scripts/init-qs.sh"]="0:0:755"
 
   # Calamares autostart (XDG autostart — read by dex/autostart managers)
   ["/etc/xdg/autostart/calamares.desktop"]="0:0:644"
