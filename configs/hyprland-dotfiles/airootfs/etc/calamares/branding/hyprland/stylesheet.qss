@@ -555,3 +555,34 @@ QToolButton#debugButton {
     color:       transparent;
     icon-size:   0px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLLBARS — fully transparent
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QScrollBar:vertical,
+QScrollBar:horizontal {
+    background: transparent;
+    border:     none;
+    width:      6px;
+    height:     6px;
+    margin:     0;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background:    transparent;
+    border-radius: 3px;
+    min-height:    20px;
+    min-width:     20px;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line,
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: transparent;
+    border:     none;
+    width:      0;
+    height:     0;
+}
