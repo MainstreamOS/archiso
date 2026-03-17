@@ -529,26 +529,13 @@ QMenu::separator {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PAGE CONTENT PADDING
-   Each installer step is wrapped in a QScrollArea by Calamares' ViewManager.
-   Padding on QScrollArea insets the viewport, giving every page the same
-   breathing room as the Welcome page.
+   QStackedWidget > QWidget targets every direct child of the main page stack
+   regardless of whether it is a QScrollArea wrapper or a plain QWidget.
+   Qt's QSS engine passes padding through to the widget's contentsRect(), so
+   any layout inside the widget positions its children within the padded area.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-QScrollArea {
-    padding:          40px 56px;
-    border:           none;
-    background-color: #141117;
-}
-
-/* Locale / Keyboard / Users pages are plain QWidget views with no internal
-   QScrollArea, so the rule above does not reach them. Target them by their
-   C++ class names, which Qt's QSS engine resolves via the meta-object system.
-   padding on a layout-managed QWidget insets the layout's content area. */
-
-LocalePage,
-KeyboardPage,
-UsersPage,
-SummaryPage {
+QStackedWidget > QWidget {
     padding: 40px 56px;
 }
 
