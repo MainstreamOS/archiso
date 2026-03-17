@@ -5,7 +5,7 @@
  * dots-hyprland Appearance.qml palette.
  *
  * Token reference (from ii Appearance.qml):
- *   #141117  background / colLayer0
+ *   #1b1a1e  background / colLayer0
  *   #1c1b1c  surfaceContainerLow / colLayer1
  *   #201f20  surfaceContainer / colLayer2
  *   #2b2a2a  surfaceContainerHigh / colLayer3
@@ -29,7 +29,7 @@
 }
 
 QWidget {
-    background-color: #141117;
+    background-color: #1b1a1e;
     color:            #e6e1e1;
     font-family:      "Google Sans Flex", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size:        14px;
@@ -46,7 +46,7 @@ QWidget:disabled {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 #mainApp {
-    background-color: #141117;
+    background-color: #1b1a1e;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
