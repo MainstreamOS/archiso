@@ -15,7 +15,7 @@ strings:
     shortProductName:    Arch Hyprland
     version:             Rolling
     shortVersion:        Rolling
-    versionedName:       Mainstream (Rolling)
+    versionedName:       Mainstream OS
     shortVersionedName:  Arch Hyprland
     bootloaderEntryName: Mainstream
     productUrl:          https://archlinux.org
