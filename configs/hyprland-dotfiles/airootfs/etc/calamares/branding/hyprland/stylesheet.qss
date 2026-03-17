@@ -47,6 +47,11 @@ QWidget:disabled {
 
 #mainApp {
     background-color: #141117;
+    /* Left/right padding on the central widget insets the VBoxLayout that
+       contains the sidebar, page stack, and navigation — so every page gets
+       the same 56 px breathing room without needing per-page class selectors. */
+    padding-left:  56px;
+    padding-right: 56px;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -527,17 +532,6 @@ QMenu::separator {
     border-radius:    8px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PAGE CONTENT PADDING
-   QStackedWidget > QWidget targets every direct child of the main page stack
-   regardless of whether it is a QScrollArea wrapper or a plain QWidget.
-   Qt's QSS engine passes padding through to the widget's contentsRect(), so
-   any layout inside the widget positions its children within the padded area.
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QStackedWidget > QWidget {
-    padding: 40px 56px;
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    QUICK WIDGET HOST — dark clear color so transparent QML items don't
