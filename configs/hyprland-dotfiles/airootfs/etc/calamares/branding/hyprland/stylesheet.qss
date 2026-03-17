@@ -528,6 +528,19 @@ QMenu::separator {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   PAGE CONTENT PADDING
+   Each installer step is wrapped in a QScrollArea by Calamares' ViewManager.
+   Padding on QScrollArea insets the viewport, giving every page the same
+   breathing room as the Welcome page.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QScrollArea {
+    padding:          40px 56px;
+    border:           none;
+    background-color: #141117;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    QUICK WIDGET HOST — dark clear color so transparent QML items don't
    show the default white OpenGL surface behind them.
    ═══════════════════════════════════════════════════════════════════════════ */
