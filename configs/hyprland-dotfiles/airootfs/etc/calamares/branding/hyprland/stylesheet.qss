@@ -121,6 +121,29 @@ QPushButton:default:disabled {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   NAVIGATION BUTTON ICONS
+   Material Symbols Rounded SVGs keyed to Calamares' confirmed objectNames.
+   arrow_back goes on Back (icon left of text — natural).
+   arrow_forward goes on Next/Install (primary button, lighter icon colour).
+   close goes on Cancel.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QPushButton#view-button-back {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/arrow_back.svg);
+    qproperty-iconSize: 18px;
+}
+
+QPushButton#view-button-next {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/arrow_forward.svg);
+    qproperty-iconSize: 18px;
+}
+
+QPushButton#view-button-cancel {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/close.svg);
+    qproperty-iconSize: 18px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    LABELS
    ═══════════════════════════════════════════════════════════════════════════ */
 
