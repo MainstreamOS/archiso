@@ -116,17 +116,19 @@ QLabel {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   TEXT INPUT FIELDS
+   TEXT INPUT FIELDS — M3 Outlined style (matches MaterialTextField.qml)
+   Transparent background, outline (#948f94) border idle,
+   primary (#cbc4cb) border on focus — mirrors Material.containerStyle: Outlined
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QLineEdit,
 QTextEdit,
 QPlainTextEdit {
-    background-color: #2b2a2a;
+    background-color: transparent;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
+    border:           1px solid #948f94;
     border-radius:    12px;
-    padding:          8px 14px;
+    padding:          10px 16px;
 }
 
 QLineEdit:focus,
@@ -138,7 +140,7 @@ QPlainTextEdit:focus {
 QLineEdit:disabled,
 QTextEdit:disabled,
 QPlainTextEdit:disabled {
-    background-color: #1c1b1c;
+    background-color: transparent;
     color:            #49464a;
     border-color:     #49464a;
 }
