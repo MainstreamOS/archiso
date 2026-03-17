@@ -129,18 +129,18 @@ QPushButton:default:disabled {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QPushButton#view-button-back {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/arrow_back.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/arrow_back.svg);
+    icon-size:      18px 18px;
 }
 
 QPushButton#view-button-next {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/arrow_forward.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/arrow_forward.svg);
+    icon-size:      18px 18px;
 }
 
 QPushButton#view-button-cancel {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/close.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/close.svg);
+    icon-size:      18px 18px;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -150,23 +150,23 @@ QPushButton#view-button-cancel {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QPushButton#supportButton {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/help_outline.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/help_outline.svg);
+    icon-size:      18px 18px;
 }
 
 QPushButton#knownIssuesButton {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/bug_report.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/bug_report.svg);
+    icon-size:      18px 18px;
 }
 
 QPushButton#releaseNotesButton {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/article.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/article.svg);
+    icon-size:      18px 18px;
 }
 
 QPushButton#donateButton {
-    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/favorite.svg);
-    qproperty-iconSize: 18px;
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/favorite.svg);
+    icon-size:      18px 18px;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
