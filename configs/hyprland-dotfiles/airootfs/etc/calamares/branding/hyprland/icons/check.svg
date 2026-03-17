@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24">
+  <!--
+    Material Symbols Rounded — "check"
+    Used as the QCheckBox checked indicator.
+    Color: M3 dark onPrimary (#322f34) — dark mark on the light #cbc4cb fill.
+  -->
+  <path fill="#322f34" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+</svg>

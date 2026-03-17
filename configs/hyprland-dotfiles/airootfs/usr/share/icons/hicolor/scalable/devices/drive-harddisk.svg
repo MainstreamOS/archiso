@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24">
+  <!--
+    Material Symbols Rounded — "hard_drive" (outlined)
+    Source: Material Symbols, Google Fonts (Apache 2.0)
+    Color: M3 dark onSurfaceVariant (#cbc5ca)
+  -->
+  <path fill="#cbc5ca" d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 18H6v-2h12v2zm0-4H6V4h12v12zM12 5c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3zm0 4c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1z"/>
+</svg>
