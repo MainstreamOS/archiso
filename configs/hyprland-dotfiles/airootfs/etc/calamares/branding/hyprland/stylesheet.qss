@@ -47,9 +47,19 @@ QWidget:disabled {
 
 #mainApp {
     background-color: #141117;
-    /* Left/right padding on the central widget insets the VBoxLayout that
-       contains the sidebar, page stack, and navigation — so every page gets
-       the same 56 px breathing room without needing per-page class selectors. */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PAGE CONTENT PADDING
+   #viewManager and #viewManagerStack are the confirmed objectNames set in
+   ViewManager.cpp.  #viewManager is a plain QWidget whose QVBoxLayout uses
+   contentsRect() — unlike QMainWindow's special layout, a plain QWidget DOES
+   propagate QSS padding into contentsRect(), so the VBoxLayout positions
+   #viewManagerStack 56 px in from each side, and QStackedLayout fills every
+   page widget to that narrower rect.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+#viewManager {
     padding-left:  56px;
     padding-right: 56px;
 }
