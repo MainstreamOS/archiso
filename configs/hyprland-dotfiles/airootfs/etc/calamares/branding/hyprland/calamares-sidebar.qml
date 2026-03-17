@@ -133,14 +133,14 @@ Rectangle {
                         }
 
                         // ── Icon + label row (mirrors NavigationRailButton expanded mode)
-                        Row {
+                        RowLayout {
                             id: pillContent
-                            anchors.centerIn:      parent
-                            spacing:               6
-                            verticalItemAlignment: Qt.AlignVCenter
+                            anchors.centerIn: parent
+                            spacing:          6
 
                             // Material Symbols Rounded icon via OpenType ligature
                             Text {
+                                Layout.alignment: Qt.AlignVCenter
                                 font.family:       "Material Symbols Rounded"
                                 font.pixelSize:    18
                                 // Variable-font axes: FILL animates outline↔filled
@@ -159,6 +159,7 @@ Rectangle {
 
                             // Step label — name comes directly from ViewManager model
                             Text {
+                                Layout.alignment: Qt.AlignVCenter
                                 text:            display
                                 font.pixelSize:  13
                                 font.weight:     stepDel.isCurrent ? Font.Medium : Font.Normal
