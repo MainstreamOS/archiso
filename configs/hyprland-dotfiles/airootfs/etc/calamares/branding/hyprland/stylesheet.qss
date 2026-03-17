@@ -144,6 +144,32 @@ QPushButton#view-button-cancel {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   WELCOME PAGE BUTTON ICONS
+   objectNames come from WelcomePage.ui (uic-generated setObjectName calls).
+   All four are covered; visibility of each depends on welcome.conf toggles.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QPushButton#supportButton {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/help_outline.svg);
+    qproperty-iconSize: 18px;
+}
+
+QPushButton#knownIssuesButton {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/bug_report.svg);
+    qproperty-iconSize: 18px;
+}
+
+QPushButton#releaseNotesButton {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/article.svg);
+    qproperty-iconSize: 18px;
+}
+
+QPushButton#donateButton {
+    qproperty-icon:     url(/etc/calamares/branding/hyprland/icons/favorite.svg);
+    qproperty-iconSize: 18px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    LABELS
    ═══════════════════════════════════════════════════════════════════════════ */
 
