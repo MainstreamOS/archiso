@@ -24,6 +24,15 @@ Presentation {
     readonly property color colOnSecCont:    "#ece6e9"
     readonly property color colOutlineVar:   "#49464a"
 
+    // ── Background fill ───────────────────────────────────────────────────────
+    // QQuickWidget's OpenGL clear color defaults to white; this Rectangle
+    // ensures the dark surface shows even in regions not covered by a Slide.
+    Rectangle {
+        anchors.fill: parent
+        color:        "#141313"
+        z:            -100
+    }
+
     // ── Slideshow lifecycle (API v2) ─────────────────────────────────────────
     Timer {
         id: slideTimer

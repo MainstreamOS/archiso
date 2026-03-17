@@ -526,12 +526,24 @@ QMenu::separator {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   HIDE DEBUG / LOG BUTTON
-   Calamares places a "Debug" log viewer button bottom-left with object name
-   debugButton. Zeroing all dimensions removes it from view and layout space.
+   QUICK WIDGET HOST — dark clear color so transparent QML items don't
+   show the default white OpenGL surface behind them.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-QPushButton#debugButton {
+QQuickWidget {
+    background-color: #141313;
+    border:           none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HIDE DEBUG / LOG BUTTON
+   Calamares places a log viewer button (object name "debugButton") in the
+   bottom-right corner. Cover both QPushButton and QToolButton since the
+   exact widget type varies across Calamares versions.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QPushButton#debugButton,
+QToolButton#debugButton {
     max-height:  0px;
     max-width:   0px;
     min-height:  0px;
@@ -541,4 +553,5 @@ QPushButton#debugButton {
     margin:      0px;
     background:  transparent;
     color:       transparent;
+    icon-size:   0px;
 }
