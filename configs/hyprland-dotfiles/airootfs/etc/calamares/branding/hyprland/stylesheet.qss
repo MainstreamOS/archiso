@@ -139,7 +139,7 @@ QLabel {
 QLineEdit,
 QTextEdit,
 QPlainTextEdit {
-    background-color: transparent;
+    background-color: #292828;
     color:            #e6e1e1;
     border:           1px solid #948f94;
     border-radius:    12px;
