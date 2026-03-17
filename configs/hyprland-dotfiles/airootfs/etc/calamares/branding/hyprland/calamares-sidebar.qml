@@ -23,7 +23,7 @@ Rectangle {
     readonly property color colBg:           "#1c1b1c"   // surfaceContainerLow
     readonly property color colOnSurface:    "#e6e1e1"   // onBackground
     readonly property color colOnSurfaceVar: "#cbc5ca"   // onSurfaceVariant
-    readonly property color colSecCont:      "#4d4b4d"   // secondaryContainer
+    readonly property color colSecCont:      "#474052"   // secondaryContainer
     readonly property color colOnSecCont:    "#ece6e9"   // onSecondaryContainer
     readonly property color colOutlineVar:   "#49464a"   // outlineVariant
     readonly property color colOutline:      "#948f94"   // outline
