@@ -71,7 +71,6 @@ QWidget:disabled {
 QPushButton {
     background-color: #201f20;
     color:            #cbc5ca;
-    border:           1px solid #49464a;
     border-radius:    25px;
     padding:          8px 24px;
     font-size:        14px;
@@ -141,7 +140,6 @@ QTextEdit,
 QPlainTextEdit {
     background-color: #292828;
     color:            #e6e1e1;
-    border:           1px solid #948f94;
     border-radius:    12px;
     padding:          10px 16px;
 }
@@ -167,7 +165,6 @@ QPlainTextEdit:disabled {
 QComboBox {
     background-color: #2b2a2a;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    12px;
     padding:          7px 14px;
     min-width:        120px;
@@ -191,7 +188,6 @@ QComboBox::down-arrow {
 QComboBox QAbstractItemView {
     background-color: #201f20;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    16px;
     selection-background-color: #4d4b4d;
     selection-color:            #ece6e9;
@@ -224,7 +220,6 @@ QTreeView,
 QTableView {
     background-color: #1c1b1c;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    12px;
     outline:          none;
     gridline-color:   #49464a;
@@ -332,7 +327,6 @@ QScrollBar::sub-page:horizontal {
 QGroupBox {
     background-color: #1c1b1c;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    12px;
     margin-top:       22px;
     padding-top:      12px;
@@ -430,7 +424,6 @@ QProgressBar::chunk {
 
 QTabWidget::pane {
     background-color: #1c1b1c;
-    border:           1px solid #49464a;
     border-radius:    12px;
     top:              -1px;
 }
@@ -489,7 +482,6 @@ QDoubleSpinBox::down-button {
 QToolTip {
     background-color: #363435;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    8px;
     padding:          6px 10px;
     font-size:        13px;
@@ -512,7 +504,6 @@ QFrame[frameShape="5"] {
 QMenu {
     background-color: #201f20;
     color:            #e6e1e1;
-    border:           1px solid #49464a;
     border-radius:    12px;
     padding:          6px;
 }
