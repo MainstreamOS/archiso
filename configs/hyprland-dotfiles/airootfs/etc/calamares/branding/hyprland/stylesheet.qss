@@ -540,6 +540,18 @@ QScrollArea {
     background-color: #141117;
 }
 
+/* Locale / Keyboard / Users pages are plain QWidget views with no internal
+   QScrollArea, so the rule above does not reach them. Target them by their
+   C++ class names, which Qt's QSS engine resolves via the meta-object system.
+   padding on a layout-managed QWidget insets the layout's content area. */
+
+LocalePage,
+KeyboardPage,
+UsersPage,
+SummaryPage {
+    padding: 40px 56px;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    QUICK WIDGET HOST — dark clear color so transparent QML items don't
    show the default white OpenGL surface behind them.
