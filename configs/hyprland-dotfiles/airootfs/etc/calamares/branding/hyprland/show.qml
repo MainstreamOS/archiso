@@ -14,7 +14,7 @@ Presentation {
     id: presentation
 
     // ── M3 dark color tokens ─────────────────────────────────────────────────
-    readonly property color colBg:           "#141313"
+    readonly property color colBg:           "#141117"
     readonly property color colSurface:      "#1c1b1c"
     readonly property color colSurfaceHigh:  "#2b2a2a"
     readonly property color colOnSurface:    "#e6e1e1"
@@ -29,7 +29,7 @@ Presentation {
     // ensures the dark surface shows even in regions not covered by a Slide.
     Rectangle {
         anchors.fill: parent
-        color:        "#141313"
+        color:        "#141117"
         z:            -100
     }
 
