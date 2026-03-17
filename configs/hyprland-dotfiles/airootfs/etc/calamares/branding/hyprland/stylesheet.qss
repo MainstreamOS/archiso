@@ -387,8 +387,9 @@ QProgressBar {
     border:           none;
     border-radius:    6px;
     text-align:       center;
-    color:            #e6e1e1;
-    font-size:        12px;
+    color:            #ece6e9;
+    font-size:        13px;
+    font-weight:      700;
     min-height:       8px;
 }
 
@@ -513,4 +514,22 @@ QMenu::separator {
 #partitionBarView {
     background-color: #1c1b1c;
     border-radius:    8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HIDE DEBUG / LOG BUTTON
+   Calamares places a "Debug" log viewer button bottom-left with object name
+   debugButton. Zeroing all dimensions removes it from view and layout space.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QPushButton#debugButton {
+    max-height:  0px;
+    max-width:   0px;
+    min-height:  0px;
+    min-width:   0px;
+    border:      none;
+    padding:     0px;
+    margin:      0px;
+    background:  transparent;
+    color:       transparent;
 }
