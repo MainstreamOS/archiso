@@ -28,13 +28,3 @@ EOF
 systemctl enable --global pipewire
 systemctl enable --global pipewire-pulse
 systemctl enable --global wireplumber
-
-# Override default shellprocess.conf to prevent fallback to test commands
-cat > /usr/share/calamares/modules/shellprocess.conf << 'EOF'
----
-# Default shellprocess - intentionally empty
-# Named instances (shellprocess@name) handle all actual commands
-script:
-    - command: "/usr/bin/true"
-      timeout: 10
-EOF
