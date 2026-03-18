@@ -23,7 +23,7 @@
 
 pkgname=calamares-mainstream
 pkgver=3.3.14
-pkgrel=2
+pkgrel=3
 pkgdesc='Distribution-independent installer framework (Mainstream edition)'
 arch=('x86_64')
 url='https://calamares.io'
@@ -103,101 +103,78 @@ prepare() {
     cp "${srcdir}/red-password-not-met.svg" data/images/state-error.svg
 
     # ── Application font — src/calamares/main.cpp ──────────────────────────
-    # Add #include <QFontDatabase> and a font-selection block in main() that
-    # walks the dotfiles font stack and sets the first available family.
-    python3 - << 'PYEOF'
-f = 'src/calamares/main.cpp'
-c = open(f).read()
-
-c = c.replace('#include <QDir>', '#include <QDir>\n#include <QFontDatabase>', 1)
-
-marker = '    CalamaresApplication a( argc, argv );\n'
-assert marker in c, 'ERROR: CalamaresApplication marker not found in main.cpp'
-insert = (
-    '    CalamaresApplication a( argc, argv );\n'
-    '\n'
-    '    // Mainstream: prefer the dotfiles font stack when available\n'
-    '    {\n'
-    '        const char* families[] = { "Google Sans Flex", "Noto Sans", "DejaVu Sans", nullptr };\n'
-    '        for ( int i = 0; families[ i ]; ++i )\n'
-    '        {\n'
-    '            if ( QFontDatabase::hasFamily( QLatin1String( families[ i ] ) ) )\n'
-    '            {\n'
-    '                QFont f = a.font();\n'
-    '                f.setFamily( QLatin1String( families[ i ] ) );\n'
-    '                a.setFont( f );\n'
-    '                break;\n'
-    '            }\n'
-    '        }\n'
-    '    }\n'
-)
-c = c.replace(marker, insert, 1)
-open(f, 'w').write(c)
-PYEOF
+    # Add #include <QFontDatabase> after #include <QDir>
+    sed -i 's|#include <QDir>|#include <QDir>\n#include <QFontDatabase>|' \
+        src/calamares/main.cpp
+    # Insert font-selection block immediately after CalamaresApplication construction.
+    # awk: on matching the construction line, emit it then emit the new block.
+    awk '/CalamaresApplication a\( argc, argv \);/ {
+        print
+        print ""
+        print "    // Mainstream: prefer the dotfiles font stack when available"
+        print "    {"
+        print "        const char* families[] = { \"Google Sans Flex\", \"Noto Sans\", \"DejaVu Sans\", nullptr };"
+        print "        for ( int i = 0; families[ i ]; ++i )"
+        print "        {"
+        print "            if ( QFontDatabase::hasFamily( QLatin1String( families[ i ] ) ) )"
+        print "            {"
+        print "                QFont f = a.font();"
+        print "                f.setFamily( QLatin1String( families[ i ] ) );"
+        print "                a.setFont( f );"
+        print "                break;"
+        print "            }"
+        print "        }"
+        print "    }"
+        next
+    }
+    { print }' src/calamares/main.cpp > /tmp/_ms_main.cpp \
+        && mv /tmp/_ms_main.cpp src/calamares/main.cpp
 
     # ── Frameless window + drag — CalamaresWindow.h + .cpp ────────────────
-    # .h : add QMouseEvent include and mousePressEvent declaration.
-    # .cpp: add QMouseEvent include, set FramelessWindowHint after the
-    #       disableCancel block, and append the mousePressEvent implementation
-    #       that allows dragging from the top 56 px nav-bar strip.
-    python3 - << 'PYEOF'
-# --- CalamaresWindow.h ---
-fh = 'src/calamares/CalamaresWindow.h'
-h = open(fh).read()
-h = h.replace('#include <QWidget>', '#include <QMouseEvent>\n#include <QWidget>', 1)
-h = h.replace(
-    '    virtual void closeEvent( QCloseEvent* e ) override;',
-    '    virtual void closeEvent( QCloseEvent* e ) override;\n'
-    '    void mousePressEvent( QMouseEvent* event ) override;',
-    1
-)
-open(fh, 'w').write(h)
+    # .h: add QMouseEvent include
+    sed -i 's|#include <QWidget>|#include <QMouseEvent>\n#include <QWidget>|' \
+        src/calamares/CalamaresWindow.h
+    # .h: add mousePressEvent declaration after closeEvent
+    sed -i 's|virtual void closeEvent( QCloseEvent\* e ) override;|virtual void closeEvent( QCloseEvent* e ) override;\n    void mousePressEvent( QMouseEvent* event ) override;|' \
+        src/calamares/CalamaresWindow.h
 
-# --- CalamaresWindow.cpp ---
-fc = 'src/calamares/CalamaresWindow.cpp'
-c = open(fc).read()
+    # .cpp: add QMouseEvent include
+    sed -i 's|#include <QLabel>|#include <QLabel>\n#include <QMouseEvent>|' \
+        src/calamares/CalamaresWindow.cpp
+    # .cpp: insert FramelessWindowHint after the closing } of the disableCancel block.
+    # awk: set a flag when we see the WindowCloseButtonHint line, then on the
+    # next line that is exactly "    }" emit it plus the new flag call.
+    awk '
+    /setWindowFlag\( Qt::WindowCloseButtonHint, false \);/ { found=1 }
+    found && /^    \}/ {
+        print
+        print ""
+        print "    // Mainstream: frameless -- Hyprland applies rounding and shadows"
+        print "    setWindowFlag( Qt::FramelessWindowHint );"
+        found=0
+        next
+    }
+    { print }' src/calamares/CalamaresWindow.cpp > /tmp/_ms_calwin.cpp \
+        && mv /tmp/_ms_calwin.cpp src/calamares/CalamaresWindow.cpp
+    # .cpp: append mousePressEvent implementation
+    cat >> src/calamares/CalamaresWindow.cpp << 'CALEOF'
 
-c = c.replace('#include <QLabel>', '#include <QLabel>\n#include <QMouseEvent>', 1)
-
-old_block = (
-    "    // If we can never cancel, don't show the window-close button\n"
-    "    if ( Calamares::Settings::instance()->disableCancel() )\n"
-    "    {\n"
-    "        setWindowFlag( Qt::WindowCloseButtonHint, false );\n"
-    "    }"
-)
-assert old_block in c, 'ERROR: disableCancel block not found in CalamaresWindow.cpp'
-new_block = (
-    "    // If we can never cancel, don't show the window-close button\n"
-    "    if ( Calamares::Settings::instance()->disableCancel() )\n"
-    "    {\n"
-    "        setWindowFlag( Qt::WindowCloseButtonHint, false );\n"
-    "    }\n"
-    "\n"
-    "    // Mainstream: frameless — Hyprland applies rounding and shadows\n"
-    "    setWindowFlag( Qt::FramelessWindowHint );"
-)
-c = c.replace(old_block, new_block, 1)
-
-c += (
-    '\nvoid\n'
-    'CalamaresWindow::mousePressEvent( QMouseEvent* event )\n'
-    '{\n'
-    '    // Drag the frameless window from the nav-bar strip (top 56 px)\n'
-    '    if ( event->button() == Qt::LeftButton && event->position().y() <= 56 )\n'
-    '    {\n'
-    '        if ( auto* h = windowHandle() )\n'
-    '        {\n'
-    '            h->startSystemMove();\n'
-    '            event->accept();\n'
-    '            return;\n'
-    '        }\n'
-    '    }\n'
-    '    QWidget::mousePressEvent( event );\n'
-    '}\n'
-)
-open(fc, 'w').write(c)
-PYEOF
+void
+CalamaresWindow::mousePressEvent( QMouseEvent* event )
+{
+    // Drag the frameless window from the nav-bar strip (top 56 px)
+    if ( event->button() == Qt::LeftButton && event->position().y() <= 56 )
+    {
+        if ( auto* h = windowHandle() )
+        {
+            h->startSystemMove();
+            event->accept();
+            return;
+        }
+    }
+    QWidget::mousePressEvent( event );
+}
+CALEOF
 
     # ── Partition labels: dark-theme colours + M3 corner radius ───────────
     sed -i \
