@@ -1,0 +1,30 @@
+--- a/src/calamares/main.cpp
++++ b/src/calamares/main.cpp
+@@ -29,6 +29,7 @@
+ #include <QCommandLineParser>
+ #include <QDebug>
+ #include <QDir>
++#include <QFontDatabase>
+
+ #include <memory>
+
+@@ -103,6 +104,18 @@ main( int argc, char* argv[] )
+ #endif
+     CalamaresApplication a( argc, argv );
+
++    // Mainstream: prefer the dotfiles font stack when available on the live ISO
++    {
++        const char* families[] = { "Google Sans Flex", "Noto Sans", "DejaVu Sans", nullptr };
++        for ( int i = 0; families[ i ]; ++i )
++        {
++            if ( QFontDatabase::hasFamily( QLatin1String( families[ i ] ) ) )
++            {
++                QFont f = a.font();
++                f.setFamily( QLatin1String( families[ i ] ) );
++                a.setFont( f );
++                break;
++            }
++        }
++    }
++
+     KAboutData aboutData( "calamares",
