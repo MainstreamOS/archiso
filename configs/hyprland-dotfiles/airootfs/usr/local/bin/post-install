@@ -276,6 +276,10 @@ if [[ -n "$MAIN_USER" ]]; then
         chsh -s /usr/bin/zsh "$MAIN_USER" || true
     fi
 
+    # Remove quickshell first-run sentinel copied from skel so the installed
+    # user sees the welcome message on their first login.
+    rm -f "$MAIN_USER_HOME/.local/state/quickshell/user/first_run.txt"
+
     # Final ownership guarantee
     chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
 
