@@ -349,6 +349,9 @@ build_local_pkg() {
         if [[ -n "$built" ]]; then
             cp "$built" "$OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
+            # Remove any stale pacman cache entry so a corrupt leftover from a
+            # previous interrupted install cannot block the next pacman run.
+            rm -f /var/cache/pacman/pkg/${pkgname}-*.pkg.tar.zst 2>/dev/null || true
             success "$pkgname built successfully."
         else
             warn "$pkgname — build ran but no .pkg.tar.zst found in temp output."
