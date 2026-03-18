@@ -576,11 +576,25 @@ QMenu::separator {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CALAMARES-SPECIFIC PARTITION VIEW
+   PartitionBarsView  — the coloured disk-layout bar
+   PartitionLabelsView — the legend below (coloured square + name + size)
+   Both widgets paint text via QPainter using QPalette::Text / WindowText.
+   Explicitly setting color here covers both roles so labels are readable.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 #partitionBarView {
     background-color: #1d1b20;
     border-radius:    8px;
+}
+
+PartitionBarsView {
+    color:            #e6e1e6;
+    background-color: transparent;
+}
+
+PartitionLabelsView {
+    color:            #e6e1e6;
+    background-color: transparent;
 }
 
 
