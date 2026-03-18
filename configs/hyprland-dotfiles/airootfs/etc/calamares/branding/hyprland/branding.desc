@@ -34,7 +34,7 @@ slideshowAPI: 2
 # These style keys apply to the fallback widget sidebar only.
 # The QML sidebar (calamares-sidebar.qml) defines its own colors inline.
 style:
-    SidebarBackground:        "#1c1b1c"
-    SidebarText:              "#cbc5ca"
-    SidebarTextCurrent:       "#ece6e9"
-    SidebarBackgroundCurrent: "#4d4b4d"
+    SidebarBackground:        "#1d1b20"
+    SidebarText:              "#cac4d0"
+    SidebarTextCurrent:       "#e8def8"
+    SidebarBackgroundCurrent: "#4a4458"

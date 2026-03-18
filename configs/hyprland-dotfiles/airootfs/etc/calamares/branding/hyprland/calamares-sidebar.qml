@@ -19,15 +19,15 @@ import io.calamares.ui 1.0
 Rectangle {
     id: root
 
-    // ── M3 dark color tokens (ii dots — Appearance.qml m3colors / colors) ──
-    readonly property color colBg:           "#1c1b1c"   // surfaceContainerLow
-    readonly property color colOnSurface:    "#e6e1e1"   // onBackground
-    readonly property color colOnSurfaceVar: "#cbc5ca"   // onSurfaceVariant
-    readonly property color colSecCont:      "#474052"   // secondaryContainer
-    readonly property color colOnSecCont:    "#ece6e9"   // onSecondaryContainer
-    readonly property color colOutlineVar:   "#49464a"   // outlineVariant
-    readonly property color colOutline:      "#948f94"   // outline
-    readonly property color colPrimary:      "#cbc4cb"   // primary
+    // ── M3 dark color tokens — baseline purple scheme (seed #6750A4) ──────
+    readonly property color colBg:           "#1d1b20"   // surfaceContainerLow
+    readonly property color colOnSurface:    "#e6e1e6"   // onBackground
+    readonly property color colOnSurfaceVar: "#cac4d0"   // onSurfaceVariant
+    readonly property color colSecCont:      "#4a4458"   // secondaryContainer — active pill
+    readonly property color colOnSecCont:    "#e8def8"   // onSecondaryContainer
+    readonly property color colOutlineVar:   "#49454f"   // outlineVariant
+    readonly property color colOutline:      "#938f99"   // outline
+    readonly property color colPrimary:      "#cfbcff"   // primary
 
     // ── Icon mapping by step index — names come dynamically from ViewManager ─
     // Icons correspond to the `show` sequence in settings.conf:
