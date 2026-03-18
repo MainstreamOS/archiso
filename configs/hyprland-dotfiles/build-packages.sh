@@ -82,7 +82,6 @@ METAPKGS=(
 # Note: matugen, songrec, go-yq, ksshaskpass are in official repos — not listed here.
 # Note: matugen, songrec, go-yq, ksshaskpass are in official [extra] — not listed here.
 AUR_DEPS=(
-    "calamares::calamares"  # AUR-only, git repo requires auth — uses yay cache fallback
     "ttf-google-sans"
     "limine-mkinitcpio-hook"
     "limine-snapper-sync"
@@ -289,6 +288,67 @@ for pkgname in "${METAPKGS[@]}"; do
     fi
     echo ""
 done
+
+# ---------------------------------------------------------------------------
+# BUILD LOCAL PKGBUILDS
+# Each sub-directory under pkgbuilds/ is a self-contained PKGBUILD tree.
+# These are built before AUR deps so the local repo takes precedence.
+# ---------------------------------------------------------------------------
+
+LOCAL_PKGBUILDS_DIR="$SCRIPT_DIR/pkgbuilds"
+
+build_local_pkg() {
+    local pkgname="$1"
+    local pkgdir="$LOCAL_PKGBUILDS_DIR/$pkgname"
+
+    if [[ ! -d "$pkgdir" ]]; then
+        warn "$pkgname — local PKGBUILD directory not found at $pkgdir, skipping."
+        return
+    fi
+
+    # Skip if already built at current version (unless --clean)
+    existing=$(find "$OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
+        pkg_ver=$(bash -c "cd '$pkgdir' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
+        if echo "$existing" | grep -q "$pkg_ver"; then
+            info "$pkgname — already built at current version, skipping."
+            return
+        fi
+        info "$pkgname — newer version available, rebuilding..."
+        rm -f "$OUTPUT_DIR/${pkgname}-"*.pkg.tar.zst
+    fi
+
+    # Copy the PKGBUILD tree to a temp dir owned by the build user
+    local tmp_build_dir="/tmp/local-pkg-${pkgname}"
+    rm -rf "$tmp_build_dir"
+    cp -a "$pkgdir" "$tmp_build_dir"
+    chown -R "$BUILD_USER":"$BUILD_USER" "$tmp_build_dir"
+
+    info "Building local package: $pkgname..."
+    if su "$BUILD_USER" -c "
+        cd '$tmp_build_dir'
+        PACMAN=/usr/local/bin/pacman-noconfirm \
+        PKGDEST='$TEMP_OUTPUT' \
+        makepkg -s --noconfirm --skippgpcheck 2>&1
+    "; then
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        if [[ -n "$built" ]]; then
+            cp "$built" "$OUTPUT_DIR/"
+            rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
+            success "$pkgname built successfully."
+        else
+            warn "$pkgname — build ran but no .pkg.tar.zst found in temp output."
+        fi
+    else
+        warn "$pkgname — build failed."
+    fi
+
+    rm -rf "$tmp_build_dir"
+    echo ""
+}
+
+info "Building local PKGBUILDs..."
+build_local_pkg "calamares-mainstream"
 
 # ---------------------------------------------------------------------------
 # BUILD AUR DEPENDENCY PACKAGES

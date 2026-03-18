@@ -173,8 +173,10 @@ wget
 
 # ==============================================================================
 # Calamares installer (live only — removed by packages.conf on install)
+# Built from pkgbuilds/calamares-mainstream/ — patches state-ok/error SVGs
+# with the Mainstream branding icons before compilation.
 # ==============================================================================
-calamares
+calamares-mainstream
 kcrash
 kpmcore
 qt6-declarative
