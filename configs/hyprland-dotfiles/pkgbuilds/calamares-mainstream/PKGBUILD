@@ -8,20 +8,16 @@
 #     Those two files are the password-met / password-not-met indicator icons
 #     shown on the Users page.  They are compiled into libcalamaresui as Qt
 #     resources and must be patched before cmake runs.
-#   - mainstream-font.patch
-#     Sets the application font to the dotfiles font stack (Google Sans Flex
-#     → Noto Sans → DejaVu Sans) early in main() so every widget inherits it.
-#   - mainstream-window.patch
-#     Makes the window frameless (Qt::FramelessWindowHint) so Hyprland draws
-#     its compositor-level rounding and shadows.  Adds mousePressEvent with
-#     startSystemMove() so the window can still be dragged by clicking the
-#     top navigation-bar strip.
-#   - mainstream-partition.patch
-#     Fixes partition-label text colours: replaces the hardcoded Qt::black /
-#     Qt::gray QPainter pens with palette().color(Text/PlaceholderText) so
-#     the labels are visible on the dark theme.  Also increases CORNER_RADIUS
-#     from 2 → 6 (M3-style rounded partition colour squares) and removes the
-#     hardcoded border pen on those squares.
+#   - Python in prepare(): sets the application font to the dotfiles font
+#     stack (Google Sans Flex → Noto Sans → DejaVu Sans) early in main() so
+#     every widget inherits it.
+#   - Python in prepare(): makes the window frameless (Qt::FramelessWindowHint)
+#     so Hyprland draws its compositor-level rounding and shadows.  Adds
+#     mousePressEvent with startSystemMove() so the window can still be dragged
+#     by clicking the top navigation-bar strip.
+#   - sed in prepare(): fixes partition-label text colours (Qt::black/gray →
+#     palette Text/PlaceholderText), increases CORNER_RADIUS 2→6, removes
+#     the hardcoded border pen on partition colour squares.
 #   - sed in prepare(): strips keyboard-shortcut & ampersands from every
 #     navigation button label (Back, Next, Cancel, Done, Install, Set Up).
 
@@ -89,18 +85,11 @@ source=(
     # libcalamaresui as Qt resources.
     "green-password-met.svg"
     "red-password-not-met.svg"
-    # Mainstream source patches
-    "mainstream-font.patch"
-    "mainstream-window.patch"
-    "mainstream-partition.patch"
 )
 
 # sha256sums[0] can be updated with: sha256sum calamares-${pkgver}.tar.gz
-# Local sources (SVGs and patches) are verified by git history.
+# Local sources (SVGs) are verified by git history.
 sha256sums=(
-    'SKIP'
-    'SKIP'
-    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'
@@ -110,35 +99,133 @@ prepare() {
     cd "calamares-${pkgver}"
 
     # ── Icon substitution ──────────────────────────────────────────────────
-    # Replace the built-in status icons with Mainstream branding icons.
     cp "${srcdir}/green-password-met.svg"   data/images/state-ok.svg
     cp "${srcdir}/red-password-not-met.svg" data/images/state-error.svg
 
-    # ── Source patches ─────────────────────────────────────────────────────
-    patch -p1 < "${srcdir}/mainstream-font.patch"
-    patch -p1 < "${srcdir}/mainstream-window.patch"
-    patch -p1 < "${srcdir}/mainstream-partition.patch"
+    # ── Application font — src/calamares/main.cpp ──────────────────────────
+    # Add #include <QFontDatabase> and a font-selection block in main() that
+    # walks the dotfiles font stack and sets the first available family.
+    python3 - << 'PYEOF'
+f = 'src/calamares/main.cpp'
+c = open(f).read()
+
+c = c.replace('#include <QDir>', '#include <QDir>\n#include <QFontDatabase>', 1)
+
+marker = '    CalamaresApplication a( argc, argv );\n'
+assert marker in c, 'ERROR: CalamaresApplication marker not found in main.cpp'
+insert = (
+    '    CalamaresApplication a( argc, argv );\n'
+    '\n'
+    '    // Mainstream: prefer the dotfiles font stack when available\n'
+    '    {\n'
+    '        const char* families[] = { "Google Sans Flex", "Noto Sans", "DejaVu Sans", nullptr };\n'
+    '        for ( int i = 0; families[ i ]; ++i )\n'
+    '        {\n'
+    '            if ( QFontDatabase::hasFamily( QLatin1String( families[ i ] ) ) )\n'
+    '            {\n'
+    '                QFont f = a.font();\n'
+    '                f.setFamily( QLatin1String( families[ i ] ) );\n'
+    '                a.setFont( f );\n'
+    '                break;\n'
+    '            }\n'
+    '        }\n'
+    '    }\n'
+)
+c = c.replace(marker, insert, 1)
+open(f, 'w').write(c)
+PYEOF
+
+    # ── Frameless window + drag — CalamaresWindow.h + .cpp ────────────────
+    # .h : add QMouseEvent include and mousePressEvent declaration.
+    # .cpp: add QMouseEvent include, set FramelessWindowHint after the
+    #       disableCancel block, and append the mousePressEvent implementation
+    #       that allows dragging from the top 56 px nav-bar strip.
+    python3 - << 'PYEOF'
+# --- CalamaresWindow.h ---
+fh = 'src/calamares/CalamaresWindow.h'
+h = open(fh).read()
+h = h.replace('#include <QWidget>', '#include <QMouseEvent>\n#include <QWidget>', 1)
+h = h.replace(
+    '    virtual void closeEvent( QCloseEvent* e ) override;',
+    '    virtual void closeEvent( QCloseEvent* e ) override;\n'
+    '    void mousePressEvent( QMouseEvent* event ) override;',
+    1
+)
+open(fh, 'w').write(h)
+
+# --- CalamaresWindow.cpp ---
+fc = 'src/calamares/CalamaresWindow.cpp'
+c = open(fc).read()
+
+c = c.replace('#include <QLabel>', '#include <QLabel>\n#include <QMouseEvent>', 1)
+
+old_block = (
+    "    // If we can never cancel, don't show the window-close button\n"
+    "    if ( Calamares::Settings::instance()->disableCancel() )\n"
+    "    {\n"
+    "        setWindowFlag( Qt::WindowCloseButtonHint, false );\n"
+    "    }"
+)
+assert old_block in c, 'ERROR: disableCancel block not found in CalamaresWindow.cpp'
+new_block = (
+    "    // If we can never cancel, don't show the window-close button\n"
+    "    if ( Calamares::Settings::instance()->disableCancel() )\n"
+    "    {\n"
+    "        setWindowFlag( Qt::WindowCloseButtonHint, false );\n"
+    "    }\n"
+    "\n"
+    "    // Mainstream: frameless — Hyprland applies rounding and shadows\n"
+    "    setWindowFlag( Qt::FramelessWindowHint );"
+)
+c = c.replace(old_block, new_block, 1)
+
+c += (
+    '\nvoid\n'
+    'CalamaresWindow::mousePressEvent( QMouseEvent* event )\n'
+    '{\n'
+    '    // Drag the frameless window from the nav-bar strip (top 56 px)\n'
+    '    if ( event->button() == Qt::LeftButton && event->position().y() <= 56 )\n'
+    '    {\n'
+    '        if ( auto* h = windowHandle() )\n'
+    '        {\n'
+    '            h->startSystemMove();\n'
+    '            event->accept();\n'
+    '            return;\n'
+    '        }\n'
+    '    }\n'
+    '    QWidget::mousePressEvent( event );\n'
+    '}\n'
+)
+open(fc, 'w').write(c)
+PYEOF
+
+    # ── Partition labels: dark-theme colours + M3 corner radius ───────────
+    sed -i \
+        -e 's/static const int CORNER_RADIUS = 2;/static const int CORNER_RADIUS = 6;/' \
+        -e 's/painter->setPen( QPalette().shadow().color() );/painter->setPen( Qt::NoPen );/' \
+        -e 's/painter->setPen( Qt::black );/painter->setPen( palette().color( QPalette::Text ) );/g' \
+        -e 's/painter->setPen( Qt::gray );/painter->setPen( palette().color( QPalette::PlaceholderText ) );/g' \
+        src/modules/partition/gui/PartitionLabelsView.cpp
 
     # ── Navigation button labels: strip keyboard-shortcut ampersands ───────
     # CalamaresWindow.cpp — initial button text at widget creation
-    sed -i 's/"&Back"/"Back"/g'     src/calamares/CalamaresWindow.cpp
-    sed -i 's/"&Next"/"Next"/g'     src/calamares/CalamaresWindow.cpp
-    sed -i 's/"&Cancel"/"Cancel"/g' src/calamares/CalamaresWindow.cpp
+    sed -i \
+        -e 's/"&Back"/"Back"/g' \
+        -e 's/"&Next"/"Next"/g' \
+        -e 's/"&Cancel"/"Cancel"/g' \
+        src/calamares/CalamaresWindow.cpp
 
     # ViewManager.cpp — dynamic labels set/updated at runtime
     sed -i \
-        -e 's/tr( "&Next",     "@button" )/tr( "Next",     "@button" )/g' \
-        -e 's/tr( "&Back",     "@button" )/tr( "Back",     "@button" )/g' \
-        -e 's/tr( "&Cancel",   "@button" )/tr( "Cancel",   "@button" )/g' \
-        -e 's/tr( "&Done",     "@button" )/tr( "Done",     "@button" )/g' \
-        -e 's/tr( "&Install",  "@button" )/tr( "Install",  "@button" )/g' \
-        -e 's/tr( "&Set Up",   "@button" )/tr( "Set Up",   "@button" )/g' \
-        src/libcalamaresui/ViewManager.cpp
-    # Multi-word labels with spaces that vary by mode
-    sed -i \
+        -e 's/tr( "&Next", "@button" )/tr( "Next", "@button" )/g' \
+        -e 's/tr( "&Back", "@button" )/tr( "Back", "@button" )/g' \
+        -e 's/tr( "&Cancel", "@button" )/tr( "Cancel", "@button" )/g' \
+        -e 's/tr( "&Done", "@button" )/tr( "Done", "@button" )/g' \
+        -e 's/tr( "&Install", "@button" )/tr( "Install", "@button" )/g' \
+        -e 's/tr( "&Set Up", "@button" )/tr( "Set Up", "@button" )/g' \
         -e 's/tr( "&Install Now", "@button" )/tr( "Install Now", "@button" )/g' \
-        -e 's/tr( "&Set Up Now",  "@button" )/tr( "Set Up Now",  "@button" )/g' \
-        -e 's/tr( "Go &Back",     "@button" )/tr( "Go Back",     "@button" )/g' \
+        -e 's/tr( "&Set Up Now", "@button" )/tr( "Set Up Now", "@button" )/g' \
+        -e 's/tr( "Go &Back", "@button" )/tr( "Go Back", "@button" )/g' \
         src/libcalamaresui/ViewManager.cpp
 }
 
