@@ -25,6 +25,7 @@ success() { log "OK:    $*"; }
 # FLAGS
 # ---------------------------------------------------------------------------
 CLEAN_BUILD=false
+CLEAN_CALAMARES=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -32,10 +33,15 @@ for arg in "$@"; do
             CLEAN_BUILD=true
             info "Clean build requested — all existing packages will be removed and rebuilt."
             ;;
+        --cleancal)
+            CLEAN_CALAMARES=true
+            info "Calamares clean requested — calamares-mainstream will be removed and rebuilt."
+            ;;
         --help|-h)
-            echo "Usage: sudo ./build-packages.sh [--clean|-c]"
+            echo "Usage: sudo ./build-packages.sh [--clean|-c] [--cleancal]"
             echo ""
             echo "  --clean, -c    Remove all existing pre-built packages and rebuild from scratch"
+            echo "  --cleancal     Remove existing calamares-mainstream package and rebuild it"
             echo "  --help,  -h    Show this help message"
             exit 0
             ;;
@@ -150,6 +156,13 @@ if [[ "$CLEAN_BUILD" == true ]]; then
     info "Clean build — removing all existing pre-built packages..."
     rm -f "$OUTPUT_DIR"/*.pkg.tar.zst
     info "Output directory cleared."
+fi
+
+# Apply calamares-only clean if requested
+if [[ "$CLEAN_CALAMARES" == true ]]; then
+    info "Removing calamares-mainstream packages from output dir..."
+    rm -f "$OUTPUT_DIR"/calamares-mainstream-*.pkg.tar.zst
+    info "calamares-mainstream cleared."
 fi
 
 # Create temporary build user if it doesn't exist
