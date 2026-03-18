@@ -551,6 +551,10 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             info "init-qs.sh deployed to skel."
         fi
 
+        # Remove first_run sentinel so every new user sees the quickshell
+        # welcome message on their first login (live and installed alike).
+        rm -f "$SKEL_DIR/.local/state/quickshell/user/first_run.txt"
+
         info "Dotfiles deployed to skel."
     else
         warn "dots/ directory not found in repo — skel dotfiles not deployed."
