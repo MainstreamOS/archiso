@@ -393,6 +393,58 @@ QGroupBox::title {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   TREE / LIST VIEW CHECKBOX INDICATORS
+   QTreeView and QListView use their own ::indicator sub-control which is
+   NOT covered by QCheckBox::indicator.  Without this block the Fusion style
+   draws its own platform checkbox, which renders as blank/white on dark
+   backgrounds.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+QTreeView::indicator,
+QListView::indicator {
+    width:  18px;
+    height: 18px;
+}
+
+QTreeView::indicator:unchecked,
+QListView::indicator:unchecked {
+    border:           2px solid #938f99;
+    border-radius:    4px;
+    background-color: transparent;
+}
+
+QTreeView::indicator:unchecked:hover,
+QListView::indicator:unchecked:hover {
+    border-color: #cfbcff;
+}
+
+QTreeView::indicator:checked,
+QListView::indicator:checked {
+    border:           2px solid #cfbcff;
+    border-radius:    4px;
+    background-color: #cfbcff;
+    image: url(/etc/calamares/branding/hyprland/icons/check.svg);
+}
+
+QTreeView::indicator:indeterminate,
+QListView::indicator:indeterminate {
+    border:           2px solid #cfbcff;
+    border-radius:    4px;
+    background-color: #4a4458;
+}
+
+QTreeView::indicator:unchecked:disabled,
+QListView::indicator:unchecked:disabled {
+    border-color: #49454f;
+}
+
+QTreeView::indicator:checked:disabled,
+QListView::indicator:checked:disabled {
+    background-color: #49454f;
+    border-color:     #49454f;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    CHECK BOX & RADIO BUTTON
    ═══════════════════════════════════════════════════════════════════════════ */
 
