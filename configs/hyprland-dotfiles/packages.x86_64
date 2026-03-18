@@ -177,6 +177,8 @@ wget
 # with the Mainstream branding icons before compilation.
 # ==============================================================================
 calamares-mainstream
+ckbcomp
+hwinfo
 kcrash
 kpmcore
 qt6-declarative

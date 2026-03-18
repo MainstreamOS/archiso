@@ -19,14 +19,14 @@ url='https://calamares.io'
 license=('GPL-3.0-only' 'LGPL-2.1-or-later')
 
 depends=(
-    # KDE Frameworks 6
-    'kf6-kconfig'
-    'kf6-kcoreaddons'
-    'kf6-kiconthemes'
-    'kf6-ki18n'
-    'kf6-kio'
-    'kf6-solid'
-    'kf6-kpackage'
+    # KDE Frameworks 6 — Arch packages use bare names (no kf6- prefix)
+    'kconfig'
+    'kcoreaddons'
+    'kiconthemes'
+    'ki18n'
+    'kio'
+    'solid'
+    'kpackage'
     # Qt 6
     'qt6-base'
     'qt6-svg'
@@ -40,7 +40,6 @@ depends=(
     # Misc runtime
     'boost-libs'
     'yaml-cpp'
-    'ckbcomp'
     'hwinfo'
     'libpwquality'
     'squashfs-tools'
@@ -48,6 +47,10 @@ depends=(
     'gtk-update-icon-cache'
     'icu'
     'python'
+    # Note: ckbcomp (keyboard layout tool) is AUR-only on Arch.
+    # It is listed in packages.x86_64 and built via AUR_DEPS in
+    # build-packages.sh rather than declared here to avoid dep-resolution
+    # failures during makepkg -s.
 )
 
 makedepends=(

@@ -82,6 +82,7 @@ METAPKGS=(
 # Note: matugen, songrec, go-yq, ksshaskpass are in official repos — not listed here.
 # Note: matugen, songrec, go-yq, ksshaskpass are in official [extra] — not listed here.
 AUR_DEPS=(
+    "ckbcomp"               # keyboard layout tool used by Calamares keyboard module (AUR-only)
     "ttf-google-sans"
     "limine-mkinitcpio-hook"
     "limine-snapper-sync"
