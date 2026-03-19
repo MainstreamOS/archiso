@@ -1,4 +1,4 @@
-timeout: 1
+timeout: 4
 
 # Catppuccin Frappe theme
 term_background: 303446
@@ -12,7 +12,7 @@ backdrop: 303446
 /Arch Linux
     protocol: linux
     kernel_path: boot():///vmlinuz-linux
-    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw zswap.enabled=0 quiet loglevel=0 systemd.show_status=false rd.systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 consoleblank=0 drm.vblankoffdelay=-1 nowatchdog nmi_watchdog=0 printk.devkmsg=off systemd.log_level=0 systemd.log_target=null audit=0
+    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw zswap.enabled=0 quiet rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0 amdgpu.sg_display=0
     module_path: boot():///initramfs-linux.img
 
 # --- Snapper Snapshots (auto-generated below) ---
