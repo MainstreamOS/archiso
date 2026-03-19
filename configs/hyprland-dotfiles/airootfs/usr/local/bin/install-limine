@@ -89,19 +89,22 @@ fi
 # --- 4. Configuration Deployment ---
 TEMPLATE="/etc/limine.conf.template"
 
+if [ "$IS_UEFI" = true ]; then
+    CONF_DEST="$BOOT_PATH/EFI/limine/limine.conf"
+else
+    CONF_DEST="$BOOT_PATH/limine.conf"
+fi
+
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."
-    if [ "$IS_UEFI" = true ]; then
-        CONF_DEST="$BOOT_PATH/EFI/limine/limine.conf"
-    else
-        CONF_DEST="$BOOT_PATH/limine.conf"
-    fi
     sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" | \
         sed "s/subvol=\/@/subvol=@/g" > "$CONF_DEST"
     rm -f "$TEMPLATE"
     info "Config deployed to $CONF_DEST, template removed."
+elif [ -f "$CONF_DEST" ]; then
+    info "Config already deployed at $CONF_DEST — skipping."
 else
-    log "ERROR: Template missing at $TEMPLATE"
+    log "ERROR: Template missing at $TEMPLATE and no existing config at $CONF_DEST"
     exit 1
 fi
 
