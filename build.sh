@@ -12,9 +12,10 @@
 #   -w <dir>    Work directory    (default: ./work)
 #
 # How it works:
-#   1. Appends Limine bootmode functions (configs/hyprland-dotfiles/bootmodes/limine.sh)
-#      to a temporary copy of archiso/mkarchiso so that mkarchiso's dynamic
-#      function dispatch picks up _make_bootmode_bios.limine and friends.
+#   1. Prepends Limine bootmode functions (configs/hyprland-dotfiles/bootmodes/limine.sh)
+#      into a temporary copy of archiso/mkarchiso (right after the shebang) so
+#      that mkarchiso's dynamic function dispatch picks up _make_bootmode_bios.limine
+#      and friends before _validate_options / _build are executed.
 #   2. Runs the patched mkarchiso to build the ISO.
 #   3. Runs `limine bios-install <iso>` to embed Limine's MBR bootstrap code
 #      so the ISO is bootable from USB via BIOS as well as CD/DVD.
@@ -77,14 +78,26 @@ fi
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 
 # ── Patch mkarchiso with Limine bootmode functions ──────────────────────────
-# mkarchiso defines all bootmode functions internally; we append our Limine
-# functions to a temp copy so the dynamic dispatch (typeset -f) finds them.
+# mkarchiso defines all bootmode functions internally and calls _build at the
+# very end of the script.  Appending our functions AFTER that call means bash
+# hasn't parsed them yet when _validate_options runs typeset -f.
+#
+# Fix: prepend our functions immediately after the shebang so they are
+# defined before any execution code runs, while still having access to
+# mkarchiso's helper functions (_msg_info, _make_efibootimg, etc.) because
+# those functions are only CALLED (not needed) at definition time.
 PATCHED_MKARCHISO="$(mktemp /tmp/mkarchiso-limine-XXXXXX)"
 trap 'rm -f -- "${PATCHED_MKARCHISO}"' EXIT
-
-cp -- "${MKARCHISO}" "${PATCHED_MKARCHISO}"
 chmod +x -- "${PATCHED_MKARCHISO}"
-cat -- "${LIMINE_BOOTMODES}" >> "${PATCHED_MKARCHISO}"
+
+{
+    # Line 1: shebang (#!/usr/bin/env bash)
+    head -1 "${MKARCHISO}"
+    # Limine bootmode function definitions — inserted right after shebang
+    cat -- "${LIMINE_BOOTMODES}"
+    # Rest of mkarchiso (skip the shebang we already wrote)
+    tail -n +2 "${MKARCHISO}"
+} > "${PATCHED_MKARCHISO}"
 
 echo ">>> Building ISO (this takes several minutes)..."
 "${PATCHED_MKARCHISO}" \
