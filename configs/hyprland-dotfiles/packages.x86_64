@@ -28,6 +28,7 @@ efibootmgr
 mkinitcpio
 mkinitcpio-busybox
 udev
+plymouth
 
 # ==============================================================================
 # archiso essentials (live ISO only — removed by packages.conf on install)
