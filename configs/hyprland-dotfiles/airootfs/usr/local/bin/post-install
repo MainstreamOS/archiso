@@ -72,6 +72,19 @@ for svc in \
     fi
 done
 
+# Mask services that are disabled but still start via socket activation or as
+# dependencies of other units.  Masking makes them unlaunchable by any means.
+#
+# systemd-networkd: redundant alongside NetworkManager; 226ms wasted if active
+# lvm2-monitor:     not needed on a pure Btrfs+zram system; 154ms wasted
+for svc in \
+    systemd-networkd.service \
+    systemd-networkd-persistent-storage.service \
+    lvm2-monitor.service; do
+    info "Masking: $svc"
+    systemctl mask "$svc" || true
+done
+
 # ---------------------------------------------------------------------------
 # 4. MKINITCPIO & HYBRID GPU DETECTION (Early KMS)
 # ---------------------------------------------------------------------------
