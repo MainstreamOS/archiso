@@ -38,4 +38,32 @@ fi
 # install-limine will reinstall the linux kernel which recreates it, and
 # post-install owns the final mkinitcpio -P call after all config is in place.
 
+# --- 3. Live Package Removal ---
+# Remove packages that are only needed in the live ISO environment.
+# This must run after pacman -Sy above so the local database exists.
+# Calamares' built-in `packages` module runs before shellprocess and
+# therefore before the DB sync, causing a "target not found" failure —
+# so we do the removal here instead.
+LIVE_PKGS=(
+    calamares
+    arch-install-scripts
+    archinstall
+    mkinitcpio-archiso
+    mkinitcpio-nfs-utils
+    nbd
+    squashfs-tools
+    syslinux
+    mtools
+    edk2-shell
+    "memtest86+"
+    memtest86+-efi
+    livecd-sounds
+    pv
+    reflector
+)
+
+info "Removing live-only packages..."
+pacman -Rns --noconfirm "${LIVE_PKGS[@]}" 2>/dev/null || \
+    warn "Some live packages were not installed — continuing."
+
 info "Pre-install environment is ready."
