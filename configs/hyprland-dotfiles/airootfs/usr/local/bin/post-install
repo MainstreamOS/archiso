@@ -88,26 +88,31 @@ done
 # ---------------------------------------------------------------------------
 # 4. MKINITCPIO & HYBRID GPU DETECTION (Early KMS)
 # ---------------------------------------------------------------------------
-info "Applying silent boot fixes and detecting hardware..."
+info "Detecting GPU hardware and configuring Early KMS..."
 
 # Force remove 'resume' hook to stop the hibernation scan (speeds up boot)
 sed -i 's/\bresume\b//g' /etc/mkinitcpio.conf
 find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/\bresume\b//g' {} +
 
-# Hybrid GPU Detection logic for Early KMS
-# Use || true on the grep so set -e doesn't fire if no GPU matches
-GPU_INFO=$(lspci 2>/dev/null | grep -E "VGA|3D" || true)
+# Include "Display controller" PCI class so Intel iGPU is never missed on
+# hybrid systems (Intel iGPU often appears as Display controller, not VGA)
+GPU_INFO=$(lspci 2>/dev/null | grep -E "VGA|3D|Display" || true)
 MODULE_LIST=""
+FIRMWARE_PKGS=""
+MODESET_PARAMS=""
 
 if echo "$GPU_INFO" | grep -iq "Intel"; then
     info "Intel iGPU detected."
     MODULE_LIST+="i915 "
+    FIRMWARE_PKGS+="linux-firmware-intel "
+    MODESET_PARAMS+="i915.modeset=1 "
 fi
 
 if echo "$GPU_INFO" | grep -iqE "AMD|ATI"; then
     info "AMD GPU detected."
     MODULE_LIST+="amdgpu "
-    # Apply RDNA specific environment variables
+    FIRMWARE_PKGS+="linux-firmware-amdgpu "
+    MODESET_PARAMS+="amdgpu.modeset=1 "
     cat >> /etc/environment <<EOF
 WLR_RENDERER=vulkan
 AMD_VULKAN_ICD=RADV
@@ -118,29 +123,54 @@ fi
 if echo "$GPU_INFO" | grep -iq "NVIDIA"; then
     info "NVIDIA GPU detected."
     MODULE_LIST+="nvidia nvidia_modeset nvidia_uvm nvidia_drm "
+    FIRMWARE_PKGS+="linux-firmware-nvidia "
+    MODESET_PARAMS+="nvidia-drm.modeset=1 "
     mkdir -p /etc/modprobe.d
     echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
 fi
 
 if [[ -z "$GPU_INFO" ]]; then
-    warn "lspci returned no GPU info — skipping Early KMS module injection."
+    warn "lspci returned no GPU info — skipping Early KMS configuration."
+fi
+
+# Install vendor-specific firmware packages before rebuilding initramfs
+if [[ -n "$FIRMWARE_PKGS" ]]; then
+    info "Installing GPU firmware packages: $FIRMWARE_PKGS"
+    pacman -S --noconfirm --needed $FIRMWARE_PKGS 2>/dev/null || \
+        warn "Some GPU firmware packages failed to install — boot may still work."
 fi
 
 # Inject detected modules into mkinitcpio.conf
 if [[ -n "$MODULE_LIST" ]]; then
-    info "Configuring Early KMS for: $MODULE_LIST"
+    info "Configuring Early KMS modules: $MODULE_LIST"
     sed -i "s/^MODULES=(/MODULES=($MODULE_LIST/" /etc/mkinitcpio.conf
 fi
 
-# Regenerate initramfs — this is the single authoritative mkinitcpio -P call
-# (install-limine intentionally skips this so all config is in place first)
+# Append vendor modeset params to the deployed limine.conf cmdline
+if [[ -n "$MODESET_PARAMS" ]]; then
+    LIMINE_CONF=""
+    if [[ -f "/boot/efi/EFI/limine/limine.conf" ]]; then
+        LIMINE_CONF="/boot/efi/EFI/limine/limine.conf"
+    elif [[ -f "/boot/limine.conf" ]]; then
+        LIMINE_CONF="/boot/limine.conf"
+    fi
+
+    if [[ -n "$LIMINE_CONF" ]]; then
+        info "Adding modeset params to $LIMINE_CONF: $MODESET_PARAMS"
+        sed -i "/^ *cmdline:/ s/$/ ${MODESET_PARAMS% }/" "$LIMINE_CONF"
+    else
+        warn "limine.conf not found — modeset params not injected."
+    fi
+fi
+
+# Regenerate initramfs — single authoritative mkinitcpio -P call.
+# Firmware, modules, and limine.conf are all configured above so this
+# produces the final initramfs with everything in place.
 info "Regenerating initramfs..."
 mkinitcpio -P
 
 # Re-sync kernel and initramfs to the EFI partition so Limine sees the
-# freshly built initramfs (with early KMS modules). install-limine copies
-# these before mkinitcpio -P runs, so without this step the EFI partition
-# would have the stale pre-GPU-detection initramfs, causing screen flashing.
+# freshly built initramfs (with early KMS modules and vendor firmware).
 if [ -d "/boot/efi" ]; then
     info "Re-syncing kernel and initramfs to EFI partition..."
     cp -f /boot/vmlinuz-linux /boot/efi/ || true
