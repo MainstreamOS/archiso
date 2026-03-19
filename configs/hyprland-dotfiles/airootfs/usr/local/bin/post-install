@@ -506,10 +506,13 @@ fi
 if findmnt -n -o FSTYPE / | grep -q btrfs; then
     info "Btrfs detected — configuring snapper..."
 
-    # If /.snapshots exists as a plain directory (not a subvolume), remove it.
-    # snapper create-config creates the subvolume itself; a pre-existing plain
-    # directory causes create-config to fail.
-    if [[ -d "/.snapshots" ]] && ! btrfs subvolume show /.snapshots &>/dev/null; then
+    # snapper create-config always creates /.snapshots itself — it fails if
+    # anything already exists there, whether a plain directory or a subvolume.
+    # Delete it unconditionally so snapper gets a clean slate.
+    if btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Removing existing /.snapshots subvolume so snapper can recreate it..."
+        btrfs subvolume delete /.snapshots
+    elif [[ -d "/.snapshots" ]]; then
         info "Removing plain /.snapshots directory so snapper can create the subvolume..."
         rm -rf /.snapshots
     fi
