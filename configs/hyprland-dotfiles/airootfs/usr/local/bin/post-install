@@ -438,12 +438,13 @@ systemctl enable kill-fprintd.service 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE PACKAGES VIA YAY
 # ---------------------------------------------------------------------------
+# limine and limine-mkinitcpio-hook are installed by install-limine earlier.
 # These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso chroot)
 # and can't be in packages.conf install section (no db sync available)
 # So we install them here via yay which handles AUR + db sync
 if command -v yay &>/dev/null; then
     info "Installing snapper and limine integration packages..."
-    su -s /bin/bash "$MAIN_USER" -c         "yay -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync"         2>/dev/null ||         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
+    su -s /bin/bash "$MAIN_USER" -c         "yay -S --noconfirm --needed snapper snap-pac limine-snapper-sync"         2>/dev/null ||         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
