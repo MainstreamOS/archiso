@@ -163,9 +163,23 @@ if [[ -n "$MODESET_PARAMS" ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# 4b. PLYMOUTH WITH BGRT THEME
+# ---------------------------------------------------------------------------
+info "Installing Plymouth boot splash with BGRT theme..."
+if pacman -S --noconfirm --needed plymouth; then
+    # Systemd-based initramfs needs sd-plymouth, not plymouth
+    sed -i 's/\bsystemd\b/systemd sd-plymouth/' /etc/mkinitcpio.conf
+    # Set BGRT theme — shows the UEFI firmware/manufacturer logo during boot
+    plymouth-set-default-theme bgrt
+    info "Plymouth BGRT theme configured."
+else
+    warn "Plymouth failed to install — boot splash will be skipped."
+fi
+
 # Regenerate initramfs — single authoritative mkinitcpio -P call.
-# Firmware, modules, and limine.conf are all configured above so this
-# produces the final initramfs with everything in place.
+# Firmware, modules, Plymouth hooks, and limine.conf are all configured
+# above so this produces the final initramfs with everything in place.
 info "Regenerating initramfs..."
 mkinitcpio -P
 
