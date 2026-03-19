@@ -17,11 +17,11 @@ rm -f /etc/mkinitcpio.d/linux.preset || true
 # Only reinstall linux kernel if network is available
 info "Checking network connectivity..."
 if ping -c1 -W3 archlinux.org &>/dev/null; then
-    info "Network available — reinstalling linux kernel and limine..."
+    info "Network available — reinstalling linux kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
-    pacman -S --noconfirm --overwrite "*" linux linux-headers limine limine-mkinitcpio-hook
+    pacman -S --noconfirm --overwrite "*" linux linux-headers
 else
-    warn "No network detected — skipping kernel/limine reinstall. Using packages from squashfs."
+    warn "No network detected — skipping kernel reinstall. Using kernel from squashfs."
 fi
 
 # NOTE: mkinitcpio -P is intentionally NOT called here.

@@ -153,8 +153,7 @@ udisks2
 # ==============================================================================
 snapper
 snap-pac
-# limine-mkinitcpio-hook is installed by install-limine (via pacman in the chroot)
-# limine-snapper-sync is installed by post-install (via yay, AUR)
+# limine-mkinitcpio-hook and limine-snapper-sync are installed by post-install
 # They must NOT be in the live ISO — limine-mkinitcpio-hook breaks mkinitcpio in the archiso chroot
 
 # ==============================================================================
