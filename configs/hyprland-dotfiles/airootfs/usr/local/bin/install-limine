@@ -91,15 +91,15 @@ TEMPLATE="/etc/limine.conf.template"
 
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."
-    # 1. Replace placeholder with real PARTUUID
-    # 2. Ensure subvol=@ (matching your working system)
-    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" | \
-    sed "s/subvol=\/@/subvol=@/g" > "$BOOT_PATH/limine.conf"
-
-    # Redundant copy for EFI internal path
     if [ "$IS_UEFI" = true ]; then
-        cp -f "$BOOT_PATH/limine.conf" "$BOOT_PATH/EFI/limine/limine.conf" || true
+        CONF_DEST="$BOOT_PATH/EFI/limine/limine.conf"
+    else
+        CONF_DEST="$BOOT_PATH/limine.conf"
     fi
+    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" | \
+        sed "s/subvol=\/@/subvol=@/g" > "$CONF_DEST"
+    rm -f "$TEMPLATE"
+    info "Config deployed to $CONF_DEST, template removed."
 else
     log "ERROR: Template missing at $TEMPLATE"
     exit 1

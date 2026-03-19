@@ -145,7 +145,6 @@ if [ -d "/boot/efi" ]; then
     info "Re-syncing kernel and initramfs to EFI partition..."
     cp -f /boot/vmlinuz-linux /boot/efi/ || true
     cp -f /boot/initramfs-linux.img /boot/efi/ || true
-    cp -f /boot/efi/initramfs-linux.img /boot/efi/EFI/limine/ 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
