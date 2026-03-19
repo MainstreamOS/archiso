@@ -10,9 +10,11 @@ info() { log "INFO:  $*"; }
 die()  { log "FATAL: $*"; exit 1; }
 
 # --- 1. Network Check ---
+# Use an IP address so the check is DNS-independent (resolv.conf is fixed by
+# pre-install, but this is a safety net for any ordering edge cases).
 info "Checking network connectivity..."
-if ! ping -c1 -W5 aur.archlinux.org &>/dev/null; then
-    die "No network connectivity. Cannot reach AUR. Aborting."
+if ! ping -c1 -W5 8.8.8.8 &>/dev/null; then
+    die "No network connectivity. Cannot reach internet. Aborting."
 fi
 info "Network OK."
 

@@ -9,6 +9,17 @@ log()  { echo "[pre-install] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 
+# --- 0. DNS Fix ---
+# /etc/resolv.conf on the live system is a symlink to
+# /run/systemd/resolve/stub-resolv.conf.  Inside the Calamares chroot,
+# /run/ is an empty tmpfs so the symlink is dangling — DNS fails silently.
+# Write real nameservers unconditionally so every subsequent network call works.
+if [ -L /etc/resolv.conf ] || [ ! -s /etc/resolv.conf ]; then
+    info "Fixing /etc/resolv.conf for chroot DNS..."
+    rm -f /etc/resolv.conf
+    printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf
+fi
+
 # --- 1. Keyring & Mirror Sync ---
 # Since we are already in the chroot, we initialize the keys for the target system
 info "Initializing Arch Linux keyring..."
