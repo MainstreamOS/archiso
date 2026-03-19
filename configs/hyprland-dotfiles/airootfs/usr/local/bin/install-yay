@@ -28,6 +28,9 @@ info "Configuring temporary sudo privileges..."
 echo "builduser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builduser
 chmod 440 /etc/sudoers.d/builduser
 
+info "Syncing pacman databases..."
+pacman -Sy --noconfirm
+
 info "Installing build dependencies..."
 pacman -S --needed --noconfirm base-devel git
 
