@@ -103,7 +103,27 @@ if command -v matugen &>/dev/null && [[ -f "$DEFAULT_WALL" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Rebuild font cache and reload Hyprland config
+# 5. Disable lockscreen and sleep on the live ISO
+#    Users are just trying out the desktop — locking/sleeping is annoying and
+#    can make recovery awkward since the live password may not be obvious.
+# ---------------------------------------------------------------------------
+killall hypridle 2>/dev/null || true
+mkdir -p "$HOME/.config/hypr"
+cat > "$HOME/.config/hypr/hypridle.conf" << 'IDLE_EOF'
+# Live ISO: idle actions disabled so the session never locks or suspends.
+general {
+    lock_cmd = hyprctl dispatch global quickshell:lock & pidof qs quickshell hyprlock || hyprlock
+    before_sleep_cmd = loginctl lock-session
+    after_sleep_cmd = hyprctl dispatch global quickshell:lockFocus
+    inhibit_sleep = 3
+}
+IDLE_EOF
+
+# Restart hypridle with the no-timeout config
+hyprctl dispatch exec hypridle 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 6. Rebuild font cache and reload Hyprland config
 # ---------------------------------------------------------------------------
 fc-cache -fv 2>/dev/null || true
 hyprctl reload 2>/dev/null || true
