@@ -55,7 +55,7 @@ depends=(
     'python'
     # Note: ckbcomp (keyboard layout tool) is AUR-only on Arch.
     # It is listed in packages.x86_64 and built via AUR_DEPS in
-    # build-packages.sh rather than declared here to avoid dep-resolution
+    # build.sh --refresh rather than declared here to avoid dep-resolution
     # failures during makepkg -s.
 )
 

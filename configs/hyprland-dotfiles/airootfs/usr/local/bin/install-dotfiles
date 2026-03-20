@@ -40,12 +40,12 @@ info "Target user: $NEW_USER (UID: $(id -u "$NEW_USER"), home: $NEW_USER_HOME)"
 # 3. VERIFY PRE-BUILT PACKAGES EXIST
 # ---------------------------------------------------------------------------
 if [[ ! -d "$PKG_DIR" ]]; then
-    die "Pre-built package directory missing: $PKG_DIR — was build-packages.sh run before building the ISO?"
+    die "Pre-built package directory missing: $PKG_DIR — was build.sh --refresh run before building the ISO?"
 fi
 
 PKG_COUNT=$(find "$PKG_DIR" -name "*.pkg.tar.zst" 2>/dev/null | wc -l)
 if [[ "$PKG_COUNT" -eq 0 ]]; then
-    die "No .pkg.tar.zst files found in $PKG_DIR — run build-packages.sh and rebuild the ISO."
+    die "No .pkg.tar.zst files found in $PKG_DIR — run build.sh --refresh and rebuild the ISO."
 fi
 info "Found $PKG_COUNT pre-built packages in $PKG_DIR."
 
@@ -75,7 +75,7 @@ fi
 # ---------------------------------------------------------------------------
 # 6. REGISTER LOCAL REPO FOR PRE-BUILT AUR DEPS
 # ---------------------------------------------------------------------------
-# All AUR runtime dependencies were pre-built by build-packages.sh and are
+# All AUR runtime dependencies were pre-built by build.sh --refresh and are
 # available in the local repo at /usr/local/share/pkgs/.  Register it in
 # pacman.conf so pacman -U (step 8) can auto-resolve them — no yay needed.
 info "Registering local package repo for dependency resolution..."

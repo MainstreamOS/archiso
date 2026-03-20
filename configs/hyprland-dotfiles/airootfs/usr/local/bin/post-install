@@ -457,7 +457,7 @@ if [[ -n "$MAIN_USER" ]]; then
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
     if [[ -f "$VENV_PATH/bin/python" ]]; then
-        # Venv was pre-baked into skel by build-packages.sh — just fix shebangs
+        # Venv was pre-baked into skel by build.sh --refresh — just fix shebangs
         info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
         find "$VENV_PATH/bin" -type f -exec \
             sed -i "1s|#!/home/SKEL_USER/|#!$MAIN_USER_HOME/|" {} + 2>/dev/null || true
