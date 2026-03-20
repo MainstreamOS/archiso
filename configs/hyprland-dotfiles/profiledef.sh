@@ -7,6 +7,7 @@ iso_publisher="Mainstream"
 iso_application="Mainstream Dotfiles Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="arch"
+arch="x86_64"
 buildmodes=('iso')
 bootmodes=('bios.limine'
            'uefi.limine')
@@ -29,6 +30,7 @@ file_permissions=(
   ["/usr/local/bin/calamares-launch"]="0:0:755"
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
   ["/usr/local/bin/live-setup"]="0:0:755"
+  ["/usr/local/bin/choose-mirror"]="0:0:755"
   ["/usr/local/bin/sddm-bg-helper"]="0:0:755"
   ["/etc/skel/.config/hypr/scripts/init-qs.sh"]="0:0:755"
 

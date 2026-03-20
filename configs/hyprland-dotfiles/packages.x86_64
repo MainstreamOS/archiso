@@ -16,9 +16,12 @@ amd-ucode
 intel-ucode
 
 # ==============================================================================
-# Firmware
+# Firmware & hardware support
 # ==============================================================================
 sof-firmware
+broadcom-wl
+b43-fwcutter
+usb_modeswitch
 
 # ==============================================================================
 # Boot
@@ -160,6 +163,10 @@ snap-pac
 # ==============================================================================
 # System utilities
 # ==============================================================================
+bolt
+nvme-cli
+smartmontools
+tpm2-tss
 upower
 brightnessctl
 hyprpolkitagent
@@ -194,3 +201,4 @@ openssh
 less
 man-db
 terminus-font
+testdisk
