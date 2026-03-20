@@ -296,7 +296,35 @@ if id "builduser" &>/dev/null && [[ "$MAIN_USER" != "builduser" ]]; then
     userdel -rf builduser || true
 fi
 
-rm -f /etc/sudoers.d/builduser /etc/sudoers.d/g_wheel 2>/dev/null || true
+# Remove builduser sudoers immediately — builduser has been deleted above.
+rm -f /etc/sudoers.d/builduser 2>/dev/null || true
+
+# g_wheel grants %wheel passwordless sudo.  The Calamares packages module
+# (Job 34) runs AFTER this script and uses yay, which calls sudo pacman
+# internally.  Deleting g_wheel here would leave itsjustdroid without
+# passwordless sudo and yay would silently fail to install every optional
+# package the user selected in the netinstall step.
+#
+# Instead, schedule removal via a first-boot oneshot service so g_wheel
+# survives until Calamares is fully done, then gets replaced with a
+# normal password-requiring wheel sudoers rule on the first boot.
+info "Scheduling passwordless sudoers cleanup for first boot..."
+cat > /etc/systemd/system/sudo-cleanup.service << 'SUDOCLEANEOF'
+[Unit]
+Description=Replace passwordless sudoers with password-required rule after installation
+ConditionPathExists=/etc/sudoers.d/g_wheel
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'printf "%%wheel ALL=(ALL:ALL) ALL\n" > /etc/sudoers.d/wheel && chmod 0440 /etc/sudoers.d/wheel && rm -f /etc/sudoers.d/g_wheel'
+ExecStartPost=/usr/bin/systemctl disable sudo-cleanup.service
+
+[Install]
+WantedBy=multi-user.target
+SUDOCLEANEOF
+systemctl enable sudo-cleanup.service 2>/dev/null || true
 rm -f /var/lib/pacman/db.lck 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
