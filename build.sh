@@ -176,7 +176,7 @@ AUR_DEPS=(
     "ttf-readex-pro"
     "ttf-rubik-vf"
     "ttf-twemoji"
-    "google-breakpad"
+    "cpptrace"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
 )
 
