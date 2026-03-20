@@ -178,6 +178,7 @@ upower
 brightnessctl
 hyprpolkitagent
 gnome-keyring
+loupe
 zram-generator
 imagemagick
 jq
