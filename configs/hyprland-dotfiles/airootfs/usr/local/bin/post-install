@@ -29,7 +29,7 @@ fi
 info "Removing installer artifacts and masking redundant setup..."
 
 # Remove Calamares and its autostart triggers
-pacman -Rs --noconfirm calamares || true
+pacman -Rs --noconfirm calamares-mainstream || true
 rm -f /etc/xdg/autostart/calamares* || true
 rm -f /usr/share/applications/calamares.desktop || true
 
@@ -176,6 +176,24 @@ if pacman -S --noconfirm --needed plymouth; then
 else
     warn "Plymouth failed to install — boot splash will be skipped."
 fi
+
+# Remove archiso-specific mkinitcpio config — it is only valid on the live ISO.
+# If left in place, mkinitcpio -P will attempt to build with archiso hooks
+# (archiso, archiso_loop_mnt, etc.) that do not exist on the installed system.
+info "Removing archiso-specific mkinitcpio config..."
+rm -f /etc/mkinitcpio.conf.d/archiso.conf
+
+# Restore a standard installed-system mkinitcpio preset so mkinitcpio -P
+# produces a normal default + fallback initramfs from /etc/mkinitcpio.conf.
+cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+PRESETS=('default' 'fallback')
+ALL_kver='/boot/vmlinuz-linux'
+default_config='/etc/mkinitcpio.conf'
+default_image='/boot/initramfs-linux.img'
+fallback_config='/etc/mkinitcpio.conf'
+fallback_image='/boot/initramfs-linux-fallback.img'
+fallback_options='-S autodetect'
+PRESET
 
 # Regenerate initramfs — single authoritative mkinitcpio -P call.
 # Firmware, modules, Plymouth hooks, and limine.conf are all configured
