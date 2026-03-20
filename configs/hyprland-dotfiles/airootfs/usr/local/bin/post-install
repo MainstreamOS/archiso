@@ -168,8 +168,15 @@ fi
 # ---------------------------------------------------------------------------
 info "Installing Plymouth boot splash with BGRT theme..."
 if pacman -S --noconfirm --needed plymouth; then
-    # Systemd-based initramfs needs sd-plymouth, not plymouth
-    sed -i 's/\bsystemd\b/systemd sd-plymouth/' /etc/mkinitcpio.conf
+    # Only inject the hook if the hook file is actually present.
+    # The calamares-mainstream repo's plymouth package does not ship
+    # sd-plymouth; injecting a missing hook causes mkinitcpio to error out.
+    if [[ -f /usr/lib/initcpio/install/sd-plymouth ]]; then
+        sed -i 's/\bsystemd\b/systemd sd-plymouth/' /etc/mkinitcpio.conf
+        info "sd-plymouth hook added to initramfs config."
+    else
+        warn "sd-plymouth hook not found — Plymouth will run without initramfs hook (splash shown after kernel hands off to systemd)."
+    fi
     # Set BGRT theme — shows the UEFI firmware/manufacturer logo during boot
     plymouth-set-default-theme bgrt
     info "Plymouth BGRT theme configured."
