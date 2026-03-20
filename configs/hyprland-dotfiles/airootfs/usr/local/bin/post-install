@@ -301,7 +301,7 @@ rm -f /etc/sudoers.d/builduser 2>/dev/null || true
 
 # g_wheel grants %wheel passwordless sudo.  The Calamares packages module
 # (Job 34) runs AFTER this script and uses yay, which calls sudo pacman
-# internally.  Deleting g_wheel here would leave itsjustdroid without
+# internally.  Deleting g_wheel here would leave the user without
 # passwordless sudo and yay would silently fail to install every optional
 # package the user selected in the netinstall step.
 #
