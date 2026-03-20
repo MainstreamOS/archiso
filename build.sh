@@ -608,8 +608,19 @@ if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
 
     if uv venv "$VENV_SKEL_PATH" 2>&1 && \
        uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS" 2>&1; then
+        # Patch shebangs from build path to SKEL_USER placeholder
         find "$VENV_SKEL_PATH/bin" -type f -exec \
             sed -i "1s|^#!${VENV_SKEL_PATH}|#!/home/SKEL_USER/.local/state/quickshell/.venv|" {} + 2>/dev/null || true
+        # Patch VIRTUAL_ENV path in activate scripts (not just shebangs)
+        for _activate in "$VENV_SKEL_PATH/bin/activate" \
+                         "$VENV_SKEL_PATH/bin/activate.csh" \
+                         "$VENV_SKEL_PATH/bin/activate.fish"; do
+            [[ -f "$_activate" ]] && \
+                sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" "$_activate"
+        done
+        # Patch pyvenv.cfg if it references the build path
+        [[ -f "$VENV_SKEL_PATH/pyvenv.cfg" ]] && \
+            sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" "$VENV_SKEL_PATH/pyvenv.cfg"
         info "Python venv pre-built into skel ($VENV_SKEL_PATH)."
     else
         warn "Failed to pre-build Python venv — will be created on first login instead."

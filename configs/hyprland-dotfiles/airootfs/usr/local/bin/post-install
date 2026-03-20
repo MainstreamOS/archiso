@@ -461,6 +461,13 @@ if [[ -n "$MAIN_USER" ]]; then
         info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
         find "$VENV_PATH/bin" -type f -exec \
             sed -i "1s|#!/home/SKEL_USER/|#!$MAIN_USER_HOME/|" {} + 2>/dev/null || true
+        # Fix VIRTUAL_ENV path in activate scripts (not just shebangs)
+        for _activate in "$VENV_PATH/bin/activate" \
+                         "$VENV_PATH/bin/activate.csh" \
+                         "$VENV_PATH/bin/activate.fish"; do
+            [[ -f "$_activate" ]] && \
+                sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$_activate"
+        done
         # Fix pyvenv.cfg home path
         sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
         chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
