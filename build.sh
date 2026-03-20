@@ -178,6 +178,7 @@ AUR_DEPS=(
     "ttf-twemoji"
     "google-breakpad"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
+    "qt5-webengine"
 )
 
 # ── Preflight checks ───────────────────────────────────────────────────────
