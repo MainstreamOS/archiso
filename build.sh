@@ -178,7 +178,16 @@ AUR_DEPS=(
     "ttf-twemoji"
     "google-breakpad"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
-    "qt5-webengine"
+)
+
+# Prebuilt packages to download instead of building from source.
+# Format: "filename URL"
+# These are Qt5 packages removed from official repos as part of the Qt5→Qt6 transition.
+PREBUILT_PKGS=(
+    "qt5-webengine-5.15.19-4-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webengine-5.15.19-4-x86_64.pkg.tar.zst/download"
+    "qt5-webchannel-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webchannel-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst/download"
+    "qt5-location-5.15.18+kde+r7-2-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-location/qt5-location-5.15.18%2Bkde%2Br7-2-x86_64.pkg.tar.zst"
+    "qt5-tools-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-tools/qt5-tools-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst"
 )
 
 # ── Preflight checks ───────────────────────────────────────────────────────
@@ -514,6 +523,28 @@ GSFPKGBUILD
     else
         warn "$GSF_PKG — build failed."
     fi
+fi
+
+# ── Download prebuilt packages ─────────────────────────────────────────────
+if [[ ${#PREBUILT_PKGS[@]} -gt 0 ]]; then
+    info "Downloading ${#PREBUILT_PKGS[@]} prebuilt packages..."
+    for entry in "${PREBUILT_PKGS[@]}"; do
+        pkg_file="${entry%% *}"
+        pkg_url="${entry#* }"
+
+        if [[ -f "$PKG_OUTPUT_DIR/$pkg_file" ]] && [[ "$CLEAN_BUILD" == false ]]; then
+            info "$pkg_file — already present, skipping download."
+            continue
+        fi
+
+        info "Downloading $pkg_file..."
+        if curl -L --retry 4 --retry-delay 2 -o "$PKG_OUTPUT_DIR/$pkg_file" "$pkg_url"; then
+            success "$pkg_file downloaded successfully."
+        else
+            warn "$pkg_file — download failed."
+        fi
+    done
+    echo ""
 fi
 
 # ── Generate local pacman repo database ────────────────────────────────────
