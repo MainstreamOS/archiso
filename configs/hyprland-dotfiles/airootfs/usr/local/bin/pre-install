@@ -29,6 +29,16 @@ pacman-key --populate archlinux
 # Only sync package databases if network is available
 info "Checking network connectivity..."
 if ping -c1 -W3 archlinux.org &>/dev/null; then
+    # Sort mirrors by speed so all subsequent downloads are fast.
+    # reflector runs on the live ISO boot, but the chroot gets a fresh
+    # unsorted mirrorlist from pacman-mirrorlist — fix it here.
+    if command -v reflector &>/dev/null; then
+        info "Sorting mirrors by download speed (reflector)..."
+        reflector --protocol https --latest 20 --sort rate --age 12 \
+            --save /etc/pacman.d/mirrorlist 2>/dev/null || \
+            warn "reflector failed — using existing mirrorlist."
+    fi
+
     info "Network available — syncing package databases..."
     pacman -Sy --noconfirm
 else
