@@ -52,6 +52,9 @@ file_permissions=(
   ["/home/liveuser/Desktop"]="1000:1000:755"
   ["/home/liveuser/Desktop/install-arch.desktop"]="1000:1000:755"
 
+  # Sleep hook
+  ["/usr/lib/systemd/system-sleep/hyprland-dpms.sh"]="0:0:755"
+
   # System config
   ["/etc/sudoers.d/g_wheel"]="0:0:440"
   ["/etc/systemd/system/systemd-firstboot.service"]="0:0:644"
