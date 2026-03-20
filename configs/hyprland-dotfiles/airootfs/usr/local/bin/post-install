@@ -745,8 +745,9 @@ LSSCONF
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
     fi
 
-    # Enable snapper timers
+    # Enable snapper timers + limine-snapper-sync so new snapshots get boot entries
     systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
+    systemctl enable --now limine-snapper-sync.service 2>/dev/null || true
 
     # Create initial "Fresh install" snapshot
     if [[ -f /etc/snapper/configs/root ]]; then
