@@ -126,11 +126,66 @@ if echo "$GPU_INFO" | grep -iq "NVIDIA"; then
     FIRMWARE_PKGS+="linux-firmware-nvidia "
     MODESET_PARAMS+="nvidia-drm.modeset=1 "
     mkdir -p /etc/modprobe.d
-    echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+    cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
+options nvidia-drm modeset=1
+# Preserve VRAM state across suspend/resume — without this, VRAM is lost
+# and displays show corruption or black screen on wake
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+NVIDIAEOF
+    info "Written /etc/modprobe.d/nvidia.conf (modeset + VRAM preservation)"
+
+    # Enable NVIDIA sleep/resume services if the driver ships them
+    if lsmod | grep -q "^nvidia "; then
+        info "Configuring NVIDIA sleep services..."
+        for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
+            if systemctl list-unit-files "$svc" &>/dev/null; then
+                systemctl enable "$svc" 2>/dev/null && \
+                    info "Enabled $svc" || \
+                    warn "Failed to enable $svc"
+            else
+                warn "$svc not found — driver may not be fully installed"
+            fi
+        done
+        # nvidia-powerd is optional — only in newer driver versions
+        if systemctl list-unit-files nvidia-powerd.service &>/dev/null; then
+            systemctl enable nvidia-powerd.service 2>/dev/null || true
+            info "Enabled nvidia-powerd.service"
+        fi
+    else
+        info "NVIDIA GPU present but proprietary driver not loaded — sleep services skipped."
+        info "After installing nvidia drivers, run: sudo systemctl enable nvidia-suspend nvidia-hibernate nvidia-resume"
+    fi
 fi
 
 if [[ -z "$GPU_INFO" ]]; then
     warn "lspci returned no GPU info — skipping Early KMS configuration."
+fi
+
+# --- RDNA 4 conditional: amdgpu.sg_display=0 ---
+# Fixes display engine reinit bug on resume for RX 9000 series (Navi 4x).
+# Only applied when RDNA 4 hardware is detected — other AMD GPUs don't need it.
+if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
+    info "RDNA 4 GPU detected — adding amdgpu.sg_display=0"
+    MODESET_PARAMS+="amdgpu.sg_display=0 "
+else
+    info "No RDNA 4 GPU detected — skipping amdgpu.sg_display=0"
+fi
+
+# --- Sleep mode detection: mem_sleep_default=deep ---
+# Only apply if this hardware actually exposes S3 (deep) sleep.
+# Modern Standby laptops (s2idle only) are automatically skipped.
+if [[ -f /sys/power/mem_sleep ]]; then
+    MEM_SLEEP=$(cat /sys/power/mem_sleep)
+    info "Available sleep modes: $MEM_SLEEP"
+    if echo "$MEM_SLEEP" | grep -q "deep"; then
+        MODESET_PARAMS+="mem_sleep_default=deep "
+        info "S3 sleep available — mem_sleep_default=deep will be set"
+    else
+        info "S3 (deep) not available — system uses Modern Standby (s2idle), no change needed"
+    fi
+else
+    warn "/sys/power/mem_sleep not readable — skipping sleep mode config"
 fi
 
 # Install vendor-specific firmware packages before rebuilding initramfs
