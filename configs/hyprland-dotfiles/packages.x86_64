@@ -137,6 +137,8 @@ tesseract-data-eng
 # Pre-built heavy dependencies (avoids 10-40 min compile during install)
 # ==============================================================================
 qt5-webengine
+qt6-websockets
+kdsoap-ws-discovery-client
 
 # ==============================================================================
 # Audio (PipeWire)
