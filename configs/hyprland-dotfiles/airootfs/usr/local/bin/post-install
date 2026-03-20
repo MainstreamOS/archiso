@@ -452,35 +452,50 @@ if [[ -n "$MAIN_USER" ]]; then
     " || true
 
     # ---------------------------------------------------------------------------
-    # Create Python venv BEFORE first login so switchwall.sh works immediately
+    # Use pre-baked Python venv from skel, or create one if missing
     # ---------------------------------------------------------------------------
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
-    REQUIREMENTS="/tmp/dotfiles-setup/sdata/uv/requirements.txt"
 
-    if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
-        info "Creating Python venv at $VENV_PATH (as $MAIN_USER)..."
-        mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
-        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
+    if [[ -f "$VENV_PATH/bin/python" ]]; then
+        # Venv was pre-baked into skel by build-packages.sh — just fix shebangs
+        info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
+        find "$VENV_PATH/bin" -type f -exec \
+            sed -i "1s|#!/home/SKEL_USER/|#!$MAIN_USER_HOME/|" {} + 2>/dev/null || true
+        # Fix pyvenv.cfg home path
+        sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
+        chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
+        info "Python venv ready (pre-baked)."
+    else
+        # Fallback: create venv from scratch (slower, ~2-5 min)
+        REQUIREMENTS="/tmp/dotfiles-setup/sdata/uv/requirements.txt"
+        if [[ ! -f "$REQUIREMENTS" ]]; then
+            REQUIREMENTS="$MAIN_USER_HOME/.local/share/quickshell/sdata/uv/requirements.txt"
+        fi
 
-        # Write helper script to avoid quoting issues in su -c
-        VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
-        cat > "$VENV_HELPER" << VENVEOF
+        if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+            info "No pre-baked venv — creating Python venv at $VENV_PATH..."
+            mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
+            chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
+
+            VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
+            cat > "$VENV_HELPER" << VENVEOF
 #!/usr/bin/env bash
 uv venv "$VENV_PATH"
 uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
 VENVEOF
-        chmod 755 "$VENV_HELPER"
-        chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
+            chmod 755 "$VENV_HELPER"
+            chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
 
-        if su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1; then
-            chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
-            info "Python venv created successfully."
+            if su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1; then
+                chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
+                info "Python venv created successfully."
+            else
+                warn "venv creation failed — will retry on first login"
+            fi
+            rm -f "$VENV_HELPER"
         else
-            warn "venv creation failed — will retry on first login"
+            warn "uv or requirements.txt not found — venv will be created on first login"
         fi
-        rm -f "$VENV_HELPER"
-    else
-        warn "uv or requirements.txt not found — venv will be created on first login"
     fi
 
     # Rebuild font cache as the target user so custom fonts are found

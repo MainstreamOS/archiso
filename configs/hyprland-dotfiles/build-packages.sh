@@ -151,6 +151,14 @@ mkdir -p "$OUTPUT_DIR"
 chmod -R 775 "$OUTPUT_DIR"
 info "Output directory: $OUTPUT_DIR"
 
+# Fix the build-time pacman.conf to point to the actual output directory
+# so mkarchiso can resolve packages from the local repo during ISO build.
+BUILD_PACMAN_CONF="$SCRIPT_DIR/pacman.conf"
+if [[ -f "$BUILD_PACMAN_CONF" ]]; then
+    sed -i "s|^Server = file:///.*pkgs$|Server = file://$OUTPUT_DIR|" "$BUILD_PACMAN_CONF"
+    info "Updated build pacman.conf repo path to: file://$OUTPUT_DIR"
+fi
+
 # Apply clean build if requested
 if [[ "$CLEAN_BUILD" == true ]]; then
     info "Clean build — removing all existing pre-built packages..."
@@ -555,10 +563,48 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
     else
         warn "dots/ directory not found in repo — skel dotfiles not deployed."
     fi
-    rm -rf "$DOTS_WORK"
+    # DOTS_WORK cleanup deferred to after venv step (needs requirements.txt)
 else
     warn "Failed to clone dotfiles for skel — skipping."
 fi
+
+# ---------------------------------------------------------------------------
+# PRE-BAKE PYTHON VENV INTO SKEL
+# ---------------------------------------------------------------------------
+# The quickshell color pipeline needs a Python venv with specific packages.
+# Building it here (at ISO build time) saves 2-5 minutes during installation
+# and avoids the "long Python job" users were seeing.
+VENV_SKEL_PATH="$SKEL_DIR/.local/state/quickshell/.venv"
+REQUIREMENTS="$DOTS_WORK/sdata/uv/requirements.txt"
+
+if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+    info "Pre-building Python venv for skel..."
+    mkdir -p "$(dirname "$VENV_SKEL_PATH")"
+
+    if uv venv "$VENV_SKEL_PATH" 2>&1 && \
+       uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS" 2>&1; then
+        # Fix shebangs: venv scripts contain absolute paths to the build-machine
+        # skel directory.  Replace them with a generic /home placeholder that
+        # post-install will fix to the real user home.
+        find "$VENV_SKEL_PATH/bin" -type f -exec \
+            sed -i "1s|^#!${VENV_SKEL_PATH}|#!/home/SKEL_USER/.local/state/quickshell/.venv|" {} + 2>/dev/null || true
+        info "Python venv pre-built into skel ($VENV_SKEL_PATH)."
+    else
+        warn "Failed to pre-build Python venv — will be created on first login instead."
+        rm -rf "$VENV_SKEL_PATH"
+    fi
+
+    # Copy requirements.txt into skel so first-login fallback can find it
+    SKEL_SDATA="$SKEL_DIR/.local/share/quickshell/sdata/uv"
+    mkdir -p "$SKEL_SDATA"
+    cp "$REQUIREMENTS" "$SKEL_SDATA/"
+    info "requirements.txt deployed to skel."
+else
+    warn "uv or requirements.txt not found — Python venv will be created on first login."
+fi
+
+# Clean up the deferred dots-deploy clone
+rm -rf "$DOTS_WORK"
 
 # ---------------------------------------------------------------------------
 # CLEANUP

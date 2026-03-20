@@ -59,10 +59,10 @@ fi
 info "Network OK."
 
 # ---------------------------------------------------------------------------
-# 5. ENSURE BUILDUSER EXISTS FOR YAY CALLS
+# 5. ENSURE BUILDUSER EXISTS FOR GIT CLONE
 # ---------------------------------------------------------------------------
 if ! id "builduser" &>/dev/null; then
-    info "Creating builduser for AUR dependency installation..."
+    info "Creating builduser for git clone..."
     useradd -m -G wheel builduser
 fi
 
@@ -73,31 +73,24 @@ if ! grep -q "builduser" /etc/sudoers /etc/sudoers.d/* 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. INSTALL AUR RUNTIME DEPENDENCIES
+# 6. REGISTER LOCAL REPO FOR PRE-BUILT AUR DEPS
 # ---------------------------------------------------------------------------
-# Pre-built packages still need their AUR runtime deps installed.
-# Clone only PKGBUILDs (no submodules needed) to extract dep lists.
-info "Resolving AUR dependencies..."
-PKGBUILD_DIR="/tmp/pkgbuilds-only"
-rm -rf "$PKGBUILD_DIR"
-mkdir -p "$PKGBUILD_DIR"
-chown builduser:builduser "$PKGBUILD_DIR"
+# All AUR runtime dependencies were pre-built by build-packages.sh and are
+# available in the local repo at /usr/local/share/pkgs/.  Register it in
+# pacman.conf so pacman -U (step 8) can auto-resolve them — no yay needed.
+info "Registering local package repo for dependency resolution..."
+if [[ -d "$PKG_DIR" ]] && ! grep -q '^\[illogical-impulse\]' /etc/pacman.conf 2>/dev/null; then
+    cat >> /etc/pacman.conf << 'LOCALREPO'
 
-su builduser -c "git clone --depth=1 --no-recurse-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$PKGBUILD_DIR'" 2>/dev/null || true
-
-ALL_AUR_DEPS=""
-if [[ -d "$PKGBUILD_DIR/sdata/dist-arch" ]]; then
-    while IFS= read -r pkgbuild; do
-        DEPS=$(bash -c "source '$pkgbuild' 2>/dev/null; echo \${depends[@]:-} \${makedepends[@]:-}" 2>/dev/null || true)
-        ALL_AUR_DEPS+=" $DEPS"
-    done < <(find "$PKGBUILD_DIR/sdata/dist-arch" -name "PKGBUILD")
-
-    if [[ -n "$ALL_AUR_DEPS" ]]; then
-        info "Installing all runtime dependencies via yay..."
-        su builduser -c "yay -S --noconfirm --needed --asdeps $ALL_AUR_DEPS 2>&1" || true
-    fi
+[illogical-impulse]
+SigLevel = Never
+Server = file:///usr/local/share/pkgs
+LOCALREPO
+    pacman -Sy 2>/dev/null || true
+    info "Local repo registered."
+else
+    info "Local repo already registered or PKG_DIR missing."
 fi
-rm -rf "$PKGBUILD_DIR"
 
 # ---------------------------------------------------------------------------
 # 7. CLONE DOTFILES FOR ASSET DEPLOYMENT
@@ -191,55 +184,13 @@ chown -R "$NEW_USER:$NEW_USER" "$NEW_USER_HOME"
 info "Dotfiles deployed."
 
 # ---------------------------------------------------------------------------
-# 10. OPTIONAL EXTRAS
+# 10. OPTIONAL EXTRAS — moved to netinstall.conf
 # ---------------------------------------------------------------------------
-info "Installing optional extras via yay..."
-
-EXTRAS=(
-    "google-chrome"
-    "resources"
-    "gnome-disk-utility"
-    "gnome-software"
-    "appstream"
-    "appstream-glib"
-    "flatpak"
-    "gnome-calculator"
-    "gnome-calendar"
-    "simple-scan"
-    "gnome-font-viewer"
-    "impression"
-    "libreoffice-fresh"
-    "gnome-text-editor"
-    "mpv"
-    "mpv-modernz"
-    "mpv-thumbfast"
-    "spotify"
-    "satty"
-    "snapper"
-    "gimp"
-    "fastfetch"
-    "topgrade"
-    "ksshaskpass"
-)
-
-EXTRAS_FAILED=()
-for pkg in "${EXTRAS[@]}"; do
-    if ! pacman -Q "$pkg" &>/dev/null; then
-        info "Installing extra: $pkg..."
-        if su builduser -c "yay -S --noconfirm --needed '$pkg' 2>&1"; then
-            info "$pkg installed successfully."
-        else
-            warn "Failed to install extra: $pkg"
-            EXTRAS_FAILED+=("$pkg")
-        fi
-    else
-        info "$pkg already installed — skipping."
-    fi
-done
-
-if [[ ${#EXTRAS_FAILED[@]} -ne 0 ]]; then
-    warn "The following extras failed: ${EXTRAS_FAILED[*]}"
-fi
+# Previously, 23 packages (google-chrome, libreoffice, spotify, gimp, etc.)
+# were force-installed here via yay, adding 10-30+ minutes to every install.
+# They are now user-selectable in the Calamares netinstall step instead.
+# See: /etc/calamares/modules/netinstall.conf → "Included Extras" group.
+info "Optional extras are now user-selectable in the Calamares package picker."
 
 # ---------------------------------------------------------------------------
 # 11. SUMMARY
