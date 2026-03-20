@@ -330,12 +330,32 @@ rm -f /var/lib/pacman/db.lck 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # 6b. PACMAN KEYRING INITIALIZATION
 # ---------------------------------------------------------------------------
-# Initialize the pacman keyring on the installed system so pacman can
-# verify and install packages after first boot without keyring errors.
-info "Initializing pacman keyring..."
+# pacman-key --init often fails in a chroot (no gpg-agent, limited entropy).
+# Try it here as a best-effort, but the real guarantee is the first-boot
+# oneshot service created below.
+info "Initializing pacman keyring (best-effort in chroot)..."
 pacman-key --init 2>/dev/null || true
 pacman-key --populate archlinux 2>/dev/null || true
-info "Pacman keyring initialized."
+
+# Create a first-boot oneshot that (re-)initializes the keyring with proper
+# entropy and a running gpg-agent — guaranteed to work unlike the chroot attempt.
+info "Scheduling pacman keyring initialization for first boot..."
+cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
+[Unit]
+Description=Initialize pacman keyring on first boot
+After=time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'rm -rf /etc/pacman.d/gnupg && pacman-key --init && pacman-key --populate archlinux'
+ExecStartPost=/usr/bin/systemctl disable pacman-keyring-init.service
+
+[Install]
+WantedBy=multi-user.target
+KEYRINGEOF
+systemctl enable pacman-keyring-init.service 2>/dev/null || true
+info "Pacman keyring initialization scheduled."
 
 # ---------------------------------------------------------------------------
 # 6c. ZRAM CONFIGURATION
