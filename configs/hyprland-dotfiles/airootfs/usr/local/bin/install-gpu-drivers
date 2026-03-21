@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# =============================================================================
+# install-gpu-drivers
+# Calamares shellprocess — runs inside the installed system chroot
+#
+# Installs GPU driver PACKAGES ONLY.
+# All mkinitcpio, modprobe, env var, and cmdline configuration is handled
+# by post-install section 4c which runs after archiso.conf is removed,
+# guaranteeing a clean mkinitcpio.conf baseline.
+#
+# NVIDIA: proprietary by generation, nouveau for pre-Fermi
+# AMD:    amdgpu (open source), radeon for pre-GCN
+# Intel:  i915/vulkan-intel, xf86-video-intel for pre-Sandy Bridge
+# =============================================================================
+
+set -uo pipefail
+
+log()  { echo "[install-gpu-drivers] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+if [[ -z "$GPU_INFO" ]]; then
+    warn "No GPU detected — skipping package installation."
+    exit 0
+fi
+
+info "Detected GPU(s):"
+echo "$GPU_INFO" | while read -r line; do info "  $line"; done
+
+HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
+echo "$GPU_INFO" | grep -iq  "NVIDIA"                             && HAS_NVIDIA=true || true
+echo "$GPU_INFO" | grep -iqE "AMD|ATI|Radeon"                    && HAS_AMD=true    || true
+echo "$GPU_INFO" | grep -iqE "Intel.*(Graphics|UHD|HD|Iris|Arc)" && HAS_INTEL=true  || true
+
+MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
+    | grep -vE '(liveuser|builduser|nobody|root)' | head -1)
+
+install_pkgs() { info "Installing: $*"; pacman -S --noconfirm --needed "$@" 2>&1 || warn "Some packages failed: $*"; }
+get_aur_pkg() {
+    local pkg="$1"
+    if command -v yay &>/dev/null && [[ -n "$MAIN_USER" ]]; then
+        su -s /bin/bash "$MAIN_USER" -c "yay -S --noconfirm --needed $pkg" && return 0
+    fi
+    warn "Could not install AUR package: $pkg"; return 1
+}
+
+pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
+
+if $HAS_INTEL; then
+    INTEL_DEV=$(lspci 2>/dev/null | grep -iE "Intel.*(Graphics|UHD|HD|Iris|Arc)" | head -1)
+    if echo "$INTEL_DEV" | grep -iqE "Arc|Xe|A[3-7][0-9]{2}"; then
+        install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
+        install_pkgs linux-firmware-intel 2>/dev/null || true
+    else
+        INTEL_ID=$(lspci -nn 2>/dev/null | grep -iE "Intel.*Graphics" \
+                   | grep -oE '8086:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || echo "ffff")
+        INTEL_DEC=$((16#${INTEL_ID:-ffff}))
+        if [[ $INTEL_DEC -lt 256 ]]; then
+            install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
+        else
+            install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
+            install_pkgs linux-firmware-intel 2>/dev/null || true
+        fi
+    fi
+    info "Intel packages installed."
+fi
+
+if $HAS_AMD; then
+    AMD_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep "1002:" \
+             | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
+    AMD_DEC=$((16#${AMD_ID:-ffff}))
+    IS_OLD_AMD=false
+    [[ $AMD_DEC -lt 26112 ]] && IS_OLD_AMD=true || true
+    AMD_NAME=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | grep -i "AMD\|ATI\|Radeon" | head -1)
+    echo "$AMD_NAME" | grep -iqE "\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b" \
+        && IS_OLD_AMD=true || true
+    if lspci 2>/dev/null | grep -iqE "Navi 4[0-9]|RX 9[0-9]{3}|gfx12"; then IS_OLD_AMD=false; fi
+
+    if $IS_OLD_AMD; then
+        install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
+    else
+        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon \
+                     libva-mesa-driver lib32-libva-mesa-driver mesa-vdpau lib32-mesa-vdpau xf86-video-amdgpu
+    fi
+    install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+    info "AMD packages installed."
+fi
+
+if $HAS_NVIDIA; then
+    PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
+    PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1 \
+             | grep -oE '[0-9a-fA-F]{4}$' || echo "0000")
+    PCI_DEC=$((16#$PCI_ID))
+    info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
+
+    if [[ $PCI_DEC -ge 4928 ]]; then
+        install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
+        install_pkgs linux-firmware-nvidia 2>/dev/null || true
+    elif [[ $PCI_DEC -ge 4032 ]]; then
+        install_pkgs linux-headers dkms
+        get_aur_pkg nvidia-470xx-dkms || warn "nvidia-470xx-dkms failed."
+    elif [[ $PCI_DEC -ge 1728 ]]; then
+        install_pkgs linux-headers dkms
+        get_aur_pkg nvidia-390xx-dkms || warn "nvidia-390xx-dkms failed."
+    else
+        install_pkgs xf86-video-nouveau mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver
+    fi
+
+    # PRIME package if hybrid
+    GPU_COUNT=0
+    $HAS_INTEL && ((GPU_COUNT++)) || true
+    $HAS_AMD   && ((GPU_COUNT++)) || true
+    [[ $GPU_COUNT -gt 0 ]] && install_pkgs nvidia-prime || true
+
+    info "NVIDIA packages installed."
+fi
+
+info "GPU driver package installation complete."
+info "Configuration (mkinitcpio, modprobe, env, cmdline) handled by post-install section 4c."

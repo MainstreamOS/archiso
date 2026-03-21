@@ -88,137 +88,16 @@ for svc in \
 done
 
 # ---------------------------------------------------------------------------
-# 4. MKINITCPIO & HYBRID GPU DETECTION (Early KMS)
+# 4. MKINITCPIO PREP
+# GPU detection, module injection, modprobe config, and env vars are all
+# handled by the install-gpu-drivers shellprocess which runs before this.
+# Here we only: remove the resume hook, clean up archiso preset, and
+# restore the standard linux.preset before the final mkinitcpio -P call.
 # ---------------------------------------------------------------------------
-info "Detecting GPU hardware and configuring Early KMS..."
 
-# Force remove 'resume' hook to stop the hibernation scan (speeds up boot)
+# Force remove 'resume' hook — no swap partition, zram handles memory pressure
 sed -i 's/\bresume\b//g' /etc/mkinitcpio.conf
 find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/\bresume\b//g' {} +
-
-# Include "Display controller" PCI class so Intel iGPU is never missed on
-# hybrid systems (Intel iGPU often appears as Display controller, not VGA)
-GPU_INFO=$(lspci 2>/dev/null | grep -E "VGA|3D|Display" || true)
-MODULE_LIST=""
-FIRMWARE_PKGS=""
-MODESET_PARAMS=""
-
-if echo "$GPU_INFO" | grep -iq "Intel"; then
-    info "Intel iGPU detected."
-    MODULE_LIST+="i915 "
-    FIRMWARE_PKGS+="linux-firmware-intel "
-    MODESET_PARAMS+="i915.modeset=1 "
-fi
-
-if echo "$GPU_INFO" | grep -iqE "AMD|ATI"; then
-    info "AMD GPU detected."
-    MODULE_LIST+="amdgpu "
-    FIRMWARE_PKGS+="linux-firmware-amdgpu "
-    MODESET_PARAMS+="amdgpu.modeset=1 "
-    cat >> /etc/environment <<EOF
-WLR_RENDERER=vulkan
-AMD_VULKAN_ICD=RADV
-WLR_NO_HARDWARE_CURSORS=1
-EOF
-fi
-
-if echo "$GPU_INFO" | grep -iq "NVIDIA"; then
-    info "NVIDIA GPU detected."
-    MODULE_LIST+="nvidia nvidia_modeset nvidia_uvm nvidia_drm "
-    FIRMWARE_PKGS+="linux-firmware-nvidia "
-    MODESET_PARAMS+="nvidia-drm.modeset=1 "
-    mkdir -p /etc/modprobe.d
-    cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
-options nvidia-drm modeset=1
-# Preserve VRAM state across suspend/resume — without this, VRAM is lost
-# and displays show corruption or black screen on wake
-options nvidia NVreg_PreserveVideoMemoryAllocations=1
-options nvidia NVreg_TemporaryFilePath=/var/tmp
-NVIDIAEOF
-    info "Written /etc/modprobe.d/nvidia.conf (modeset + VRAM preservation)"
-
-    # Enable NVIDIA sleep/resume services if the driver ships them
-    if lsmod | grep -q "^nvidia "; then
-        info "Configuring NVIDIA sleep services..."
-        for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
-            if systemctl list-unit-files "$svc" &>/dev/null; then
-                systemctl enable "$svc" 2>/dev/null && \
-                    info "Enabled $svc" || \
-                    warn "Failed to enable $svc"
-            else
-                warn "$svc not found — driver may not be fully installed"
-            fi
-        done
-        # nvidia-powerd is optional — only in newer driver versions
-        if systemctl list-unit-files nvidia-powerd.service &>/dev/null; then
-            systemctl enable nvidia-powerd.service 2>/dev/null || true
-            info "Enabled nvidia-powerd.service"
-        fi
-    else
-        info "NVIDIA GPU present but proprietary driver not loaded — sleep services skipped."
-        info "After installing nvidia drivers, run: sudo systemctl enable nvidia-suspend nvidia-hibernate nvidia-resume"
-    fi
-fi
-
-if [[ -z "$GPU_INFO" ]]; then
-    warn "lspci returned no GPU info — skipping Early KMS configuration."
-fi
-
-# --- RDNA 4 conditional: amdgpu.sg_display=0 ---
-# Fixes display engine reinit bug on resume for RX 9000 series (Navi 4x).
-# Only applied when RDNA 4 hardware is detected — other AMD GPUs don't need it.
-if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
-    info "RDNA 4 GPU detected — adding amdgpu.sg_display=0"
-    MODESET_PARAMS+="amdgpu.sg_display=0 "
-else
-    info "No RDNA 4 GPU detected — skipping amdgpu.sg_display=0"
-fi
-
-# --- Sleep mode detection: mem_sleep_default=deep ---
-# Only apply if this hardware actually exposes S3 (deep) sleep.
-# Modern Standby laptops (s2idle only) are automatically skipped.
-if [[ -f /sys/power/mem_sleep ]]; then
-    MEM_SLEEP=$(cat /sys/power/mem_sleep)
-    info "Available sleep modes: $MEM_SLEEP"
-    if echo "$MEM_SLEEP" | grep -q "deep"; then
-        MODESET_PARAMS+="mem_sleep_default=deep "
-        info "S3 sleep available — mem_sleep_default=deep will be set"
-    else
-        info "S3 (deep) not available — system uses Modern Standby (s2idle), no change needed"
-    fi
-else
-    warn "/sys/power/mem_sleep not readable — skipping sleep mode config"
-fi
-
-# Install vendor-specific firmware packages before rebuilding initramfs
-if [[ -n "$FIRMWARE_PKGS" ]]; then
-    info "Installing GPU firmware packages: $FIRMWARE_PKGS"
-    pacman -S --noconfirm --needed $FIRMWARE_PKGS 2>/dev/null || \
-        warn "Some GPU firmware packages failed to install — boot may still work."
-fi
-
-# Inject detected modules into mkinitcpio.conf
-if [[ -n "$MODULE_LIST" ]]; then
-    info "Configuring Early KMS modules: $MODULE_LIST"
-    sed -i "s/^MODULES=(/MODULES=($MODULE_LIST/" /etc/mkinitcpio.conf
-fi
-
-# Append vendor modeset params to the deployed limine.conf cmdline
-if [[ -n "$MODESET_PARAMS" ]]; then
-    LIMINE_CONF=""
-    if [[ -f "/boot/efi/EFI/limine/limine.conf" ]]; then
-        LIMINE_CONF="/boot/efi/EFI/limine/limine.conf"
-    elif [[ -f "/boot/limine.conf" ]]; then
-        LIMINE_CONF="/boot/limine.conf"
-    fi
-
-    if [[ -n "$LIMINE_CONF" ]]; then
-        info "Adding modeset params to $LIMINE_CONF: $MODESET_PARAMS"
-        sed -i "/^ *cmdline:/ s/$/ ${MODESET_PARAMS% }/" "$LIMINE_CONF"
-    else
-        warn "limine.conf not found — modeset params not injected."
-    fi
-fi
 
 # ---------------------------------------------------------------------------
 # 4b. PLYMOUTH WITH BGRT THEME
@@ -246,6 +125,242 @@ fi
 # (archiso, archiso_loop_mnt, etc.) that do not exist on the installed system.
 info "Removing archiso-specific mkinitcpio config..."
 rm -f /etc/mkinitcpio.conf.d/archiso.conf
+
+
+# ---------------------------------------------------------------------------
+# 4c. GPU DETECTION & CONFIGURATION
+# Runs after archiso.conf is removed so mkinitcpio.conf changes are safe.
+# Handles: packages, MODULES, HOOKS, modprobe, env vars, cmdline, services.
+# ---------------------------------------------------------------------------
+info "Detecting GPU hardware..."
+GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+
+if [[ -n "$GPU_INFO" ]]; then
+    info "Detected GPU(s):"
+    echo "$GPU_INFO" | while read -r line; do info "  $line"; done
+
+    HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false; IS_HYBRID=false
+    IS_OLD_NVIDIA=false; IS_OLD_AMD=false; IS_ARC=false; IS_OLD_INTEL=false
+
+    echo "$GPU_INFO" | grep -iq  "NVIDIA"                             && HAS_NVIDIA=true || true
+    echo "$GPU_INFO" | grep -iqE "AMD|ATI|Radeon"                    && HAS_AMD=true    || true
+    echo "$GPU_INFO" | grep -iqE "Intel.*(Graphics|UHD|HD|Iris|Arc)" && HAS_INTEL=true  || true
+
+    GPU_COUNT=0
+    $HAS_NVIDIA && ((GPU_COUNT++)) || true
+    $HAS_AMD    && ((GPU_COUNT++)) || true
+    $HAS_INTEL  && ((GPU_COUNT++)) || true
+    [[ $GPU_COUNT -gt 1 ]] && IS_HYBRID=true || true
+    $IS_HYBRID && info "Hybrid GPU configuration detected." || true
+
+    # --- GPU helpers ---
+    gpu_install_pkgs() { info "Installing: $*"; pacman -S --noconfirm --needed "$@" 2>&1 || warn "Some packages failed: $*"; }
+    gpu_get_aur_pkg() {
+        local pkg="$1"
+        if command -v yay &>/dev/null && [[ -n "$MAIN_USER" ]]; then
+            su -s /bin/bash "$MAIN_USER" -c "yay -S --noconfirm --needed $pkg" && return 0
+        fi
+        warn "Could not install AUR package: $pkg"; return 1
+    }
+    gpu_add_modules() {
+        for mod in "$@"; do
+            if ! grep -q "\b${mod}\b" /etc/mkinitcpio.conf; then
+                sed -i "s/^MODULES=(/MODULES=(${mod} /" /etc/mkinitcpio.conf
+                info "Added module to initramfs: $mod"
+            fi
+        done
+    }
+    gpu_remove_hook() {
+        sed -i "s/\b${1}\b *//g" /etc/mkinitcpio.conf
+        info "Removed hook from initramfs: $1"
+    }
+    gpu_append_cmdline() {
+        local params="$1" LIMINE_CONF=""
+        [[ -f "/boot/efi/EFI/limine/limine.conf" ]] && LIMINE_CONF="/boot/efi/EFI/limine/limine.conf"
+        [[ -f "/boot/limine.conf" ]]                 && LIMINE_CONF="/boot/limine.conf"
+        if [[ -n "$LIMINE_CONF" ]]; then
+            sed -i "/^ *cmdline:/ s/$/ $params/" "$LIMINE_CONF"
+            info "Added to bootloader cmdline: $params"
+        else
+            warn "limine.conf not found — could not add: $params"
+        fi
+    }
+    gpu_append_env() { echo "$1" >> /etc/environment; info "Set environment: $1"; }
+
+    # Sync db before installing
+    pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
+
+    # --- NVIDIA ---
+    configure_nvidia() {
+        local PCI_LINE PCI_ID PCI_DEC
+        PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
+        PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1                  | grep -oE '[0-9a-fA-F]{4}$' || echo "0000")
+        PCI_DEC=$((16#$PCI_ID))
+        info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
+
+        if [[ $PCI_DEC -ge 4928 ]]; then
+            info "Maxwell+ — installing nvidia."
+            gpu_install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
+            gpu_install_pkgs linux-firmware-nvidia 2>/dev/null || true
+            gpu_remove_hook kms
+            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            mkdir -p /etc/modprobe.d
+            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
+options nvidia-drm modeset=1 fbdev=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+NVIDIAEOF
+            gpu_append_cmdline "nvidia_drm.modeset=1"
+            # NVIDIA env vars set in env.conf by dotfiles, not system-wide
+            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
+                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
+            done
+            systemctl enable nvidia-powerd.service 2>/dev/null || true
+            info "NVIDIA (current) configured."
+        elif [[ $PCI_DEC -ge 4032 ]]; then
+            info "Kepler — installing nvidia-470xx-dkms."
+            gpu_install_pkgs linux-headers dkms
+            if gpu_get_aur_pkg nvidia-470xx-dkms; then
+                gpu_remove_hook kms; gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+                echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+                gpu_append_cmdline "nvidia_drm.modeset=1"; gpu_append_env "WLR_NO_HARDWARE_CURSORS=1"
+            else
+                warn "nvidia-470xx-dkms failed — falling back to nouveau."; IS_OLD_NVIDIA=true
+            fi
+        elif [[ $PCI_DEC -ge 1728 ]]; then
+            info "Fermi — installing nvidia-390xx-dkms."
+            gpu_install_pkgs linux-headers dkms
+            if gpu_get_aur_pkg nvidia-390xx-dkms; then
+                gpu_remove_hook kms; gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+                echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+                gpu_append_cmdline "nvidia_drm.modeset=1"; gpu_append_env "WLR_NO_HARDWARE_CURSORS=1"
+            else
+                warn "nvidia-390xx-dkms failed — falling back to nouveau."; IS_OLD_NVIDIA=true
+            fi
+        else
+            IS_OLD_NVIDIA=true
+        fi
+        if $IS_OLD_NVIDIA; then
+            warn "Pre-Fermi NVIDIA — installing nouveau."
+            gpu_install_pkgs xf86-video-nouveau mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver
+        fi
+    }
+
+    # --- AMD ---
+    configure_amd() {
+        info "Configuring AMD GPU..."
+        local AMD_ID AMD_DEC
+        AMD_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep "1002:"                  | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
+        AMD_DEC=$((16#${AMD_ID:-ffff}))
+        info "AMD GPU PCI device ID: 0x${AMD_ID} (${AMD_DEC})"
+        [[ $AMD_DEC -lt 26112 ]] && IS_OLD_AMD=true || true
+        local AMD_NAME
+        AMD_NAME=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | grep -i "AMD\|ATI\|Radeon" | head -1)
+        echo "$AMD_NAME" | grep -iqE "\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b"             && IS_OLD_AMD=true || true
+        if lspci 2>/dev/null | grep -iqE "Navi 4[0-9]|RX 9[0-9]{3}|gfx12"; then
+            info "RDNA 4 explicitly detected — forcing modern AMD path."; IS_OLD_AMD=false
+        fi
+
+        if $IS_OLD_AMD; then
+            info "Pre-GCN AMD — installing amdgpu+radeon."
+            gpu_install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
+            gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+            mkdir -p /etc/modprobe.d
+            cat > /etc/modprobe.d/amdgpu.conf << 'AMDEOF'
+options amdgpu si_support=1
+options amdgpu cik_support=1
+options radeon si_support=0
+options radeon cik_support=0
+AMDEOF
+            gpu_add_modules amdgpu radeon
+            gpu_append_cmdline "amdgpu.si_support=1 amdgpu.cik_support=1"
+        else
+            info "GCN/RDNA AMD — installing amdgpu."
+            gpu_install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon                              libva-mesa-driver lib32-libva-mesa-driver mesa-vdpau lib32-mesa-vdpau xf86-video-amdgpu
+            gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+            gpu_append_cmdline "amdgpu.modeset=1"
+            if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
+                info "RDNA 4 detected — adding amdgpu.sg_display=0."
+                gpu_append_cmdline "amdgpu.sg_display=0"
+            fi
+        fi
+        # NOTE: AMD env vars intentionally not set globally in /etc/environment
+        # WLR_RENDERER, AMD_VULKAN_ICD, LIBVA_DRIVER_NAME can conflict with
+        # Quickshell and Hyprland on modern RDNA hardware — defaults work correctly.
+        # Set per-app in ~/.config/hypr/hyprland/env.conf if needed.
+        info "AMD configured."
+    }
+
+    # --- INTEL ---
+    configure_intel() {
+        info "Configuring Intel GPU..."
+        local INTEL_DEV
+        INTEL_DEV=$(lspci 2>/dev/null | grep -iE "Intel.*(Graphics|UHD|HD|Iris|Arc)" | head -1)
+        echo "$INTEL_DEV" | grep -iqE "Arc|Xe|A[3-7][0-9]{2}" && IS_ARC=true || true
+        local INTEL_ID INTEL_DEC
+        INTEL_ID=$(lspci -nn 2>/dev/null | grep -iE "Intel.*Graphics"                    | grep -oE '8086:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || echo "ffff")
+        INTEL_DEC=$((16#${INTEL_ID:-ffff}))
+        [[ $INTEL_DEC -lt 256 ]] && IS_OLD_INTEL=true || true
+
+        if $IS_ARC; then
+            info "Intel Arc — installing Arc drivers."
+            gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver intel-compute-runtime ocl-icd
+            gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
+            gpu_add_modules xe
+            # LIBVA_DRIVER_NAME set in env.conf by dotfiles
+        elif $IS_OLD_INTEL; then
+            info "Pre-Sandy Bridge Intel — installing xf86-video-intel."
+            gpu_install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
+            gpu_add_modules i915; gpu_append_env "LIBVA_DRIVER_NAME=i965"
+        else
+            info "Sandy Bridge+ Intel — installing i915/media-driver."
+            gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver libva-intel-driver
+            gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
+            if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
+            gpu_append_env "LIBVA_DRIVER_NAME=iHD"
+        fi
+        info "Intel configured."
+    }
+
+    # --- PRIME ---
+    configure_prime() {
+        info "Configuring PRIME hybrid GPU..."
+        if $HAS_NVIDIA && $HAS_INTEL; then
+            gpu_add_modules i915; gpu_append_cmdline "i915.modeset=1"
+            gpu_install_pkgs nvidia-prime
+            # PRIME env vars set in env.conf by dotfiles, not system-wide
+        elif $HAS_NVIDIA && $HAS_AMD; then
+            gpu_add_modules amdgpu; gpu_install_pkgs nvidia-prime
+        elif $HAS_AMD && $HAS_INTEL; then
+            : # DRI_PRIME set per-app, not system-wide
+        fi
+        info "PRIME configured."
+    }
+
+    # --- SLEEP ---
+    configure_sleep() {
+        if [[ -f /sys/power/mem_sleep ]]; then
+            local MEM_SLEEP; MEM_SLEEP=$(cat /sys/power/mem_sleep)
+            info "Available sleep modes: $MEM_SLEEP"
+            if echo "$MEM_SLEEP" | grep -q "deep"; then
+                gpu_append_cmdline "mem_sleep_default=deep"; info "S3 deep sleep enabled."
+            else
+                info "S3 not available — using Modern Standby (s2idle)."
+            fi
+        fi
+    }
+
+    # Run — Intel first so i915 appears before NVIDIA in MODULES
+    $HAS_INTEL  && configure_intel  || true
+    $HAS_AMD    && configure_amd    || true
+    $HAS_NVIDIA && configure_nvidia || true
+    $IS_HYBRID  && configure_prime  || true
+    configure_sleep
+
+    info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+else
+    warn "No GPU detected via lspci — skipping GPU configuration."
+fi
 
 # Restore a standard installed-system mkinitcpio preset so mkinitcpio -P
 # produces a normal default + fallback initramfs from /etc/mkinitcpio.conf.

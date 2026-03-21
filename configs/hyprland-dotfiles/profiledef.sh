@@ -24,6 +24,7 @@ file_permissions=(
   ["/usr/local/bin/pre-install"]="0:0:755"
   ["/usr/local/bin/install-yay"]="0:0:755"
   ["/usr/local/bin/install-dotfiles"]="0:0:755"
+  ["/usr/local/bin/install-gpu-drivers"]="0:0:755"
   ["/usr/local/bin/install-limine"]="0:0:755"
   ["/usr/local/bin/post-install"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
