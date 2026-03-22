@@ -140,14 +140,6 @@ if [[ -n "$GPU_INFO" ]]; then
     $IS_HYBRID && info "Hybrid GPU configuration detected." || true
 
     # --- GPU helpers ---
-    gpu_install_pkgs() { info "Installing: $*"; pacman -S --noconfirm --needed "$@" 2>&1 || warn "Some packages failed: $*"; }
-    gpu_get_aur_pkg() {
-        local pkg="$1"
-        if command -v yay &>/dev/null && [[ -n "$MAIN_USER" ]]; then
-            su -s /bin/bash "$MAIN_USER" -c "yay -S --noconfirm --needed $pkg" && return 0
-        fi
-        warn "Could not install AUR package: $pkg"; return 1
-    }
     gpu_add_modules() {
         for mod in "$@"; do
             if ! grep -q "\b${mod}\b" /etc/mkinitcpio.conf; then
@@ -184,14 +176,9 @@ if [[ -n "$GPU_INFO" ]]; then
         PCI_DEC=$((16#$PCI_ID))
         info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
 
-        if [[ $PCI_DEC -ge 4928 ]]; then
-            info "Maxwell+ — installing nvidia."
-            gpu_install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
-            gpu_install_pkgs linux-firmware-nvidia 2>/dev/null || true
-            # Hardware encoding — NVENC/NVDEC for OBS (VAAPI wrapper via libva-nvidia-driver)
-            gpu_install_pkgs nv-codec-headers libva libva-utils libva-nvidia-driver \
-                             ffmpeg gst-plugin-va 2>/dev/null || \
-                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
+        if [[ $PCI_DEC -ge 7684 ]]; then
+            # 0x1E04+ = Turing and newer (RTX 2060+, 30xx, 40xx, 50xx)
+            # nvidia-open is the official open source kernel module (packages installed by install-gpu-drivers)
             gpu_remove_hook kms
             gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
             mkdir -p /etc/modprobe.d
@@ -201,38 +188,48 @@ options nvidia NVreg_PreserveVideoMemoryAllocations=1
 options nvidia NVreg_TemporaryFilePath=/var/tmp
 NVIDIAEOF
             gpu_append_cmdline "nvidia_drm.modeset=1"
-            # NVIDIA env vars set in env.conf by dotfiles, not system-wide
             for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
                 systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
             done
             systemctl enable nvidia-powerd.service 2>/dev/null || true
-            info "NVIDIA (current) configured."
+            info "NVIDIA Turing+ configured (nvidia-open)."
+
+        elif [[ $PCI_DEC -ge 4928 ]]; then
+            # 0x1340-0x1E03 = Maxwell through Volta — proprietary
+            gpu_remove_hook kms
+            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            mkdir -p /etc/modprobe.d
+            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
+options nvidia-drm modeset=1 fbdev=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+NVIDIAEOF
+            gpu_append_cmdline "nvidia_drm.modeset=1"
+            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
+                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
+            done
+            systemctl enable nvidia-powerd.service 2>/dev/null || true
+            info "NVIDIA Maxwell-Volta configured (proprietary)."
+
         elif [[ $PCI_DEC -ge 4032 ]]; then
-            info "Kepler — installing nvidia-470xx-dkms."
-            gpu_install_pkgs linux-headers dkms
-            if gpu_get_aur_pkg nvidia-470xx-dkms; then
-                gpu_remove_hook kms; gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
-                echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
-                gpu_append_cmdline "nvidia_drm.modeset=1"; gpu_append_env "WLR_NO_HARDWARE_CURSORS=1"
-            else
-                warn "nvidia-470xx-dkms failed — falling back to nouveau."; IS_OLD_NVIDIA=true
-            fi
+            # Kepler — 470xx installed by install-gpu-drivers if successful
+            gpu_remove_hook kms
+            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+            gpu_append_cmdline "nvidia_drm.modeset=1"
+            info "NVIDIA Kepler configured."
+
         elif [[ $PCI_DEC -ge 1728 ]]; then
-            info "Fermi — installing nvidia-390xx-dkms."
-            gpu_install_pkgs linux-headers dkms
-            if gpu_get_aur_pkg nvidia-390xx-dkms; then
-                gpu_remove_hook kms; gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
-                echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
-                gpu_append_cmdline "nvidia_drm.modeset=1"; gpu_append_env "WLR_NO_HARDWARE_CURSORS=1"
-            else
-                warn "nvidia-390xx-dkms failed — falling back to nouveau."; IS_OLD_NVIDIA=true
-            fi
+            # Fermi — 390xx installed by install-gpu-drivers if successful
+            gpu_remove_hook kms
+            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+            gpu_append_cmdline "nvidia_drm.modeset=1"
+            info "NVIDIA Fermi configured."
+
         else
-            IS_OLD_NVIDIA=true
-        fi
-        if $IS_OLD_NVIDIA; then
-            warn "Pre-Fermi NVIDIA — installing nouveau."
-            gpu_install_pkgs xf86-video-nouveau mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver
+            # Pre-Fermi — nouveau (no config changes needed, kms hook stays)
+            info "Pre-Fermi NVIDIA — using nouveau (kms hook kept)."
         fi
     }
 
@@ -253,11 +250,6 @@ NVIDIAEOF
 
         if $IS_OLD_AMD; then
             info "Pre-GCN AMD — installing amdgpu+radeon."
-            gpu_install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
-            gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
-            # Hardware encoding — VAAPI via radeonsi
-            gpu_install_pkgs libva libva-utils libva-mesa-driver lib32-libva-mesa-driver \
-                             mesa-vdpau lib32-mesa-vdpau libvdpau vdpauinfo gst-plugin-va ffmpeg
             mkdir -p /etc/modprobe.d
             cat > /etc/modprobe.d/amdgpu.conf << 'AMDEOF'
 options amdgpu si_support=1
@@ -269,10 +261,6 @@ AMDEOF
             gpu_append_cmdline "amdgpu.si_support=1 amdgpu.cik_support=1"
         else
             info "GCN/RDNA AMD — installing amdgpu."
-            gpu_install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon                              libva-mesa-driver lib32-libva-mesa-driver mesa-vdpau lib32-mesa-vdpau xf86-video-amdgpu
-            gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
-            # Hardware encoding — VAAPI/VDPAU for OBS
-            gpu_install_pkgs libva libva-utils libvdpau vdpauinfo gst-plugin-va ffmpeg
             gpu_append_cmdline "amdgpu.modeset=1"
             if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
                 info "RDNA 4 detected — adding amdgpu.sg_display=0."
@@ -299,26 +287,13 @@ AMDEOF
 
         if $IS_ARC; then
             info "Intel Arc — installing Arc drivers."
-            gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver intel-compute-runtime ocl-icd
-            gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
-            # Hardware encoding — QSV (Quick Sync) for OBS
-            gpu_install_pkgs libva libva-utils onevpl-intel-gpu libvpl \
-                             ffmpeg gst-plugin-va gst-plugin-qsv 2>/dev/null || \
-                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             gpu_add_modules xe
             # LIBVA_DRIVER_NAME set in env.conf by dotfiles
         elif $IS_OLD_INTEL; then
             info "Pre-Sandy Bridge Intel — installing xf86-video-intel."
-            gpu_install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
-            gpu_add_modules i915; gpu_append_env "LIBVA_DRIVER_NAME=i965"
+            gpu_add_modules i915
         else
             info "Sandy Bridge+ Intel — installing i915/media-driver."
-            gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver libva-intel-driver
-            gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
-            # Hardware encoding — Quick Sync for OBS, VAAPI general encode
-            gpu_install_pkgs libva libva-utils onevpl-intel-gpu libvpl \
-                             ffmpeg gst-plugin-va gst-plugin-qsv 2>/dev/null || \
-                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
             # LIBVA_DRIVER_NAME set in env.conf by dotfiles
         fi
@@ -330,10 +305,10 @@ AMDEOF
         info "Configuring PRIME hybrid GPU..."
         if $HAS_NVIDIA && $HAS_INTEL; then
             gpu_add_modules i915; gpu_append_cmdline "i915.modeset=1"
-            gpu_install_pkgs nvidia-prime
             # PRIME env vars set in env.conf by dotfiles, not system-wide
         elif $HAS_NVIDIA && $HAS_AMD; then
-            gpu_add_modules amdgpu; gpu_install_pkgs nvidia-prime
+            gpu_add_modules amdgpu
+            # PRIME env vars set in env.conf by dotfiles, not system-wide
         elif $HAS_AMD && $HAS_INTEL; then
             : # DRI_PRIME set per-app, not system-wide
         fi
