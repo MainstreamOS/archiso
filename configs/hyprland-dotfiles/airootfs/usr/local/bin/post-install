@@ -202,6 +202,10 @@ if [[ -n "$GPU_INFO" ]]; then
             info "Maxwell+ — installing nvidia."
             gpu_install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
             gpu_install_pkgs linux-firmware-nvidia 2>/dev/null || true
+            # Hardware encoding — NVENC/NVDEC for OBS (VAAPI wrapper via libva-nvidia-driver)
+            gpu_install_pkgs nv-codec-headers libva libva-utils libva-nvidia-driver \
+                             ffmpeg gst-plugin-va 2>/dev/null || \
+                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             gpu_remove_hook kms
             gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
             mkdir -p /etc/modprobe.d
@@ -265,6 +269,9 @@ NVIDIAEOF
             info "Pre-GCN AMD — installing amdgpu+radeon."
             gpu_install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
             gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+            # Hardware encoding — VAAPI via radeonsi
+            gpu_install_pkgs libva libva-utils libva-mesa-driver lib32-libva-mesa-driver \
+                             mesa-vdpau lib32-mesa-vdpau libvdpau vdpauinfo gst-plugin-va ffmpeg
             mkdir -p /etc/modprobe.d
             cat > /etc/modprobe.d/amdgpu.conf << 'AMDEOF'
 options amdgpu si_support=1
@@ -278,6 +285,8 @@ AMDEOF
             info "GCN/RDNA AMD — installing amdgpu."
             gpu_install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon                              libva-mesa-driver lib32-libva-mesa-driver mesa-vdpau lib32-mesa-vdpau xf86-video-amdgpu
             gpu_install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+            # Hardware encoding — VAAPI/VDPAU for OBS
+            gpu_install_pkgs libva libva-utils libvdpau vdpauinfo gst-plugin-va ffmpeg
             gpu_append_cmdline "amdgpu.modeset=1"
             if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
                 info "RDNA 4 detected — adding amdgpu.sg_display=0."
@@ -306,6 +315,10 @@ AMDEOF
             info "Intel Arc — installing Arc drivers."
             gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver intel-compute-runtime ocl-icd
             gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
+            # Hardware encoding — QSV (Quick Sync) for OBS
+            gpu_install_pkgs libva libva-utils onevpl-intel-gpu libvpl \
+                             ffmpeg gst-plugin-va gst-plugin-qsv 2>/dev/null || \
+                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             gpu_add_modules xe
             # LIBVA_DRIVER_NAME set in env.conf by dotfiles
         elif $IS_OLD_INTEL; then
@@ -316,6 +329,10 @@ AMDEOF
             info "Sandy Bridge+ Intel — installing i915/media-driver."
             gpu_install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel                              intel-media-driver libva-intel-driver
             gpu_install_pkgs linux-firmware-intel 2>/dev/null || true
+            # Hardware encoding — Quick Sync for OBS, VAAPI general encode
+            gpu_install_pkgs libva libva-utils onevpl-intel-gpu libvpl \
+                             ffmpeg gst-plugin-va gst-plugin-qsv 2>/dev/null || \
+                gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
             gpu_append_env "LIBVA_DRIVER_NAME=iHD"
         fi
