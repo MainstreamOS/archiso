@@ -334,7 +334,7 @@ AMDEOF
                              ffmpeg gst-plugin-va gst-plugin-qsv 2>/dev/null || \
                 gpu_install_pkgs libva libva-utils ffmpeg gst-plugin-va 2>/dev/null || true
             if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
-            gpu_append_env "LIBVA_DRIVER_NAME=iHD"
+            # LIBVA_DRIVER_NAME set in env.conf by dotfiles
         fi
         info "Intel configured."
     }
