@@ -54,38 +54,24 @@ systemctl mask debug-shell.service || true
 # memory pressure instead so oomd is redundant
 systemctl mask systemd-oomd.service || true
 
-# Disable live-only services that get copied from the squashfs
+# Disable services that are live-ISO-only — these should never run on
+# the installed system. Nothing here affects networking, DNS, or keyring.
 for svc in \
     pacman-init.service \
-    iwd.service \
-    wpa_supplicant.service \
-    sshd.service \
     reflector.service \
     reflector.timer \
-    systemd-networkd.service \
-    systemd-networkd-persistent-storage.service \
-    lvm2-monitor.service \
-    systemd-udev-settle.service \
-    systemd-resolved.service \
-    ModemManager.service; do
+    sshd.service; do
     if systemctl is-enabled "$svc" &>/dev/null; then
-        info "Disabling live service: $svc"
+        info "Disabling live-only service: $svc"
         systemctl disable "$svc" || true
     fi
 done
 
-# Mask services that are disabled but still start via socket activation or as
-# dependencies of other units.  Masking makes them unlaunchable by any means.
-#
-# systemd-networkd: redundant alongside NetworkManager; 226ms wasted if active
-# lvm2-monitor:     not needed on a pure Btrfs+zram system; 154ms wasted
-for svc in \
-    systemd-networkd.service \
-    systemd-networkd-persistent-storage.service \
-    lvm2-monitor.service; do
-    info "Masking: $svc"
-    systemctl mask "$svc" || true
-done
+# Mask systemd-networkd — redundant alongside NetworkManager and can
+# cause conflicts if both try to manage the same interface.
+# Does NOT affect DNS resolution or keyring connectivity.
+systemctl mask systemd-networkd.service || true
+systemctl mask systemd-networkd-persistent-storage.service || true
 
 # ---------------------------------------------------------------------------
 # 4. MKINITCPIO PREP
