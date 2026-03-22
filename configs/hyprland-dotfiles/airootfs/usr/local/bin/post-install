@@ -878,4 +878,13 @@ else
     info "Root filesystem is not btrfs — skipping snapper setup."
 fi
 
+# ---------------------------------------------------------------------------
+# CLEANUP — Remove dotfiles repo left in home directory
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME/dots-hyprland" ]]; then
+    info "Cleaning up dots-hyprland repo from home directory..."
+    rm -rf "$MAIN_USER_HOME/dots-hyprland"
+    info "dots-hyprland removed."
+fi
+
 info "Post-install synchronization complete. System is ready for reboot."
