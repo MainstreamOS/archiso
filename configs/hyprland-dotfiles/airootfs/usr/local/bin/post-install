@@ -45,7 +45,9 @@ info "Optimizing boot services and disabling live-only services..."
 
 # Speed fixes — disable/mask services that add latency on the installed system
 systemctl disable systemd-time-wait-sync.service || true
-systemctl disable NetworkManager-wait-online.service || true
+# NOTE: NetworkManager-wait-online is kept enabled so pacman-keyring-init.service
+# has a working network connection on first boot to reach GPG keyservers
+# systemctl disable NetworkManager-wait-online.service || true
 # debug-shell is only useful for emergency TTY debugging; safe to mask normally
 systemctl mask debug-shell.service || true
 # systemd-oomd reacts to memory pressure but can cause latency; zram handles
@@ -398,7 +400,9 @@ info "Scheduling pacman keyring initialization for first boot..."
 cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
 [Unit]
 Description=Initialize pacman keyring on first boot
-After=time-sync.target
+After=network-online.target time-sync.target
+Wants=network-online.target
+ConditionPathExists=!/etc/pacman.d/gnupg/pubring.gpg
 
 [Service]
 Type=oneshot
