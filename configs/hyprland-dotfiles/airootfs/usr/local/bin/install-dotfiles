@@ -129,6 +129,7 @@ METAPKGS=(
     "illogical-impulse-quickshell-git"
     "illogical-impulse-extras"
     "illogical-impulse-bibata-modern-classic-bin"
+    "topgrade"
 )
 
 SUCCESS_COUNT=0
