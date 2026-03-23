@@ -31,16 +31,13 @@ Rectangle {
 
     // ── Icon mapping by step index — names come dynamically from ViewManager ─
     // Icons correspond to the `show` sequence in settings.conf:
-    //   0=welcome 1=locale 2=keyboard 3=partition 4=users
-    //   5=packagechooser@installchoice 6=netinstall 7=summary 8=finished
+    //   0=welcome 1=locale 2=keyboard 3=partition 4=users 5=summary 6=finished
     readonly property var stepIcons: [
         "waving_hand",   // Welcome
         "language",      // Location
         "keyboard",      // Keyboard
         "storage",       // Partitions
         "person",        // Users
-        "widgets",       // Install Choice
-        "tune",          // Optional Apps (netinstall)
         "fact_check",    // Summary
         "check_circle"   // Finish
     ]
