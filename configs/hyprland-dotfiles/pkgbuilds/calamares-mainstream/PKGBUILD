@@ -18,7 +18,7 @@
 
 pkgname=calamares-mainstream
 pkgver=3.3.14
-pkgrel=7
+pkgrel=8
 pkgdesc='Distribution-independent installer framework (Mainstream edition)'
 arch=('x86_64')
 url='https://calamares.io'
@@ -84,12 +84,17 @@ sha256sums=(
 prepare() {
     cd "calamares-${pkgver}"
 
-    # ── Application font — src/calamares/main.cpp ──────────────────────────
-    # Add #include <QFontDatabase> after #include <QDir>
-    sed -i 's|#include <QDir>|#include <QDir>\n#include <QFontDatabase>|' \
+    # ── Application font + Qt 6.8.3 DBus fix — src/calamares/main.cpp ─────
+    # Add #include <QDBusConnection> and <QFontDatabase> after #include <QDir>
+    sed -i 's|#include <QDir>|#include <QDBusConnection>\n#include <QDir>\n#include <QFontDatabase>|' \
         src/calamares/main.cpp
-    # Insert font-selection block immediately after CalamaresApplication construction.
-    # awk: on matching the construction line, emit it then emit the new block.
+    # Insert font-selection and DBus-object-registration blocks immediately
+    # after CalamaresApplication construction.
+    #
+    # Qt 6.8.3 requires a registered object on the session bus, not just a
+    # service name.  Without this, KDE framework internals that call
+    # registerService() crash with SIGSEGV because introspection fails on a
+    # service with no object tree.
     awk '/CalamaresApplication a\( argc, argv \);/ {
         print
         print ""
@@ -105,6 +110,16 @@ prepare() {
         print "                a.setFont( f );"
         print "                break;"
         print "            }"
+        print "        }"
+        print "    }"
+        print ""
+        print "    // Mainstream: Qt 6.8.3 requires a registered DBus object, not just a"
+        print "    // service name.  Register the app at \"/\" so framework introspection works."
+        print "    {"
+        print "        auto bus = QDBusConnection::sessionBus();"
+        print "        if ( bus.isConnected() )"
+        print "        {"
+        print "            bus.registerObject( \"/\", &a );"
         print "        }"
         print "    }"
         next
