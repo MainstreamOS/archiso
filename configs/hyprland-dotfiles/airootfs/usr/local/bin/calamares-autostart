@@ -22,14 +22,5 @@ if [[ ! -d "/run/archiso" ]]; then
     exit 0
 fi
 
-# All checks passed — we are on the live ISO, launch Calamares.
-#
-# • sudo -E preserves the Wayland environment (WAYLAND_DISPLAY,
-#   XDG_RUNTIME_DIR) so the Qt wayland platform plugin works.
-# • QT_QPA_PLATFORMTHEME is cleared so the GNOME theme plugin doesn't
-#   try to connect to the user's DBus session (which root can't access),
-#   preventing a SIGSEGV.
-# • LANG=C.UTF-8 avoids the "ANSI_X3.4-1968 is not UTF-8" warnings.
-export QT_QPA_PLATFORMTHEME=""
-export LANG=C.UTF-8
+# All checks passed — we are on the live ISO, launch Calamares
 exec sudo -E /usr/bin/calamares
