@@ -196,13 +196,33 @@ if [[ ! -f "/etc/systemd/logind.conf.d/10-power-key.conf" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 11. OPTIONAL EXTRAS — moved to netinstall.conf
+# 11. REQUIRED EXTRAS (always installed)
 # ---------------------------------------------------------------------------
-# Previously, 23 packages (google-chrome, libreoffice, spotify, gimp, etc.)
-# were force-installed here via yay, adding 10-30+ minutes to every install.
-# They are now user-selectable in the Calamares netinstall step instead.
-# See: /etc/calamares/modules/netinstall.conf → "Included Extras" group.
-info "Optional extras are now user-selectable in the Calamares package picker."
+# These packages are essential to the desktop experience and are not optional.
+# Most optional extras are user-selectable in the Calamares netinstall step.
+# See: /etc/calamares/modules/netinstall.conf
+REQUIRED_EXTRAS=(
+    "appstream"
+    "appstream-glib"
+    "flatpak"
+    "satty"
+    "fastfetch"
+)
+
+info "Installing ${#REQUIRED_EXTRAS[@]} required extras..."
+for pkg in "${REQUIRED_EXTRAS[@]}"; do
+    if pacman -Qq "$pkg" &>/dev/null; then
+        info "$pkg is already installed — skipping."
+        continue
+    fi
+    info "Installing $pkg..."
+    if sudo -u "$NEW_USER" yay -S --noconfirm --needed "$pkg" 2>&1; then
+        info "$pkg installed successfully."
+    else
+        warn "Failed to install $pkg"
+        FAILED_PKGS+=("$pkg")
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # 12. SUMMARY
