@@ -84,6 +84,10 @@ sha256sums=(
 prepare() {
     cd "calamares-${pkgver}"
 
+    # ── Qt 6.8.3 DBus fix — link Qt6::DBus into calamares binary ───────────
+    sed -i 's|PRIVATE calamares calamaresui calamares-i18n kdsingleapplication ${qtname}::Core ${qtname}::Widgets|PRIVATE calamares calamaresui calamares-i18n kdsingleapplication ${qtname}::Core ${qtname}::DBus ${qtname}::Widgets|' \
+        src/calamares/CMakeLists.txt
+
     # ── Application font + Qt 6.8.3 DBus fix — src/calamares/main.cpp ─────
     # Add #include <QDBusConnection> and <QFontDatabase> after #include <QDir>
     sed -i 's|#include <QDir>|#include <QDBusConnection>\n#include <QDir>\n#include <QFontDatabase>|' \
