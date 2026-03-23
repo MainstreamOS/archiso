@@ -184,7 +184,18 @@ chown -R "$NEW_USER:$NEW_USER" "$NEW_USER_HOME"
 info "Dotfiles deployed."
 
 # ---------------------------------------------------------------------------
-# 10. OPTIONAL EXTRAS — moved to netinstall.conf
+# 10. POWER BUTTON POLKIT SETUP
+# ---------------------------------------------------------------------------
+# Create default logind drop-in so the PowerConfig settings panel works
+# (the helper script and polkit policy/rules are baked into the ISO)
+if [[ ! -f "/etc/systemd/logind.conf.d/10-power-key.conf" ]]; then
+    info "Creating default power-key logind config..."
+    mkdir -p /etc/systemd/logind.conf.d
+    printf '[Login]\nHandlePowerKey=suspend\n' > /etc/systemd/logind.conf.d/10-power-key.conf
+fi
+
+# ---------------------------------------------------------------------------
+# 11. OPTIONAL EXTRAS — moved to netinstall.conf
 # ---------------------------------------------------------------------------
 # Previously, 23 packages (google-chrome, libreoffice, spotify, gimp, etc.)
 # were force-installed here via yay, adding 10-30+ minutes to every install.
@@ -193,7 +204,7 @@ info "Dotfiles deployed."
 info "Optional extras are now user-selectable in the Calamares package picker."
 
 # ---------------------------------------------------------------------------
-# 11. SUMMARY
+# 12. SUMMARY
 # ---------------------------------------------------------------------------
 TOTAL=${#METAPKGS[@]}
 info "Installation Summary: $SUCCESS_COUNT/$TOTAL packages successful."
