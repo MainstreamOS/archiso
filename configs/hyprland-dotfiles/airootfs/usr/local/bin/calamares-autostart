@@ -22,5 +22,15 @@ if [[ ! -d "/run/archiso" ]]; then
     exit 0
 fi
 
-# All checks passed — we are on the live ISO, launch Calamares
-exec sudo -E /usr/bin/calamares
+# All checks passed — we are on the live ISO, launch Calamares.
+#
+# • dbus-run-session gives Calamares its own session bus so Qt platform
+#   themes (GNOME/KDE) don't SIGSEGV on a missing bus connection.
+# • We forward WAYLAND_DISPLAY and XDG_RUNTIME_DIR so the Wayland
+#   backend can find the compositor socket.
+# • LANG=C.UTF-8 avoids the "ANSI_X3.4-1968 is not UTF-8" warnings.
+exec sudo \
+    WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
+    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    LANG=C.UTF-8 \
+    /usr/bin/dbus-run-session /usr/bin/calamares
