@@ -102,7 +102,6 @@ Item {
                 { name: "neovim",                 desc: "Neovim — hyperextensible Vim-based terminal editor." },
                 { name: "vim",                    desc: "Vim — classic, highly configurable terminal text editor." },
                 { name: "jetbrains-toolbox",      desc: "JetBrains Toolbox — manage PyCharm, IDEA, and other JetBrains IDEs. (AUR)" },
-                { name: "github-cli",             desc: "GitHub CLI — interact with GitHub repositories from the terminal." },
                 { name: "github-desktop-bin",     desc: "GitHub Desktop — official Git GUI client. (AUR)" },
                 { name: "docker",                 desc: "Docker — build, ship, and run containerized applications." }
             ]
@@ -156,7 +155,6 @@ Item {
                 { name: "lutris",                     desc: "Lutris — open game manager with Wine and emulator frontend support." },
                 { name: "heroic-games-launcher-bin",  desc: "Heroic — open-source launcher for Epic and GOG. (AUR)" },
                 { name: "mangohud",                   desc: "MangoHud — in-game performance overlay (FPS, CPU, GPU, temps)." },
-                { name: "protonup-qt",                desc: "ProtonUp-Qt — install and manage Proton-GE and Wine-GE. (AUR)" },
                 { name: "protonplus",                 desc: "ProtonPlus — simple Proton version manager for Steam. (AUR)" },
                 { name: "goverlay",                   desc: "GOverlay — graphical MangoHud, vkBasalt, and ReplaySorcery configurator. (AUR)" },
                 { name: "bottles",                    desc: "Bottles — run Windows applications and games via Wine." }
@@ -186,8 +184,7 @@ Item {
                 { name: "obs-move-transition",         desc: "obs-move-transition — smooth move transitions for OBS sources. (AUR)" },
                 { name: "v4l2loopback-dkms",           desc: "v4l2loopback — virtual camera kernel module for OBS virtual webcam." },
                 { name: "ffmpeg",                      desc: "FFmpeg — complete multimedia framework for encoding and streaming." },
-                { name: "obs-vaapi",                   desc: "obs-vaapi — VA-API hardware encoding for OBS (AMD/Intel). (AUR)" },
-                { name: "gstreamer-vaapi",             desc: "gstreamer-vaapi — VA-API hardware-accelerated video for GStreamer." }
+                { name: "obs-vaapi",                   desc: "obs-vaapi — VA-API hardware encoding for OBS (AMD/Intel). (AUR)" }
             ]
         },
         {
