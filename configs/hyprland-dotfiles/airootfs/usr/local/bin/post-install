@@ -71,6 +71,7 @@ done
 # cause conflicts if both try to manage the same interface.
 # Does NOT affect DNS resolution or keyring connectivity.
 systemctl mask systemd-networkd.service || true
+systemctl mask systemd-networkd.socket || true
 systemctl mask systemd-networkd-persistent-storage.service || true
 
 # ---------------------------------------------------------------------------
