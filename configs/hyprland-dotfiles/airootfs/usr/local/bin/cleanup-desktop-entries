@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cleanup-desktop-entries
+# Remove custom .desktop overrides for apps the user chose not to install.
+# Runs after the Calamares "packages" module (netinstall selections).
+# =============================================================================
+
+set -euo pipefail
+
+log()  { echo "[desktop-cleanup] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+# ---------------------------------------------------------------------------
+# 1. IDENTIFY USER
+# ---------------------------------------------------------------------------
+MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' \
+    | grep -vE '(liveuser|builduser|nobody|root)' | head -n 1 || true)
+
+if [[ -z "$MAIN_USER" ]]; then
+    warn "No target user found — skipping desktop entry cleanup."
+    exit 0
+fi
+
+DESKTOP_DIR="/home/$MAIN_USER/.local/share/applications"
+
+if [[ ! -d "$DESKTOP_DIR" ]]; then
+    info "No user applications directory — nothing to clean."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 2. PACKAGE → DESKTOP FILE MAPPING
+#    Each entry: "package_name:file1.desktop:file2.desktop:..."
+#    Only list .desktop files that are custom launchers or hiders for
+#    optional (netinstall) packages. System-junk hiders are left alone.
+# ---------------------------------------------------------------------------
+CLEANUP_MAP=(
+    "gimp:gimp.desktop:org.gimp.GIMP.desktop"
+    "mpv:mpv.desktop"
+    "spotify:spotify.desktop"
+    "resources:net.nokyan.Resources.desktop"
+    "impression:io.gitlab.adhami3310.Impression.desktop"
+)
+
+# ---------------------------------------------------------------------------
+# 3. REMOVE .DESKTOP FILES FOR UNINSTALLED PACKAGES
+# ---------------------------------------------------------------------------
+removed=0
+kept=0
+
+for entry in "${CLEANUP_MAP[@]}"; do
+    IFS=':' read -ra parts <<< "$entry"
+    pkg="${parts[0]}"
+
+    if pacman -Qq "$pkg" &>/dev/null; then
+        info "  ✓ $pkg is installed — keeping desktop entries"
+        (( kept++ )) || true
+    else
+        for df in "${parts[@]:1}"; do
+            target="$DESKTOP_DIR/$df"
+            if [[ -f "$target" ]]; then
+                rm -f "$target"
+                info "  ✗ $pkg not installed — removed $df"
+                (( removed++ )) || true
+            fi
+        done
+    fi
+done
+
+info "Desktop entry cleanup complete: $removed removed, $kept packages kept."
