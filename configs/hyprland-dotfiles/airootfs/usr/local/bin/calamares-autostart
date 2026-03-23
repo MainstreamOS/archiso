@@ -24,13 +24,12 @@ fi
 
 # All checks passed — we are on the live ISO, launch Calamares.
 #
-# • dbus-run-session gives Calamares its own session bus so Qt platform
-#   themes (GNOME/KDE) don't SIGSEGV on a missing bus connection.
-# • We forward WAYLAND_DISPLAY and XDG_RUNTIME_DIR so the Wayland
-#   backend can find the compositor socket.
+# • sudo -E preserves the Wayland environment (WAYLAND_DISPLAY,
+#   XDG_RUNTIME_DIR) so the Qt wayland platform plugin works.
+# • QT_QPA_PLATFORMTHEME is cleared so the GNOME theme plugin doesn't
+#   try to connect to the user's DBus session (which root can't access),
+#   preventing a SIGSEGV.
 # • LANG=C.UTF-8 avoids the "ANSI_X3.4-1968 is not UTF-8" warnings.
-exec sudo \
-    WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-    LANG=C.UTF-8 \
-    /usr/bin/dbus-run-session /usr/bin/calamares
+export QT_QPA_PLATFORMTHEME=""
+export LANG=C.UTF-8
+exec sudo -E /usr/bin/calamares
