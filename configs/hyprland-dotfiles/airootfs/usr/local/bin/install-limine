@@ -89,11 +89,7 @@ fi
 # --- 4. Configuration Deployment ---
 TEMPLATE="/etc/limine.conf.template"
 
-if [ "$IS_UEFI" = true ]; then
-    CONF_DEST="$BOOT_PATH/EFI/limine/limine.conf"
-else
-    CONF_DEST="$BOOT_PATH/limine.conf"
-fi
+CONF_DEST="$BOOT_PATH/limine.conf"
 
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."

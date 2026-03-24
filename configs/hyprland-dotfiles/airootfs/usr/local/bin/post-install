@@ -155,8 +155,8 @@ if [[ -n "$GPU_INFO" ]]; then
     }
     gpu_append_cmdline() {
         local params="$1" LIMINE_CONF=""
-        [[ -f "/boot/efi/EFI/limine/limine.conf" ]] && LIMINE_CONF="/boot/efi/EFI/limine/limine.conf"
-        [[ -f "/boot/limine.conf" ]]                 && LIMINE_CONF="/boot/limine.conf"
+        [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
+        [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
         if [[ -n "$LIMINE_CONF" ]]; then
             sed -i "/^ *cmdline:/ s/$/ $params/" "$LIMINE_CONF"
             info "Added to bootloader cmdline: $params"
@@ -775,8 +775,20 @@ fi
 # ---------------------------------------------------------------------------
 # SNAPPER + LIMINE-SNAPPER-SYNC SETUP
 # ---------------------------------------------------------------------------
-# Only configure snapper if the root filesystem is btrfs
-if findmnt -n -o FSTYPE / | grep -q btrfs; then
+# Detect btrfs — findmnt may not work inside a Calamares chroot because
+# /proc/self/mountinfo reflects the host, not the chrooted root.  Fall back
+# to checking /etc/fstab (written by Calamares before post-install runs) or
+# testing with the btrfs tool directly.
+_root_is_btrfs=false
+if findmnt -n -o FSTYPE / 2>/dev/null | grep -q btrfs; then
+    _root_is_btrfs=true
+elif grep -qE '^\s*[^#]\S+\s+/\s+btrfs\s' /etc/fstab 2>/dev/null; then
+    _root_is_btrfs=true
+elif btrfs filesystem usage / &>/dev/null; then
+    _root_is_btrfs=true
+fi
+
+if $_root_is_btrfs; then
     info "Btrfs detected — configuring snapper..."
 
     # snapper create-config always creates /.snapshots itself — it fails if
@@ -795,6 +807,23 @@ if findmnt -n -o FSTYPE / | grep -q btrfs; then
         info "Creating snapper root config..."
         if snapper -c root create-config /; then
             info "Snapper root config created."
+        else
+            # snapper create-config can fail inside a chroot — create the
+            # config manually so it is ready on first real boot.
+            warn "snapper create-config failed (likely chroot) — writing config manually..."
+            mkdir -p /etc/snapper/configs
+            cp /etc/snapper/config-templates/default /etc/snapper/configs/root
+            # Register the config with snapper
+            sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper 2>/dev/null || \
+                echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
+            # Ensure /.snapshots subvolume exists
+            if ! btrfs subvolume show /.snapshots &>/dev/null; then
+                btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
+            fi
+            chmod 750 /.snapshots 2>/dev/null || true
+        fi
+
+        if [[ -f /etc/snapper/configs/root ]]; then
             sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root
             sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /etc/snapper/configs/root
             sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
@@ -807,13 +836,19 @@ if findmnt -n -o FSTYPE / | grep -q btrfs; then
             if [[ -n "$MAIN_USER" ]]; then
                 sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$MAIN_USER\"/" /etc/snapper/configs/root
             fi
-        else
-            warn "snapper create-config / failed — snapper will not be configured."
+            # Set SUBVOLUME to / so snapper knows where to snapshot
+            sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
         fi
     fi
 
     # Initialize snapper home config if /home is btrfs
-    if findmnt -n -o FSTYPE /home | grep -q btrfs; then
+    _home_is_btrfs=false
+    if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
+        _home_is_btrfs=true
+    elif grep -qE '^\s*[^#]\S+\s+/home\s+btrfs\s' /etc/fstab 2>/dev/null; then
+        _home_is_btrfs=true
+    fi
+    if $_home_is_btrfs; then
         if [[ ! -f /etc/snapper/configs/home ]]; then
             info "Creating snapper home config..."
             snapper -c home create-config /home || \
