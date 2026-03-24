@@ -354,16 +354,38 @@ fallback_image='/boot/initramfs-linux-fallback.img'
 fallback_options='-S autodetect'
 PRESET
 
+# ---------------------------------------------------------------------------
+# INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
+# ---------------------------------------------------------------------------
+# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso
+# build chroot) and can't be in packages.conf install section (no db sync
+# available).  We install them here via yay which handles AUR + db sync.
+#
+# IMPORTANT: limine-mkinitcpio-hook must be installed BEFORE mkinitcpio -P
+# so the hook can manage kernel/initramfs placement on the EFI partition and
+# generate proper //linux sub-entries in limine.conf.
+if command -v yay &>/dev/null; then
+    info "Installing snapper and limine integration packages..."
+    su -s /bin/bash "$MAIN_USER" -c \
+        "yay -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync" \
+        2>/dev/null || \
+        pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
+fi
+
 # Regenerate initramfs — single authoritative mkinitcpio -P call.
 # Firmware, modules, Plymouth hooks, and limine.conf are all configured
 # above so this produces the final initramfs with everything in place.
+# If limine-mkinitcpio-hook is installed, it will automatically sync the
+# kernel/initramfs to the EFI partition and update limine.conf with proper
+# //linux sub-entries.
 info "Regenerating initramfs..."
 mkinitcpio -P
 
-# Re-sync kernel and initramfs to the EFI partition so Limine sees the
-# freshly built initramfs (with early KMS modules and vendor firmware).
-if [ -d "/boot/efi" ]; then
-    info "Re-syncing kernel and initramfs to EFI partition..."
+# Fallback: if limine-mkinitcpio-hook is NOT installed (yay failed, no
+# network, etc.), manually sync kernel/initramfs so the system can still boot
+# from the template's //Kernel entry.
+if ! pacman -Qq limine-mkinitcpio-hook &>/dev/null && [ -d "/boot/efi" ]; then
+    info "limine-mkinitcpio-hook not available — manually syncing kernel to EFI..."
     cp -f /boot/vmlinuz-linux /boot/efi/ || true
     cp -f /boot/initramfs-linux.img /boot/efi/ || true
 fi
@@ -764,17 +786,6 @@ ExecStart=killall fprintd
 WantedBy=sleep.target
 FPRINTEOF
 systemctl enable kill-fprintd.service 2>/dev/null || true
-
-# ---------------------------------------------------------------------------
-# INSTALL SNAPPER + LIMINE PACKAGES VIA YAY
-# ---------------------------------------------------------------------------
-# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso chroot)
-# and can't be in packages.conf install section (no db sync available)
-# So we install them here via yay which handles AUR + db sync
-if command -v yay &>/dev/null; then
-    info "Installing snapper and limine integration packages..."
-    su -s /bin/bash "$MAIN_USER" -c         "yay -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync"         2>/dev/null ||         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
-fi
 
 # ---------------------------------------------------------------------------
 # SNAPPER + LIMINE-SNAPPER-SYNC SETUP
