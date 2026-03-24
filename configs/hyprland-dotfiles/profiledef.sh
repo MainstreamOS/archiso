@@ -36,6 +36,7 @@ file_permissions=(
   ["/usr/local/bin/cleanup-desktop-entries"]="0:0:755"
   ["/usr/local/bin/power-key-helper"]="0:0:755"
   ["/etc/skel/.config/hypr/scripts/init-qs.sh"]="0:0:755"
+  ["/etc/skel/.config/hypr/hyprland/scripts/auto_scale.sh"]="0:0:755"
 
   # Calamares autostart (XDG autostart — read by dex/autostart managers)
   ["/etc/xdg/autostart/calamares.desktop"]="0:0:644"
