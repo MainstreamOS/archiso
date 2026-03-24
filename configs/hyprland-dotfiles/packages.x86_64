@@ -177,6 +177,7 @@ tpm2-tss
 upower
 brightnessctl
 hyprpolkitagent
+zenity
 gnome-keyring
 loupe
 zram-generator
