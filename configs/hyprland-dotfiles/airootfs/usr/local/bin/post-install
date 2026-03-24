@@ -355,6 +355,20 @@ fallback_options='-S autodetect'
 PRESET
 
 # ---------------------------------------------------------------------------
+# ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
+# ---------------------------------------------------------------------------
+# mkarchiso sets /etc/machine-id to "uninitialized" (13 chars) for systemd
+# first-boot semantics.  limine-mkinitcpio-hook requires a valid 32-char hex
+# machine-id to place kernel/initramfs on the EFI partition.  Calamares'
+# machineid module should have generated one, but verify and fix if needed.
+if ! grep -qE '^[0-9a-f]{32}$' /etc/machine-id 2>/dev/null; then
+    warn "Invalid or missing machine-id — generating one..."
+    systemd-machine-id-setup 2>/dev/null || \
+        printf '%s\n' "$(cat /proc/sys/kernel/random/uuid | tr -d '-')" > /etc/machine-id
+    info "Machine-id set to: $(cat /etc/machine-id)"
+fi
+
+# ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
 # ---------------------------------------------------------------------------
 # These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso
@@ -378,8 +392,21 @@ fi
 # If limine-mkinitcpio-hook is installed, it will automatically sync the
 # kernel/initramfs to the EFI partition and update limine.conf with proper
 # //linux sub-entries.
+#
+# NOTE: mkinitcpio -P may return non-zero if a post-build hook (e.g.
+# limine-mkinitcpio) encounters a non-fatal issue.  The initramfs images
+# themselves are already built at that point, so we tolerate the error and
+# verify the result below.
 info "Regenerating initramfs..."
-mkinitcpio -P
+if ! mkinitcpio -P; then
+    warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
+    if [ -f /boot/initramfs-linux.img ]; then
+        info "Initramfs images exist — continuing despite hook warning."
+    else
+        warn "Initramfs images missing — mkinitcpio truly failed."
+        exit 1
+    fi
+fi
 
 # Fallback: if limine-mkinitcpio-hook is NOT installed (yay failed, no
 # network, etc.), manually sync kernel/initramfs so the system can still boot
