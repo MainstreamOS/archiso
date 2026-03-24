@@ -9,13 +9,12 @@ term_palette: 303446;e78284;a6d189;e5c890;8caaee;f4b8e4;81c8be;c6d0f5
 term_palette_bright: 626880;e78284;a6d189;e5c890;8caaee;f4b8e4;81c8be;c6d0f5
 backdrop: 303446
 
-/Arch Linux
+/+Arch Linux
+
+//Kernel
     protocol: linux
     kernel_path: boot():///vmlinuz-linux
     cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0
     module_path: boot():///initramfs-linux.img
 
-# --- Snapper Snapshots (auto-generated below) ---
-# SNAPPER_ENTRIES_START
-
-# SNAPPER_ENTRIES_END
+//Snapshots
