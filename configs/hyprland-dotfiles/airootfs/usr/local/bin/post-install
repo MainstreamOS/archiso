@@ -645,24 +645,19 @@ if [[ -n "$MAIN_USER" ]]; then
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
     if [[ -f "$VENV_PATH/bin/python" ]]; then
-        # Venv was pre-baked into skel by build.sh --refresh — just fix shebangs.
-        # The build path may be /home/SKEL_USER/... or the full build machine path
-        # (e.g. /home/user/Documents/.../airootfs/etc/skel/...).
-        # Use a regex that replaces everything before .local/state/quickshell/.venv/
+        # Venv was pre-baked into skel by build.sh --refresh — just fix shebangs
         info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
         find "$VENV_PATH/bin" -type f -exec \
-            sed -i "1s|#!.*/\.local/state/quickshell/\.venv/|#!$MAIN_USER_HOME/.local/state/quickshell/.venv/|" {} + 2>/dev/null || true
-        # Fix VIRTUAL_ENV path in activate scripts
+            sed -i "1s|#!/home/SKEL_USER/|#!$MAIN_USER_HOME/|" {} + 2>/dev/null || true
+        # Fix VIRTUAL_ENV path in activate scripts (not just shebangs)
         for _activate in "$VENV_PATH/bin/activate" \
                          "$VENV_PATH/bin/activate.csh" \
                          "$VENV_PATH/bin/activate.fish"; do
             [[ -f "$_activate" ]] && \
-                sed -i "s|VIRTUAL_ENV=.*/.local/state/quickshell/.venv|VIRTUAL_ENV=\"$VENV_PATH\"|g; s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$_activate"
+                sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$_activate"
         done
         # Fix pyvenv.cfg home path
-        sed -i "s|home = .*/.local/state/quickshell/.venv/bin|home = $VENV_PATH/bin|g; s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
-        # Ensure all venv bin scripts are executable (squashfs rsync can lose +x)
-        chmod +x "$VENV_PATH"/bin/* 2>/dev/null || true
+        sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
         chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
         info "Python venv ready (pre-baked)."
     else
@@ -713,10 +708,6 @@ VENVEOF
         info "Generating initial Material You colors from default wallpaper..."
         mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
         chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
-
-        # Ensure illogical-impulse config dir exists (switchwall.sh writes config.json here)
-        mkdir -p "$MAIN_USER_HOME/.config/illogical-impulse"
-        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.config/illogical-impulse"
 
         # Run full switchwall pipeline if venv is ready — generates all color files
         # including material_colors.scss and terminal/kitty-theme.conf
