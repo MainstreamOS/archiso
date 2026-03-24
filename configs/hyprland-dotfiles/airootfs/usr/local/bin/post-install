@@ -658,6 +658,8 @@ if [[ -n "$MAIN_USER" ]]; then
         done
         # Fix pyvenv.cfg home path
         sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
+        # Ensure all venv bin scripts are executable (squashfs rsync can lose +x)
+        chmod +x "$VENV_PATH"/bin/* 2>/dev/null || true
         chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
         info "Python venv ready (pre-baked)."
     else
@@ -708,6 +710,10 @@ VENVEOF
         info "Generating initial Material You colors from default wallpaper..."
         mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
         chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
+
+        # Ensure illogical-impulse config dir exists (switchwall.sh writes config.json here)
+        mkdir -p "$MAIN_USER_HOME/.config/illogical-impulse"
+        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.config/illogical-impulse"
 
         # Run full switchwall pipeline if venv is ready — generates all color files
         # including material_colors.scss and terminal/kitty-theme.conf
@@ -816,7 +822,36 @@ if $_root_is_btrfs; then
             # config manually so it is ready on first real boot.
             warn "snapper create-config failed (likely chroot) — writing config manually..."
             mkdir -p /etc/snapper/configs
-            cp /etc/snapper/config-templates/default /etc/snapper/configs/root
+            if [[ -f /etc/snapper/config-templates/default ]]; then
+                cp /etc/snapper/config-templates/default /etc/snapper/configs/root
+            else
+                # Template may not exist in chroot — write a minimal config inline
+                cat > /etc/snapper/configs/root << 'SNAPCFG'
+SUBVOLUME="/"
+FSTYPE="btrfs"
+QGROUP=""
+SPACE_LIMIT="0.5"
+FREE_LIMIT="0.2"
+ALLOW_USERS=""
+ALLOW_GROUPS=""
+SYNC_ACL=""
+BACKGROUND_COMPARISON="yes"
+NUMBER_CLEANUP="yes"
+NUMBER_MIN_AGE="1800"
+NUMBER_LIMIT="10"
+NUMBER_LIMIT_IMPORTANT="5"
+TIMELINE_CREATE="yes"
+TIMELINE_CLEANUP="yes"
+TIMELINE_MIN_AGE="1800"
+TIMELINE_LIMIT_HOURLY="5"
+TIMELINE_LIMIT_DAILY="7"
+TIMELINE_LIMIT_WEEKLY="0"
+TIMELINE_LIMIT_MONTHLY="0"
+TIMELINE_LIMIT_YEARLY="0"
+EMPTY_PRE_POST_CLEANUP="yes"
+EMPTY_PRE_POST_MIN_AGE="1800"
+SNAPCFG
+            fi
             # Register the config with snapper
             sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper 2>/dev/null || \
                 echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
