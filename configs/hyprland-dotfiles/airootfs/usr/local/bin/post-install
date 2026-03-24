@@ -408,6 +408,14 @@ if ! mkinitcpio -P; then
     fi
 fi
 
+# Explicitly update Limine boot entries.  The mkinitcpio post-hook may not
+# reliably update limine.conf inside a Calamares chroot, so call the tool
+# directly to ensure //linux sub-entries are created.
+if command -v limine-mkinitcpio &>/dev/null; then
+    info "Updating Limine boot entries via limine-mkinitcpio..."
+    limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+fi
+
 # Fallback: if limine-mkinitcpio-hook is NOT installed (yay failed, no
 # network, etc.), manually sync kernel/initramfs so the system can still boot
 # from the template's //Kernel entry.
@@ -830,18 +838,23 @@ elif btrfs filesystem usage / &>/dev/null; then
     _root_is_btrfs=true
 fi
 
+if ! $_root_is_btrfs; then
+    warn "Root filesystem is NOT btrfs — skipping snapper configuration."
+fi
+
 if $_root_is_btrfs; then
-    info "Btrfs detected — configuring snapper..."
+    info "Btrfs detected on / — configuring snapper..."
 
     # snapper create-config always creates /.snapshots itself — it fails if
     # anything already exists there, whether a plain directory or a subvolume.
     # Delete it unconditionally so snapper gets a clean slate.
     if btrfs subvolume show /.snapshots &>/dev/null; then
         info "Removing existing /.snapshots subvolume so snapper can recreate it..."
-        btrfs subvolume delete /.snapshots
+        btrfs subvolume delete /.snapshots 2>/dev/null || \
+            warn "Could not delete /.snapshots subvolume — snapper create-config may fail."
     elif [[ -d "/.snapshots" ]]; then
         info "Removing plain /.snapshots directory so snapper can create the subvolume..."
-        rm -rf /.snapshots
+        rm -rf /.snapshots 2>/dev/null || true
     fi
 
     # Initialize snapper root config if not already present
