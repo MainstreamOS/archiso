@@ -39,25 +39,26 @@ if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. SPEED & SILENCE + LIVE SERVICE CLEANUP
+# 3. LIVE SERVICE CLEANUP
 # ---------------------------------------------------------------------------
-info "Optimizing boot services and disabling live-only services..."
+info "Removing live-only services..."
 
-# Speed fixes — disable/mask services that add latency on the installed system
-systemctl disable systemd-time-wait-sync.service || true
-# NOTE: NetworkManager-wait-online is kept enabled so pacman-keyring-init.service
-# has a working network connection on first boot to reach GPG keyservers
-# systemctl disable NetworkManager-wait-online.service || true
-# debug-shell is only useful for emergency TTY debugging; safe to mask normally
-systemctl mask debug-shell.service || true
-# systemd-oomd reacts to memory pressure but can cause latency; zram handles
-# memory pressure instead so oomd is redundant
-systemctl mask systemd-oomd.service || true
+# Remove live-ISO-only unit files entirely — disabling is not enough because
+# etc-pacman.d-gnupg.mount mounts a tmpfs over the keyring directory,
+# destroying any keys written there on every reboot.
+for unit in \
+    /etc/systemd/system/etc-pacman.d-gnupg.mount \
+    /etc/systemd/system/pacman-init.service; do
+    if [[ -f "$unit" ]]; then
+        systemctl disable "$(basename "$unit")" 2>/dev/null || true
+        rm -f "$unit"
+        info "Removed live-only unit: $(basename "$unit")"
+    fi
+done
 
-# Disable services that are live-ISO-only — these should never run on
-# the installed system. Nothing here affects networking, DNS, or keyring.
+# Disable other live-ISO-only services (unit files owned by packages, so
+# disable only — don't delete).
 for svc in \
-    pacman-init.service \
     reflector.service \
     reflector.timer \
     sshd.service; do
@@ -496,12 +497,15 @@ cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
 Description=Initialize pacman keyring on first boot
 After=network-online.target time-sync.target
 Wants=network-online.target
-ConditionPathExists=!/etc/pacman.d/gnupg/pubring.gpg
+# Run if the keyring is missing OR empty (e.g. left over from a tmpfs mount).
+# The ExecCondition check handles both cases; ConditionPathExists alone is
+# not enough because an empty pubring.gpg can exist from a failed init.
+ConditionPathExists=!/etc/pacman.d/gnupg/trustdb.gpg
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'rm -rf /etc/pacman.d/gnupg && pacman-key --init && pacman-key --populate archlinux'
+ExecStart=/bin/bash -c 'rm -rf /etc/pacman.d/gnupg && pacman-key --init && pacman-key --populate archlinux && pacman-key --updatedb'
 ExecStartPost=/usr/bin/systemctl disable pacman-keyring-init.service
 
 [Install]
