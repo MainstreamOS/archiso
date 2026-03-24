@@ -9,7 +9,15 @@ log()  { echo "[pre-install] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 
-# --- 0. DNS Fix ---
+# --- 0. Clean pacman local DB ---
+# The archiso build process can leave stray %INSTALLED_DB% keys in
+# /var/lib/pacman/local/*/desc files, causing pacman to spam warnings
+# on every operation.  Strip them before any pacman call.
+info "Cleaning stale keys from pacman local database..."
+find /var/lib/pacman/local/ -type f -name "desc" -exec \
+    sed -i '/^%INSTALLED_DB%$/,+2d' {} + 2>/dev/null || true
+
+# --- 1. DNS Fix ---
 # /etc/resolv.conf on the live system is a symlink to
 # /run/systemd/resolve/stub-resolv.conf.  Inside the Calamares chroot,
 # /run/ is an empty tmpfs so the symlink is dangling — DNS fails silently.
@@ -20,7 +28,7 @@ if [ -L /etc/resolv.conf ] || [ ! -s /etc/resolv.conf ]; then
     printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf
 fi
 
-# --- 1. Keyring & Mirror Sync ---
+# --- 2. Keyring & Mirror Sync ---
 # Since we are already in the chroot, we initialize the keys for the target system
 info "Initializing Arch Linux keyring..."
 pacman-key --init
@@ -45,7 +53,7 @@ else
     warn "No network detected — skipping database sync. Packages will use cached data."
 fi
 
-# --- 2. Archiso Cleanup ---
+# --- 3. Archiso Cleanup ---
 # We must remove these because they point to the live environment's
 # read-only filesystem, which causes mkinitcpio to fail on the new SSD.
 info "Removing live-session hardware configurations..."
@@ -59,7 +67,7 @@ fi
 # install-limine will reinstall the linux kernel which recreates it, and
 # post-install owns the final mkinitcpio -P call after all config is in place.
 
-# --- 3. Live Package Removal ---
+# --- 4. Live Package Removal ---
 # Remove packages that are only needed in the live ISO environment.
 # This must run after pacman -Sy above so the local database exists.
 # Calamares' built-in `packages` module runs before shellprocess and
