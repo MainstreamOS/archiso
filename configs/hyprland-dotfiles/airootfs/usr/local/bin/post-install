@@ -845,39 +845,35 @@ fi
 if $_root_is_btrfs; then
     info "Btrfs detected on / — configuring snapper..."
 
-    # snapper create-config always creates /.snapshots itself — it fails if
-    # anything already exists there, whether a plain directory or a subvolume.
-    # Delete it unconditionally so snapper gets a clean slate.
+    # Ensure /.snapshots subvolume exists.  snapper expects to own this, and
+    # Calamares may have created a plain directory during partitioning.
     if btrfs subvolume show /.snapshots &>/dev/null; then
-        info "Removing existing /.snapshots subvolume so snapper can recreate it..."
-        btrfs subvolume delete /.snapshots 2>/dev/null || \
-            warn "Could not delete /.snapshots subvolume — snapper create-config may fail."
+        info "/.snapshots subvolume already exists."
     elif [[ -d "/.snapshots" ]]; then
-        info "Removing plain /.snapshots directory so snapper can create the subvolume..."
+        info "Removing plain /.snapshots directory, replacing with subvolume..."
         rm -rf /.snapshots 2>/dev/null || true
+        btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
+    else
+        btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
     fi
+    chmod 750 /.snapshots 2>/dev/null || true
 
-    # Initialize snapper root config if not already present
-    if [[ ! -f /etc/snapper/configs/root ]]; then
-        info "Creating snapper root config..."
-        if snapper -c root create-config / 2>/dev/null; then
-            info "Snapper root config created via snapper."
-        else
-            # snapper create-config fails inside chroots (D-Bus unavailable).
-            # Write the config manually — every path is created explicitly.
-            warn "snapper create-config failed (likely chroot) — writing config manually..."
+    # --- Write snapper root config MANUALLY ---
+    # We intentionally NEVER call "snapper -c root create-config /" here.
+    # In a Calamares chroot, snapper create-config behaves unpredictably:
+    # it may succeed, partially succeed, or fail — and in some cases it
+    # creates the config file but a later cleanup removes it.  Writing
+    # the config manually is 100% reliable.
+    info "Writing snapper root config manually..."
+    mkdir -p /etc/snapper/configs
+    mkdir -p /etc/sysconfig
 
-            # Ensure all parent directories exist
-            mkdir -p /etc/snapper/configs || true
-            mkdir -p /etc/sysconfig || true
-
-            # Write the config file — use the shipped template if available,
-            # otherwise write a known-good inline config.
-            if [[ -f /etc/snapper/config-templates/default ]]; then
-                cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
-                info "Config written from shipped template."
-            else
-                cat > /etc/snapper/configs/root << 'SNAPCFG'
+    # Write the config from the shipped template or inline
+    if [[ -f /etc/snapper/config-templates/default ]]; then
+        cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
+        info "Config written from shipped template."
+    else
+        cat > /etc/snapper/configs/root << 'SNAPCFG'
 SUBVOLUME="/"
 FSTYPE="btrfs"
 QGROUP=""
@@ -902,51 +898,34 @@ TIMELINE_LIMIT_YEARLY="0"
 EMPTY_PRE_POST_CLEANUP="yes"
 EMPTY_PRE_POST_MIN_AGE="1800"
 SNAPCFG
-                info "Config written from inline template."
-            fi
+        info "Config written from inline template."
+    fi
 
-            # Register "root" in snapper's config registry.
-            # The file must contain SNAPPER_CONFIGS="root" for snapper to
-            # recognise the config.  We overwrite any existing value.
-            if [[ -f /etc/sysconfig/snapper ]]; then
-                if grep -q '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper; then
-                    sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper
-                else
-                    echo 'SNAPPER_CONFIGS="root"' >> /etc/sysconfig/snapper
-                fi
-            else
-                echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
-            fi
-
-            # Ensure /.snapshots subvolume exists
-            if ! btrfs subvolume show /.snapshots &>/dev/null; then
-                btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
-            fi
-            chmod 750 /.snapshots 2>/dev/null || true
+    # Apply our preferred settings
+    if [[ -f /etc/snapper/configs/root ]]; then
+        sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root
+        sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_LIMIT_WEEKLY=.*/TIMELINE_LIMIT_WEEKLY="0"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_LIMIT_MONTHLY=.*/TIMELINE_LIMIT_MONTHLY="0"/' /etc/snapper/configs/root
+        sed -i 's/^TIMELINE_LIMIT_YEARLY=.*/TIMELINE_LIMIT_YEARLY="0"/' /etc/snapper/configs/root
+        sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
+        if [[ -n "$MAIN_USER" ]]; then
+            sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$MAIN_USER\"/" /etc/snapper/configs/root
         fi
+        info "Snapper root config customized."
+    else
+        warn "CRITICAL: Failed to write /etc/snapper/configs/root!"
+    fi
 
-        # Verify the config was actually created
-        if [[ ! -f /etc/snapper/configs/root ]]; then
-            warn "CRITICAL: /etc/snapper/configs/root still missing after creation attempt!"
-            warn "Snapper will not function until this is resolved."
-        fi
-
-        if [[ -f /etc/snapper/configs/root ]]; then
-            sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root
-            sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_LIMIT_WEEKLY=.*/TIMELINE_LIMIT_WEEKLY="0"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_LIMIT_MONTHLY=.*/TIMELINE_LIMIT_MONTHLY="0"/' /etc/snapper/configs/root
-            sed -i 's/^TIMELINE_LIMIT_YEARLY=.*/TIMELINE_LIMIT_YEARLY="0"/' /etc/snapper/configs/root
-            if [[ -n "$MAIN_USER" ]]; then
-                sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$MAIN_USER\"/" /etc/snapper/configs/root
-            fi
-            # Set SUBVOLUME to / so snapper knows where to snapshot
-            sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
-        fi
+    # Register "root" in snapper's config registry
+    if [[ -f /etc/sysconfig/snapper ]] && grep -q '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper; then
+        sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper
+    else
+        echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
     fi
 
     # Initialize snapper home config if /home is btrfs
@@ -998,6 +977,27 @@ LSSCONF
     if [[ -f /etc/snapper/configs/root ]]; then
         snapper -c root create --description "Fresh install" || true
     fi
+
+    # --- Firstboot safety net ---
+    # If something removes /etc/snapper/configs/root between now and first
+    # boot (e.g. a pacman hook, package reinstall, or Calamares cleanup),
+    # this oneshot service recreates it on the real running system where
+    # snapper create-config works reliably.
+    cat > /etc/systemd/system/snapper-init.service << 'SNAPPERUNITEOF'
+[Unit]
+Description=Initialize snapper root config if missing
+ConditionPathExists=!/etc/snapper/configs/root
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'snapper -c root create-config / 2>/dev/null || true; [ -f /etc/snapper/configs/root ] && snapper -c root create --description "Fresh install" || true'
+ExecStartPost=/usr/bin/systemctl disable snapper-init.service
+
+[Install]
+WantedBy=multi-user.target
+SNAPPERUNITEOF
+    systemctl enable snapper-init.service 2>/dev/null || true
 
     info "Snapper setup complete."
 else
