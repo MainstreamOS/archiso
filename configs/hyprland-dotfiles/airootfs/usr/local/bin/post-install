@@ -995,6 +995,8 @@ SNAPPERUNITEOF
     cat > /usr/local/bin/snapper-firstboot << 'FIRSTBOOTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# All snapper commands use --no-dbus because snapperd (D-Bus service)
+# may not be available during early boot when this service runs.
 log() { echo "[snapper-firstboot] $*"; }
 
 # --- Root config ---
@@ -1004,7 +1006,6 @@ if [[ ! -f /etc/snapper/configs/root ]]; then
     if [[ -f /etc/snapper/config-templates/default ]]; then
         cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
     else
-        # Minimal inline config
         cat > /etc/snapper/configs/root << 'CFG'
 SUBVOLUME="/"
 FSTYPE="btrfs"
@@ -1033,6 +1034,8 @@ CFG
     fi
     sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
     log "Root config created."
+else
+    log "Root config already exists."
 fi
 
 # Ensure sysconfig knows about root
@@ -1045,16 +1048,17 @@ fi
 if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
     if [[ ! -f /etc/snapper/configs/home ]]; then
         log "Creating snapper home config..."
-        snapper -c home create-config /home 2>/dev/null || \
+        snapper --no-dbus -c home create-config /home 2>/dev/null || \
             log "WARN: snapper create-config /home failed."
     fi
 fi
 
 # --- Initial snapshot ---
-if snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
+if snapper --no-dbus -c root list 2>/dev/null | grep -q "Fresh install"; then
     log "Fresh install snapshot already exists."
 else
-    snapper -c root create --description "Fresh install" 2>/dev/null || \
+    log "Creating initial 'Fresh install' snapshot..."
+    snapper --no-dbus -c root create --description "Fresh install" 2>/dev/null || \
         log "WARN: Could not create initial snapshot."
 fi
 
