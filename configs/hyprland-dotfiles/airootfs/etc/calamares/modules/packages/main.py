@@ -723,8 +723,42 @@ def run():
                     .format(e.cmd, e.returncode))
 
     operations = libcalamares.job.configuration.get("operations", [])
-    if libcalamares.globalstorage.contains("packageOperations"):
-        operations += libcalamares.globalstorage.value("packageOperations")
+
+    # ── Install-choice override (packagechooser@installchoice) ────────
+    # "default"   → install the Included Extras list, ignore netinstall
+    # "minimal"   → install nothing from netinstall
+    # "customize" → use whatever netinstall selected (normal behaviour)
+    install_choice = ""
+    if libcalamares.globalstorage.contains("packagechooser_installchoice"):
+        install_choice = libcalamares.globalstorage.value(
+            "packagechooser_installchoice") or ""
+    libcalamares.utils.debug(
+        "Install choice: {!r}".format(install_choice))
+
+    if install_choice == "default":
+        # Override with the full Included Extras package list
+        _default_packages = [
+            "google-chrome", "resources", "gnome-disk-utility",
+            "gnome-software", "appstream", "appstream-glib", "flatpak",
+            "gnome-calculator", "gnome-calendar", "simple-scan",
+            "gnome-font-viewer", "impression", "libreoffice-fresh",
+            "gnome-text-editor", "mpv", "mpv-modernz", "mpv-thumbfast",
+            "spotify", "satty", "loupe", "gimp", "fastfetch", "topgrade",
+            "localsend", "ksshaskpass",
+        ]
+        operations += [{"try_install": _default_packages}]
+        libcalamares.utils.debug(
+            "Install choice 'default': installing %d Included Extras"
+            % len(_default_packages))
+    elif install_choice == "minimal":
+        # Skip all optional packages — don't add netinstall operations
+        libcalamares.utils.debug(
+            "Install choice 'minimal': skipping optional packages")
+    else:
+        # "customize" or unset — use netinstall selections as-is
+        if libcalamares.globalstorage.contains("packageOperations"):
+            operations += libcalamares.globalstorage.value(
+                "packageOperations")
 
     mode_packages = None
     total_packages = 0

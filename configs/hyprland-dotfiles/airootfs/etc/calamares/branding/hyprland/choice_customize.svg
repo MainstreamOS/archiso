@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Customize — three horizontal sliders -->
+  <rect width="256" height="256" rx="32" fill="#211f26"/>
+  <!-- Slider 1 — knob at 70% -->
+  <rect x="40" y="62" width="176" height="8" rx="4" fill="#49454f"/>
+  <rect x="40" y="62" width="123" height="8" rx="4" fill="#cfbcff"/>
+  <circle cx="163" cy="66" r="14" fill="#cfbcff"/>
+  <!-- Slider 2 — knob at 40% -->
+  <rect x="40" y="124" width="176" height="8" rx="4" fill="#49454f"/>
+  <rect x="40" y="124" width="70" height="8" rx="4" fill="#cfbcff"/>
+  <circle cx="110" cy="128" r="14" fill="#cfbcff"/>
+  <!-- Slider 3 — knob at 90% -->
+  <rect x="40" y="186" width="176" height="8" rx="4" fill="#49454f"/>
+  <rect x="40" y="186" width="158" height="8" rx="4" fill="#cfbcff"/>
+  <circle cx="198" cy="190" r="14" fill="#cfbcff"/>
+</svg>
