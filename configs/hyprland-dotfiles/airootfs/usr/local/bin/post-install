@@ -964,13 +964,10 @@ LSSCONF
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
     fi
 
-    # Enable snapper timers + limine-snapper-sync so new snapshots get boot entries.
-    # Use 'enable' only (not --now) — starting services inside a chroot fails
-    # and can cause the enable to be reported as failed even though the
-    # symlinks were created.  services-systemd.conf also enables these as a
-    # safety net.
-    systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
-    systemctl enable limine-snapper-sync.service 2>/dev/null || true
+    # NOTE: snapper timers and limine-snapper-sync are NOT enabled here.
+    # They are enabled by snapper-firstboot on first boot AFTER configs are
+    # fully set up.  Enabling them here causes a race condition where
+    # snapperd starts via D-Bus activation before configs exist, deleting them.
 
     # --- Firstboot service ---
     # Handles all snapper operations that require a fully booted system:
@@ -1078,6 +1075,15 @@ else
     snapper --no-dbus -c root create --description "Fresh install" 2>/dev/null || \
         log "WARN: Could not create initial snapshot."
 fi
+
+# --- Enable snapper timers NOW that configs are set up ---
+# These must not be enabled before configs exist, because the timers
+# trigger snapperd via D-Bus, and snapperd deletes configs it considers
+# invalid during its startup validation.
+log "Enabling snapper timers and limine-snapper-sync..."
+systemctl enable --now snapper-timeline.timer 2>/dev/null || true
+systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
+systemctl enable limine-snapper-sync.service 2>/dev/null || true
 
 # Disable ourselves — one-shot job done
 systemctl disable snapper-init.service 2>/dev/null || true
