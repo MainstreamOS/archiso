@@ -414,6 +414,14 @@ fi
 if command -v limine-mkinitcpio &>/dev/null; then
     info "Updating Limine boot entries via limine-mkinitcpio..."
     limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+
+    # limine-mkinitcpio-hook manages kernel/initramfs in /boot/efi/<machine-id>/linux/
+    # and creates proper //linux entries in limine.conf.  Remove the bootstrap
+    # copies that install-limine placed directly in /boot/efi/ so we don't
+    # have stale duplicates (~70MB) on the EFI partition.
+    if [ -d "/boot/efi" ]; then
+        rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img 2>/dev/null || true
+    fi
 fi
 
 # Fallback: if limine-mkinitcpio-hook is NOT installed (yay failed, no
@@ -860,17 +868,23 @@ if $_root_is_btrfs; then
     # Initialize snapper root config if not already present
     if [[ ! -f /etc/snapper/configs/root ]]; then
         info "Creating snapper root config..."
-        if snapper -c root create-config /; then
-            info "Snapper root config created."
+        if snapper -c root create-config / 2>/dev/null; then
+            info "Snapper root config created via snapper."
         else
-            # snapper create-config can fail inside a chroot — create the
-            # config manually so it is ready on first real boot.
+            # snapper create-config fails inside chroots (D-Bus unavailable).
+            # Write the config manually — every path is created explicitly.
             warn "snapper create-config failed (likely chroot) — writing config manually..."
-            mkdir -p /etc/snapper/configs
+
+            # Ensure all parent directories exist
+            mkdir -p /etc/snapper/configs || true
+            mkdir -p /etc/sysconfig || true
+
+            # Write the config file — use the shipped template if available,
+            # otherwise write a known-good inline config.
             if [[ -f /etc/snapper/config-templates/default ]]; then
-                cp /etc/snapper/config-templates/default /etc/snapper/configs/root
+                cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
+                info "Config written from shipped template."
             else
-                # Template may not exist in chroot — write a minimal config inline
                 cat > /etc/snapper/configs/root << 'SNAPCFG'
 SUBVOLUME="/"
 FSTYPE="btrfs"
@@ -896,16 +910,33 @@ TIMELINE_LIMIT_YEARLY="0"
 EMPTY_PRE_POST_CLEANUP="yes"
 EMPTY_PRE_POST_MIN_AGE="1800"
 SNAPCFG
+                info "Config written from inline template."
             fi
-            # Register the config with snapper
-            mkdir -p /etc/sysconfig
-            sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper 2>/dev/null || \
+
+            # Register "root" in snapper's config registry.
+            # The file must contain SNAPPER_CONFIGS="root" for snapper to
+            # recognise the config.  We overwrite any existing value.
+            if [[ -f /etc/sysconfig/snapper ]]; then
+                if grep -q '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper; then
+                    sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper
+                else
+                    echo 'SNAPPER_CONFIGS="root"' >> /etc/sysconfig/snapper
+                fi
+            else
                 echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
+            fi
+
             # Ensure /.snapshots subvolume exists
             if ! btrfs subvolume show /.snapshots &>/dev/null; then
                 btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
             fi
             chmod 750 /.snapshots 2>/dev/null || true
+        fi
+
+        # Verify the config was actually created
+        if [[ ! -f /etc/snapper/configs/root ]]; then
+            warn "CRITICAL: /etc/snapper/configs/root still missing after creation attempt!"
+            warn "Snapper will not function until this is resolved."
         fi
 
         if [[ -f /etc/snapper/configs/root ]]; then
@@ -963,9 +994,13 @@ LSSCONF
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
     fi
 
-    # Enable snapper timers + limine-snapper-sync so new snapshots get boot entries
+    # Enable snapper timers + limine-snapper-sync so new snapshots get boot entries.
+    # Use 'enable' only (not --now) — starting services inside a chroot fails
+    # and can cause the enable to be reported as failed even though the
+    # symlinks were created.  services-systemd.conf also enables these as a
+    # safety net.
     systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
-    systemctl enable --now limine-snapper-sync.service 2>/dev/null || true
+    systemctl enable limine-snapper-sync.service 2>/dev/null || true
 
     # Create initial "Fresh install" snapshot
     if [[ -f /etc/snapper/configs/root ]]; then
