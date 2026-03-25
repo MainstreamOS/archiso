@@ -995,18 +995,19 @@ SNAPPERUNITEOF
     cat > /usr/local/bin/snapper-firstboot << 'FIRSTBOOTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
-# All snapper commands use --no-dbus because snapperd (D-Bus service)
-# may not be available during early boot when this service runs.
+# IMPORTANT: Never call "snapper create-config" — it deletes other config
+# files as a side effect.  All configs are written manually.
+# All snapper commands use --no-dbus because snapperd may not be available
+# during early boot.
 log() { echo "[snapper-firstboot] $*"; }
 
-# --- Root config ---
-if [[ ! -f /etc/snapper/configs/root ]]; then
-    log "Root config missing — writing manually..."
+write_snapper_config() {
+    local name="$1" subvol="$2"
     mkdir -p /etc/snapper/configs
     if [[ -f /etc/snapper/config-templates/default ]]; then
-        cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
+        cp -f /etc/snapper/config-templates/default "/etc/snapper/configs/$name"
     else
-        cat > /etc/snapper/configs/root << 'CFG'
+        cat > "/etc/snapper/configs/$name" << 'CFG'
 SUBVOLUME="/"
 FSTYPE="btrfs"
 QGROUP=""
@@ -1032,7 +1033,13 @@ EMPTY_PRE_POST_CLEANUP="yes"
 EMPTY_PRE_POST_MIN_AGE="1800"
 CFG
     fi
-    sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
+    sed -i "s|^SUBVOLUME=.*|SUBVOLUME=\"$subvol\"|" "/etc/snapper/configs/$name"
+}
+
+# --- Root config ---
+if [[ ! -f /etc/snapper/configs/root ]]; then
+    log "Root config missing — writing manually..."
+    write_snapper_config root /
     log "Root config created."
 else
     log "Root config already exists."
@@ -1044,12 +1051,22 @@ if ! grep -q '"root"' /etc/sysconfig/snapper 2>/dev/null; then
     echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
 fi
 
-# --- Home config ---
+# --- Home config (manual — never use snapper create-config) ---
 if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
     if [[ ! -f /etc/snapper/configs/home ]]; then
-        log "Creating snapper home config..."
-        snapper --no-dbus -c home create-config /home 2>/dev/null || \
-            log "WARN: snapper create-config /home failed."
+        log "Creating snapper home config manually..."
+        # Ensure .snapshots subvolume exists under /home
+        if ! btrfs subvolume show /home/.snapshots &>/dev/null; then
+            btrfs subvolume create /home/.snapshots 2>/dev/null || mkdir -p /home/.snapshots
+        fi
+        chmod 750 /home/.snapshots 2>/dev/null || true
+        write_snapper_config home /home
+        # Register home in sysconfig
+        current=$(grep '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper 2>/dev/null | sed 's/.*"\(.*\)"/\1/')
+        if [[ "$current" != *home* ]]; then
+            echo "SNAPPER_CONFIGS=\"$current home\"" > /etc/sysconfig/snapper
+        fi
+        log "Home config created."
     fi
 fi
 
