@@ -957,8 +957,14 @@ COMMANDS_AFTER_SAVE="limine-enroll-config"
 NOTIFICATION_ICON="/usr/share/icons/hicolor/128x128/apps/LimineSnapperSync.png"
 LSSCONF
 
-        # NOTE: do NOT run limine-snapper-sync here — it invokes snapper
-        # internally and fails in a chroot.  It will run on firstboot.
+        # Tell limine-snapper-sync which snapper config to use, so it never
+        # tries to auto-create one via "snapper create-config" (which deletes
+        # existing configs as a side effect).
+        mkdir -p /etc/default
+        cat > /etc/default/limine << 'LIMINEDEF'
+SNAPPER_CONFIG_NAME=root
+LIMINEDEF
+
         info "limine-snapper-sync config deployed."
     else
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
