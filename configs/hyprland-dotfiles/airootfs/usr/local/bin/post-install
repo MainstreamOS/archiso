@@ -901,6 +901,9 @@ SNAPCFG
         info "Config written from inline template."
     fi
 
+    # Force flush to disk — btrfs can lose new directory entries without sync
+    sync
+
     # Apply our preferred settings
     if [[ -f /etc/snapper/configs/root ]]; then
         sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root
@@ -928,20 +931,15 @@ SNAPCFG
         echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
     fi
 
-    # Initialize snapper home config if /home is btrfs
-    _home_is_btrfs=false
-    if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
-        _home_is_btrfs=true
-    elif grep -qE '^\s*[^#]\S+\s+/home\s+btrfs\s' /etc/fstab 2>/dev/null; then
-        _home_is_btrfs=true
-    fi
-    if $_home_is_btrfs; then
-        if [[ ! -f /etc/snapper/configs/home ]]; then
-            info "Creating snapper home config..."
-            snapper -c home create-config /home || \
-                warn "snapper create-config /home failed."
-        fi
-    fi
+    # Flush everything to disk before continuing
+    sync
+
+    # NOTE: We do NOT call any "snapper" commands in the chroot.
+    # snapper create-config / snapper create require D-Bus and a fully
+    # booted system.  Running them in a Calamares chroot can corrupt or
+    # delete the config files we just wrote.  All dynamic snapper
+    # operations (home config, initial snapshot) are deferred to the
+    # firstboot service below.
 
     # Deploy limine-snapper-sync config
     if command -v limine-snapper-sync &>/dev/null; then
@@ -959,8 +957,9 @@ COMMANDS_AFTER_SAVE="limine-enroll-config"
 NOTIFICATION_ICON="/usr/share/icons/hicolor/128x128/apps/LimineSnapperSync.png"
 LSSCONF
 
-        limine-snapper-sync 2>/dev/null || true
-        info "limine-snapper-sync configured."
+        # NOTE: do NOT run limine-snapper-sync here — it invokes snapper
+        # internally and fails in a chroot.  It will run on firstboot.
+        info "limine-snapper-sync config deployed."
     else
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
     fi
@@ -973,30 +972,97 @@ LSSCONF
     systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
     systemctl enable limine-snapper-sync.service 2>/dev/null || true
 
-    # Create initial "Fresh install" snapshot
-    if [[ -f /etc/snapper/configs/root ]]; then
-        snapper -c root create --description "Fresh install" || true
-    fi
-
-    # --- Firstboot safety net ---
-    # If something removes /etc/snapper/configs/root between now and first
-    # boot (e.g. a pacman hook, package reinstall, or Calamares cleanup),
-    # this oneshot service recreates it on the real running system where
-    # snapper create-config works reliably.
+    # --- Firstboot service ---
+    # Handles all snapper operations that require a fully booted system:
+    # - Verify/recreate the root config if it's somehow missing
+    # - Create the initial "Fresh install" snapshot
+    # - Create home config if /home is btrfs
+    # We write the config manually here too (not via snapper create-config)
+    # because create-config fails when /.snapshots already exists.
     cat > /etc/systemd/system/snapper-init.service << 'SNAPPERUNITEOF'
 [Unit]
-Description=Initialize snapper root config if missing
-ConditionPathExists=!/etc/snapper/configs/root
+Description=Initialize snapper configs and create first snapshot
 After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'snapper -c root create-config / 2>/dev/null || true; [ -f /etc/snapper/configs/root ] && snapper -c root create --description "Fresh install" || true'
-ExecStartPost=/usr/bin/systemctl disable snapper-init.service
+ExecStart=/usr/local/bin/snapper-firstboot
 
 [Install]
 WantedBy=multi-user.target
 SNAPPERUNITEOF
+
+    cat > /usr/local/bin/snapper-firstboot << 'FIRSTBOOTEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+log() { echo "[snapper-firstboot] $*"; }
+
+# --- Root config ---
+if [[ ! -f /etc/snapper/configs/root ]]; then
+    log "Root config missing — writing manually..."
+    mkdir -p /etc/snapper/configs
+    if [[ -f /etc/snapper/config-templates/default ]]; then
+        cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
+    else
+        # Minimal inline config
+        cat > /etc/snapper/configs/root << 'CFG'
+SUBVOLUME="/"
+FSTYPE="btrfs"
+QGROUP=""
+SPACE_LIMIT="0.5"
+FREE_LIMIT="0.2"
+ALLOW_USERS=""
+ALLOW_GROUPS=""
+SYNC_ACL=""
+BACKGROUND_COMPARISON="yes"
+NUMBER_CLEANUP="yes"
+NUMBER_MIN_AGE="1800"
+NUMBER_LIMIT="10"
+NUMBER_LIMIT_IMPORTANT="5"
+TIMELINE_CREATE="yes"
+TIMELINE_CLEANUP="yes"
+TIMELINE_MIN_AGE="1800"
+TIMELINE_LIMIT_HOURLY="5"
+TIMELINE_LIMIT_DAILY="7"
+TIMELINE_LIMIT_WEEKLY="0"
+TIMELINE_LIMIT_MONTHLY="0"
+TIMELINE_LIMIT_YEARLY="0"
+EMPTY_PRE_POST_CLEANUP="yes"
+EMPTY_PRE_POST_MIN_AGE="1800"
+CFG
+    fi
+    sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
+    log "Root config created."
+fi
+
+# Ensure sysconfig knows about root
+if ! grep -q '"root"' /etc/sysconfig/snapper 2>/dev/null; then
+    mkdir -p /etc/sysconfig
+    echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
+fi
+
+# --- Home config ---
+if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
+    if [[ ! -f /etc/snapper/configs/home ]]; then
+        log "Creating snapper home config..."
+        snapper -c home create-config /home 2>/dev/null || \
+            log "WARN: snapper create-config /home failed."
+    fi
+fi
+
+# --- Initial snapshot ---
+if snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
+    log "Fresh install snapshot already exists."
+else
+    snapper -c root create --description "Fresh install" 2>/dev/null || \
+        log "WARN: Could not create initial snapshot."
+fi
+
+# Disable ourselves — one-shot job done
+systemctl disable snapper-init.service 2>/dev/null || true
+log "Firstboot snapper init complete."
+FIRSTBOOTEOF
+    chmod +x /usr/local/bin/snapper-firstboot
     systemctl enable snapper-init.service 2>/dev/null || true
 
     info "Snapper setup complete."
