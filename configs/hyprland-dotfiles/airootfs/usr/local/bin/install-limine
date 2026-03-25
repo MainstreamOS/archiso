@@ -93,8 +93,7 @@ CONF_DEST="$BOOT_PATH/limine.conf"
 
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."
-    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" | \
-        sed "s/subvol=\/@/subvol=@/g" > "$CONF_DEST"
+    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" > "$CONF_DEST"
     rm -f "$TEMPLATE"
     info "Config deployed to $CONF_DEST, template removed."
 elif [ -f "$CONF_DEST" ]; then

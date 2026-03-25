@@ -414,21 +414,13 @@ fi
 if command -v limine-mkinitcpio &>/dev/null; then
     info "Updating Limine boot entries via limine-mkinitcpio..."
     limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
-
-    # limine-mkinitcpio-hook manages kernel/initramfs in /boot/efi/<machine-id>/linux/
-    # and creates proper //linux entries in limine.conf.  Remove the bootstrap
-    # copies that install-limine placed directly in /boot/efi/ so we don't
-    # have stale duplicates (~70MB) on the EFI partition.
-    if [ -d "/boot/efi" ]; then
-        rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img 2>/dev/null || true
-    fi
 fi
 
-# Fallback: if limine-mkinitcpio-hook is NOT installed (yay failed, no
-# network, etc.), manually sync kernel/initramfs so the system can still boot
-# from the template's //Kernel entry.
-if ! pacman -Qq limine-mkinitcpio-hook &>/dev/null && [ -d "/boot/efi" ]; then
-    info "limine-mkinitcpio-hook not available — manually syncing kernel to EFI..."
+# Ensure kernel/initramfs exist at the EFI root for the top-level /Arch Linux
+# entry (boot():///vmlinuz-linux).  limine-mkinitcpio-hook also places copies
+# in /boot/efi/<machine-id>/linux/ for its //linux sub-entries, but the
+# top-level fallback entry always needs the EFI-root copies.
+if [ -d "/boot/efi" ]; then
     cp -f /boot/vmlinuz-linux /boot/efi/ || true
     cp -f /boot/initramfs-linux.img /boot/efi/ || true
 fi
