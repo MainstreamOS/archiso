@@ -843,103 +843,23 @@ if ! $_root_is_btrfs; then
 fi
 
 if $_root_is_btrfs; then
-    info "Btrfs detected on / — configuring snapper..."
+    info "Btrfs detected on / — preparing snapper for firstboot setup..."
 
-    # Ensure /.snapshots subvolume exists.  snapper expects to own this, and
-    # Calamares may have created a plain directory during partitioning.
-    if btrfs subvolume show /.snapshots &>/dev/null; then
-        info "/.snapshots subvolume already exists."
-    elif [[ -d "/.snapshots" ]]; then
-        info "Removing plain /.snapshots directory, replacing with subvolume..."
+    # IMPORTANT: We do NOT create /.snapshots, write config files, or call
+    # any snapper commands in this chroot.  snapper create-config sets up
+    # internal btrfs metadata that manual file writes cannot replicate,
+    # causing "Snapshot.cc reading failed" errors.  All snapper setup is
+    # deferred to snapper-firstboot which runs on the real booted system.
+
+    # Remove any /.snapshots that Calamares may have created as a plain
+    # directory — snapper create-config needs it to NOT exist.
+    if [[ -d "/.snapshots" ]] && ! btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Removing plain /.snapshots directory (snapper will recreate it)..."
         rm -rf /.snapshots 2>/dev/null || true
-        btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
-    else
-        btrfs subvolume create /.snapshots 2>/dev/null || mkdir -p /.snapshots
+    elif btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Removing pre-existing /.snapshots subvolume (snapper will recreate it)..."
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
     fi
-    chmod 750 /.snapshots 2>/dev/null || true
-
-    # --- Write snapper root config MANUALLY ---
-    # We intentionally NEVER call "snapper -c root create-config /" here.
-    # In a Calamares chroot, snapper create-config behaves unpredictably:
-    # it may succeed, partially succeed, or fail — and in some cases it
-    # creates the config file but a later cleanup removes it.  Writing
-    # the config manually is 100% reliable.
-    info "Writing snapper root config manually..."
-    mkdir -p /etc/snapper/configs
-    mkdir -p /etc/sysconfig
-
-    # Write the config from the shipped template or inline
-    if [[ -f /etc/snapper/config-templates/default ]]; then
-        cp -f /etc/snapper/config-templates/default /etc/snapper/configs/root
-        info "Config written from shipped template."
-    else
-        cat > /etc/snapper/configs/root << 'SNAPCFG'
-SUBVOLUME="/"
-FSTYPE="btrfs"
-QGROUP=""
-SPACE_LIMIT="0.5"
-FREE_LIMIT="0.2"
-ALLOW_USERS=""
-ALLOW_GROUPS=""
-SYNC_ACL=""
-BACKGROUND_COMPARISON="yes"
-NUMBER_CLEANUP="yes"
-NUMBER_MIN_AGE="1800"
-NUMBER_LIMIT="10"
-NUMBER_LIMIT_IMPORTANT="5"
-TIMELINE_CREATE="yes"
-TIMELINE_CLEANUP="yes"
-TIMELINE_MIN_AGE="1800"
-TIMELINE_LIMIT_HOURLY="5"
-TIMELINE_LIMIT_DAILY="7"
-TIMELINE_LIMIT_WEEKLY="0"
-TIMELINE_LIMIT_MONTHLY="0"
-TIMELINE_LIMIT_YEARLY="0"
-EMPTY_PRE_POST_CLEANUP="yes"
-EMPTY_PRE_POST_MIN_AGE="1800"
-SNAPCFG
-        info "Config written from inline template."
-    fi
-
-    # Force flush to disk — btrfs can lose new directory entries without sync
-    sync
-
-    # Apply our preferred settings
-    if [[ -f /etc/snapper/configs/root ]]; then
-        sed -i 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' /etc/snapper/configs/root
-        sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_LIMIT_WEEKLY=.*/TIMELINE_LIMIT_WEEKLY="0"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_LIMIT_MONTHLY=.*/TIMELINE_LIMIT_MONTHLY="0"/' /etc/snapper/configs/root
-        sed -i 's/^TIMELINE_LIMIT_YEARLY=.*/TIMELINE_LIMIT_YEARLY="0"/' /etc/snapper/configs/root
-        sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
-        if [[ -n "$MAIN_USER" ]]; then
-            sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$MAIN_USER\"/" /etc/snapper/configs/root
-        fi
-        info "Snapper root config customized."
-    else
-        warn "CRITICAL: Failed to write /etc/snapper/configs/root!"
-    fi
-
-    # Register "root" in snapper's config registry
-    if [[ -f /etc/sysconfig/snapper ]] && grep -q '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper; then
-        sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/sysconfig/snapper
-    else
-        echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
-    fi
-
-    # Flush everything to disk before continuing
-    sync
-
-    # NOTE: We do NOT call any "snapper" commands in the chroot.
-    # snapper create-config / snapper create require D-Bus and a fully
-    # booted system.  Running them in a Calamares chroot can corrupt or
-    # delete the config files we just wrote.  All dynamic snapper
-    # operations (home config, initial snapshot) are deferred to the
-    # firstboot service below.
 
     # Deploy limine-snapper-sync config
     if command -v limine-snapper-sync &>/dev/null; then
@@ -976,12 +896,9 @@ LIMINEDEF
     # snapperd starts via D-Bus activation before configs exist, deleting them.
 
     # --- Firstboot service ---
-    # Handles all snapper operations that require a fully booted system:
-    # - Verify/recreate the root config if it's somehow missing
-    # - Create the initial "Fresh install" snapshot
-    # - Create home config if /home is btrfs
-    # We write the config manually here too (not via snapper create-config)
-    # because create-config fails when /.snapshots already exists.
+    # All snapper setup happens on first boot where D-Bus, btrfs, and the
+    # real filesystem are fully available.  snapper create-config sets up
+    # internal btrfs metadata that manual config file writes cannot replicate.
     cat > /etc/systemd/system/snapper-init.service << 'SNAPPERUNITEOF'
 [Unit]
 Description=Initialize snapper configs and create first snapshot
@@ -998,94 +915,64 @@ SNAPPERUNITEOF
     cat > /usr/local/bin/snapper-firstboot << 'FIRSTBOOTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
-# IMPORTANT: Never call "snapper create-config" — it deletes other config
-# files as a side effect.  All configs are written manually.
-# All snapper commands use --no-dbus because snapperd may not be available
-# during early boot.
 log() { echo "[snapper-firstboot] $*"; }
 
-write_snapper_config() {
-    local name="$1" subvol="$2"
-    mkdir -p /etc/snapper/configs
-    if [[ -f /etc/snapper/config-templates/default ]]; then
-        cp -f /etc/snapper/config-templates/default "/etc/snapper/configs/$name"
-    else
-        cat > "/etc/snapper/configs/$name" << 'CFG'
-SUBVOLUME="/"
-FSTYPE="btrfs"
-QGROUP=""
-SPACE_LIMIT="0.5"
-FREE_LIMIT="0.2"
-ALLOW_USERS=""
-ALLOW_GROUPS=""
-SYNC_ACL=""
-BACKGROUND_COMPARISON="yes"
-NUMBER_CLEANUP="yes"
-NUMBER_MIN_AGE="1800"
-NUMBER_LIMIT="10"
-NUMBER_LIMIT_IMPORTANT="5"
-TIMELINE_CREATE="yes"
-TIMELINE_CLEANUP="yes"
-TIMELINE_MIN_AGE="1800"
-TIMELINE_LIMIT_HOURLY="5"
-TIMELINE_LIMIT_DAILY="7"
-TIMELINE_LIMIT_WEEKLY="0"
-TIMELINE_LIMIT_MONTHLY="0"
-TIMELINE_LIMIT_YEARLY="0"
-EMPTY_PRE_POST_CLEANUP="yes"
-EMPTY_PRE_POST_MIN_AGE="1800"
-CFG
-    fi
-    sed -i "s|^SUBVOLUME=.*|SUBVOLUME=\"$subvol\"|" "/etc/snapper/configs/$name"
-}
-
-# --- Root config ---
-if [[ ! -f /etc/snapper/configs/root ]]; then
-    log "Root config missing — writing manually..."
-    write_snapper_config root /
-    log "Root config created."
-else
+# --- Root config via snapper create-config ---
+if snapper list-configs 2>/dev/null | grep -q "^root"; then
     log "Root config already exists."
+elif [[ -f /etc/snapper/configs/root ]]; then
+    # Config file exists but snapper doesn't recognize it (stale manual config).
+    # Remove it so create-config can start fresh.
+    log "Removing stale root config..."
+    rm -f /etc/snapper/configs/root
+    if btrfs subvolume show /.snapshots &>/dev/null; then
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
+    fi
+    rm -rf /.snapshots 2>/dev/null || true
+    log "Creating root config via snapper create-config..."
+    snapper create-config / || log "WARN: snapper create-config / failed."
+else
+    # Clean slate — let snapper create everything
+    if btrfs subvolume show /.snapshots &>/dev/null; then
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
+    fi
+    rm -rf /.snapshots 2>/dev/null || true
+    log "Creating root config via snapper create-config..."
+    snapper create-config / || log "WARN: snapper create-config / failed."
 fi
 
-# Ensure sysconfig knows about root
-if ! grep -q '"root"' /etc/sysconfig/snapper 2>/dev/null; then
-    mkdir -p /etc/sysconfig
-    echo 'SNAPPER_CONFIGS="root"' > /etc/sysconfig/snapper
+# Customize root config
+if [[ -f /etc/snapper/configs/root ]]; then
+    sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
+    sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root
+    sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root
+    # Set ALLOW_USERS to the first non-system user
+    _user=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1100 {print $1}' | grep -vE '(nobody)' | head -n1 || true)
+    if [[ -n "$_user" ]]; then
+        sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$_user\"/" /etc/snapper/configs/root
+    fi
+    log "Root config customized."
 fi
 
-# --- Home config (manual — never use snapper create-config) ---
+# --- Home config ---
 if findmnt -n -o FSTYPE /home 2>/dev/null | grep -q btrfs; then
-    if [[ ! -f /etc/snapper/configs/home ]]; then
-        log "Creating snapper home config manually..."
-        # Ensure .snapshots subvolume exists under /home
-        if ! btrfs subvolume show /home/.snapshots &>/dev/null; then
-            btrfs subvolume create /home/.snapshots 2>/dev/null || mkdir -p /home/.snapshots
-        fi
-        chmod 750 /home/.snapshots 2>/dev/null || true
-        write_snapper_config home /home
-        # Register home in sysconfig
-        current=$(grep '^SNAPPER_CONFIGS=' /etc/sysconfig/snapper 2>/dev/null | sed 's/.*"\(.*\)"/\1/')
-        if [[ "$current" != *home* ]]; then
-            echo "SNAPPER_CONFIGS=\"$current home\"" > /etc/sysconfig/snapper
-        fi
-        log "Home config created."
+    if ! snapper list-configs 2>/dev/null | grep -q "^home"; then
+        log "Creating home config via snapper create-config..."
+        snapper -c home create-config /home 2>/dev/null || \
+            log "WARN: snapper create-config /home failed."
     fi
 fi
 
 # --- Initial snapshot ---
-if snapper --no-dbus -c root list 2>/dev/null | grep -q "Fresh install"; then
+if snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
     log "Fresh install snapshot already exists."
 else
     log "Creating initial 'Fresh install' snapshot..."
-    snapper --no-dbus -c root create --description "Fresh install" 2>/dev/null || \
+    snapper -c root create --description "Fresh install" 2>/dev/null || \
         log "WARN: Could not create initial snapshot."
 fi
 
 # --- Enable snapper timers NOW that configs are set up ---
-# These must not be enabled before configs exist, because the timers
-# trigger snapperd via D-Bus, and snapperd deletes configs it considers
-# invalid during its startup validation.
 log "Enabling snapper timers and limine-snapper-sync..."
 systemctl enable --now snapper-timeline.timer 2>/dev/null || true
 systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
