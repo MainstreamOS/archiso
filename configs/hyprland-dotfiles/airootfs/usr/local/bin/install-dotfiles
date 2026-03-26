@@ -216,11 +216,22 @@ for pkg in "${REQUIRED_EXTRAS[@]}"; do
         continue
     fi
     info "Installing $pkg..."
-    if sudo -u "$NEW_USER" yay -S --noconfirm --needed "$pkg" 2>&1; then
-        info "$pkg installed successfully."
+    if pacman -Si "$pkg" &>/dev/null; then
+        # Official repo package — install with pacman
+        if pacman -S --noconfirm --needed "$pkg" 2>&1; then
+            info "$pkg installed successfully."
+        else
+            warn "Failed to install $pkg"
+            FAILED_PKGS+=("$pkg")
+        fi
     else
-        warn "Failed to install $pkg"
-        FAILED_PKGS+=("$pkg")
+        # AUR package — install with yay
+        if sudo -u "$NEW_USER" yay -S --noconfirm --needed "$pkg" 2>&1; then
+            info "$pkg installed successfully."
+        else
+            warn "Failed to install $pkg"
+            FAILED_PKGS+=("$pkg")
+        fi
     fi
 done
 
