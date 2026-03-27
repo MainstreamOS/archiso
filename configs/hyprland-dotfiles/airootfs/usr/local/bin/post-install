@@ -166,6 +166,22 @@ if [[ -n "$GPU_INFO" ]]; then
         fi
     }
     gpu_append_env() { echo "$1" >> /etc/environment; info "Set environment: $1"; }
+    # Write a single 'env = KEY,VALUE' line into the user's Hyprland custom env.conf
+    # Idempotent — skips if the key is already present.
+    gpu_append_hypr_env() {
+        local _key="$1" _val="$2"
+        local _env_conf="$MAIN_USER_HOME/.config/hypr/custom/env.conf"
+        if [[ ! -f "$_env_conf" ]]; then
+            warn "hypr env.conf not found at $_env_conf — skipping: $_key"
+            return
+        fi
+        if ! grep -q "^env = ${_key}" "$_env_conf"; then
+            echo "env = ${_key},${_val}" >> "$_env_conf"
+            info "Added hypr env: ${_key}=${_val}"
+        else
+            info "hypr env already set: ${_key} — skipping."
+        fi
+    }
 
     # Sync db before installing
     pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
@@ -174,7 +190,7 @@ if [[ -n "$GPU_INFO" ]]; then
     configure_nvidia() {
         local PCI_LINE PCI_ID PCI_DEC
         PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
-        PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1                  | grep -oE '[0-9a-fA-F]{4}$' || echo "0000")
+        PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1                  | grep -oE '[0-9a-fA-F]{4}' | tail -1 || echo "0000")
         PCI_DEC=$((16#$PCI_ID))
         info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
 
@@ -194,6 +210,14 @@ NVIDIAEOF
                 systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
             done
             systemctl enable nvidia-powerd.service 2>/dev/null || true
+            # Write NVIDIA Wayland env vars into the user's hypr custom env.conf
+            if [[ -n "$MAIN_USER" ]]; then
+                printf '\n# NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+                gpu_append_hypr_env "NVD_BACKEND"                  "direct"
+            fi
             info "NVIDIA Turing+ configured (nvidia-open)."
 
         elif [[ $PCI_DEC -ge 4928 ]]; then
@@ -211,22 +235,58 @@ NVIDIAEOF
                 systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
             done
             systemctl enable nvidia-powerd.service 2>/dev/null || true
+            # Write NVIDIA Wayland env vars into the user's hypr custom env.conf
+            if [[ -n "$MAIN_USER" ]]; then
+                printf '\n# NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+                gpu_append_hypr_env "NVD_BACKEND"                  "direct"
+            fi
             info "NVIDIA Maxwell-Volta configured (proprietary)."
 
         elif [[ $PCI_DEC -ge 4032 ]]; then
             # Kepler — 470xx installed by install-gpu-drivers if successful
             gpu_remove_hook kms
             gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
-            echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
+options nvidia-drm modeset=1 fbdev=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+NVIDIAEOF
             gpu_append_cmdline "nvidia_drm.modeset=1"
+            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
+                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
+            done
+            # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 470xx)
+            if [[ -n "$MAIN_USER" ]]; then
+                printf '\n# NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+            fi
             info "NVIDIA Kepler configured."
 
         elif [[ $PCI_DEC -ge 1728 ]]; then
             # Fermi — 390xx installed by install-gpu-drivers if successful
             gpu_remove_hook kms
             gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
-            echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia.conf
+            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
+options nvidia-drm modeset=1 fbdev=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+NVIDIAEOF
             gpu_append_cmdline "nvidia_drm.modeset=1"
+            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
+                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
+            done
+            # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 390xx)
+            if [[ -n "$MAIN_USER" ]]; then
+                printf '\n# NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+            fi
             info "NVIDIA Fermi configured."
 
         else
@@ -314,6 +374,26 @@ AMDEOF
         elif $HAS_AMD && $HAS_INTEL; then
             : # DRI_PRIME set per-app, not system-wide
         fi
+
+        # Set AQ_DRM_DEVICES to the stable by-path PCI symlink for the NVIDIA card.
+        # card0/card1 enumeration order is non-deterministic across reboots; the
+        # by-path symlink is stable because it encodes the physical PCIe slot.
+        # lspci -D is safe in a Calamares chroot — /proc is bind-mounted from the host.
+        if $HAS_NVIDIA && [[ -n "$MAIN_USER" ]]; then
+            local NVIDIA_PCIADDR
+            NVIDIA_PCIADDR=$(lspci -D 2>/dev/null \
+                | grep -iE "NVIDIA|GeForce|Quadro|Tesla" \
+                | head -1 | awk '{print $1}')
+            if [[ -n "$NVIDIA_PCIADDR" ]]; then
+                local AQ_PATH="/dev/dri/by-path/pci-${NVIDIA_PCIADDR}-card"
+                printf '\n# PRIME: stable NVIDIA DRM device — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                gpu_append_hypr_env "AQ_DRM_DEVICES" "$AQ_PATH"
+            else
+                warn "Could not resolve NVIDIA PCI address — AQ_DRM_DEVICES not set."
+            fi
+        fi
+
         info "PRIME configured."
     }
 

@@ -90,7 +90,7 @@ fi
 if $HAS_NVIDIA; then
     PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
     PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1 \
-             | grep -oE '[0-9a-fA-F]{4}$' || echo "0000")
+             | grep -oE '[0-9a-fA-F]{4}' | tail -1 || echo "0000")
     PCI_DEC=$((16#$PCI_ID))
     info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
 
@@ -98,13 +98,13 @@ if $HAS_NVIDIA; then
         # 0x1E04+ = Turing and newer (RTX 2060, 2070, 2080, 30xx, 40xx, 50xx)
         # nvidia-open is the official NVIDIA open source kernel module (SM 7.5+)
         # Same userspace as proprietary — full Wayland/Hyprland support
-        install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils
+        install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils nvidia-vaapi-driver
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
     elif [[ $PCI_DEC -ge 4928 ]]; then
         # 0x1340-0x1E03 = Maxwell through Volta (GTX 750 - Titan V)
         # nvidia-open not supported on pre-Turing — use proprietary
-        install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
+        install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils nvidia-vaapi-driver
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Maxwell-Volta — installed nvidia (proprietary)."
     elif [[ $PCI_DEC -ge 4032 ]]; then
