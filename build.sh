@@ -392,7 +392,7 @@ for pkgname in "${METAPKGS[@]}"; do
         continue
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgpath' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -406,7 +406,7 @@ for pkgname in "${METAPKGS[@]}"; do
 
     info "Building $pkgname..."
     if su "$BUILD_USER" -c "bash '$BUILD_SCRIPT' '$pkgpath' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             debug_pkg=$(find "$TEMP_OUTPUT" -name "${pkgname}-debug-*.pkg.tar.zst" | head -1)
@@ -438,7 +438,7 @@ build_local_pkg() {
         return
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgdir' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -461,7 +461,7 @@ build_local_pkg() {
         PKGDEST='$TEMP_OUTPUT' \
         makepkg -s --noconfirm --skippgpcheck 2>&1
     "; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
@@ -524,7 +524,7 @@ chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 for entry in "${AUR_DEPS[@]}"; do
     pkgname="${entry%%::*}"
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         info "$pkgname — already built, skipping."
         continue
@@ -533,7 +533,7 @@ for entry in "${AUR_DEPS[@]}"; do
     info "Building AUR dep: $pkgname..."
     rm -f "$TEMP_OUTPUT/${pkgname}"-*.pkg.tar.zst 2>/dev/null || true
     if su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
