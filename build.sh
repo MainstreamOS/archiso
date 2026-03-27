@@ -40,6 +40,62 @@ warn()    { log "WARN:  $*"; }
 die()     { log "FATAL: $*"; exit 1; }
 success() { log "OK:    $*"; }
 
+# Scan a local pacman repo directory for corrupted / zero-length .pkg.tar.zst
+# files, remove them, and regenerate the repo database so that subsequent
+# pacman / mkarchiso runs don't trip over bad checksums.
+#
+# Usage: sanitize_local_repo <repo_dir>
+sanitize_local_repo() {
+    local repo_dir="$1"
+    local removed=0
+    local pkg
+
+    if [[ ! -d "$repo_dir" ]]; then
+        warn "sanitize_local_repo: directory not found: $repo_dir — skipping."
+        return 0
+    fi
+
+    info "Checking local repo for corrupted packages: $repo_dir"
+
+    for pkg in "$repo_dir"/*.pkg.tar.zst; do
+        [[ -f "$pkg" ]] || continue   # no glob match → skip
+
+        # Zero-length file — definitely corrupt
+        if [[ ! -s "$pkg" ]]; then
+            warn "  Removing zero-length package: $(basename "$pkg")"
+            rm -f "$pkg"
+            (( removed++ )) || true
+            continue
+        fi
+
+        # Attempt to list the archive; any I/O or format error means corrupt.
+        # Use -tf (no -z) so GNU tar auto-detects zstd compression; -tzf forces
+        # gzip and incorrectly rejects every valid .pkg.tar.zst file.
+        if ! tar -tf "$pkg" &>/dev/null; then
+            warn "  Removing corrupted package: $(basename "$pkg")"
+            rm -f "$pkg"
+            (( removed++ )) || true
+        fi
+    done
+
+    if (( removed > 0 )); then
+        warn "$removed corrupted package(s) removed from $repo_dir."
+        info "Regenerating repo database..."
+        # Remove stale db files so repo-add starts clean
+        rm -f "$repo_dir"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
+              "$repo_dir"/illogical-impulse.files{,.tar.gz,.tar.gz.old}
+        # Only call repo-add if at least one package still exists
+        if compgen -G "$repo_dir/*.pkg.tar.zst" > /dev/null 2>&1; then
+            repo-add "$repo_dir/illogical-impulse.db.tar.gz" "$repo_dir"/*.pkg.tar.zst
+            success "Repo database regenerated."
+        else
+            warn "No packages remain in $repo_dir after sanitization — repo DB not created."
+        fi
+    else
+        info "All packages passed integrity check."
+    fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_DIR="${SCRIPT_DIR}/configs/hyprland-dotfiles"
 MKARCHISO="${SCRIPT_DIR}/archiso/mkarchiso"
@@ -148,7 +204,6 @@ METAPKGS=(
     "illogical-impulse-fonts-themes"
     "illogical-impulse-gnome"
     "illogical-impulse-hyprland"
-    "illogical-impulse-kde"
     "illogical-impulse-portal"
     "illogical-impulse-python"
     "illogical-impulse-screencapture"
@@ -207,6 +262,27 @@ for tool in git makepkg pacman yay; do
         die "Required tool '$tool' not found. Please install it first."
     fi
 done
+
+# ── Install host build dependencies for AUR packages ────────────────────────
+# These are required to build certain AUR packages (e.g. otf-space-grotesk)
+# and must be present on the host before the AUR build loop runs.
+info "Installing host build dependencies for AUR packages..."
+pacman -S --noconfirm --needed fontforge python-html2text 2>&1 | grep -v "is up to date" || true
+
+# html2markdown is AUR-only — build user must install it via yay
+if ! pacman -Qi html2markdown &>/dev/null; then
+    info "Installing html2markdown (AUR) as build user..."
+    # Ensure build user exists early enough to run yay here
+    if ! id "$BUILD_USER" &>/dev/null; then
+        useradd -m -G wheel "$BUILD_USER" 2>/dev/null || true
+        echo "$BUILD_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/"$BUILD_USER"
+        chmod 440 /etc/sudoers.d/"$BUILD_USER"
+    fi
+    su "$BUILD_USER" -c "yay -S --noconfirm --needed html2markdown" 2>&1 || \
+        warn "html2markdown install failed — otf-space-grotesk build may fall back to cache."
+else
+    info "html2markdown already installed."
+fi
 
 # ── Setup ───────────────────────────────────────────────────────────────────
 info "Setting up package-build environment..."
@@ -317,7 +393,7 @@ for pkgname in "${METAPKGS[@]}"; do
         continue
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgpath' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -331,7 +407,7 @@ for pkgname in "${METAPKGS[@]}"; do
 
     info "Building $pkgname..."
     if su "$BUILD_USER" -c "bash '$BUILD_SCRIPT' '$pkgpath' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             debug_pkg=$(find "$TEMP_OUTPUT" -name "${pkgname}-debug-*.pkg.tar.zst" | head -1)
@@ -363,7 +439,7 @@ build_local_pkg() {
         return
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgdir' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -386,7 +462,7 @@ build_local_pkg() {
         PKGDEST='$TEMP_OUTPUT' \
         makepkg -s --noconfirm --skippgpcheck 2>&1
     "; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
@@ -440,7 +516,7 @@ if [[ ! -f "PKGBUILD" ]]; then
 fi
 
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
-    makepkg -s --noconfirm --needed --skippgpcheck 2>&1
+    makepkg -sf --noconfirm --needed --skippgpcheck 2>&1
 rm -rf "$WORK"
 AURSCRIPT
 chmod 755 "$AUR_SCRIPT"
@@ -449,15 +525,16 @@ chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 for entry in "${AUR_DEPS[@]}"; do
     pkgname="${entry%%::*}"
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         info "$pkgname — already built, skipping."
         continue
     fi
 
     info "Building AUR dep: $pkgname..."
+    rm -f "$TEMP_OUTPUT/${pkgname}"-*.pkg.tar.zst 2>/dev/null || true
     if su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
@@ -546,6 +623,9 @@ if [[ ${#PREBUILT_PKGS[@]} -gt 0 ]]; then
     done
     echo ""
 fi
+
+# ── Sanitize local repo (remove corrupt packages before indexing) ──────────
+sanitize_local_repo "$PKG_OUTPUT_DIR"
 
 # ── Generate local pacman repo database ────────────────────────────────────
 info "Generating local pacman repo database..."
@@ -717,6 +797,14 @@ chmod +x -- "${PATCHED_MKARCHISO}"
 } > "${PATCHED_MKARCHISO}"
 
 echo ">>> Building ISO (this takes several minutes)..."
+
+# Sanitize the local repo one final time in case packages were corrupted
+# outside of a --refresh run (e.g. interrupted previous build, bad download).
+_LOCAL_REPO="${PROFILE_DIR}/airootfs/usr/local/share/pkgs"
+if [[ -d "$_LOCAL_REPO" ]]; then
+    sanitize_local_repo "$_LOCAL_REPO"
+fi
+
 "${PATCHED_MKARCHISO}" \
     ${VERBOSE} \
     -w "${WORK_DIR}" \

@@ -126,6 +126,7 @@ illogical-impulse-quickshell-git
 illogical-impulse-extras
 illogical-impulse-bibata-modern-classic-bin
 illogical-impulse-google-sans-flex
+noto-fonts
 
 # ==============================================================================
 # Explicit providers (prevents interactive prompts during mkarchiso build)
