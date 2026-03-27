@@ -209,7 +209,6 @@ METAPKGS=(
     "illogical-impulse-screencapture"
     "illogical-impulse-toolkit"
     "illogical-impulse-widgets"
-    "illogical-impulse-microtex-git"
     "illogical-impulse-quickshell-git"
     "illogical-impulse-extras"
     "illogical-impulse-bibata-modern-classic-bin"
@@ -393,7 +392,7 @@ for pkgname in "${METAPKGS[@]}"; do
         continue
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgpath' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -407,7 +406,7 @@ for pkgname in "${METAPKGS[@]}"; do
 
     info "Building $pkgname..."
     if su "$BUILD_USER" -c "bash '$BUILD_SCRIPT' '$pkgpath' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             debug_pkg=$(find "$TEMP_OUTPUT" -name "${pkgname}-debug-*.pkg.tar.zst" | head -1)
@@ -439,7 +438,7 @@ build_local_pkg() {
         return
     fi
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgdir' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
         if echo "$existing" | grep -q "$pkg_ver"; then
@@ -462,7 +461,7 @@ build_local_pkg() {
         PKGDEST='$TEMP_OUTPUT' \
         makepkg -s --noconfirm --skippgpcheck 2>&1
     "; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
@@ -525,7 +524,7 @@ chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 for entry in "${AUR_DEPS[@]}"; do
     pkgname="${entry%%::*}"
 
-    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+    existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         info "$pkgname — already built, skipping."
         continue
@@ -534,7 +533,7 @@ for entry in "${AUR_DEPS[@]}"; do
     info "Building AUR dep: $pkgname..."
     rm -f "$TEMP_OUTPUT/${pkgname}"-*.pkg.tar.zst 2>/dev/null || true
     if su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
@@ -602,7 +601,75 @@ GSFPKGBUILD
     fi
 fi
 
-# ── Download prebuilt packages ─────────────────────────────────────────────
+# ── Build illogical-impulse-microtex-git ──────────────────────────────────
+MICROTEX_PKG="illogical-impulse-microtex-git"
+existing_microtex=$(find "$PKG_OUTPUT_DIR" -name "${MICROTEX_PKG}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
+if [[ -n "$existing_microtex" ]] && [[ "$CLEAN_BUILD" == false ]]; then
+    info "$MICROTEX_PKG — already built, skipping."
+else
+    info "Building $MICROTEX_PKG (compiles MicroTeX from source — this may take a few minutes)..."
+    MICROTEX_BUILD="$GIT_PKGS_DIR/microtex"
+    mkdir -p "$MICROTEX_BUILD"
+    chown "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD"
+    cat > "$MICROTEX_BUILD/PKGBUILD" << 'MICROTEXPKGBUILD'
+pkgname=illogical-impulse-microtex-git
+_pkgname=MicroTeX
+pkgver=r494.0e3707f
+pkgrel=2
+pkgdesc='MicroTeX for illogical-impulse dotfiles.'
+arch=("x86_64")
+url="https://github.com/NanoMichael/${_pkgname}"
+license=('MIT')
+depends=(
+  tinyxml2
+  gtkmm3
+  gtksourceviewmm
+  cairomm
+)
+makedepends=("git" "cmake")
+source=("git+${url}.git")
+sha256sums=("SKIP")
+
+prepare() {
+  cd $_pkgname
+  sed -i 's/gtksourceviewmm-3.0/gtksourceviewmm-4.0/' CMakeLists.txt
+  sed -i 's/tinyxml2.so.10/tinyxml2.so.11/' CMakeLists.txt
+}
+
+build() {
+  cd $_pkgname
+  cmake -B build -S . -DCMAKE_BUILD_TYPE=None
+  cmake --build build
+}
+
+package() {
+  cd $_pkgname
+  install -Dm0755 -t "$pkgdir/opt/$_pkgname/" build/LaTeX
+  cp -r build/res "$pkgdir/opt/$_pkgname/"
+  install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+}
+MICROTEXPKGBUILD
+    chown "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD/PKGBUILD"
+    if su "$BUILD_USER" -c "
+        cd '$MICROTEX_BUILD'
+        PACMAN=/usr/local/bin/pacman-noconfirm \
+        PKGDEST='$TEMP_OUTPUT' \
+        makepkg -sf --noconfirm --skippgpcheck 2>&1
+    "; then
+        built=$(find "$TEMP_OUTPUT" -name "${MICROTEX_PKG}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
+        if [[ -n "$built" ]]; then
+            cp "$built" "$PKG_OUTPUT_DIR/"
+            debug_pkg=$(find "$TEMP_OUTPUT" -name "${MICROTEX_PKG}-debug-*.pkg.tar.zst" | head -1)
+            [[ -n "$debug_pkg" ]] && cp "$debug_pkg" "$PKG_OUTPUT_DIR/" || true
+            rm -f "$TEMP_OUTPUT/${MICROTEX_PKG}"*.pkg.tar.zst
+            success "$MICROTEX_PKG built successfully."
+        else
+            warn "$MICROTEX_PKG — build ran but no output file found."
+        fi
+    else
+        warn "$MICROTEX_PKG — build failed."
+    fi
+fi
 if [[ ${#PREBUILT_PKGS[@]} -gt 0 ]]; then
     info "Downloading ${#PREBUILT_PKGS[@]} prebuilt packages..."
     for entry in "${PREBUILT_PKGS[@]}"; do
