@@ -98,20 +98,20 @@ if $HAS_NVIDIA; then
         # 0x1E04+ = Turing and newer (RTX 2060, 2070, 2080, 30xx, 40xx, 50xx)
         # nvidia-open is the official NVIDIA open source kernel module (SM 7.5+)
         # Same userspace as proprietary — full Wayland/Hyprland support
-        install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils nvidia-vaapi-driver
+        install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver libva-utils
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
     elif [[ $PCI_DEC -ge 4928 ]]; then
         # 0x1340-0x1E03 = Maxwell through Volta (GTX 900, GTX 1000, Titan V)
         # Dropped from mainline nvidia — requires nvidia-580xx-dkms from AUR
         install_pkgs linux-headers dkms
-        get_aur_pkg "nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings nvidia-vaapi-driver libva" \
+        get_aur_pkg "nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libva-nvidia-driver libva-utils" \
             || warn "nvidia-580xx-dkms AUR install failed."
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
     elif [[ $PCI_DEC -ge 4032 ]]; then
         install_pkgs linux-headers dkms
-        get_aur_pkg "nvidia-470xx-dkms nvidia-vaapi-driver libva" || warn "nvidia-470xx-dkms failed."
+        get_aur_pkg "nvidia-470xx-dkms libva-nvidia-driver libva-utils" || warn "nvidia-470xx-dkms failed."
     elif [[ $PCI_DEC -ge 1728 ]]; then
         install_pkgs linux-headers dkms
         get_aur_pkg nvidia-390xx-dkms || warn "nvidia-390xx-dkms failed."
