@@ -666,12 +666,12 @@ Singleton {
             }
 
             property JsonObject screenSnip: JsonObject {
-                property string savePath: "" // only copy to clipboard when empty
+                property string savePath: FileUtils.trimFileProtocol(Directories.pictures + "/Screenshots")
             }
 
             property JsonObject sounds: JsonObject {
-                property bool battery: false
-                property bool pomodoro: false
+                property bool battery: true
+                property bool pomodoro: true
                 property string theme: "freedesktop"
             }
 

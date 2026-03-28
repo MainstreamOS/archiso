@@ -24,6 +24,7 @@ ContentPage {
 
     property string monitorsConfPath: `${Quickshell.env("HOME")}/.config/hypr/monitors.conf`
     property var confBitdepth: ({})
+    property var confVrr: ({})
 
     function parseMonitorsConf() {
         readConfProc.running = false;
@@ -38,14 +39,18 @@ ContentPage {
             onRead: data => readConfProc.output += data
         }
         onExited: {
-            let result = {};
+            let bitdepthResult = {};
+            let vrrResult = {};
             readConfProc.output.split("\n").forEach(line => {
-                let m = line.match(/^monitor=([^,]+),.+,bitdepth,(\d+)/);
-                if (m) result[m[1]] = parseInt(m[2]);
+                let mb = line.match(/^monitor=([^,]+),.+,bitdepth,(\d+)/);
+                if (mb) bitdepthResult[mb[1]] = parseInt(mb[2]);
+                let mv = line.match(/^monitor=([^,]+),.+,vrr,(\d+)/);
+                if (mv) vrrResult[mv[1]] = parseInt(mv[2]);
             });
-            displayConfigPage.confBitdepth = result;
+            displayConfigPage.confBitdepth = bitdepthResult;
+            displayConfigPage.confVrr = vrrResult;
             readConfProc.output = "";
-            // Only refresh monitors after conf is parsed so initPending gets correct bitdepth
+            // Only refresh monitors after conf is parsed so initPending gets correct values
             displayConfigPage.refreshMonitors();
         }
     }
@@ -81,6 +86,7 @@ ContentPage {
         let line = `monitor=${name},${res}@${refresh},${pos},${scale}`;
         line += `,transform,${m.transform}`;
         if ((m.bitdepth ?? 8) !== 8) line += `,bitdepth,${m.bitdepth}`;
+        if ((m.vrr ?? 0) !== 0) line += `,vrr,${m.vrr}`;
         return line;
     }
 
@@ -122,7 +128,8 @@ ContentPage {
                 scale: monitor.scale,
                 transform: monitor.transform,
                 enabled: !monitor.disabled,
-                bitdepth: confBitdepth[name] ?? 8
+                bitdepth: confBitdepth[name] ?? 8,
+                vrr: confVrr[name] ?? 0
             };
         }
     }
@@ -653,91 +660,123 @@ with open(path, 'w') as f:
                 }
             }
 
-            // Scale
+            // Scale + VRR
             ContentSubsection {
                 title: Translation.tr("Scale")
                 tooltip: Translation.tr("Current: %1%").arg(Math.round(mon.scale * 100))
 
-                ConfigSelectionArray {
-                    currentValue: {
-                        let scale = Math.round((monitorSection.pending.scale ?? mon.scale) * 10000);
-                        let options = [10000, 12500, 15000, 16667, 18750, 20000];
-                        return options.reduce((prev, curr) =>
-                            Math.abs(curr - scale) < Math.abs(prev - scale) ? curr : prev);
+                ConfigRow {
+                    ConfigSelectionArray {
+                        currentValue: {
+                            let scale = Math.round((monitorSection.pending.scale ?? mon.scale) * 10000);
+                            let options = [10000, 12500, 15000, 16667, 18750, 20000];
+                            return options.reduce((prev, curr) =>
+                                Math.abs(curr - scale) < Math.abs(prev - scale) ? curr : prev);
+                        }
+                        onSelected: newValue => {
+                            let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
+                            p.scale = newValue / 10000;
+                            displayConfigPage.pendingChanges[monitorSection.monName] = p;
+                            displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+                        }
+                        options: [
+                            { displayName: "100%",   value: 10000 },
+                            { displayName: "125%",   value: 12500 },
+                            { displayName: "150%",   value: 15000 },
+                            { displayName: "167%",   value: 16667 },
+                            { displayName: "188%",   value: 18750 },
+                            { displayName: "200%",   value: 20000 },
+                        ]
                     }
-                    onSelected: newValue => {
-                        let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
-                        p.scale = newValue / 10000;
-                        displayConfigPage.pendingChanges[monitorSection.monName] = p;
-                        displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+
+                    StyledText {
+                        text: Translation.tr("VRR")
+                        font.pixelSize: Appearance.font.pixelSize.normal
+                        color: Appearance.colors.colOnLayer1
                     }
-                    options: [
-                        { displayName: "100%",   value: 10000 },
-                        { displayName: "125%",   value: 12500 },
-                        { displayName: "150%",   value: 15000 },
-                        { displayName: "167%",   value: 16667 },
-                        { displayName: "188%",   value: 18750 },
-                        { displayName: "200%",   value: 20000 },
-                    ]
+                    StyledComboBox {
+                        id: vrrComboBox
+                        textRole: "displayName"
+                        model: [
+                            { displayName: Translation.tr("Off"),             value: 0 },
+                            { displayName: Translation.tr("Always On"),      value: 1 },
+                            { displayName: Translation.tr("Fullscreen Only"), value: 2 },
+                        ]
+                        currentIndex: monitorSection.pending.vrr ?? 0
+                        onActivated: index => {
+                            let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
+                            p.vrr = model[index].value;
+                            displayConfigPage.pendingChanges[monitorSection.monName] = p;
+                            displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+                        }
+                    }
+                    Connections {
+                        target: displayConfigPage
+                        function onPendingChangesChanged() {
+                            let newVrr = displayConfigPage.pendingChanges[monitorSection.monName]?.vrr ?? 0;
+                            vrrComboBox.currentIndex = newVrr;
+                        }
+                    }
                 }
             }
 
-            // Rotation / transform
+            // Rotation + 10-bit
             ContentSubsection {
                 title: Translation.tr("Rotation")
                 tooltip: Translation.tr("Current transform: %1").arg(mon.transform)
 
-                ConfigSelectionArray {
-                    currentValue: monitorSection.pending.transform ?? mon.transform
-                    onSelected: newValue => {
-                        let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
-                        p.transform = newValue;
-                        displayConfigPage.pendingChanges[monitorSection.monName] = p;
-                        displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+                ConfigRow {
+                    ConfigSelectionArray {
+                        currentValue: monitorSection.pending.transform ?? mon.transform
+                        onSelected: newValue => {
+                            let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
+                            p.transform = newValue;
+                            displayConfigPage.pendingChanges[monitorSection.monName] = p;
+                            displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+                        }
+                        options: [
+                            { displayName: Translation.tr("0°"),   icon: "screen_rotation_alt",  value: 0 },
+                            { displayName: Translation.tr("90°"),  icon: "rotate_90_degrees_cw",  value: 1 },
+                            { displayName: Translation.tr("180°"), icon: "rotate_left",            value: 2 },
+                            { displayName: Translation.tr("270°"), icon: "rotate_90_degrees_ccw", value: 3 },
+                        ]
                     }
-                    options: [
-                        { displayName: Translation.tr("0°"),   icon: "screen_rotation_alt",  value: 0 },
-                        { displayName: Translation.tr("90°"),  icon: "rotate_90_degrees_cw",  value: 1 },
-                        { displayName: Translation.tr("180°"), icon: "rotate_left",            value: 2 },
-                        { displayName: Translation.tr("270°"), icon: "rotate_90_degrees_ccw", value: 3 },
-                    ]
-                }
-            }
 
-            property bool is10bit: (displayConfigPage.pendingChanges[monName]?.bitdepth ?? 8) === 10
+                    property bool is10bit: (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10
 
-            Connections {
-                target: displayConfigPage
-                function onPendingChangesChanged() {
-                    let new10bit = (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10;
-                    if (monitorSection.is10bit !== new10bit) {
-                        monitorSection.is10bit = new10bit;
-                        tenBitSwitch.checked = new10bit;
+                    ConfigSwitch {
+                        id: tenBitSwitch
+                        Layout.fillWidth: false
+                        buttonIcon: "hdr_on"
+                        text: Translation.tr("10-bit")
+                        checked: parent.is10bit
+
+                        onCheckedChanged: {
+                            let current10bit = (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10;
+                            if (current10bit === checked) return;
+                            let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
+                            p.bitdepth = checked ? 10 : 8;
+                            displayConfigPage.pendingChanges[monitorSection.monName] = p;
+                            displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
+                        }
+                        StyledToolTip {
+                            text: Translation.tr("Enables 10-bit colour output.\nRequires hardware and driver support.")
+                        }
+                    }
+
+                    Connections {
+                        target: displayConfigPage
+                        function onPendingChangesChanged() {
+                            let new10bit = (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10;
+                            tenBitSwitch.checked = new10bit;
+                        }
                     }
                 }
             }
 
-            // 10-bit colour
-            ConfigSwitch {
-                id: tenBitSwitch
-                Layout.fillWidth: false
-                Layout.alignment: Qt.AlignRight
-                buttonIcon: "hdr_on"
-                text: Translation.tr("10-bit")
-                checked: monitorSection.is10bit
-
-                onCheckedChanged: {
-                    if (monitorSection.is10bit === checked) return;
-                    monitorSection.is10bit = checked;
-                    let p = Object.assign({}, displayConfigPage.pendingChanges[monitorSection.monName]);
-                    p.bitdepth = checked ? 10 : 8;
-                    displayConfigPage.pendingChanges[monitorSection.monName] = p;
-                    displayConfigPage.pendingChanges = Object.assign({}, displayConfigPage.pendingChanges);
-                }
-                StyledToolTip {
-                    text: Translation.tr("Enables 10-bit colour output.\nRequires hardware and driver support.")
-                }
-            }
+            // Spacer rows before Apply
+            Item { implicitHeight: 8 }
+            Item { implicitHeight: 8 }
 
             // Apply
             ConfigRow {
