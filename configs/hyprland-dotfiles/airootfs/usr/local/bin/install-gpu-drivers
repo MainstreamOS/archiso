@@ -29,9 +29,11 @@ info "Detected GPU(s):"
 echo "$GPU_INFO" | while read -r line; do info "  $line"; done
 
 HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
-echo "$GPU_INFO" | grep -iq  "NVIDIA"                             && HAS_NVIDIA=true || true
-echo "$GPU_INFO" | grep -iqE "AMD|ATI|Radeon"                    && HAS_AMD=true    || true
-echo "$GPU_INFO" | grep -iqE "Intel.*(Graphics|UHD|HD|Iris|Arc)" && HAS_INTEL=true  || true
+# Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
+# 10de=NVIDIA  1002=AMD/ATI  8086=Intel
+lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
+lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
+lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
 
 MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
     | grep -vE '(liveuser|builduser|nobody|root)' | head -1)

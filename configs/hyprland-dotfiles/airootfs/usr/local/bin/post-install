@@ -130,9 +130,11 @@ if [[ -n "$GPU_INFO" ]]; then
     HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false; IS_HYBRID=false
     IS_OLD_NVIDIA=false; IS_OLD_AMD=false; IS_ARC=false; IS_OLD_INTEL=false
 
-    echo "$GPU_INFO" | grep -iq  "NVIDIA"                             && HAS_NVIDIA=true || true
-    echo "$GPU_INFO" | grep -iqE "AMD|ATI|Radeon"                    && HAS_AMD=true    || true
-    echo "$GPU_INFO" | grep -iqE "Intel.*(Graphics|UHD|HD|Iris|Arc)" && HAS_INTEL=true  || true
+    # Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
+    # 10de=NVIDIA  1002=AMD/ATI  8086=Intel
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
 
     GPU_COUNT=0
     $HAS_NVIDIA && ((GPU_COUNT++)) || true
@@ -298,6 +300,11 @@ NVIDIAEOF
 
     # --- AMD ---
     configure_amd() {
+        # Safety guard — only proceed if an AMD GPU was actually detected
+        if ! $HAS_AMD; then
+            warn "configure_amd called without AMD GPU present — skipping."
+            return 0
+        fi
         info "Configuring AMD GPU..."
         local AMD_ID AMD_DEC
         AMD_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep "1002:"                  | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
