@@ -189,6 +189,24 @@ if [[ -n "$GPU_INFO" ]]; then
             info "hypr env already set: ${_key} — skipping."
         fi
     }
+    # Comment out 'dpms off' in hypridle.conf — older NVIDIA cards (580xx and
+    # below) cannot handle displays becoming unavailable while hyprlock is
+    # active, causing a crash.  Commenting the line disables DPMS power-off
+    # while leaving the rest of the idle config intact.
+    gpu_fix_hypridle() {
+        local _hypridle="$MAIN_USER_HOME/.config/hypr/hypridle.conf"
+        if [[ ! -f "$_hypridle" ]]; then
+            warn "hypridle.conf not found at $_hypridle — skipping dpms fix."
+            return
+        fi
+        if grep -qE "^\s*dpms\s+off" "$_hypridle"; then
+            sed -i 's/^\(\s*\)\(dpms\s\+off\)/\1# \2 # disabled: older NVIDIA cards crash when display powers off under hyprlock/' \
+                "$_hypridle"
+            info "Commented out 'dpms off' in hypridle.conf (NVIDIA legacy driver workaround)."
+        else
+            info "No active 'dpms off' line found in hypridle.conf — nothing to patch."
+        fi
+    }
 
     # Sync db before installing
     pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
@@ -256,6 +274,7 @@ NVIDIAEOF
                 gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) configured (nvidia-580xx-dkms)."
+            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
             DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 4032 ]]; then
@@ -281,6 +300,7 @@ NVIDIAEOF
                 gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Kepler configured."
+            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
             DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 1728 ]]; then
@@ -306,6 +326,7 @@ NVIDIAEOF
                 gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Fermi configured."
+            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
             DEFER_MKINITCPIO=true
 
         else
