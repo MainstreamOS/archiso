@@ -130,6 +130,11 @@ if [[ -n "$GPU_INFO" ]]; then
     HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false; IS_HYBRID=false
     IS_OLD_NVIDIA=false; IS_OLD_AMD=false; IS_ARC=false; IS_OLD_INTEL=false
 
+    # Set to true by DKMS-based NVIDIA generations (580xx, 470xx, 390xx).
+    # When true, mkinitcpio -P is skipped in chroot and deferred to a
+    # firstboot systemd service that runs after DKMS has finished building.
+    DEFER_MKINITCPIO=false
+
     # Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
     # 10de=NVIDIA  1002=AMD/ATI  8086=Intel
     lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
@@ -217,8 +222,10 @@ NVIDIAEOF
                 printf '\n# NVIDIA Wayland — added by post-install\n' \
                     >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
                 gpu_append_hypr_env "NVD_BACKEND"                  "direct"
+                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Turing+ configured (nvidia-open)."
 
@@ -243,10 +250,13 @@ NVIDIAEOF
                 printf '\n# NVIDIA Wayland — added by post-install\n' \
                     >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
                 gpu_append_hypr_env "NVD_BACKEND"                  "direct"
+                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) configured (nvidia-580xx-dkms)."
+            DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 4032 ]]; then
             # Kepler — 470xx installed by install-gpu-drivers if successful
@@ -266,9 +276,12 @@ NVIDIAEOF
                 printf '\n# NVIDIA Wayland — added by post-install\n' \
                     >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Kepler configured."
+            DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 1728 ]]; then
             # Fermi — 390xx installed by install-gpu-drivers if successful
@@ -288,9 +301,12 @@ NVIDIAEOF
                 printf '\n# NVIDIA Wayland — added by post-install\n' \
                     >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
+                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
+                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Fermi configured."
+            DEFER_MKINITCPIO=true
 
         else
             # Pre-Fermi — nouveau (no config changes needed, kms hook stays)
@@ -474,43 +490,102 @@ if command -v yay &>/dev/null; then
         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
 fi
 
-# Regenerate initramfs — single authoritative mkinitcpio -P call.
-# Firmware, modules, Plymouth hooks, and limine.conf are all configured
-# above so this produces the final initramfs with everything in place.
-# If limine-mkinitcpio-hook is installed, it will automatically sync the
-# kernel/initramfs to the EFI partition and update limine.conf with proper
-# //linux sub-entries.
+# ---------------------------------------------------------------------------
+# MKINITCPIO — immediate or deferred depending on GPU driver type
+# ---------------------------------------------------------------------------
+# DKMS drivers (580xx, 470xx, 390xx) cannot build kernel modules in a
+# Calamares chroot because the running host kernel differs from the installed
+# one.  Running mkinitcpio -P with missing modules produces no image at all,
+# leaving the stale archiso initramfs on the EFI partition → kernel panic.
 #
-# NOTE: mkinitcpio -P may return non-zero if a post-build hook (e.g.
-# limine-mkinitcpio) encounters a non-fatal issue.  The initramfs images
-# themselves are already built at that point, so we tolerate the error and
-# verify the result below.
-info "Regenerating initramfs..."
-if ! mkinitcpio -P; then
-    warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
-    if [ -f /boot/initramfs-linux.img ]; then
-        info "Initramfs images exist — continuing despite hook warning."
-    else
-        warn "Initramfs images missing — mkinitcpio truly failed."
-        exit 1
+# For those generations we skip mkinitcpio -P entirely here and install a
+# oneshot firstboot service that runs on the first real boot, by which time
+# DKMS has completed and all modules exist on disk.  The service then
+# triggers an automatic reboot so the user boots into the fully built
+# initramfs on the second boot — transparent, no manual intervention needed.
+#
+# Turing+ uses nvidia-open which is a real package (not DKMS) — modules exist
+# immediately, so mkinitcpio -P runs normally in chroot.
+
+if $DEFER_MKINITCPIO; then
+    info "DKMS NVIDIA driver detected — deferring mkinitcpio -P to first boot."
+
+    cat > /etc/systemd/system/mkinitcpio-firstboot.service << 'MKINITEOF'
+[Unit]
+Description=Rebuild initramfs after DKMS modules are ready (first boot only)
+After=dkms.service systemd-modules-load.service local-fs.target
+Wants=dkms.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Rebuild initramfs with all modules now present on disk
+ExecStart=/usr/bin/mkinitcpio -P
+# Sync kernel/initramfs to EFI partition
+ExecStartPost=/bin/bash -c '\
+    if command -v limine-mkinitcpio &>/dev/null; then \
+        limine-mkinitcpio 2>/dev/null || true; \
+    fi; \
+    efi_root=""; \
+    [ -d /boot/efi ] && efi_root="/boot/efi"; \
+    [ -z "$efi_root" ] && [ -d /efi ] && efi_root="/efi"; \
+    if [ -n "$efi_root" ]; then \
+        cp -f /boot/vmlinuz-linux "$efi_root/vmlinuz-linux" || true; \
+        cp -f /boot/initramfs-linux.img "$efi_root/initramfs-linux.img" || true; \
+        cp -f /boot/initramfs-linux-fallback.img "$efi_root/initramfs-linux-fallback.img" || true; \
+    fi'
+# Disable ourselves — one-shot job done
+ExecStartPost=/usr/bin/systemctl disable mkinitcpio-firstboot.service
+
+[Install]
+WantedBy=multi-user.target
+MKINITEOF
+
+    systemctl enable mkinitcpio-firstboot.service 2>/dev/null || true
+    info "mkinitcpio-firstboot.service installed and enabled."
+
+    # Deploy an autostart .desktop entry so the user gets a reboot notification
+    # on their first login after the initramfs rebuild completes.
+    # The script sends the notification then removes the autostart entry so it
+    # never fires again.
+    if [[ -n "$MAIN_USER" ]]; then
+        mkdir -p "$MAIN_USER_HOME/.config/autostart"
+        cat > "$MAIN_USER_HOME/.config/autostart/mkinitcpio-reboot-notify.desktop" << 'NOTIFYEOF'
+[Desktop Entry]
+Type=Application
+Name=Initramfs Rebuild Notification
+Comment=Notify user to reboot after DKMS initramfs rebuild
+Exec=/bin/bash -c 'sleep 5 && notify-send --urgency=critical --icon=system-reboot "Reboot Required" "Your GPU drivers were set up in the background. Please reboot to finish the installation and apply all changes." && rm -f ~/.config/autostart/mkinitcpio-reboot-notify.desktop'
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+NOTIFYEOF
+        chown "$MAIN_USER:$MAIN_USER" \
+            "$MAIN_USER_HOME/.config/autostart/mkinitcpio-reboot-notify.desktop"
+        info "Reboot notification autostart deployed for $MAIN_USER."
     fi
-fi
 
-# Explicitly update Limine boot entries.  The mkinitcpio post-hook may not
-# reliably update limine.conf inside a Calamares chroot, so call the tool
-# directly to ensure //linux sub-entries are created.
-if command -v limine-mkinitcpio &>/dev/null; then
-    info "Updating Limine boot entries via limine-mkinitcpio..."
-    limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
-fi
+else
+    # Turing+ (nvidia-open) or non-NVIDIA: modules exist now, safe to build.
+    info "Regenerating initramfs..."
+    if ! mkinitcpio -P; then
+        warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
+        if [ -f /boot/initramfs-linux.img ]; then
+            info "Initramfs images exist — continuing despite hook warning."
+        else
+            warn "Initramfs images missing — mkinitcpio truly failed."
+            exit 1
+        fi
+    fi
 
-# Ensure kernel/initramfs exist at the EFI root for the top-level /Arch Linux
-# entry (boot():///vmlinuz-linux).  limine-mkinitcpio-hook also places copies
-# in /boot/efi/<machine-id>/linux/ for its //linux sub-entries, but the
-# top-level fallback entry always needs the EFI-root copies.
-if [ -d "/boot/efi" ]; then
-    cp -f /boot/vmlinuz-linux /boot/efi/ || true
-    cp -f /boot/initramfs-linux.img /boot/efi/ || true
+    if command -v limine-mkinitcpio &>/dev/null; then
+        info "Updating Limine boot entries via limine-mkinitcpio..."
+        limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+    fi
+
+    if [ -d "/boot/efi" ]; then
+        cp -f /boot/vmlinuz-linux       /boot/efi/ || true
+        cp -f /boot/initramfs-linux.img /boot/efi/ || true
+    fi
 fi
 
 # ---------------------------------------------------------------------------
