@@ -238,7 +238,7 @@ AUR_DEPS=(
 # Format: "filename URL"
 # These are Qt5 packages removed from official repos as part of the Qt5→Qt6 transition.
 PREBUILT_PKGS=(
-    "qt5-webengine-5.15.19-4-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webengine-5.15.19-4-x86_64.pkg.tar.zst/download"
+    "qt5-webengine-5.15.19-4.1-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webengine-5.15.19-4.1-x86_64.pkg.tar.zst/download"
     "qt5-webchannel-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webchannel-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst/download"
     "qt5-location-5.15.18+kde+r7-2-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-location/qt5-location-5.15.18%2Bkde%2Br7-2-x86_64.pkg.tar.zst"
     "qt5-tools-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-tools/qt5-tools-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst"
