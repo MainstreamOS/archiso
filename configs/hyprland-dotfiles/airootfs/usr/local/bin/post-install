@@ -124,6 +124,9 @@ EOF
 After=
 After=plymouth-start.service
 Conflicts=display-manager.service
+
+[Service]
+ExecStartPost=/usr/bin/sleep 5
 EOF
     done
 else
