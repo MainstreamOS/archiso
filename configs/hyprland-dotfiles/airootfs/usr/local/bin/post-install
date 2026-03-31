@@ -632,7 +632,7 @@ mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/10-wayland.conf <<SDDMEOF
 [General]
 DisplayServer=wayland
-GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=xdg-shell
+GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
 
 [Wayland]
 CompositorCommand=Hyprland
