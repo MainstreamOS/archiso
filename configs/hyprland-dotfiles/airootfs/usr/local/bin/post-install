@@ -111,6 +111,7 @@ if pacman -S --noconfirm --needed plymouth; then
     cat > /etc/systemd/system/plymouth-quit.service.d/wait-for-dm.conf << 'EOF'
 [Service]
 ExecStart=
+ExecStartPre=/usr/bin/sleep 10
 ExecStart=-/usr/bin/plymouth quit --retain-splash
 EOF
 else
