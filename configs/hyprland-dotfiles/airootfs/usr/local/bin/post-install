@@ -114,6 +114,18 @@ ExecStart=
 ExecStartPre=/usr/bin/sleep 10
 ExecStart=-/usr/bin/plymouth quit --retain-splash
 EOF
+
+    # Show Plymouth during shutdown/reboot by stopping the display manager
+    # atomically with Plymouth starting, preventing a black screen gap.
+    for svc in plymouth-reboot plymouth-poweroff plymouth-halt; do
+        mkdir -p /etc/systemd/system/${svc}.service.d/
+        cat > /etc/systemd/system/${svc}.service.d/display.conf << 'EOF'
+[Unit]
+After=
+After=plymouth-start.service
+Conflicts=display-manager.service
+EOF
+    done
 else
     warn "Plymouth failed to install — boot splash will be skipped."
 fi
