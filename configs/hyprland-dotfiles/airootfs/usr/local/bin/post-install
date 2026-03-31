@@ -109,9 +109,6 @@ if pacman -S --noconfirm --needed plymouth; then
     # black screen gap between the boot splash and the login/desktop session.
     mkdir -p /etc/systemd/system/plymouth-quit.service.d/
     cat > /etc/systemd/system/plymouth-quit.service.d/wait-for-dm.conf << 'EOF'
-[Unit]
-After=display-manager.service
-
 [Service]
 ExecStart=
 ExecStart=-/usr/bin/plymouth quit --retain-splash
