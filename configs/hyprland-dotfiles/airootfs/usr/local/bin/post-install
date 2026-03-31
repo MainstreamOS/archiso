@@ -635,11 +635,26 @@ DisplayServer=wayland
 GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
 
 [Wayland]
-CompositorCommand=weston --shell=kiosk
+CompositorCommand=cage -s
 
 [Theme]
 Current=pixie
 SDDMEOF
+
+# Update autologin to use the real installed user (not liveuser from ISO)
+if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
+    cat > /etc/sddm.conf.d/autologin.conf <<AUTOLOGINEOF
+[Autologin]
+User=$MAIN_USER
+Session=hyprland
+Relogin=true
+AUTOLOGINEOF
+    info "SDDM autologin configured for user: $MAIN_USER"
+else
+    # No valid user — remove autologin so the greeter shows instead of looping
+    rm -f /etc/sddm.conf.d/autologin.conf
+    warn "No primary user found; SDDM autologin disabled."
+fi
 
 # SDDM user home directory and permissions
 mkdir -p /var/lib/sddm/.config
