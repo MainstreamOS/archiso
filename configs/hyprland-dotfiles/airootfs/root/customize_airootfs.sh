@@ -14,6 +14,7 @@ sed -i 's/Exec=Hyprland/Exec=start-hyprland/' /usr/share/wayland-sessions/hyprla
 # Enable essential services
 systemctl enable NetworkManager
 systemctl enable bluetooth
+systemctl unmask display-manager.service
 systemctl enable sddm
 
 # Enable user services
