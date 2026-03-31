@@ -632,10 +632,10 @@ mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/10-wayland.conf <<SDDMEOF
 [General]
 DisplayServer=wayland
-GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
+GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=xdg-shell
 
 [Wayland]
-CompositorCommand=cage -s -- /usr/bin/sddm-greeter-qt6 -- %args%
+CompositorCommand=Hyprland
 
 [Theme]
 Current=pixie
@@ -656,10 +656,27 @@ else
     warn "No primary user found; SDDM autologin disabled."
 fi
 
-# SDDM user home directory and permissions
-mkdir -p /var/lib/sddm/.config
+# SDDM user home directory, Hyprland greeter config, and permissions
+mkdir -p /var/lib/sddm/.config/hypr
+cat > /var/lib/sddm/.config/hypr/hyprland.conf <<HYPREOF
+monitor=,preferred,auto,1
+
+misc {
+    disable_hyprland_logo = true
+    disable_splash_rendering = true
+    force_default_wallpaper = 0
+}
+
+animations {
+    enabled = false
+}
+
+windowrule = match:class ^(sddm-greeter-qt6)$, fullscreen on
+HYPREOF
 chown -R sddm:sddm /var/lib/sddm
 chmod 700 /var/lib/sddm/.config
+chmod 700 /var/lib/sddm/.config/hypr
+chmod 600 /var/lib/sddm/.config/hypr/hyprland.conf
 
 # Fix Btrfs subvolume naming mismatch (@ vs /@)
 sed -i 's|subvol=/@|subvol=@|g' /etc/fstab || true
