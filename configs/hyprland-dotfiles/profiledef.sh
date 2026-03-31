@@ -33,6 +33,7 @@ file_permissions=(
   ["/usr/local/bin/live-setup"]="0:0:755"
   ["/usr/local/bin/choose-mirror"]="0:0:755"
   ["/usr/local/bin/sddm-bg-helper"]="0:0:755"
+  ["/usr/local/bin/sddm-compositor.sh"]="0:0:755"
 
   # SDDM user Hyprland greeter config (sddm uid:gid = 963:963)
   ["/var/lib/sddm/.config/hypr"]="963:963:700"
