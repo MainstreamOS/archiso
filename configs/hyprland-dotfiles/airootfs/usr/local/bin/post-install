@@ -635,11 +635,16 @@ DisplayServer=wayland
 GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
 
 [Wayland]
-CompositorCommand=Hyprland
+CompositorCommand=weston --shell=kiosk
 
 [Theme]
 Current=pixie
 SDDMEOF
+
+# SDDM user home directory and permissions
+mkdir -p /var/lib/sddm/.config
+chown -R sddm:sddm /var/lib/sddm
+chmod 700 /var/lib/sddm/.config
 
 # Fix Btrfs subvolume naming mismatch (@ vs /@)
 sed -i 's|subvol=/@|subvol=@|g' /etc/fstab || true
