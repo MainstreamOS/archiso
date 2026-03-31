@@ -14,15 +14,7 @@ sed -i 's/Exec=Hyprland/Exec=start-hyprland/' /usr/share/wayland-sessions/hyprla
 # Enable essential services
 systemctl enable NetworkManager
 systemctl enable bluetooth
-systemctl disable sddm
-
-# TTY1 autologin for faster boot on live session
-mkdir -p /etc/systemd/system/getty@tty1.service.d/
-cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty -a liveuser --noclear %I \$TERM
-EOF
+systemctl enable sddm
 
 # Enable user services
 systemctl enable --global pipewire
