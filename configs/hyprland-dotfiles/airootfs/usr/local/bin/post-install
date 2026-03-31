@@ -635,7 +635,7 @@ DisplayServer=wayland
 GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
 
 [Wayland]
-CompositorCommand=cage -s
+CompositorCommand=cage -s -- /usr/bin/sddm-greeter-qt6 -- %args%
 
 [Theme]
 Current=pixie
