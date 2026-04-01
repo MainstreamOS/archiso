@@ -107,11 +107,22 @@ if pacman -S --noconfirm --needed plymouth; then
 
     # Keep Plymouth visible until the display manager is up so there is no
     # black screen gap between the boot splash and the login/desktop session.
+    # Move plymouth-quit out of multi-user.target so SDDM can start while
+    # Plymouth is still animating. Hyprland takes DRM master from Plymouth
+    # atomically (no black frame). Plymouth then quits after SDDM is up.
+    rm -f /etc/systemd/system/multi-user.target.wants/plymouth-quit.service
+    rm -f /etc/systemd/system/multi-user.target.wants/plymouth-quit-wait.service
+    mkdir -p /etc/systemd/system/graphical.target.wants/
+    ln -sf /usr/lib/systemd/system/plymouth-quit.service \
+        /etc/systemd/system/graphical.target.wants/plymouth-quit.service
+
     mkdir -p /etc/systemd/system/plymouth-quit.service.d/
     cat > /etc/systemd/system/plymouth-quit.service.d/wait-for-dm.conf << 'EOF'
+[Unit]
+After=display-manager.service
+
 [Service]
 ExecStart=
-ExecStartPre=/usr/bin/sleep 10
 ExecStart=-/usr/bin/plymouth quit --retain-splash
 EOF
 
