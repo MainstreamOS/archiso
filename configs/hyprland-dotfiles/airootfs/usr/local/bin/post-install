@@ -266,6 +266,35 @@ if [[ -n "$GPU_INFO" ]]; then
         "$_changed" \
             || info "hypridle.conf dpms delays already present or target lines not found — nothing to patch."
     }
+    # Inject resume=PARTUUID=<uuid> into the bootloader cmdline so the kernel
+    # can restore a hibernation (S4) image on boot.  Without this parameter the
+    # resume hook placed in the initramfs never activates, even if the hook is
+    # present and a swap partition exists.
+    #
+    # PARTUUID (GPT partition UUID) is used rather than UUID (filesystem UUID)
+    # because the limine.conf template already uses PARTUUID for root=, keeping
+    # the config uniform.  PARTUUID is also stable across mkswap reformats.
+    #
+    # Idempotent: skips injection if resume= is already present in limine.conf
+    # or if no swap partition is found (e.g. swap-file-only or no-swap setups).
+    inject_swap_resume() {
+        local SWAP_PARTUUID=""
+        SWAP_PARTUUID=$(blkid -t TYPE=swap -o export 2>/dev/null \
+            | grep '^PARTUUID=' | head -1 | cut -d= -f2)
+        if [[ -z "$SWAP_PARTUUID" ]]; then
+            info "No swap partition found — skipping resume= cmdline injection."
+            return
+        fi
+        local LIMINE_CONF=""
+        [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
+        [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
+        if [[ -n "$LIMINE_CONF" ]] && grep -q '\bresume=' "$LIMINE_CONF" 2>/dev/null; then
+            info "resume= already present in limine.conf — skipping."
+            return
+        fi
+        gpu_append_cmdline "resume=PARTUUID=$SWAP_PARTUUID"
+        info "Hibernation resume= set to swap PARTUUID=$SWAP_PARTUUID."
+    }
 
     # Sync db before installing
     pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
@@ -526,6 +555,7 @@ AMDEOF
     $HAS_NVIDIA && configure_nvidia || true
     $IS_HYBRID  && configure_prime  || true
     configure_sleep
+    inject_swap_resume
 
     info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
 else
