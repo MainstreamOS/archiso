@@ -421,8 +421,13 @@ AMDEOF
             info "GCN/RDNA AMD — installing amdgpu."
             gpu_append_cmdline "amdgpu.modeset=1"
             if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
-                info "RDNA 4 detected — adding amdgpu.sg_display=0."
+                info "RDNA 4 detected — adding amdgpu.sg_display=0 and mem_sleep_default=deep."
                 gpu_append_cmdline "amdgpu.sg_display=0"
+                # Force S3 (deep) suspend instead of s2idle.
+                # s2idle is broken on Navi 48 through at least kernel 6.17.x — systems
+                # that default to s2idle (common on modern UEFI) will hang or crash on
+                # resume.  S3 deep sleep has been stable since kernel 6.15.2 / 6.16.8.
+                gpu_append_cmdline "mem_sleep_default=deep"
             fi
         fi
         # NOTE: AMD env vars intentionally not set globally in /etc/environment
