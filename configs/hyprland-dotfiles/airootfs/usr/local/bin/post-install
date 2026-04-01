@@ -457,6 +457,7 @@ AMDEOF
             gpu_append_cmdline "amdgpu.si_support=1 amdgpu.cik_support=1"
         else
             info "GCN/RDNA AMD — installing amdgpu."
+            gpu_add_modules amdgpu
             gpu_append_cmdline "amdgpu.modeset=1"
             if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
                 info "RDNA 4 detected — adding amdgpu.sg_display=0 and mem_sleep_default=deep."
@@ -495,6 +496,7 @@ AMDEOF
             gpu_add_modules i915
         else
             info "Sandy Bridge+ Intel — installing i915/media-driver."
+            gpu_add_modules i915
             if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
             # LIBVA_DRIVER_NAME set in env.conf by dotfiles
         fi
