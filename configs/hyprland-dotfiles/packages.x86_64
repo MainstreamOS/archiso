@@ -182,6 +182,7 @@ brightnessctl
 hyprpolkitagent
 zenity
 gnome-keyring
+python-dbus
 loupe
 zram-generator
 imagemagick
