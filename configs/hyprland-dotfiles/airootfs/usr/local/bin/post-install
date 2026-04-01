@@ -79,13 +79,22 @@ systemctl mask systemd-networkd-persistent-storage.service || true
 # 4. MKINITCPIO PREP
 # GPU detection, module injection, modprobe config, and env vars are all
 # handled by the install-gpu-drivers shellprocess which runs before this.
-# Here we only: remove the resume hook, clean up archiso preset, and
+# Here we only: position the resume hook, clean up archiso preset, and
 # restore the standard linux.preset before the final mkinitcpio -P call.
 # ---------------------------------------------------------------------------
 
-# Force remove 'resume' hook — no swap partition, zram handles memory pressure
-sed -i 's/\bresume\b//g' /etc/mkinitcpio.conf
-find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/\bresume\b//g' {} +
+# Place the 'resume' hook immediately after 'filesystems' in the HOOKS array.
+# This is required for hibernation (S4/suspend-to-disk): on boot the initramfs
+# checks for a hibernate image on the resume= device and restores it before
+# handing off to the normal init sequence.
+# The hook is safe to include even when no swap partition exists — it only
+# activates if the kernel 'resume=' parameter is set (e.g. by the bootloader
+# or Calamares when swap is configured).  Strip any existing occurrence first
+# to avoid duplicates, then re-insert in the correct position.
+sed -i 's/ *\bresume\b *//g' /etc/mkinitcpio.conf
+sed -i 's/\bfilesystems\b/filesystems resume/' /etc/mkinitcpio.conf
+find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/ *\bresume\b *//g' {} +
+info "resume hook placed after filesystems in mkinitcpio.conf."
 
 # ---------------------------------------------------------------------------
 # 4b. PLYMOUTH WITH BGRT THEME
