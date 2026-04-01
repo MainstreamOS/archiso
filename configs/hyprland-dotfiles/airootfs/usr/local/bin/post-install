@@ -685,7 +685,7 @@ DisplayServer=wayland
 GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
 
 [Wayland]
-CompositorCommand=Hyprland
+CompositorCommand=start-hyprland
 
 [Theme]
 Current=pixie
