@@ -738,20 +738,11 @@ CompositorCommand=Hyprland
 Current=pixie
 SDDMEOF
 
-# Update autologin to use the real installed user (not liveuser from ISO)
-if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
-    cat > /etc/sddm.conf.d/autologin.conf <<AUTOLOGINEOF
-[Autologin]
-User=$MAIN_USER
-Session=hyprland
-Relogin=true
-AUTOLOGINEOF
-    info "SDDM autologin configured for user: $MAIN_USER"
-else
-    # No valid user — remove autologin so the greeter shows instead of looping
-    rm -f /etc/sddm.conf.d/autologin.conf
-    warn "No primary user found; SDDM autologin disabled."
-fi
+# Remove the live ISO autologin config — the installed system should show
+# the SDDM greeter. The live ISO uses autologin for liveuser which must not
+# carry over to the installed system.
+rm -f /etc/sddm.conf.d/autologin.conf
+info "SDDM autologin disabled for installed system (greeter will be shown)."
 
 # SDDM user home directory, Hyprland greeter config, and permissions
 mkdir -p /var/lib/sddm/.config/hypr
