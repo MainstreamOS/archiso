@@ -214,23 +214,48 @@ if [[ -n "$GPU_INFO" ]]; then
             info "hypr env already set: ${_key} — skipping."
         fi
     }
-    # Comment out 'dpms off' in hypridle.conf — older NVIDIA cards (580xx and
-    # below) cannot handle displays becoming unavailable while hyprlock is
-    # active, causing a crash.  Commenting the line disables DPMS power-off
-    # while leaving the rest of the idle config intact.
+    # Add resume delays to hypridle.conf for NVIDIA cards.
+    #
+    # Root cause: nvidia-sleep.sh writes "resume" to /proc/driver/nvidia/suspend
+    # and performs a VT switch back to the Wayland session.  There is a brief
+    # window after that where the NVIDIA DRM/KMS device is still initialising.
+    # If Hyprland's Aquamarine backend receives "dpms on" during that window it
+    # hits a DRM error and crashes, producing the "recover session" prompt.
+    #
+    # This affects every NVIDIA generation that uses nvidia-sleep.sh (Fermi+),
+    # including Turing+ with nvidia-open.  AMD and Intel do not need this fix —
+    # their in-kernel DRM drivers (amdgpu/i915) complete resume synchronously
+    # before userspace is notified, so there is no race window.
+    #
+    # Fix: insert a short sleep before each "hyprctl dispatch dpms on" in
+    # after_sleep_cmd (2 s — covers cold resume from S3/S4) and on-resume
+    # (1 s — covers re-enabling the display after an idle screen blank).
+    # DPMS power-off is preserved; only the re-enable is delayed.
     gpu_fix_hypridle() {
         local _hypridle="$MAIN_USER_HOME/.config/hypr/hypridle.conf"
         if [[ ! -f "$_hypridle" ]]; then
             warn "hypridle.conf not found at $_hypridle — skipping dpms fix."
             return
         fi
-        if grep -qE "^\s*dpms\s+off" "$_hypridle"; then
-            sed -i 's/^\(\s*\)\(dpms\s\+off\)/\1# \2 # disabled: older NVIDIA cards crash when display powers off under hyprlock/' \
+        local _changed=false
+        # after_sleep_cmd: delay dpms on after system wake from suspend/hibernate
+        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch dpms on" "$_hypridle" \
+            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch dpms on" "$_hypridle"; then
+            sed -i '/after_sleep_cmd/s/hyprctl dispatch dpms on/sleep 2 \&\& hyprctl dispatch dpms on/' \
                 "$_hypridle"
-            info "Commented out 'dpms off' in hypridle.conf (NVIDIA legacy driver workaround)."
-        else
-            info "No active 'dpms off' line found in hypridle.conf — nothing to patch."
+            _changed=true
+            info "Added 2s delay before dpms on in after_sleep_cmd (NVIDIA resume fix)."
         fi
+        # on-resume: delay dpms on when idle screen-blank is cleared by activity
+        if grep -qE "on-resume\s*=.*hyprctl dispatch dpms on" "$_hypridle" \
+            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch dpms on" "$_hypridle"; then
+            sed -i '/on-resume/s/hyprctl dispatch dpms on/sleep 1 \&\& hyprctl dispatch dpms on/' \
+                "$_hypridle"
+            _changed=true
+            info "Added 1s delay before dpms on in on-resume (NVIDIA resume fix)."
+        fi
+        "$_changed" \
+            || info "hypridle.conf dpms delays already present or target lines not found — nothing to patch."
     }
 
     # Sync db before installing
@@ -271,6 +296,7 @@ NVIDIAEOF
                 gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
             fi
             info "NVIDIA Turing+ configured (nvidia-open)."
+            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
 
         elif [[ $PCI_DEC -ge 4928 ]]; then
             # 0x1340-0x1E03 = Maxwell through Volta (GTX 900, GTX 1000, Titan V)
