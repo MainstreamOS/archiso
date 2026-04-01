@@ -83,33 +83,11 @@ systemctl mask systemd-networkd-persistent-storage.service || true
 # restore the standard linux.preset before the final mkinitcpio -P call.
 # ---------------------------------------------------------------------------
 
-# Place the 'resume' hook immediately after 'filesystems' in the HOOKS array.
-# This is required for hibernation (S4/suspend-to-disk): on boot the initramfs
-# checks for a hibernate image on the resume= device and restores it before
-# handing off to the normal init sequence.
-# The hook is safe to include even when no swap partition exists — it only
-# activates if the kernel 'resume=' parameter is set (e.g. by the bootloader
-# or Calamares when swap is configured).  Strip any existing occurrence first
-# to avoid duplicates, then re-insert in the correct position.
-sed -i 's/ *\bresume\b *//g' /etc/mkinitcpio.conf
-sed -i 's/\bfilesystems\b/filesystems resume/' /etc/mkinitcpio.conf
-find /etc/mkinitcpio.d/ -type f -name "*.preset" -exec sed -i 's/ *\bresume\b *//g' {} +
-info "resume hook placed after filesystems in mkinitcpio.conf."
-
 # ---------------------------------------------------------------------------
 # 4b. PLYMOUTH WITH BGRT THEME
 # ---------------------------------------------------------------------------
 info "Installing Plymouth boot splash with BGRT theme..."
 if pacman -S --noconfirm --needed plymouth; then
-    # Only inject the hook if the hook file is actually present.
-    # The calamares-mainstream repo's plymouth package does not ship
-    # sd-plymouth; injecting a missing hook causes mkinitcpio to error out.
-    if [[ -f /usr/lib/initcpio/install/sd-plymouth ]]; then
-        sed -i 's/\bsystemd\b/systemd sd-plymouth/' /etc/mkinitcpio.conf
-        info "sd-plymouth hook added to initramfs config."
-    else
-        warn "sd-plymouth hook not found — Plymouth will run without initramfs hook (splash shown after kernel hands off to systemd)."
-    fi
     # Set BGRT theme — shows the UEFI firmware/manufacturer logo during boot
     plymouth-set-default-theme bgrt
     info "Plymouth BGRT theme configured."
