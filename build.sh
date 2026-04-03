@@ -782,6 +782,11 @@ else
     warn "uv or requirements.txt not found — Python venv will be created on first login."
 fi
 
+# Hand skel ownership back to the invoking user so Git can modify it later
+if [[ -n "${SUDO_USER:-}" ]]; then
+    chown -R "$SUDO_USER":"$SUDO_USER" "$SKEL_DIR"
+fi
+
 rm -rf "$DOTS_WORK"
 
 # ── Package-build cleanup ──────────────────────────────────────────────────
