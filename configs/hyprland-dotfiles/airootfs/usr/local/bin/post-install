@@ -1285,20 +1285,22 @@ fi
 # GAMESCOPE SESSION SETUP
 # Sets up everything needed for the toggle_gamescope.sh script included
 # in the user's dotfiles to work correctly.
+# Only runs if Steam is installed — no point setting up gamescope without it.
 # ---------------------------------------------------------------------------
-info "Setting up gamescope session support..."
+if pacman -Q steam &>/dev/null; then
+    info "Steam detected — setting up gamescope session support..."
 
-# gamescope and python-evdev are not guaranteed to be present.
-# jq and seatd are pulled in by other packages so --needed makes this
-# a no-op if they are already installed.
-pacman -S --noconfirm --needed gamescope python-evdev jq seatd || \
-    warn "gamescope python-evdev jq or seatd failed to install — gamescope session will not work."
+    # gamescope and python-evdev are not guaranteed to be present.
+    # jq and seatd are pulled in by other packages so --needed makes this
+    # a no-op if they are already installed.
+    pacman -S --noconfirm --needed gamescope python-evdev jq seatd || \
+        warn "gamescope or python-evdev failed to install — gamescope session will not work."
 
-# Sudoers file — allows the script to stop/start sddm, chvt, seatd,
-# python3, and systemd-run without a password prompt.
-# chmod 440 is required — sudo refuses world-readable sudoers files.
-if [[ -n "$MAIN_USER" ]]; then
-    cat > /etc/sudoers.d/gamescope << EOF
+    # Sudoers file — allows the script to stop/start sddm, chvt, seatd,
+    # python3, setcap, and systemd-run without a password prompt.
+    # chmod 440 is required — sudo refuses world-readable sudoers files.
+    if [[ -n "$MAIN_USER" ]]; then
+        cat > /etc/sudoers.d/gamescope << EOF
 Defaults:${MAIN_USER} !requiretty
 ${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop sddm
 ${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start sddm
@@ -1308,46 +1310,48 @@ ${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/python3
 ${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/seatd
 ${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/setcap
 EOF
-    chmod 440 /etc/sudoers.d/gamescope
-    info "Sudoers file written: /etc/sudoers.d/gamescope"
-else
-    warn "MAIN_USER not set — skipping gamescope sudoers setup."
-fi
+        chmod 440 /etc/sudoers.d/gamescope
+        info "Sudoers file written: /etc/sudoers.d/gamescope"
+    else
+        warn "MAIN_USER not set — skipping gamescope sudoers setup."
+    fi
 
-# udev rule — allows the input proxy to create a UInput virtual device.
-# No reload needed here — udev reads rules automatically on every boot.
-cat > /etc/udev/rules.d/99-uinput.rules << 'EOF'
+    # udev rule — allows the input proxy to create a UInput virtual device.
+    # No reload needed here — udev reads rules automatically on every boot.
+    cat > /etc/udev/rules.d/99-uinput.rules << 'UDEVEOF'
 KERNEL=="uinput", MODE="0660", GROUP="input"
-EOF
-info "udev rule written: /etc/udev/rules.d/99-uinput.rules"
+UDEVEOF
+    info "udev rule written: /etc/udev/rules.d/99-uinput.rules"
 
-# Add user to input group so the proxy can read keyboard devices
-if [[ -n "$MAIN_USER" ]]; then
-    usermod -aG input "$MAIN_USER"
-    info "Added $MAIN_USER to input group."
-fi
+    # Add user to input group so the proxy can read keyboard devices
+    if [[ -n "$MAIN_USER" ]]; then
+        usermod -aG input "$MAIN_USER"
+        info "Added $MAIN_USER to input group."
+    fi
 
-# Enable linger so the user's systemd session persists independently
-# of SDDM being stopped. loginctl requires a live systemd session so
-# it cannot be called inside a chroot — instead we create the linger
-# file directly which is exactly what loginctl enable-linger writes.
-if [[ -n "$MAIN_USER" ]]; then
-    mkdir -p /var/lib/systemd/linger
-    touch /var/lib/systemd/linger/"$MAIN_USER"
-    info "Linger enabled for $MAIN_USER (via /var/lib/systemd/linger)."
-fi
+    # Enable linger so the user's systemd session persists independently
+    # of SDDM being stopped. loginctl requires a live systemd session so
+    # it cannot be called inside a chroot — instead we create the linger
+    # file directly which is exactly what loginctl enable-linger writes.
+    if [[ -n "$MAIN_USER" ]]; then
+        mkdir -p /var/lib/systemd/linger
+        touch /var/lib/systemd/linger/"$MAIN_USER"
+        info "Linger enabled for $MAIN_USER (via /var/lib/systemd/linger)."
+    fi
 
-# Ensure the toggle script is executable — safety net in case dotfile
-# permissions were lost during deployment.
-TOGGLE_SCRIPT="$MAIN_USER_HOME/.config/hypr/hyprland/scripts/toggle_gamescope.sh"
-if [[ -f "$TOGGLE_SCRIPT" ]]; then
-    chmod +x "$TOGGLE_SCRIPT"
-    info "toggle_gamescope.sh marked executable."
+    # Ensure the toggle script is executable — safety net in case dotfile
+    # permissions were lost during deployment.
+    TOGGLE_SCRIPT="$MAIN_USER_HOME/.config/hypr/hyprland/scripts/toggle_gamescope.sh"
+    if [[ -f "$TOGGLE_SCRIPT" ]]; then
+        chmod +x "$TOGGLE_SCRIPT"
+        info "toggle_gamescope.sh marked executable."
+    else
+        warn "toggle_gamescope.sh not found at $TOGGLE_SCRIPT — skipping chmod."
+    fi
+
+    info "Gamescope session setup complete."
 else
-    warn "toggle_gamescope.sh not found at $TOGGLE_SCRIPT — skipping chmod."
+    info "Steam not installed — skipping gamescope session setup."
 fi
-
-info "Gamescope session setup complete."
-
 
 info "Post-install synchronization complete. System is ready for reboot."
