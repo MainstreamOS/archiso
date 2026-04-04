@@ -1253,6 +1253,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# NAUTILUS BOOKMARKS
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" && -n "$MAIN_USER_HOME" ]]; then
+    info "Writing Nautilus bookmarks for $MAIN_USER..."
+    mkdir -p "$MAIN_USER_HOME/.config/gtk-3.0"
+    cat > "$MAIN_USER_HOME/.config/gtk-3.0/bookmarks" << EOF
+file://$MAIN_USER_HOME/Desktop Desktop
+file://$MAIN_USER_HOME/Downloads Downloads
+file://$MAIN_USER_HOME/Documents Documents
+file://$MAIN_USER_HOME/Music Music
+file://$MAIN_USER_HOME/Pictures Pictures
+file://$MAIN_USER_HOME/Videos Videos
+EOF
+    chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.config/gtk-3.0/bookmarks"
+    info "Nautilus bookmarks written."
+fi
+
+# ---------------------------------------------------------------------------
 # CLEANUP — Remove dotfiles repo left in home directory
 # ---------------------------------------------------------------------------
 if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME/dots-hyprland" ]]; then
