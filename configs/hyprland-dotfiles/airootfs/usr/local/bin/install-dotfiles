@@ -207,6 +207,7 @@ REQUIRED_EXTRAS=(
     "flatpak"
     "satty"
     "fastfetch"
+    "ksshaskpass"
 )
 
 info "Installing ${#REQUIRED_EXTRAS[@]} required extras..."
