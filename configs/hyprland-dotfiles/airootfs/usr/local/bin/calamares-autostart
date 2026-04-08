@@ -22,5 +22,5 @@ if [[ ! -d "/run/archiso" ]]; then
     exit 0
 fi
 
-# All checks passed — we are on the live ISO, launch Calamares
-exec sudo -E /usr/bin/calamares
+# All checks passed — we are on the live ISO, launch installer welcome
+exec quickshell -p ~/.config/quickshell/ii/installer.qml
