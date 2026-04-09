@@ -1273,6 +1273,19 @@ fi
 
 
 # ---------------------------------------------------------------------------
+# GPG KEYBOX CLEANUP
+# Clear any stale lock files left by GPG operations during the chroot install.
+# A ghost lock on pubring.kbx/keyboxd causes AUR key imports to fail on first
+# post-install update. Safe to run unconditionally — no keys are deleted.
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" ]]; then
+    info "Clearing stale GPG locks for $MAIN_USER..."
+    find "$MAIN_USER_HOME/.gnupg" -name "*.lock" -delete 2>/dev/null || true
+    runuser -l "$MAIN_USER" -c 'gpgconf --kill all' 2>/dev/null || true
+    info "GPG lock cleanup complete."
+fi
+
+# ---------------------------------------------------------------------------
 # GAMESCOPE SESSION SETUP
 # Sets up everything needed for the toggle_gamescope.sh script included
 # in the user's dotfiles to work correctly.
