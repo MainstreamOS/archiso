@@ -1389,4 +1389,57 @@ chmod +x /usr/local/bin/gamescope-firstboot
 systemctl enable gamescope-init.service 2>/dev/null || true
 info "gamescope-init.service registered — will run on first boot after netinstall."
 
+# ---------------------------------------------------------------------------
+# HYPRLAND PLUGINS — run once on first Hyprland launch via exec-once
+# hyprpm requires HYPRLAND_INSTANCE_SIGNATURE (a live session) so it cannot
+# run at boot. A one-shot script is dropped into exec-once and a marker file
+# prevents it from firing on subsequent logins.
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" ]]; then
+    info "Deploying hyprland-plugins one-shot exec script for $MAIN_USER..."
+
+    cat > /usr/local/bin/hyprland-plugins-setup << 'HYPRPLUGINSEOF'
+#!/usr/bin/env bash
+MARKER="$HOME/.local/share/hyprpm/.plugins-installed"
+LOG="$HOME/.local/share/hyprpm/firstrun.log"
+
+[[ -f "$MARKER" ]] && exit 0
+
+mkdir -p "$(dirname "$LOG")"
+exec >> "$LOG" 2>&1
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting hyprland-plugins setup..."
+
+if ! command -v hyprpm &>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: hyprpm not found."
+    exit 1
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running hyprpm update..."
+if ! hyprpm update; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: hyprpm update failed."
+    exit 1
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Adding hyprland-plugins..."
+if ! echo "y" | hyprpm add https://github.com/hyprwm/hyprland-plugins; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: hyprpm add failed."
+    exit 1
+fi
+
+touch "$MARKER"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Done. Plugins installed successfully."
+HYPRPLUGINSEOF
+
+    chmod +x /usr/local/bin/hyprland-plugins-setup
+
+    EXECS_CONF="/home/$MAIN_USER/.config/hypr/custom/execs.conf"
+    if [[ -f "$EXECS_CONF" ]]; then
+        echo "exec-once = /usr/local/bin/hyprland-plugins-setup" >> "$EXECS_CONF"
+        info "Added hyprland-plugins-setup to $EXECS_CONF"
+    else
+        warn "Could not find $EXECS_CONF — add 'exec-once = /usr/local/bin/hyprland-plugins-setup' manually."
+    fi
+fi
+
 info "Post-install synchronization complete. System is ready for reboot."
