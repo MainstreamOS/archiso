@@ -649,27 +649,6 @@ PartitionLabelsView {
     background-color: transparent;
 }
 
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   USERS PAGE — PASSWORD VALIDATION INDICATOR LABELS
-   labelUserPassword / labelRootPassword are 24×24 scaledContents QLabels.
-   Calamares sets their pixmap at runtime via C++ setPixmap(), so QSS can
-   only influence the initial/style-polish state.  We register both custom
-   branding icons here so they are baked into the branding stylesheet and
-   any tooling that reads qproperty-pixmap will pick them up.
-
-   The "met" icon is set as the default (positive final state).  Calamares'
-   C++ code will call setPixmap() with state-ok.svg / state-error.svg from
-   its embedded Qt resources as the user types — those dynamic calls take
-   over at runtime.  A full icon override requires rebuilding Calamares with
-   the custom SVGs at data/images/state-ok.svg and data/images/state-error.svg.
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QLabel#labelUserPassword,
-QLabel#labelRootPassword {
-    qproperty-pixmap: url(/etc/calamares/branding/hyprland/icons/green-password-met.svg);
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
    QUICK WIDGET HOST — dark clear color so transparent QML items don't
    show the default white OpenGL surface behind them.
@@ -678,26 +657,5 @@ QLabel#labelRootPassword {
 QQuickWidget {
     background-color: #141218;
     border:           none;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   HIDE DEBUG / LOG BUTTON
-   Calamares places a log viewer button (object name "debugButton") in the
-   bottom-right corner. Cover both QPushButton and QToolButton since the
-   exact widget type varies across Calamares versions.
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QPushButton#debugButton,
-QToolButton#debugButton {
-    max-height:  0px;
-    max-width:   0px;
-    min-height:  0px;
-    min-width:   0px;
-    border:      none;
-    padding:     0px;
-    margin:      0px;
-    background:  transparent;
-    color:       transparent;
-    icon-size:   0px;
 }
 
