@@ -218,7 +218,7 @@ Singleton {
                     property bool vertical: false
                     property bool autoVertical: false
                     property bool enableWorkspace: true
-                    property real workspaceZoom: 1.07 // Relative to your screen, not wallpaper size
+                    property real workspaceZoom: 1.0 // Relative to wallpaper size
                     property bool enableSidebar: true
                     property real widgetsFactor: 1.2
                 }
@@ -338,6 +338,9 @@ Singleton {
                 property JsonObject tooltips: JsonObject {
                     property bool clickToShow: false
                 }
+                property JsonObject volumeControl: JsonObject {
+                    property bool enable: true
+                }
             }
 
             property JsonObject battery: JsonObject {
@@ -386,7 +389,7 @@ Singleton {
                 property bool pinnedOnStartup: false
                 property bool hoverToReveal: true // When false, only reveals on empty workspace
                 property list<string> pinnedApps: [ // IDs of pinned entries
-                    "google-chrome", "org.gnome.Nautilus", "org.gnome.TextEditor", "org.gimp.GIMP", "mpv", "spotify", "kitty", "org.gnome.Software",]
+                    "google-chrome", "org.gnome.Nautilus", "org.gnome.TextEditor", "gimp", "mpv", "spotify", "kitty", "org.gnome.Software",]
                 property list<string> ignoredAppRegexes: []
             }
 
@@ -672,6 +675,7 @@ Singleton {
             property JsonObject sounds: JsonObject {
                 property bool battery: true
                 property bool pomodoro: true
+                property bool timer: true
                 property string theme: "freedesktop"
             }
 

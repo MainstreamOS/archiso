@@ -169,7 +169,7 @@ Singleton {
         let elapsed = getCurrentTimeInSeconds() - Persistent.states.timer.countdown.start;
         let left = countdownDuration - elapsed;
         if (left <= 0) {
-            if (Config.options.sounds.pomodoro) {
+            if (Config.options.sounds.timer) {
                 Audio.playSystemSound("alarm-clock-elapsed");
             }
             Quickshell.execDetached(["notify-send", "Timer", Translation.tr("Timer finished!"), "-a", "Shell"]);

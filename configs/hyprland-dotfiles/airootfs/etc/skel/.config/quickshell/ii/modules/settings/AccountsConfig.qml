@@ -108,9 +108,7 @@ ContentPage {
         property bool showChangePassword: false
         property bool showChangeName: false
         property bool showRemove: false
-        property bool working: actionProc.running || imageApplyProc.running || keyringRekeyProc.running
-        property string pendingOldPass: ""
-        property string pendingNewPass: ""
+        property bool working: actionProc.running || imageApplyProc.running
 
         Layout.fillWidth: true
         implicitHeight: itemColumn.implicitHeight + 24
@@ -139,47 +137,18 @@ ContentPage {
             id: actionProc
             onExited: (code) => {
                 if (code === 0) {
-                    // If this was a password change for the current user, re-key the keyring
-                    if (item.pendingOldPass.length > 0 && item.pendingNewPass.length > 0) {
-                        keyringRekeyProc.running = true
-                        return
-                    }
                     root.showStatus(Translation.tr("Done! Changes have been saved."), false)
-                    root.refresh()
-                    item.expanded = false
                     item.showChangePassword = false
                     item.showChangeName = false
                     item.showRemove = false
+                    root.refresh()
+                    item.expanded = false
                 } else {
-                    item.pendingOldPass = ""
-                    item.pendingNewPass = ""
                     root.showStatus(Translation.tr("Something went wrong. Please try again."), true)
                 }
             }
         }
 
-        Process {
-            id: keyringRekeyProc
-            command: ["bash", Directories.scriptPath + "/keyring/rekey.sh"]
-            environment: ({
-                "OLD_PASSWORD": item.pendingOldPass,
-                "NEW_PASSWORD": item.pendingNewPass,
-            })
-            onExited: (code) => {
-                item.pendingOldPass = ""
-                item.pendingNewPass = ""
-                if (code === 0) {
-                    root.showStatus(Translation.tr("Password updated and keyring re-keyed successfully."), false)
-                } else {
-                    root.showStatus(Translation.tr("Password changed, but the keyring could not be re-keyed. You may need to enter your old password to unlock saved credentials."), true)
-                }
-                root.refresh()
-                item.expanded = false
-                item.showChangePassword = false
-                item.showChangeName = false
-                item.showRemove = false
-            }
-        }
 
         Process {
             id: imagePickerProc
@@ -475,6 +444,7 @@ ContentPage {
                     Layout.fillWidth: true
                 }
 
+
                 // ── Change password form ──────────────────────────────────────
                 ColumnLayout {
                     visible: item.showChangePassword
@@ -488,14 +458,6 @@ ContentPage {
                         placeholderText: Translation.tr("Current password")
                         echoMode: TextInput.Password
                         inputMethodHints: Qt.ImhSensitiveData
-                    }
-                    StyledText {
-                        visible: account.isCurrent
-                        text: Translation.tr("Your current password is needed to update saved credentials in the keyring.")
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.colors.colSubtext
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
                     }
                     MaterialTextField {
                         id: newPassField
@@ -521,29 +483,6 @@ ContentPage {
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                     }
-                    // Warning for other users: keyring cannot be re-keyed remotely
-                    Rectangle {
-                        visible: !account.isCurrent
-                        Layout.fillWidth: true
-                        implicitHeight: keyringWarnRow.implicitHeight + 14
-                        radius: Appearance.rounding.normal
-                        color: Qt.rgba(0.85, 0.65, 0.1, 0.1)
-                        border.width: 1
-                        border.color: Qt.rgba(0.85, 0.65, 0.1, 0.3)
-                        RowLayout {
-                            id: keyringWarnRow
-                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 10 }
-                            spacing: 8
-                            MaterialSymbol { text: "info"; iconSize: 14; color: Appearance.colors.colSubtext }
-                            StyledText {
-                                Layout.fillWidth: true
-                                text: Translation.tr("This user may be asked for their old password on next login to unlock saved credentials.")
-                                font.pixelSize: Appearance.font.pixelSize.small
-                                color: Appearance.colors.colSubtext
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-                    }
                     RowLayout {
                         Layout.fillWidth: true
                         Item { Layout.fillWidth: true }
@@ -567,11 +506,6 @@ ContentPage {
                             onClicked: {
                                 const user = account.name
                                 const pass = newPassField.text
-                                // Store passwords for keyring re-key (current user only)
-                                if (account.isCurrent) {
-                                    item.pendingOldPass = oldPassField.text
-                                    item.pendingNewPass = pass
-                                }
                                 oldPassField.text = ""; newPassField.text = ""; confirmPassField.text = ""
                                 actionProc.command = ["pkexec", "bash", "-c",
                                     'printf "%s:%s\\n" "$1" "$2" | chpasswd',

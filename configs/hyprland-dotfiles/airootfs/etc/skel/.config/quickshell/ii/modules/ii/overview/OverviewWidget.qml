@@ -47,15 +47,16 @@ Item {
     property int draggingFromWorkspace: -1
     property int draggingTargetWorkspace: -1
 
-    // Set by Overview.qml during an app drag to highlight the hovered workspace
+    // Set by Overview.qml during an app-drawer drag to highlight the hovered workspace
     property int appDragHoverWorkspace: -1
 
-    // Returns the 1-indexed workspace number at the given scene coords, or -1 if none.
+    // Returns the 1-indexed workspace number at the given scene coordinates, or -1 if none.
     function workspaceAtScenePoint(sceneX, sceneY) {
         const lp = workspaceColumnLayout.mapFromItem(null, sceneX, sceneY)
-        const col = Math.floor(lp.x / (root.workspaceImplicitWidth + workspaceSpacing))
-        const row = Math.floor(lp.y / (root.workspaceImplicitHeight + workspaceSpacing))
-        console.log("[wsHit] scene=(", sceneX, sceneY, ") local=(", lp.x, lp.y, ") cell=(", col, row, ") wsW=", root.workspaceImplicitWidth, "wsH=", root.workspaceImplicitHeight)
+        const cellW = root.workspaceImplicitWidth + workspaceSpacing
+        const cellH = root.workspaceImplicitHeight + workspaceSpacing
+        const col = Math.floor(lp.x / cellW)
+        const row = Math.floor(lp.y / cellH)
         if (col < 0 || col >= Config.options.overview.columns) return -1
         if (row < 0 || row >= Config.options.overview.rows) return -1
         return root.workspaceGroup * root.workspacesShown + getWsInCell(row, col)
@@ -255,7 +256,7 @@ Item {
                         }
                     }
 
-                    z: Drag.active ? root.windowDraggingZ : (root.windowZ + windowData?.floating)
+                    z: Drag.active ? root.windowDraggingZ : (root.windowZ + windowData?.floating + windowData?.fullscreen * 2)
                     Drag.hotSpot.x: width / 2
                     Drag.hotSpot.y: height / 2
                     MouseArea {

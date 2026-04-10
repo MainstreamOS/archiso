@@ -60,6 +60,11 @@ ApplicationWindow {
             component: "modules/settings/DisplayConfig.qml"
         },
         {
+            name: Translation.tr("Layouts"),
+            icon: "view_quilt",
+            component: "modules/settings/LayoutsConfig.qml"
+        },
+        {
             name: Translation.tr("Mouse"),
             icon: "mouse",
             component: "modules/settings/MouseConfig.qml"
@@ -83,6 +88,11 @@ ApplicationWindow {
             name: Translation.tr("Update"),
             icon: "system_update_alt",
             component: "modules/settings/UpdateConfig.qml"
+        },
+        {
+            name: Translation.tr("Recovery"),
+            icon: "healing",
+            component: "modules/settings/RecoverConfig.qml"
         },
         {
             name: Translation.tr("About"),
@@ -224,7 +234,7 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 2: Bar, Background, Interface (Indices 3, 4, 5)
+                    // Group 2: Bar, Interface, Background (Indices 3, 4, 5)
                     Repeater {
                         model: root.pages.slice(3, 6)
                         SettingsNavButton {
@@ -241,9 +251,9 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 3: Display, Power, Mouse (Indices 6, 7, 8)
+                    // Group 3: Display, Layouts, Mouse, Power (Indices 6, 7, 8, 9)
                     Repeater {
-                        model: root.pages.slice(6, 9)
+                        model: root.pages.slice(6, 10)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
@@ -258,14 +268,14 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 4: Services, Update, Accounts (Indices 9, 10, 11)
+                    // Group 4: Accounts, Services, Update, Recovery (Indices 10, 11, 12, 13)
                     Repeater {
-                        model: root.pages.slice(9, 12)
+                        model: root.pages.slice(10, 14)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
-                            toggled: root.currentPage === (index + 9)
-                            onPressed: root.currentPage = (index + 9)
+                            toggled: root.currentPage === (index + 10)
+                            onPressed: root.currentPage = (index + 10)
                             buttonIcon: modelData.icon
                             buttonText: modelData.name
                         }
@@ -275,14 +285,14 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 5: About (Index 12)
+                    // Group 5: About (Index 14)
                     Repeater {
-                        model: root.pages.slice(12)
+                        model: root.pages.slice(14)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
-                            toggled: root.currentPage === (index + 12)
-                            onPressed: root.currentPage = (index + 12)
+                            toggled: root.currentPage === (index + 14)
+                            onPressed: root.currentPage = (index + 14)
                             buttonIcon: modelData.icon
                             buttonText: modelData.name
                         }

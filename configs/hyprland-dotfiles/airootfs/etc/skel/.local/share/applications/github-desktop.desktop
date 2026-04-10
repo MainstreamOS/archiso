@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=GitHub Desktop
+Comment=Extend your GitHub workflow beyond your browser with GitHub Desktop
+Exec=/opt/github-desktop/github-desktop --ozone-platform-hint=wayland --gtk-version=4 --ignore-gpu-blocklist --enable-features=TouchpadOverscrollHistoryNavigation --enable-wayland-ime %U
+TryExec=/opt/github-desktop/github-desktop
+Terminal=false
+Type=Application
+Icon=github-desktop
+Categories=Development;
+MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;x-scheme-handler/x-github-desktop-dev-auth;
+StartupWMClass=GitHub Desktop

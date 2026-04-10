@@ -18,18 +18,38 @@ DockButton {
     property bool appIsActive: appToplevel.toplevels.find(t => (t.activated == true)) !== undefined
 
     readonly property bool isSeparator: appToplevel.appId === "SEPARATOR"
-    property var desktopEntry: DesktopEntries.heuristicLookup(appToplevel.appId)
+    readonly property bool isFolder: appToplevel.isFolder === true
+    property var desktopEntry: isFolder ? null : DesktopEntries.heuristicLookup(appToplevel.appId)
 
     Timer {
         // Retry looking up the desktop entry if it failed (e.g. database not loaded yet)
         property int retryCount: 5
         interval: 1000
-        running: !root.isSeparator && root.desktopEntry === null && retryCount > 0
+        running: !root.isSeparator && !root.isFolder && root.desktopEntry === null && retryCount > 0
         repeat: true
         onTriggered: {
             retryCount--;
             root.desktopEntry = DesktopEntries.heuristicLookup(root.appToplevel.appId);
         }
+    }
+
+    // Folder icon data — resolved imperatively to avoid reactive dependency
+    // on AppFolderManager.folders which would rebuild the entire dock model.
+    property var folderAppIds: []
+
+    function refreshFolderData() {
+        if (!root.isFolder) return;
+        const folderId = appToplevel.appId.substring(TaskbarApps.folderPrefix.length);
+        const folder = AppFolderManager.getFolder(folderId);
+        root.folderAppIds = folder ? folder.appIds.slice(0, 4) : [];
+    }
+
+    Component.onCompleted: refreshFolderData()
+
+    Connections {
+        target: AppFolderManager
+        enabled: root.isFolder
+        function onFoldersChanged() { root.refreshFolderData(); }
     }
 
     // Drag-to-reorder
@@ -128,7 +148,16 @@ DockButton {
     }
 
     onClicked: {
-        if (appToplevel.toplevels.length > 0) {
+        if (root.isFolder) {
+            // Toggle folder popup directly above this icon
+            if (appListRoot.folderPopupShow && appListRoot.clickedButton === root) {
+                appListRoot.hideFolderPopup();
+            } else {
+                const folderId = appToplevel.appId.substring(TaskbarApps.folderPrefix.length);
+                const folder = AppFolderManager.getFolder(folderId);
+                if (folder) appListRoot.showFolderPopup(root, folder);
+            }
+        } else if (appToplevel.toplevels.length > 0) {
             // Toggle preview
             if (appListRoot.clickedButton === root) {
                 appListRoot.hidePreview();
@@ -157,7 +186,7 @@ DockButton {
     }
 
     middleClickAction: () => {
-        root.desktopEntry?.execute();
+        if (!root.isFolder) root.desktopEntry?.execute();
     }
 
     altAction: () => {
@@ -177,6 +206,7 @@ DockButton {
                 NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
             }
 
+            // Regular app icon
             Loader {
                 id: iconImageLoader
                 anchors {
@@ -184,15 +214,50 @@ DockButton {
                     right: parent.right
                     verticalCenter: parent.verticalCenter
                 }
-                active: !root.isSeparator
+                active: !root.isSeparator && !root.isFolder
                 sourceComponent: IconImage {
                     source: Quickshell.iconPath(root.desktopEntry?.icon ?? AppSearch.guessIcon(appToplevel.appId), "image-missing")
                     implicitSize: root.iconSize
                 }
             }
 
+            // Folder icon — 2x2 mini-icon grid
             Loader {
-                active: Config.options.dock.monochromeIcons
+                id: folderIconLoader
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
+                }
+                active: root.isFolder
+                sourceComponent: Rectangle {
+                    implicitWidth: root.iconSize
+                    implicitHeight: root.iconSize
+                    radius: Appearance.rounding.small
+                    color: Appearance.colors.colLayer1
+                    border.width: 1
+                    border.color: Appearance.colors.colLayer0Border
+
+                    Grid {
+                        anchors.centerIn: parent
+                        columns: 2
+                        spacing: 1
+
+                        Repeater {
+                            model: root.folderAppIds
+
+                            IconImage {
+                                required property var modelData
+                                source: Quickshell.iconPath(AppSearch.guessIcon(modelData), "image-missing")
+                                implicitSize: root.iconSize * 0.4
+                            }
+                        }
+                    }
+                }
+            }
+
+            Loader {
+                active: Config.options.dock.monochromeIcons && !root.isFolder
                 anchors.fill: iconImageLoader
                 sourceComponent: Item {
                     Desaturate {
@@ -213,10 +278,11 @@ DockButton {
             RowLayout {
                 spacing: 3
                 anchors {
-                    top: iconImageLoader.bottom
+                    top: root.isFolder ? folderIconLoader.bottom : iconImageLoader.bottom
                     topMargin: 2
                     horizontalCenter: parent.horizontalCenter
                 }
+                visible: !root.isFolder
                 Repeater {
                     model: Math.min(appToplevel.toplevels.length, 3)
                     delegate: Rectangle {

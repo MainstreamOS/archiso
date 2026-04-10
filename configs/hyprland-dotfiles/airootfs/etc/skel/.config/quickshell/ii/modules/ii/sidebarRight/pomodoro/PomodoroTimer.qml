@@ -32,84 +32,15 @@ Item {
                 anchors.centerIn: parent
                 spacing: 0
 
-                Item {
-                    id: timeItem
+                StyledText {
                     Layout.alignment: Qt.AlignHCenter
-                    implicitWidth: 120
-                    implicitHeight: 50
-
-                    property bool editMode: false
-
-                    function applyEdit() {
-                        editMode = false;
-                        let raw = timeField.text.replace(/[^0-9:]/g, "");
-                        let parts = raw.split(":");
-                        let newSeconds = 0;
-                        if (parts.length >= 2) {
-                            newSeconds = (parseInt(parts[0]) || 0) * 60 + (parseInt(parts[1]) || 0);
-                        } else {
-                            newSeconds = parseInt(parts[0]) || 0;
-                        }
-                        let delta = newSeconds - TimerService.pomodoroSecondsLeft;
-                        TimerService.adjustPomodoroTime(delta);
+                    text: {
+                        let minutes = Math.floor(TimerService.pomodoroSecondsLeft / 60).toString().padStart(2, '0');
+                        let seconds = Math.floor(TimerService.pomodoroSecondsLeft % 60).toString().padStart(2, '0');
+                        return `${minutes}:${seconds}`;
                     }
-
-                    StyledText {
-                        visible: !timeItem.editMode
-                        anchors.centerIn: parent
-                        text: {
-                            let minutes = Math.floor(TimerService.pomodoroSecondsLeft / 60).toString().padStart(2, '0');
-                            let seconds = Math.floor(TimerService.pomodoroSecondsLeft % 60).toString().padStart(2, '0');
-                            return `${minutes}:${seconds}`;
-                        }
-                        font.pixelSize: 40
-                        color: Appearance.m3colors.m3onSurface
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        visible: !timeItem.editMode
-                        cursorShape: Qt.IBeamCursor
-                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-
-                        onClicked: (mouse) => {
-                            if (mouse.button === Qt.MiddleButton) {
-                                if (mouse.modifiers & Qt.ShiftModifier) {
-                                    TimerService.adjustPomodoroTime(-600);
-                                } else {
-                                    TimerService.adjustPomodoroTime(600);
-                                }
-                            } else if (mouse.button === Qt.LeftButton) {
-                                let minutes = Math.floor(TimerService.pomodoroSecondsLeft / 60).toString().padStart(2, '0');
-                                let seconds = Math.floor(TimerService.pomodoroSecondsLeft % 60).toString().padStart(2, '0');
-                                timeField.text = `${minutes}:${seconds}`;
-                                timeItem.editMode = true;
-                                timeField.forceActiveFocus();
-                                timeField.selectAll();
-                            }
-                        }
-                    }
-
-                    StyledTextInput {
-                        id: timeField
-                        visible: timeItem.editMode
-                        anchors.centerIn: parent
-                        width: parent.width
-                        horizontalAlignment: TextInput.AlignHCenter
-                        font.pixelSize: 40
-                        font.hintingPreference: Font.PreferDefaultHinting
-                        renderType: Text.NativeRendering
-                        color: Appearance.m3colors.m3onSurface
-
-                        Keys.onReturnPressed: timeItem.applyEdit()
-                        Keys.onEnterPressed: timeItem.applyEdit()
-                        Keys.onEscapePressed: timeItem.editMode = false
-
-                        onActiveFocusChanged: {
-                            if (!activeFocus && timeItem.editMode)
-                                timeItem.applyEdit();
-                        }
-                    }
+                    font.pixelSize: 40
+                    color: Appearance.m3colors.m3onSurface
                 }
 
                 StyledText {

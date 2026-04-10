@@ -16,6 +16,49 @@ Scope {
     id: overviewScope
     property bool dontAutoCancelSearch: false
 
+    // ── NVIDIA surface-commit race guard ────────────────────────────────────
+    // On NVIDIA (and other GPUs with slower Wayland surface commits) the
+    // HyprlandFocusGrab fires onCleared immediately after the overview opens
+    // from a dock button click, because the overview's Wayland surface hasn't
+    // been committed to the compositor yet and focus is still on the dock.
+    // This causes the overview to flash and instantly close.
+    //
+    // Two-phase fix to handle both the initial race and a secondary race:
+    //
+    //  Phase 1 (0 → 120 ms):  Surface is committing.  Any onCleared that fires
+    //    during this window is the false-positive — ignore it.
+    //
+    //  Phase 2 (120 ms):  rearmTimer fires while the guard is STILL active.
+    //    Re-adding the window to the focus grab transitions grab.active from
+    //    false → true again, which on NVIDIA can itself trigger a second
+    //    immediate onCleared (same race, new grab setup).  Keeping ignoreDismiss
+    //    true here absorbs that second false-positive too.
+    //
+    //  Phase 3 (300 ms):  dismissGuardTimer fires and clears ignoreDismiss.
+    //    By this point both races have settled and the surface is fully
+    //    committed, so real dismiss events (clicking outside) work normally.
+    property bool ignoreDismiss: false
+
+    // Phase 2: re-arm the grab while the guard is still active.
+    Timer {
+        id: rearmTimer
+        interval: 120
+        onTriggered: {
+            if (GlobalStates.overviewOpen) {
+                GlobalFocusGrab.addDismissable(panelWindow);
+            }
+        }
+    }
+
+    // Phase 3: clear the guard after both races have settled.
+    Timer {
+        id: dismissGuardTimer
+        interval: 300
+        onTriggered: {
+            overviewScope.ignoreDismiss = false;
+        }
+    }
+
     PanelWindow {
         id: panelWindow
         property string searchingText: ""
@@ -46,7 +89,12 @@ Scope {
                     // Reset drawer state
                     appDrawer.expanded = false;
                     appDrawer.searchText = "";
+                    appDrawer.folderPopupVisible = false;
+                    appDrawer.openFolder = null;
                     flickable.contentY = 0;
+                    rearmTimer.stop();
+                    dismissGuardTimer.stop();
+                    overviewScope.ignoreDismiss = false;
                     GlobalFocusGrab.dismiss();
                 } else {
                     if (!overviewScope.dontAutoCancelSearch) {
@@ -55,6 +103,12 @@ Scope {
                     // Reset drawer state on open
                     appDrawer.expanded = false;
                     appDrawer.searchText = "";
+                    appDrawer.folderPopupVisible = false;
+                    appDrawer.openFolder = null;
+                    // Arm the two-phase dismiss guard (see comment above).
+                    overviewScope.ignoreDismiss = true;
+                    rearmTimer.restart();
+                    dismissGuardTimer.restart();
                     GlobalFocusGrab.addDismissable(panelWindow);
                 }
             }
@@ -64,6 +118,7 @@ Scope {
             target: GlobalFocusGrab
             function onDismissed() {
                 if (contentFade.appDragging) return  // don't close during app drag
+                if (overviewScope.ignoreDismiss) return  // absorb NVIDIA surface-commit race
                 GlobalStates.overviewOpen = false;
             }
         }
@@ -111,34 +166,47 @@ Scope {
         Connections {
             target: appDrawer
 
-            function onAppDragUpdate(app, sceneX, sceneY) {
+            function onAppDragStarted(app, sceneX, sceneY) {
                 contentFade.appDragging = true
                 dragFloatIcon.app = app
-                dragFloatIcon.x = sceneX - dragFloatIcon.width  / 2
+                dragFloatIcon.x = sceneX - dragFloatIcon.width / 2
                 dragFloatIcon.y = sceneY - dragFloatIcon.height / 2
                 dragFloatIcon.visible = true
+            }
+
+            function onAppDragUpdate(sceneX, sceneY) {
+                dragFloatIcon.x = sceneX - dragFloatIcon.width / 2
+                dragFloatIcon.y = sceneY - dragFloatIcon.height / 2
                 const ws = overviewLoader.item
                     ? overviewLoader.item.workspaceAtScenePoint(sceneX, sceneY)
                     : -1
                 if (overviewLoader.item) overviewLoader.item.appDragHoverWorkspace = ws
             }
 
-            function onAppDropped(appId, sceneX, sceneY) {
+            function onAppDropped(app, sceneX, sceneY) {
                 contentFade.appDragging = false
                 dragFloatIcon.visible = false
+                dragFloatIcon.app = null
                 if (overviewLoader.item) overviewLoader.item.appDragHoverWorkspace = -1
+
                 const ws = overviewLoader.item
                     ? overviewLoader.item.workspaceAtScenePoint(sceneX, sceneY)
                     : -1
-                if (ws > 0 && appId) {
-                    const cmd = `sh -c 'f="$HOME/.local/share/applications/${appId}.desktop"; [ -f "$f" ] || f="/usr/share/applications/${appId}.desktop"; gio launch "$f"'`
-                    Hyprland.dispatch(`exec [workspace ${ws} silent] ${cmd}`)
+                if (ws > 0 && app) {
+                    // Use the parsed command array from DesktopEntry so the
+                    // command is reliable (app.exec is raw and not runnable).
+                    const parts = app.command
+                    if (parts && parts.length > 0) {
+                        const cmd = parts.map(p => p.includes(" ") ? `"${p}"` : p).join(" ")
+                        Hyprland.dispatch(`exec [workspace ${ws} silent] ${cmd}`)
+                    }
                 }
             }
 
             function onAppDragCancelled() {
                 contentFade.appDragging = false
                 dragFloatIcon.visible = false
+                dragFloatIcon.app = null
                 if (overviewLoader.item) overviewLoader.item.appDragHoverWorkspace = -1
             }
         }
@@ -150,11 +218,12 @@ Scope {
             contentHeight: columnLayout.implicitHeight
             clip: true
             visible: true
-            interactive: false
+            interactive: !contentFade.appDragging
             boundsBehavior: Flickable.DragAndOvershootBounds
 
             onContentYChanged: {
                 // Drag-overshoot past the top while expanded → collapse.
+                // Wheel-based collapse is handled by wheelOverlay below.
                 if (appDrawer.expanded && contentY < -30) {
                     appDrawer.expanded = false;
                     appDrawer.searchText = "";
@@ -269,6 +338,7 @@ Scope {
                         ? columnLayout.cachedOverviewWidth
                         : Math.min(1200, flickable.width - 40)
                     visible: (panelWindow.searchingText == "")
+                    // But hide it when searching and not expanded (search results take priority)
                     opacity: (panelWindow.searchingText != "" && !appDrawer.expanded) ? 0 : 1
                     Layout.maximumHeight: (panelWindow.searchingText != "" && !appDrawer.expanded) ? 0 : implicitHeight
                         
@@ -296,6 +366,19 @@ Scope {
         }
 
         // ── Wheel-event interceptor ──────────────────────────────────────────
+        // Sits at z:100 — above the StyledFlickable and all its descendants,
+        // including StyledFlickable's inner MouseArea (which would otherwise
+        // consume every wheel event). Qt hit-tests siblings by z-order, so
+        // this MouseArea is evaluated first.
+        //
+        //  acceptedButtons: Qt.NoButton  — mouse presses pass through to lower-z
+        //                                  items (app icon buttons, etc.)
+        //  propagateComposedEvents: true — click/release also fall through
+        //
+        //  Scroll DOWN while collapsed     → expand drawer
+        //  Scroll UP  at grid+outer top    → collapse drawer
+        //  Otherwise                       → scroll grid (expanded)
+        //                                    or outer flickable (collapsed)
         MouseArea {
             id: wheelOverlay
             anchors.fill: flickable
@@ -396,22 +479,35 @@ Scope {
     GlobalShortcut {
         name: "searchToggle"
         description: "Toggles search on press"
-        onPressed: { GlobalStates.overviewOpen = !GlobalStates.overviewOpen; }
+
+        onPressed: {
+            GlobalStates.overviewOpen = !GlobalStates.overviewOpen;
+        }
     }
     GlobalShortcut {
         name: "overviewWorkspacesClose"
         description: "Closes overview on press"
-        onPressed: { GlobalStates.overviewOpen = false; }
+
+        onPressed: {
+            GlobalStates.overviewOpen = false;
+        }
     }
     GlobalShortcut {
         name: "overviewWorkspacesToggle"
         description: "Toggles overview on press"
-        onPressed: { GlobalStates.overviewOpen = !GlobalStates.overviewOpen; }
+
+        onPressed: {
+            GlobalStates.overviewOpen = !GlobalStates.overviewOpen;
+        }
     }
     GlobalShortcut {
         name: "searchToggleRelease"
         description: "Toggles search on release"
-        onPressed: { GlobalStates.superReleaseMightTrigger = true; }
+
+        onPressed: {
+            GlobalStates.superReleaseMightTrigger = true;
+        }
+
         onReleased: {
             if (!GlobalStates.superReleaseMightTrigger) {
                 GlobalStates.superReleaseMightTrigger = true;
@@ -423,16 +519,26 @@ Scope {
     GlobalShortcut {
         name: "searchToggleReleaseInterrupt"
         description: "Interrupts possibility of search being toggled on release. " + "This is necessary because GlobalShortcut.onReleased in quickshell triggers whether or not you press something else while holding the key. " + "To make sure this works consistently, use binditn = MODKEYS, catchall in an automatically triggered submap that includes everything."
-        onPressed: { GlobalStates.superReleaseMightTrigger = false; }
+
+        onPressed: {
+            GlobalStates.superReleaseMightTrigger = false;
+        }
     }
     GlobalShortcut {
         name: "overviewClipboardToggle"
         description: "Toggle clipboard query on overview widget"
-        onPressed: { overviewScope.toggleClipboard(); }
+
+        onPressed: {
+            overviewScope.toggleClipboard();
+        }
     }
+
     GlobalShortcut {
         name: "overviewEmojiToggle"
         description: "Toggle emoji query on overview widget"
-        onPressed: { overviewScope.toggleEmojis(); }
+
+        onPressed: {
+            overviewScope.toggleEmojis();
+        }
     }
 }

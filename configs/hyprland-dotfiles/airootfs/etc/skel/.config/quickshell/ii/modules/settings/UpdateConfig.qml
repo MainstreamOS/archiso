@@ -19,7 +19,7 @@ ContentPage {
     property bool flagYes: true
     property bool flagDisableSystem: false
     property bool flagDisableFlatpak: false
-    property bool flagDisableFirmware: false
+    property bool flagDisableFirmware: true
     property string customArgs: ""
 
     function buildCommand() {
@@ -110,9 +110,108 @@ ContentPage {
         }
     }
 
+    // ── Tips & Info section ──
+    ContentSection {
+        icon: "lightbulb"
+        title: Translation.tr("Tips & Info")
+
+        ContentSubsection {
+            title: Translation.tr("Before & after the update")
+
+            NoticeBox {
+                Layout.fillWidth: true
+                materialIcon: "checklist"
+                text: Translation.tr("Before you click Update, take a moment to test anything important \u2014 printers, audio, external drives, browsers, or any apps you rely on daily. After the update completes, test those same things again. Most updates go smoothly, but it's good to know right away if something needs attention.")
+            }
+        }
+
+        ContentSubsection {
+            title: Translation.tr("How updating works")
+
+            NoticeBox {
+                Layout.fillWidth: true
+                materialIcon: "sync"
+                text: Translation.tr("Before anything installs, a snapshot of your entire system is saved automatically — this is your safety net. If something ever goes wrong after updating, the Recovery page will walk you through rolling back to exactly how your system was before the update.")
+            }
+        }
+
+    }
+
+    // ── Output section ──
     ContentSection {
         icon: "system_update_alt"
         title: Translation.tr("System Update")
+
+        headerExtra: [
+            RippleButtonWithIcon {
+                materialIcon: "content_copy"
+                mainText: Translation.tr("Copy")
+                onClicked: {
+                    Quickshell.clipboardText = root.outputText;
+                }
+            }
+        ]
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 250
+            radius: Appearance.rounding.small
+            color: Appearance.colors.colLayer0
+            clip: true
+
+            Flickable {
+                id: outputFlickable
+                anchors {
+                    fill: parent
+                    margins: 10
+                }
+                contentHeight: outputDisplay.implicitHeight
+                clip: true
+                flickableDirection: Flickable.VerticalFlick
+                boundsBehavior: Flickable.StopAtBounds
+
+                StyledText {
+                    id: outputDisplay
+                    width: outputFlickable.width
+                    text: root.outputText || Translation.tr("No output yet. Press \"Start update\" to begin.")
+                    font.family: Appearance.font.family.monospace
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: root.outputText ? Appearance.colors.colOnLayer0 : Appearance.m3colors.m3outlineVariant
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+
+                onContentHeightChanged: {
+                    if (root.isRunning) {
+                        contentY = Math.max(0, contentHeight - height);
+                    }
+                }
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                }
+            }
+
+            // Running indicator
+            Rectangle {
+                visible: root.isRunning
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                }
+                height: 3
+                color: Appearance.m3colors.m3primary
+                radius: 2
+
+                SequentialAnimation on opacity {
+                    running: root.isRunning
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.3; to: 1.0; duration: 800 }
+                    NumberAnimation { from: 1.0; to: 0.3; duration: 800 }
+                }
+            }
+        }
 
         ConfigRow {
             ConfigSwitch {
@@ -241,82 +340,6 @@ ContentPage {
                 color: Appearance.m3colors.m3outlineVariant
             }
         }
-
     }
 
-    ContentSection {
-        icon: "terminal"
-        title: Translation.tr("Output")
-
-        headerExtra: [
-            RippleButtonWithIcon {
-                materialIcon: "content_copy"
-                mainText: Translation.tr("Copy")
-                onClicked: {
-                    Quickshell.clipboardText = root.outputText;
-                }
-            }
-        ]
-
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: 400
-            radius: Appearance.rounding.small
-            color: Appearance.colors.colLayer0
-            clip: true
-
-            Flickable {
-                id: outputFlickable
-                anchors {
-                    fill: parent
-                    margins: 10
-                }
-                contentHeight: outputDisplay.implicitHeight
-                clip: true
-                flickableDirection: Flickable.VerticalFlick
-                boundsBehavior: Flickable.StopAtBounds
-
-                StyledText {
-                    id: outputDisplay
-                    width: outputFlickable.width
-                    text: root.outputText || Translation.tr("No output yet. Press \"Start update\" to begin.")
-                    font.family: Appearance.font.family.monospace
-                    font.pixelSize: Appearance.font.pixelSize.small
-                    color: root.outputText ? Appearance.colors.colOnLayer0 : Appearance.m3colors.m3outlineVariant
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                }
-
-                onContentHeightChanged: {
-                    if (root.isRunning) {
-                        contentY = Math.max(0, contentHeight - height);
-                    }
-                }
-
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                }
-            }
-
-            // Running indicator
-            Rectangle {
-                visible: root.isRunning
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    bottom: parent.bottom
-                }
-                height: 3
-                color: Appearance.m3colors.m3primary
-                radius: 2
-
-                SequentialAnimation on opacity {
-                    running: root.isRunning
-                    loops: Animation.Infinite
-                    NumberAnimation { from: 0.3; to: 1.0; duration: 800 }
-                    NumberAnimation { from: 1.0; to: 0.3; duration: 800 }
-                }
-            }
-        }
-    }
 }

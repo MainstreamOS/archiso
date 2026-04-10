@@ -8,7 +8,20 @@ import qs.modules.common.functions as CF
 import qs.modules.common.widgets
 
 ContentPage {
+    id: root
     forceWidth: true
+
+    // ── Decorations state ──────────────────────────────────────────────────────
+    readonly property string generalConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/general.conf`
+    readonly property string customGeneralConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/custom/general.conf`
+    property bool animationsEnabled: true
+    property bool blurEnabled: true
+    property bool shadowsEnabled: true
+    property bool bordersEnabled: true
+    property bool roundCornersEnabled: true
+    property bool titleBarsEnabled: false
+    property int previousCornerStyle: Config.options.bar.cornerStyle
+    property bool _decoReady: false
 
     // ── Lock timeout ─────────────────────────────────────────────────────────
     property bool lockEnabled: true
@@ -19,6 +32,118 @@ ContentPage {
 
     Component.onCompleted: {
         lockTimeoutReader.running = true
+        decoReader.running = true
+        titleBarReader.running = true
+    }
+
+    Process {
+        id: titleBarReader
+        command: ["cat", root.customGeneralConf]
+        property string buf: ""
+        onRunningChanged: if (running) buf = ""
+        stdout: SplitParser { onRead: data => titleBarReader.buf += data + "\n" }
+        onExited: {
+            let match = titleBarReader.buf.match(/^#\s*ii_titlebars\s*=\s*(\w+)/m);
+            if (match) root.titleBarsEnabled = match[1] === "true";
+        }
+    }
+
+    Process {
+        id: decoReader
+        command: ["cat", root.generalConf]
+        property string buf: ""
+        onRunningChanged: if (running) buf = ""
+        stdout: SplitParser { onRead: data => decoReader.buf += data + "\n" }
+        onExited: {
+            let text = decoReader.buf;
+            let animMatch = text.match(/animations\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            if (animMatch) root.animationsEnabled = animMatch[1] === "true" || animMatch[1] === "1";
+            let blurMatch = text.match(/blur\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            if (blurMatch) root.blurEnabled = blurMatch[1] === "true" || blurMatch[1] === "1";
+            let shadowMatch = text.match(/shadow\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            if (shadowMatch) root.shadowsEnabled = shadowMatch[1] === "true" || shadowMatch[1] === "1";
+            let borderMatch = text.match(/^(\s*)(#\s*)?border_size\s*=/m);
+            root.bordersEnabled = borderMatch ? !borderMatch[2] : false;
+            let roundMatch = text.match(/^\s*rounding\s*=\s*(\d+)/m);
+            if (roundMatch) root.roundCornersEnabled = parseInt(roundMatch[1]) > 0;
+            root._decoReady = true;
+        }
+    }
+
+    function decoSetBlockEnabled(blockName, enabled) {
+        let val = enabled ? "true" : "false";
+        let py =
+            "import sys, re\n" +
+            "block, val, conf = sys.argv[1], sys.argv[2], sys.argv[3]\n" +
+            "text = open(conf).read()\n" +
+            "pattern = r'(' + re.escape(block) + r'\\s*' + chr(123) + r'[^' + chr(125) + r']*?)(enabled\\s*=\\s*)\\w+'\n" +
+            "text = re.sub(pattern, r'\\1\\2' + val, text, count=1)\n" +
+            "open(conf, 'w').write(text)\n";
+        Quickshell.execDetached(["python3", "-c", py, blockName, val, root.generalConf]);
+    }
+
+    function decoSetBordersEnabled(enabled) {
+        let fields = ["border_size", "col.active_border", "col.inactive_border", "resize_on_border"];
+        let py =
+            "import sys, re\n" +
+            "enable = sys.argv[1] == '1'\n" +
+            "conf = sys.argv[2]\n" +
+            "fields = sys.argv[3].split(',')\n" +
+            "lines = open(conf).readlines()\n" +
+            "result = []\n" +
+            "for line in lines:\n" +
+            "    stripped = line.lstrip()\n" +
+            "    for f in fields:\n" +
+            "        if enable:\n" +
+            "            if stripped.startswith('# ' + f + ' ') or stripped.startswith('#' + f + ' ') or stripped.startswith('# ' + f + '=') or stripped.startswith('#' + f + '='):\n" +
+            "                indent = line[:len(line) - len(line.lstrip())]\n" +
+            "                line = indent + stripped.lstrip('# ')\n" +
+            "                break\n" +
+            "        else:\n" +
+            "            if stripped.startswith(f + ' ') or stripped.startswith(f + '='):\n" +
+            "                indent = line[:len(line) - len(line.lstrip())]\n" +
+            "                line = indent + '# ' + stripped\n" +
+            "                break\n" +
+            "    if stripped.startswith('gaps_in'):\n" +
+            "        indent = line[:len(line) - len(line.lstrip())]\n" +
+            "        line = indent + 'gaps_in = ' + ('4' if enable else '0') + '\\n'\n" +
+            "    elif stripped.startswith('gaps_out'):\n" +
+            "        indent = line[:len(line) - len(line.lstrip())]\n" +
+            "        line = indent + 'gaps_out = ' + ('5' if enable else '0') + '\\n'\n" +
+            "    result.append(line)\n" +
+            "open(conf, 'w').writelines(result)\n";
+        Quickshell.execDetached(["python3", "-c", py, enabled ? "1" : "0", root.generalConf, fields.join(",")]);
+        if (enabled) {
+            Quickshell.execDetached(["hyprctl", "keyword", "general:border_size", "4"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:col.active_border", "rgba(0DB7D455)"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:col.inactive_border", "rgba(31313600)"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:resize_on_border", "true"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:gaps_in", "4"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:gaps_out", "5"]);
+        } else {
+            Quickshell.execDetached(["hyprctl", "keyword", "general:border_size", "0"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:resize_on_border", "false"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:gaps_in", "0"]);
+            Quickshell.execDetached(["hyprctl", "keyword", "general:gaps_out", "0"]);
+        }
+    }
+
+    function decoSetRoundCornersEnabled(enabled) {
+        let val = enabled ? "10" : "0";
+        let py =
+            "import sys, re\n" +
+            "val, conf = sys.argv[1], sys.argv[2]\n" +
+            "text = open(conf).read()\n" +
+            "text = re.sub(r'(rounding\\s*=\\s*)\\d+', r'\\g<1>' + val, text, count=1)\n" +
+            "open(conf, 'w').write(text)\n";
+        Quickshell.execDetached(["python3", "-c", py, val, root.generalConf]);
+        Quickshell.execDetached(["hyprctl", "keyword", "decoration:rounding", val]);
+        if (!enabled) {
+            root.previousCornerStyle = Config.options.bar.cornerStyle;
+            Config.options.bar.cornerStyle = 2;
+        } else {
+            Config.options.bar.cornerStyle = root.previousCornerStyle;
+        }
     }
 
     Process {
@@ -151,6 +276,118 @@ ContentPage {
         }
     }
     */
+
+    // ── Decorations ──────────────────────────────────────────────────────────
+    ContentSection {
+        icon: "auto_awesome"
+        title: Translation.tr("Decorations")
+
+        ConfigRow {
+            uniform: true
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "animation"
+                text: Translation.tr("Animations")
+                checked: root.animationsEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.animationsEnabled = checked;
+                    root.decoSetBlockEnabled("animations", checked);
+                    Quickshell.execDetached(["hyprctl", "keyword", "animations:enabled", checked ? "true" : "false"]);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Window open/close and workspace transition effects")
+                }
+            }
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "blur_on"
+                text: Translation.tr("Blur")
+                checked: root.blurEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.blurEnabled = checked;
+                    root.decoSetBlockEnabled("blur", checked);
+                    Quickshell.execDetached(["hyprctl", "keyword", "decoration:blur:enabled", checked ? "true" : "false"]);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Background blur behind transparent windows and layers")
+                }
+            }
+        }
+        ConfigRow {
+            uniform: true
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "ev_shadow"
+                text: Translation.tr("Shadows")
+                checked: root.shadowsEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.shadowsEnabled = checked;
+                    root.decoSetBlockEnabled("shadow", checked);
+                    Quickshell.execDetached(["hyprctl", "keyword", "decoration:shadow:enabled", checked ? "true" : "false"]);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Drop shadows underneath windows")
+                }
+            }
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "border_style"
+                text: Translation.tr("Borders")
+                checked: root.bordersEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.bordersEnabled = checked;
+                    root.decoSetBordersEnabled(checked);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Colored borders around active and inactive windows")
+                }
+            }
+        }
+        ConfigRow {
+            uniform: true
+            ConfigSwitch {
+                buttonIcon: "rounded_corner"
+                text: Translation.tr("Rounded Corners")
+                checked: root.roundCornersEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.roundCornersEnabled = checked;
+                    root.decoSetRoundCornersEnabled(checked);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Rounded corners on windows and the bar")
+                }
+            }
+            ConfigSwitch {
+                buttonIcon: "title"
+                text: Translation.tr("Title Bars")
+                checked: root.titleBarsEnabled
+                onCheckedChanged: {
+                    if (!root._decoReady) return;
+                    root.titleBarsEnabled = checked;
+                    let val = checked ? "true" : "false";
+                    let py =
+                        "import re, sys\n" +
+                        "val, conf = sys.argv[1], sys.argv[2]\n" +
+                        "text = open(conf).read()\n" +
+                        "if re.search(r'^#\\s*ii_titlebars\\s*=', text, re.M):\n" +
+                        "    text = re.sub(r'^#\\s*ii_titlebars\\s*=\\s*\\w+', '# ii_titlebars = ' + val, text, flags=re.M)\n" +
+                        "else:\n" +
+                        "    text = text.rstrip() + '\\n# ii_titlebars = ' + val + '\\n'\n" +
+                        "open(conf, 'w').write(text)\n";
+                    Quickshell.execDetached(["python3", "-c", py, val, root.customGeneralConf]);
+                    Quickshell.execDetached(["hyprpm", checked ? "enable" : "disable", "hyprbars"]);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Show title bars on windows")
+                }
+            }
+        }
+    }
 
     ContentSection {
         icon: "call_to_action"
@@ -669,6 +906,55 @@ ContentPage {
         */
 
         ContentSubsection {
+            title: Translation.tr("Timer")
+
+            ConfigSpinBox {
+                icon: "target"
+                text: Translation.tr("Focus (min)")
+                value: Config.options.time.pomodoro.focus / 60
+                from: 1
+                to: 120
+                stepSize: 5
+                onValueChanged: {
+                    Config.options.time.pomodoro.focus = value * 60;
+                }
+            }
+            ConfigSpinBox {
+                icon: "coffee"
+                text: Translation.tr("Break (min)")
+                value: Config.options.time.pomodoro.breakTime / 60
+                from: 1
+                to: 60
+                stepSize: 1
+                onValueChanged: {
+                    Config.options.time.pomodoro.breakTime = value * 60;
+                }
+            }
+            ConfigSpinBox {
+                icon: "weekend"
+                text: Translation.tr("Long break (min)")
+                value: Config.options.time.pomodoro.longBreak / 60
+                from: 1
+                to: 60
+                stepSize: 5
+                onValueChanged: {
+                    Config.options.time.pomodoro.longBreak = value * 60;
+                }
+            }
+            ConfigSpinBox {
+                icon: "repeat"
+                text: Translation.tr("Cycles before long break")
+                value: Config.options.time.pomodoro.cyclesBeforeLongBreak
+                from: 1
+                to: 10
+                stepSize: 1
+                onValueChanged: {
+                    Config.options.time.pomodoro.cyclesBeforeLongBreak = value;
+                }
+            }
+        }
+
+        ContentSubsection {
             title: Translation.tr("Alarms")
 
             ConfigSwitch {
@@ -677,6 +963,14 @@ ContentPage {
                 checked: Config.options.sounds.pomodoro
                 onCheckedChanged: {
                     Config.options.sounds.pomodoro = checked;
+                }
+            }
+            ConfigSwitch {
+                buttonIcon: "timer"
+                text: Translation.tr("Timer")
+                checked: Config.options.sounds.timer
+                onCheckedChanged: {
+                    Config.options.sounds.timer = checked;
                 }
             }
         }

@@ -446,6 +446,20 @@ ContentPage {
         }
     }
 
+    ContentSection {
+        icon: "volume_up"
+        title: Translation.tr("Volume Control")
+
+        ConfigSwitch {
+            buttonIcon: "volume_up"
+            text: Translation.tr('Show volume icon in bar')
+            checked: Config.options.bar.volumeControl.enable
+            onCheckedChanged: {
+                Config.options.bar.volumeControl.enable = checked;
+            }
+        }
+    }
+
     /*
     ContentSection {
         icon: "tooltip"

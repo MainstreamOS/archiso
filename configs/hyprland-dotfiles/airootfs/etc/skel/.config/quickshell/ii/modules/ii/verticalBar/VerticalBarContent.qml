@@ -54,8 +54,8 @@ Item { // Bar content region
         height: (root.height - middleSection.height) / 2
         width: Appearance.sizes.verticalBarWidth
 
-        onScrollDown: root.brightnessMonitor.setBrightness(root.brightnessMonitor.brightness - 0.05)
-        onScrollUp: root.brightnessMonitor.setBrightness(root.brightnessMonitor.brightness + 0.05)
+        onScrollDown: Brightness.decreaseBrightness()
+        onScrollUp: Brightness.increaseBrightness()
         onMovedAway: GlobalStates.osdBrightnessOpen = false
         onPressed: event => {
             if (event.button === Qt.LeftButton)
@@ -202,6 +202,54 @@ Item { // Bar content region
                 Layout.fillWidth: true
                 Layout.fillHeight: false
                 invertSide: Config?.options.bar.bottom
+            }
+
+            // Volume control icon
+            Loader {
+                id: volumeIconLoader
+                active: Config.options.bar.volumeControl.enable
+                visible: active
+                Layout.alignment: Qt.AlignHCenter
+                Layout.fillHeight: false
+
+                sourceComponent: Item {
+                    implicitWidth: volumeIconButton.implicitWidth
+                    implicitHeight: volumeIconButton.implicitHeight
+
+                    RippleButton {
+                        id: volumeIconButton
+                        anchors.centerIn: parent
+                        implicitWidth: 32
+                        implicitHeight: 32
+                        buttonRadius: Appearance.rounding.full
+                        toggled: volumeBarPopup.shown
+                        colBackground: barBottomSectionMouseArea.hovered ? Appearance.colors.colLayer1Hover : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
+                        colBackgroundHover: Appearance.colors.colLayer1Hover
+                        colRipple: Appearance.colors.colLayer1Active
+                        colBackgroundToggled: Appearance.colors.colSecondaryContainer
+                        colBackgroundToggledHover: Appearance.colors.colSecondaryContainerHover
+                        colRippleToggled: Appearance.colors.colSecondaryContainerActive
+                        onClicked: volumeBarPopup.shown = !volumeBarPopup.shown
+
+                        contentItem: MaterialSymbol {
+                            anchors.centerIn: parent
+                            text: {
+                                if (Audio.sink?.audio?.muted) return "volume_off";
+                                let vol = Audio.sink?.audio?.volume ?? 0;
+                                if (vol <= 0) return "volume_mute";
+                                if (vol < 0.5) return "volume_down";
+                                return "volume_up";
+                            }
+                            iconSize: Appearance.font.pixelSize.larger
+                            color: volumeIconButton.toggled ? Appearance.m3colors.m3onSecondaryContainer : Appearance.colors.colOnLayer0
+                        }
+                    }
+
+                    Bar.VolumeBarPopup {
+                        id: volumeBarPopup
+                        anchorTarget: volumeIconButton
+                    }
+                }
             }
 
             RippleButton { // Right sidebar button
