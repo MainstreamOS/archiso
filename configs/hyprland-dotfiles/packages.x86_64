@@ -106,6 +106,7 @@ xdg-desktop-portal-gtk
 # xdg-desktop-portal-kde removed — KDE portal not needed
 xdg-utils
 layer-shell-qt
+kdialog
 
 # ==============================================================================
 # illogical-impulse meta-packages (pre-built, from local repo)
