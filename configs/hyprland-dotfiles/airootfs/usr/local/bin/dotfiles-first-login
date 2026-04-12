@@ -31,6 +31,7 @@ SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
         gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
+        gsettings set org.gnome.desktop.wm.preferences button-layout ":" 2>/dev/null || true
         echo "[first-login] Dark mode set."
     fi
 
