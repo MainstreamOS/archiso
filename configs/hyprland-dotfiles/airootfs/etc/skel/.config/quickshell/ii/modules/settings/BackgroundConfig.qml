@@ -6,10 +6,10 @@ import qs.modules.common.widgets
 
 ContentPage {
     forceWidth: true
-    /*
+
     ContentSection {
         icon: "sync_alt"
-        title: Translation.tr("Parallax")
+        title: Translation.tr("Wallpaper panning")
 
         ConfigSwitch {
             buttonIcon: "unfold_more_double"
@@ -51,7 +51,6 @@ ContentPage {
             }
         }
     }
-    */
 
     ContentSection {
         id: settingsClock

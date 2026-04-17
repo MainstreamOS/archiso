@@ -91,6 +91,7 @@ Scope {
                     appDrawer.searchText = "";
                     appDrawer.folderPopupVisible = false;
                     appDrawer.openFolder = null;
+                    appDrawer.resetScroll();
                     flickable.contentY = 0;
                     rearmTimer.stop();
                     dismissGuardTimer.stop();
@@ -105,6 +106,7 @@ Scope {
                     appDrawer.searchText = "";
                     appDrawer.folderPopupVisible = false;
                     appDrawer.openFolder = null;
+                    appDrawer.resetScroll();
                     // Arm the two-phase dismiss guard (see comment above).
                     overviewScope.ignoreDismiss = true;
                     rearmTimer.restart();
@@ -391,9 +393,23 @@ Scope {
                 const scrollingDown = event.angleDelta.y < 0;
                 const scrollingUp   = event.angleDelta.y > 0;
 
-                if (!appDrawer.expanded && scrollingDown && panelWindow.searchingText === "") {
-                    appDrawer.expanded = true;
-                    flickable.contentY = 0;
+                // Collapsed: route wheel events through the grid first.
+                // Scroll down → scroll grid, or expand once at the bottom.
+                // Scroll up   → scroll grid back up, or fall through once at the top.
+                if (!appDrawer.expanded && panelWindow.searchingText === ""
+                        && (scrollingDown || !appDrawer.isGridAtTop())) {
+                    if (scrollingDown && appDrawer.isGridAtBottom()) {
+                        appDrawer.expanded = true;
+                        flickable.contentY = 0;
+                        event.accepted = true;
+                        return;
+                    }
+                    const threshold    = flickable.mouseScrollDeltaThreshold;
+                    const delta        = event.angleDelta.y / threshold;
+                    const scrollFactor = Math.abs(event.angleDelta.y) >= threshold
+                                         ? flickable.mouseScrollFactor
+                                         : flickable.touchpadScrollFactor;
+                    appDrawer.scrollGrid(delta, scrollFactor);
                     event.accepted = true;
                     return;
                 }

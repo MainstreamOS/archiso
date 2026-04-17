@@ -723,7 +723,7 @@ ContentPage {
             MaterialTextField {
                 id: newUserPassField
                 Layout.fillWidth: true
-                placeholderText: Translation.tr("Password (optional)")
+                placeholderText: Translation.tr("Password")
                 echoMode: TextInput.Password
                 inputMethodHints: Qt.ImhSensitiveData
             }
@@ -761,14 +761,43 @@ ContentPage {
                     const password = newUserPassField.text
                     const homeFlag = createHomeSwitch.checked ? "-m" : "-M"
                     const srcConfig = root.currentUserHome + "/.config"
+                    const srcLocalShare = root.currentUserHome + "/.local/share"
+                    const srcVenv = root.currentUserHome + "/.local/state/quickshell/.venv"
                     // Build script using positional args to avoid shell injection
-                    // $1 = homeFlag, $2 = username, $3 = password, $4 = srcConfig
+                    // $1 = homeFlag, $2 = username, $3 = password, $4 = srcConfig, $5 = srcLocalShare, $6 = srcVenv
                     let script = 'useradd $1 -s /bin/bash "$2"'
                     if (password.length > 0)
                         script += ' && printf "%s:%s\\n" "$2" "$3" | chpasswd'
-                    if (createHomeSwitch.checked && copyConfigSwitch.checked)
-                        script += ' && [ -d "$4" ] && cp -a "$4" "/home/$2/.config" && chown -R "$2:$2" "/home/$2/.config"'
-                    createAccountProc.command = ["pkexec", "bash", "-c", script, "--", homeFlag, username, password, srcConfig]
+                    if (createHomeSwitch.checked) {
+                        // 1. Create standard XDG home directories
+                        script += ' && mkdir -p "/home/$2/Desktop" "/home/$2/Documents" "/home/$2/Downloads" "/home/$2/Music" "/home/$2/Pictures" "/home/$2/Public" "/home/$2/Templates" "/home/$2/Videos"'
+                        script += ' && chown "$2:$2" "/home/$2/Desktop" "/home/$2/Documents" "/home/$2/Downloads" "/home/$2/Music" "/home/$2/Pictures" "/home/$2/Public" "/home/$2/Templates" "/home/$2/Videos"'
+                    }
+                    if (createHomeSwitch.checked && copyConfigSwitch.checked) {
+                        // Copy .config from current user
+                        script += ' && mkdir -p "/home/$2/.config"'
+                        script += ' && [ -d "$4" ] && cp -a "$4/." "/home/$2/.config/" && chown -R "$2:$2" "/home/$2/.config"'
+                        // 2. Write canonical user-dirs.dirs so Nautilus recognises the standard folders
+                        //    (written after config copy so it always reflects the dirs we just created)
+                        script += " && { echo 'XDG_DESKTOP_DIR=\"$HOME/Desktop\"'; echo 'XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"'; echo 'XDG_TEMPLATES_DIR=\"$HOME/Templates\"'; echo 'XDG_PUBLICSHARE_DIR=\"$HOME/Public\"'; echo 'XDG_DOCUMENTS_DIR=\"$HOME/Documents\"'; echo 'XDG_MUSIC_DIR=\"$HOME/Music\"'; echo 'XDG_PICTURES_DIR=\"$HOME/Pictures\"'; echo 'XDG_VIDEOS_DIR=\"$HOME/Videos\"'; } > \"/home/$2/.config/user-dirs.dirs\""
+                        script += ' && chown "$2:$2" "/home/$2/.config/user-dirs.dirs"'
+                        // 3. Copy hidden .desktop app entries from ~/.local/share/applications
+                        script += ' && if [ -d "$5/applications" ]; then mkdir -p "/home/$2/.local/share/applications" && cp -a "$5/applications/." "/home/$2/.local/share/applications/" && chown -R "$2:$2" "/home/$2/.local/share/applications"; fi'
+                        // 4. Copy Google Sans Flex font (illogical-impulse-google-sans-flex) and rebuild font cache
+                        script += ' && if [ -d "$5/fonts/illogical-impulse-google-sans-flex" ]; then mkdir -p "/home/$2/.local/share/fonts" && cp -a "$5/fonts/illogical-impulse-google-sans-flex" "/home/$2/.local/share/fonts/" && chown -R "$2:$2" "/home/$2/.local/share/fonts" && fc-cache -f "/home/$2/.local/share/fonts"; fi'
+                        // 5. Copy Python venv and re-home all hardcoded paths from source user to new user
+                        //    Mirrors the "pre-baked venv" branch in post-install: fix shebangs, activate scripts, pyvenv.cfg
+                        script += ' && if [ -d "$6" ]; then'
+                        script += '   SRC_HOME="${4%/.config}";'
+                        script += '   DEST_VENV="/home/$2/.local/state/quickshell/.venv";'
+                        script += '   mkdir -p "/home/$2/.local/state/quickshell" && cp -a "$6/." "$DEST_VENV/";'
+                        script += '   find "$DEST_VENV/bin" -type f -exec sed -i "1s|#!$SRC_HOME/|#!/home/$2/|" {} + 2>/dev/null || true;'
+                        script += '   for _act in "$DEST_VENV/bin/activate" "$DEST_VENV/bin/activate.csh" "$DEST_VENV/bin/activate.fish"; do [ -f "$_act" ] && sed -i "s|$SRC_HOME/|/home/$2/|g" "$_act"; done;'
+                        script += '   sed -i "s|$SRC_HOME/|/home/$2/|g" "$DEST_VENV/pyvenv.cfg" 2>/dev/null || true;'
+                        script += '   chown -R "$2:$2" "/home/$2/.local/state/quickshell";'
+                        script += ' fi'
+                    }
+                    createAccountProc.command = ["pkexec", "bash", "-c", script, "--", homeFlag, username, password, srcConfig, srcLocalShare, srcVenv]
                     createAccountProc.running = true
                     newUserField.text = ""
                     newUserPassField.text = ""

@@ -38,7 +38,7 @@ PanelWindow {
 
         Rectangle {
             anchors.fill: parent
-            color: Appearance.colors.colLayer0
+            color: Appearance.colors.colLayer0Base
             opacity: 0.90
         }
     }

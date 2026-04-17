@@ -10,7 +10,7 @@ ColumnLayout {
     property string icon: ""
     property bool mirrorIcon: false
     property alias headerExtra: headerExtraContainer.data
-    default property alias data: sectionContent.data
+    default property alias contentData: sectionContent.data
 
     Layout.fillWidth: true
     spacing: 6

@@ -207,42 +207,80 @@ ContentPage {
 
         ContentSubsection {
             title: Translation.tr("Scroll Direction")
-            RowLayout {
-                spacing: 16
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: 16
+                rowSpacing: 0
                 MouseArea {
+                    Layout.fillWidth: true
                     cursorShape: Qt.PointingHandCursor
-                    implicitWidth: childrenRect.width; implicitHeight: childrenRect.height
+                    implicitHeight: mouseScrollTradCol.implicitHeight
                     onClicked: { root.naturalScroll = false; root.applyMouseNaturalScroll(0) }
                     ColumnLayout {
+                        id: mouseScrollTradCol
+                        width: parent.width
                         spacing: 6
                         Rectangle {
-                            implicitWidth: 150; implicitHeight: 120
+                            Layout.fillWidth: true
+                            implicitHeight: 130
                             radius: Appearance.rounding.normal
                             color: !root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1) : Appearance.colors.colLayer2
                             border.width: !root.naturalScroll ? 2 : 1
                             border.color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
                             MouseArea { anchors.fill: parent; z: 1; cursorShape: Qt.PointingHandCursor; onClicked: { root.naturalScroll = false; root.applyMouseNaturalScroll(0) } }
-                            Rectangle {
-                                x: 12; y: 12; width: 76; height: 84; radius: 4
-                                color: Appearance.colors.colLayer3; border.width: 1; border.color: Appearance.colors.colOutlineVariant
-                                Rectangle { width: parent.width; height: 13; radius: 4; color: Appearance.colors.colLayer2
-                                    Rectangle { x: 4; anchors.verticalCenter: parent.verticalCenter; width: 5; height: 5; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.4 }
+                            Item {
+                                anchors { fill: parent; margins: 10 }
+                                Rectangle {
+                                    x: 0; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [20, 14, 18, 10]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Column { x: 6; y: 18; spacing: 4
-                                    Repeater { model: [50,38,52,34]; Rectangle { width: modelData; height: 5; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.3 } }
+                                Rectangle {
+                                    x: parent.width / 4 + 1; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2 }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [16, 22, 10, 18]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Rectangle { x: parent.width-7; y: 13; width: 4; height: parent.height-13; radius: 2; color: Appearance.colors.colLayer2
-                                    Rectangle { width: 4; height: 18; radius: 2; y: 2; color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width / 2 + 2; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [18, 10, 20, 14]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
+                                    Rectangle { x: parent.width - 6; y: 9; width: 4; height: parent.height - 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { width: 4; height: 14; radius: 2; y: 2; color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                    }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: Math.round(parent.height * 0.42); text: "arrow_upward"; iconSize: 14; color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
                                 }
-                                MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 44; text: "arrow_upward"; iconSize: 18; color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width - 42; y: 2
+                                    width: 28; height: 52; radius: 14
+                                    color: !root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
+                                    border.width: 1; border.color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+                                    Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
+                                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
+                                }
+                                MaterialSymbol {
+                                    x: parent.width - 36
+                                    y: 58
+                                    text: "arrow_upward"; iconSize: 16
+                                    color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext
+                                }
                             }
-                            Rectangle { x: 100; y: 12; width: 28; height: 52; radius: 14
-                                color: !root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
-                                border.width: 1; border.color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
-                            }
-                            MaterialSymbol { x: 107; y: 68; text: "arrow_upward"; iconSize: 16; color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext }
                         }
                         RowLayout {
                             spacing: 6; Layout.alignment: Qt.AlignHCenter
@@ -260,40 +298,75 @@ ContentPage {
                         }
                     }
                 }
-                MouseArea {
+                 MouseArea {
+                    Layout.fillWidth: true
                     cursorShape: Qt.PointingHandCursor
-                    implicitWidth: childrenRect.width; implicitHeight: childrenRect.height
+                    implicitHeight: mouseScrollNatCol.implicitHeight
                     onClicked: { root.naturalScroll = true; root.applyMouseNaturalScroll(1) }
                     ColumnLayout {
+                        id: mouseScrollNatCol
+                        width: parent.width
                         spacing: 6
                         Rectangle {
-                            implicitWidth: 150; implicitHeight: 120
+                            Layout.fillWidth: true
+                            implicitHeight: 130
                             radius: Appearance.rounding.normal
                             color: root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1) : Appearance.colors.colLayer2
                             border.width: root.naturalScroll ? 2 : 1
                             border.color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
                             MouseArea { anchors.fill: parent; z: 1; cursorShape: Qt.PointingHandCursor; onClicked: { root.naturalScroll = true; root.applyMouseNaturalScroll(1) } }
-                            Rectangle {
-                                x: 12; y: 12; width: 76; height: 84; radius: 4
-                                color: Appearance.colors.colLayer3; border.width: 1; border.color: Appearance.colors.colOutlineVariant
-                                Rectangle { width: parent.width; height: 13; radius: 4; color: Appearance.colors.colLayer2
-                                    Rectangle { x: 4; anchors.verticalCenter: parent.verticalCenter; width: 5; height: 5; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.4 }
+                            Item {
+                                anchors { fill: parent; margins: 10 }
+                                Rectangle {
+                                    x: 0; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [20, 14, 18, 10]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Column { x: 6; y: 18; spacing: 4
-                                    Repeater { model: [50,38,52,34]; Rectangle { width: modelData; height: 5; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.3 } }
+                                Rectangle {
+                                    x: parent.width / 4 + 1; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2 }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [16, 22, 10, 18]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Rectangle { x: parent.width-7; y: 13; width: 4; height: parent.height-13; radius: 2; color: Appearance.colors.colLayer2
-                                    Rectangle { width: 4; height: 18; radius: 2; y: 48; color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width / 2 + 2; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [18, 10, 20, 14]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
+                                    Rectangle { x: parent.width - 6; y: 9; width: 4; height: parent.height - 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { width: 4; height: 14; radius: 2; y: 2; color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                    }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: Math.round(parent.height * 0.42); text: "arrow_upward"; iconSize: 14; color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
                                 }
-                                MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 44; text: "arrow_downward"; iconSize: 18; color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width - 42; y: 2
+                                    width: 28; height: 52; radius: 14
+                                    color: root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
+                                    border.width: 1; border.color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+                                    Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
+                                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
+                                }
+                                MaterialSymbol {
+                                    x: parent.width - 36
+                                    y: 58
+                                    text: "arrow_downward"; iconSize: 16
+                                    color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext
+                                }
                             }
-                            Rectangle { x: 100; y: 12; width: 28; height: 52; radius: 14
-                                color: root.naturalScroll ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
-                                border.width: 1; border.color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
-                            }
-                            MaterialSymbol { x: 107; y: 68; text: "arrow_downward"; iconSize: 16; color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colSubtext }
                         }
                         RowLayout {
                             spacing: 6; Layout.alignment: Qt.AlignHCenter
@@ -322,42 +395,77 @@ ContentPage {
 
         ContentSubsection {
             title: Translation.tr("Scroll Direction")
-            RowLayout {
-                spacing: 16
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: 16
+                rowSpacing: 0
                 MouseArea {
+                    Layout.fillWidth: true
                     cursorShape: Qt.PointingHandCursor
-                    implicitWidth: childrenRect.width; implicitHeight: childrenRect.height
+                    implicitHeight: tpScrollTradCol.implicitHeight
                     onClicked: { root.naturalScrollTP = false; root.applyTouchpadInput(0) }
                     ColumnLayout {
+                        id: tpScrollTradCol
+                        width: parent.width
                         spacing: 6
                         Rectangle {
-                            implicitWidth: 150; implicitHeight: 120
+                            Layout.fillWidth: true
+                            implicitHeight: 130
                             radius: Appearance.rounding.normal
                             color: !root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1) : Appearance.colors.colLayer2
                             border.width: !root.naturalScrollTP ? 2 : 1
                             border.color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
                             MouseArea { anchors.fill: parent; z: 1; cursorShape: Qt.PointingHandCursor; onClicked: { root.naturalScrollTP = false; root.applyTouchpadInput(0) } }
-                            Rectangle {
-                                x: 12; y: 12; width: 76; height: 84; radius: 4
-                                color: Appearance.colors.colLayer3; border.width: 1; border.color: Appearance.colors.colOutlineVariant
-                                Rectangle { width: parent.width; height: 13; radius: 4; color: Appearance.colors.colLayer2
-                                    Rectangle { x: 4; anchors.verticalCenter: parent.verticalCenter; width: 5; height: 5; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.4 }
+                            Item {
+                                anchors { fill: parent; margins: 10 }
+                                Rectangle {
+                                    x: 0; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [20, 14, 18, 10]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Column { x: 6; y: 18; spacing: 4
-                                    Repeater { model: [50,38,52,34]; Rectangle { width: modelData; height: 5; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.3 } }
+                                Rectangle {
+                                    x: parent.width / 4 + 1; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2 }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [16, 22, 10, 18]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Rectangle { x: parent.width-7; y: 13; width: 4; height: parent.height-13; radius: 2; color: Appearance.colors.colLayer2
-                                    Rectangle { width: 4; height: 18; radius: 2; y: 2; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width / 2 + 2; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [18, 10, 20, 14]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
+                                    Rectangle { x: parent.width - 6; y: 9; width: 4; height: parent.height - 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { width: 4; height: 14; radius: 2; y: 2; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                    }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: Math.round(parent.height * 0.42); text: "arrow_upward"; iconSize: 14; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
                                 }
-                                MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 44; text: "arrow_upward"; iconSize: 18; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                // Touchpad — Natural: fingers swipe UP, content follows fingers
+                                Rectangle {
+                                    x: parent.width - 58; y: 2
+                                    width: 52; height: 50; radius: 6
+                                    color: !root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
+                                    border.width: 1; border.color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+                                    Rectangle { x: 0; y: parent.height - 13; width: parent.width; height: 1; opacity: 0.35; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 6; text: "arrow_upward"; iconSize: 12; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.8 }
+                                    Rectangle { x: 9; y: 24; width: 10; height: 13; radius: 5; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.75 }
+                                    Rectangle { x: 25; y: 24; width: 10; height: 13; radius: 5; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.75 }
+                                }
                             }
-                            Rectangle { x: 100; y: 12; width: 28; height: 52; radius: 14
-                                color: !root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
-                                border.width: 1; border.color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
-                            }
-                            MaterialSymbol { x: 107; y: 68; text: "arrow_upward"; iconSize: 16; color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext }
                         }
                         RowLayout {
                             spacing: 6; Layout.alignment: Qt.AlignHCenter
@@ -376,39 +484,71 @@ ContentPage {
                     }
                 }
                 MouseArea {
+                    Layout.fillWidth: true
                     cursorShape: Qt.PointingHandCursor
-                    implicitWidth: childrenRect.width; implicitHeight: childrenRect.height
+                    implicitHeight: tpScrollNatCol.implicitHeight
                     onClicked: { root.naturalScrollTP = true; root.applyTouchpadInput(1) }
                     ColumnLayout {
+                        id: tpScrollNatCol
+                        width: parent.width
                         spacing: 6
                         Rectangle {
-                            implicitWidth: 150; implicitHeight: 120
+                            Layout.fillWidth: true
+                            implicitHeight: 130
                             radius: Appearance.rounding.normal
                             color: root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1) : Appearance.colors.colLayer2
                             border.width: root.naturalScrollTP ? 2 : 1
                             border.color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
                             MouseArea { anchors.fill: parent; z: 1; cursorShape: Qt.PointingHandCursor; onClicked: { root.naturalScrollTP = true; root.applyTouchpadInput(1) } }
-                            Rectangle {
-                                x: 12; y: 12; width: 76; height: 84; radius: 4
-                                color: Appearance.colors.colLayer3; border.width: 1; border.color: Appearance.colors.colOutlineVariant
-                                Rectangle { width: parent.width; height: 13; radius: 4; color: Appearance.colors.colLayer2
-                                    Rectangle { x: 4; anchors.verticalCenter: parent.verticalCenter; width: 5; height: 5; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.4 }
+                            Item {
+                                anchors { fill: parent; margins: 10 }
+                                Rectangle {
+                                    x: 0; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [20, 14, 18, 10]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Column { x: 6; y: 18; spacing: 4
-                                    Repeater { model: [50,38,52,34]; Rectangle { width: modelData; height: 5; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.3 } }
+                                Rectangle {
+                                    x: parent.width / 4 + 1; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2 }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [16, 22, 10, 18]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
                                 }
-                                Rectangle { x: parent.width-7; y: 13; width: 4; height: parent.height-13; radius: 2; color: Appearance.colors.colLayer2
-                                    Rectangle { width: 4; height: 18; radius: 2; y: 48; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                Rectangle {
+                                    x: parent.width / 2 + 2; y: 0; width: parent.width / 4 - 2; height: parent.height
+                                    radius: 3; color: Appearance.colors.colLayer3
+                                    border.width: 1; border.color: Appearance.colors.colOutlineVariant
+                                    Rectangle { width: parent.width; height: 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { x: 3; anchors.verticalCenter: parent.verticalCenter; width: 4; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.35 }
+                                    }
+                                    Column { x: 4; y: 13; spacing: 3
+                                        Repeater { model: [18, 10, 20, 14]; Rectangle { width: modelData; height: 4; radius: 2; color: Appearance.colors.colSubtext; opacity: 0.22 } }
+                                    }
+                                    Rectangle { x: parent.width - 6; y: 9; width: 4; height: parent.height - 9; radius: 2; color: Appearance.colors.colLayer2
+                                        Rectangle { width: 4; height: 14; radius: 2; y: 2; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                    }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: Math.round(parent.height * 0.42); text: "arrow_upward"; iconSize: 14; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
                                 }
-                                MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 44; text: "arrow_downward"; iconSize: 18; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.7 }
+                                // Touchpad — Traditional: fingers swipe DOWN, view scrolls up
+                                Rectangle {
+                                    x: parent.width - 58; y: 2
+                                    width: 52; height: 50; radius: 6
+                                    color: root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
+                                    border.width: 1; border.color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+                                    Rectangle { x: 0; y: parent.height - 13; width: parent.width; height: 1; opacity: 0.35; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant }
+                                    Rectangle { x: 9; y: 8; width: 10; height: 13; radius: 5; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.75 }
+                                    Rectangle { x: 25; y: 8; width: 10; height: 13; radius: 5; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.75 }
+                                    MaterialSymbol { anchors.horizontalCenter: parent.horizontalCenter; y: 24; text: "arrow_downward"; iconSize: 12; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext; opacity: 0.8 }
+                                }
                             }
-                            Rectangle { x: 100; y: 12; width: 28; height: 52; radius: 14
-                                color: root.naturalScrollTP ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.18) : Appearance.colors.colLayer3
-                                border.width: 1; border.color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                Rectangle { x: 13; y: 0; width: 1; height: 22; color: Appearance.colors.colOutlineVariant }
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 7; width: 5; height: 14; radius: 3; color: Appearance.colors.colSubtext; opacity: 0.6 }
-                            }
-                            MaterialSymbol { x: 107; y: 68; text: "arrow_downward"; iconSize: 16; color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colSubtext }
                         }
                         RowLayout {
                             spacing: 6; Layout.alignment: Qt.AlignHCenter

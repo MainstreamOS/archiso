@@ -194,16 +194,27 @@ Item {
     }
 
     // Scroll the inner app grid by the given normalised delta and factor.
-    // Called by Overview's wheelOverlay so all wheel handling stays in one place.
+    // Called by Overview's wheelOverlay — all expand/collapse logic lives there.
     function scrollGrid(delta, scrollFactor) {
-        const maxY    = Math.max(0, appGrid.contentHeight - appGrid.height);
-        const targetY = Math.max(0, Math.min(appGrid.contentY - delta * scrollFactor, maxY));
-        appGrid.contentY = targetY;
+        const maxY = Math.max(0, appGrid.contentHeight - appGrid.height);
+        appGrid.contentY = Math.max(0, Math.min(appGrid.contentY - delta * scrollFactor, maxY));
     }
 
     // Returns true when the grid is scrolled to its very top.
     function isGridAtTop() {
         return appGrid.contentY <= 0;
+    }
+
+    // Returns true when the grid is scrolled to its very bottom.
+    function isGridAtBottom() {
+        const maxY = Math.max(0, appGrid.contentHeight - appGrid.height);
+        return appGrid.contentY >= maxY - 1;
+    }
+
+    // Resets the grid scroll position to the top.
+    // Called by Overview whenever the drawer is opened or closed.
+    function resetScroll() {
+        appGrid.contentY = 0;
     }
 
     StyledRectangularShadow {
@@ -341,19 +352,31 @@ Item {
                 Layout.minimumHeight: root.expanded ? 100 : 40
                 clip: true
 
-                // Whether the collapsed grid has more apps than one visible row
-                readonly property int visibleRows: Math.max(1, Math.floor(height / appGrid.cellHeight))
-                readonly property int visibleCount: visibleRows * root.columns
-                readonly property bool hasOverflow: !root.expanded && appGrid.count > visibleCount
+                // Whether there is content below the current scroll position in collapsed mode.
+                // Used to show the "more" indicator and reserve bottom margin for it.
+                readonly property bool hasOverflow: !root.expanded
+                    && (appGrid.contentHeight > appGrid.height + appGrid.contentY + 1)
+
+                // How many items are below the current visible area (for the indicator label).
+                readonly property int itemsBelowFold: {
+                    if (!hasOverflow) return 0;
+                    const bottomRow = Math.ceil((appGrid.contentY + appGrid.height) / appGrid.cellHeight);
+                    return Math.max(0, appGrid.count - bottomRow * root.columns);
+                }
 
                 GridView {
                     id: appGrid
                     anchors.fill: parent
-                    anchors.bottomMargin: gridContainer.hasOverflow ? 36 : 0
                     cellWidth: Math.max(root.expanded ? 120 : 80, (parent.width - (root.columns - 1) * root.spacing - 30) / root.columns)
                     cellHeight: cellWidth * 1.3
                     interactive: false
                     boundsBehavior: Flickable.StopAtBounds
+
+                    ScrollBar.vertical: ScrollBar {
+                        visible: !root.expanded && gridContainer.hasOverflow
+                        policy: ScrollBar.AsNeeded
+                        minimumSize: 0.1
+                    }
 
                     model: ScriptModel {
                         values: root.getFilteredApps()
@@ -473,9 +496,13 @@ Item {
                             IconImage {
                                 Layout.alignment: Qt.AlignHCenter
                                 source: !modelData._isFolder
-                                    ? Quickshell.iconPath(AppSearch.guessIcon(modelData.id || modelData.icon), "image-missing")
+                                    ? Quickshell.iconPath(AppSearch.guessIcon(modelData.id || modelData.icon), "application-x-executable")
                                     : ""
                                 implicitSize: root.iconSize
+                                onStatusChanged: {
+                                    if (status === Image.Error)
+                                        source = Quickshell.iconPath("application-x-executable", "")
+                                }
                             }
 
                             StyledText {
@@ -655,52 +682,6 @@ Item {
                         _dragging = false
                         root._isDraggingApp = false
                         root._dragHoverIndex = -1
-                    }
-                }
-
-                // "Show more" indicator — visible when collapsed and more apps exist below
-                Rectangle {
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        bottom: parent.bottom
-                    }
-                    height: 36
-                    visible: gridContainer.hasOverflow
-                    color: "transparent"
-
-                    Rectangle {
-                        anchors.fill: parent
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: "transparent" }
-                            GradientStop { position: 0.4; color: Appearance.colors.colLayer0 }
-                        }
-                    }
-
-                    RowLayout {
-                        anchors.centerIn: parent
-                        spacing: 4
-
-                        StyledText {
-                            text: (appGrid.count - gridContainer.visibleCount) + " more"
-                            font.pixelSize: Appearance.font.pixelSize.small
-                            color: Appearance.colors.colPrimary
-                        }
-
-                        MaterialSymbol {
-                            text: "expand_more"
-                            iconSize: Appearance.font.pixelSize.normal
-                            color: Appearance.colors.colPrimary
-                        }
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        z: 10
-                        onClicked: {
-                            root.expanded = true
-                        }
                     }
                 }
             }

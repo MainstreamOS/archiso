@@ -36,8 +36,8 @@ ContentPage {
         onRunningChanged: if (running) buf = ""
         stdout: SplitParser { onRead: data => titleBarReader.buf += data + "\n" }
         onExited: {
-            let match = titleBarReader.buf.match(/^#\s*ii_titlebars\s*=\s*(\w+)/m);
-            if (match) root.titleBarsEnabled = match[1] === "true";
+            // Enabled when the plugin = .../hyprbars.so line exists and is NOT commented out
+            root.titleBarsEnabled = /^[ \t]*plugin[ \t]*=[ \t]*.*hyprbars\.so/m.test(titleBarReader.buf);
         }
     }
 
@@ -867,18 +867,21 @@ ContentPage {
                             onCheckedChanged: {
                                 if (checked === root.titleBarsEnabled) return;
                                 root.titleBarsEnabled = checked;
-                                let val = checked ? "true" : "false";
+                                // Toggle by commenting/uncommenting the plugin = .../hyprbars.so line
+                                // in custom/general.conf. No hyprpm needed — Hyprland loads the .so
+                                // directly when the directive is present and uncommented.
                                 let py =
                                     "import re, sys\n" +
-                                    "val, conf = sys.argv[1], sys.argv[2]\n" +
+                                    "enable = sys.argv[1] == '1'\n" +
+                                    "conf = sys.argv[2]\n" +
                                     "text = open(conf).read()\n" +
-                                    "if re.search(r'^#\\s*ii_titlebars\\s*=', text, re.M):\n" +
-                                    "    text = re.sub(r'^#\\s*ii_titlebars\\s*=\\s*\\w+', '# ii_titlebars = ' + val, text, flags=re.M)\n" +
+                                    "if enable:\n" +
+                                    "    text = re.sub(r'^([ \\t]*)#[ \\t]*(plugin[ \\t]*=[ \\t]*.*hyprbars\\.so)', r'\\1\\2', text, flags=re.M)\n" +
                                     "else:\n" +
-                                    "    text = text.rstrip() + '\\n# ii_titlebars = ' + val + '\\n'\n" +
+                                    "    text = re.sub(r'^([ \\t]*)(plugin[ \\t]*=[ \\t]*.*hyprbars\\.so)', r'\\1# \\2', text, flags=re.M)\n" +
                                     "open(conf, 'w').write(text)\n";
-                                Quickshell.execDetached(["python3", "-c", py, val, root.customGeneralConf]);
-                                Quickshell.execDetached(["hyprpm", checked ? "enable" : "disable", "hyprbars"]);
+                                Quickshell.execDetached(["python3", "-c", py, checked ? "1" : "0", root.customGeneralConf]);
+                                Quickshell.execDetached(["hyprctl", "reload"]);
                             }
                             StyledToolTip {
                                 text: Translation.tr("Show title bars on windows")
@@ -1139,7 +1142,7 @@ ContentPage {
                                         id: pill
                                         anchors.fill: parent
                                         implicitWidth: pillTxt.implicitWidth + 20
-                                        radius: Appearance.rounding.small
+                                        radius: Appearance.rounding.full
                                         color: parent.active
                                             ? Appearance.colors.colPrimary
                                             : (parent.containsMouse && root.perWorkspace

@@ -42,7 +42,6 @@ Item {
                     font.pixelSize: 40
                     color: Appearance.m3colors.m3onSurface
                 }
-
                 StyledText {
                     Layout.alignment: Qt.AlignHCenter
                     text: TimerService.pomodoroLongBreak ? Translation.tr("Long break") : TimerService.pomodoroBreak ? Translation.tr("Break") : Translation.tr("Focus")
