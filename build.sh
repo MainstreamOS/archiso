@@ -193,7 +193,7 @@ info "════════════════════════�
 # ── Package-build config ────────────────────────────────────────────────────
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
 DOTFILES_REPO="https://github.com/gregorytrentmartinjr/dots-hyprland.git"
-DOTFILES_BRANCH="newcustom"
+DOTFILES_BRANCH="mainstream"
 PKG_WORK_DIR="/tmp/iso-pkg-build"
 BUILD_USER="iso-builder"
 
