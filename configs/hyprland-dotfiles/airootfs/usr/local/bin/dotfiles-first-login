@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # dotfiles-first-login
-# Installed as /etc/profile.d/dotfiles-first-login.sh
-# Runs once on first interactive login after installation.
+# Triggered as an XDG autostart entry on first graphical session.
+# Sets dark mode, builds the python venv (if missing), runs the full color
+# pipeline, and restarts Quickshell so the bar/clock pick up wallpaper colors.
+# Self-removes the autostart entry and dotfiles repo on success.
 # =============================================================================
 MARKER="$HOME/.dotfiles-pending-user-setup"
-[[ -f "$MARKER" ]] || return 0
-[[ -n "$WAYLAND_DISPLAY" || -n "$DISPLAY" ]] || return 0
-
-# Only run once
+[[ -f "$MARKER" ]] || exit 0
 rm -f "$MARKER"
 
 DOTFILES_DIR="$HOME/dots-hyprland"
@@ -17,69 +16,58 @@ DOTFILES_DIR="$HOME/dots-hyprland"
 VENV_PATH="$HOME/.local/state/quickshell/.venv"
 DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
+AUTOSTART_FILE="$HOME/.config/autostart/dotfiles-first-login.desktop"
+LOG=/tmp/dotfiles-first-login.log
 
-# ---------------------------------------------------------------------------
-# PHASE 1: Immediate — runs fast, no venv needed
-# Fix dark mode and initial colors RIGHT NOW before anything else
-# ---------------------------------------------------------------------------
-(
-    sleep 3
+{
+    echo "[first-login] start $(date -Is)"
 
-    # Fix dark mode immediately
+    # Wait for compositor — autostart can fire before WAYLAND_DISPLAY is set.
+    for _i in $(seq 1 30); do
+        [[ -n "$WAYLAND_DISPLAY" || -n "$DISPLAY" ]] && break
+        sleep 1
+    done
+
+    # PHASE 1 — fast path: dark mode + initial matugen colors
     if command -v gsettings &>/dev/null; then
         gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
         gsettings set org.gnome.desktop.wm.preferences button-layout ":" 2>/dev/null || true
-        echo "[first-login] Dark mode set."
     fi
 
-    # Run matugen immediately for basic color templates (hyprland colors, fuzzel, gtk)
-    # This doesn't need the venv — just matugen itself
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
-        matugen image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
-        echo "[first-login] Basic colors generated via matugen."
+        matugen image "$DEFAULT_WALL" --mode dark || true
     fi
 
-    # Reload Hyprland config to pick up new colors
-    sleep 1
     hyprctl reload 2>/dev/null || true
 
-) &>/tmp/dotfiles-first-login-phase1.log &
-disown
-
-# ---------------------------------------------------------------------------
-# PHASE 2: Slow — venv setup + full color pipeline
-# Runs in background, takes 2-3 minutes
-# ---------------------------------------------------------------------------
-(
-    sleep 5
-
-    # ydotool user service
+    # PHASE 2 — venv build + full color pipeline
     if systemctl --user list-unit-files ydotool.service &>/dev/null 2>&1; then
         systemctl --user enable ydotool --now 2>/dev/null || true
     fi
 
-    # Create venv if it doesn't exist yet
-    if [[ ! -f "$VENV_PATH/bin/python" ]]; then
-        echo "[first-login] Creating Python venv at $VENV_PATH..."
-        mkdir -p "$(dirname "$VENV_PATH")"
-        REQUIREMENTS="$DOTFILES_DIR/sdata/uv/requirements.txt"
+    REQUIREMENTS="$DOTFILES_DIR/sdata/uv/requirements.txt"
+    [[ -f "$REQUIREMENTS" ]] || REQUIREMENTS="$HOME/.local/share/quickshell/sdata/uv/requirements.txt"
 
-        if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
-            uv venv "$VENV_PATH"
-            uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
-            echo "[first-login] Venv created."
-        else
-            echo "[first-login] WARNING: uv or requirements.txt not found"
-        fi
-    else
-        echo "[first-login] Venv already exists at $VENV_PATH"
+    # Rebuild venv if it is empty (no site-packages content).
+    NEED_VENV=0
+    if [[ ! -f "$VENV_PATH/bin/python" ]]; then
+        NEED_VENV=1
+    elif ! ls "$VENV_PATH"/lib/python*/site-packages/materialyoucolor* &>/dev/null; then
+        NEED_VENV=1
     fi
 
-    # Write env var to shell configs
+    if (( NEED_VENV )) && command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+        echo "[first-login] (re)building venv at $VENV_PATH"
+        rm -rf "$VENV_PATH"
+        mkdir -p "$(dirname "$VENV_PATH")"
+        uv venv "$VENV_PATH"
+        uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+    fi
+
     FISH_ENV_DIR="$HOME/.config/fish/conf.d"
     mkdir -p "$FISH_ENV_DIR"
     echo "set -gx ILLOGICAL_IMPULSE_VIRTUAL_ENV '$VENV_PATH'" \
@@ -87,30 +75,27 @@ disown
     grep -q "ILLOGICAL_IMPULSE_VIRTUAL_ENV" "$HOME/.bashrc" 2>/dev/null || \
         echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" >> "$HOME/.bashrc"
 
-    # Run full switchwall pipeline now that venv exists
-    # This generates terminal/kitty-theme.conf and material_colors.scss
     if [[ -f "$VENV_PATH/bin/python" ]] && [[ -f "$SWITCHWALL" ]]; then
-        echo "[first-login] Running full color pipeline..."
+        echo "[first-login] running switchwall full pipeline"
         export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
-        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
-        echo "[first-login] Full color pipeline complete."
+        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark || true
 
-        # Restart Quickshell to pick up kitty-theme.conf
         pkill qs 2>/dev/null || true
         sleep 2
-        qs -c ii &>/dev/null &
+        qs -c ii &
         disown
-        echo "[first-login] Quickshell restarted with updated colors."
     fi
 
-    # Notify user
     if command -v notify-send &>/dev/null; then
         notify-send "Setup Complete" \
             "Your Hyprland desktop is fully configured!" \
             --icon=system-software-install 2>/dev/null || true
     fi
 
-    echo "[first-login] All done."
+    # Cleanup — autostart entry only fires once now, dotfiles repo no longer needed.
+    rm -f "$AUTOSTART_FILE"
+    rm -rf "$DOTFILES_DIR"
 
-) &>/tmp/dotfiles-first-login.log &
+    echo "[first-login] done $(date -Is)"
+} &> "$LOG" &
 disown

@@ -930,14 +930,27 @@ if [[ -n "$MAIN_USER" ]]; then
     fi
 
     # ---------------------------------------------------------------------------
-    # Deploy dotfiles-first-login so it runs on first login via profile.d
+    # Deploy dotfiles-first-login as an XDG autostart entry.
+    # profile.d is unreliable here: SDDM execs Hyprland directly (no login shell),
+    # and terminals like kitty/foot don't start login shells either, so a
+    # profile.d hook never fires. XDG autostart fires once per graphical session
+    # and is honored by the dots-hyprland xdg-autostart wiring.
     # ---------------------------------------------------------------------------
     if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
-        info "Deploying dotfiles-first-login to profile.d..."
-        cp /usr/local/bin/dotfiles-first-login /etc/profile.d/dotfiles-first-login.sh
-        chmod +x /etc/profile.d/dotfiles-first-login.sh
+        info "Deploying dotfiles-first-login as XDG autostart entry..."
+        AUTOSTART_DIR="$MAIN_USER_HOME/.config/autostart"
+        mkdir -p "$AUTOSTART_DIR"
+        cat > "$AUTOSTART_DIR/dotfiles-first-login.desktop" << 'AUTOSTARTEOF'
+[Desktop Entry]
+Type=Application
+Name=Dotfiles First-Login Setup
+Exec=/usr/local/bin/dotfiles-first-login
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+AUTOSTARTEOF
+        chown -R "$MAIN_USER:$MAIN_USER" "$AUTOSTART_DIR"
     else
-        warn "dotfiles-first-login not found in /usr/local/bin — skipping profile.d deploy."
+        warn "dotfiles-first-login not found in /usr/local/bin — skipping autostart deploy."
     fi
 
     # ---------------------------------------------------------------------------
@@ -1283,13 +1296,10 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# CLEANUP — Remove dotfiles repo left in home directory
+# Note: $HOME/dots-hyprland is intentionally left in place here.
+# dotfiles-first-login needs sdata/uv/requirements.txt to (re)build the python
+# venv on first session, and self-removes the repo after success.
 # ---------------------------------------------------------------------------
-if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME/dots-hyprland" ]]; then
-    info "Cleaning up dots-hyprland repo from home directory..."
-    rm -rf "$MAIN_USER_HOME/dots-hyprland"
-    info "dots-hyprland removed."
-fi
 
 
 
