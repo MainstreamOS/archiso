@@ -710,7 +710,7 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
 
         if [[ -f "$EXECS_CONF" ]] && ! grep -q "dotfiles-first-login" "$EXECS_CONF"; then
             info "Adding dotfiles-first-login to skel execs.conf..."
-            echo "exec-once = bash /etc/profile.d/dotfiles-first-login.sh" >> "$EXECS_CONF"
+            echo "exec-once = /usr/local/bin/dotfiles-first-login" >> "$EXECS_CONF"
         fi
 
         SCRIPTS_DIR="$SKEL_DIR/.config/hypr/scripts"
@@ -719,6 +719,23 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             cp "$PROFILE_DIR/../airootfs/etc/skel/.config/hypr/scripts/init-qs.sh" "$SCRIPTS_DIR/"
             chmod 755 "$SCRIPTS_DIR/init-qs.sh"
             info "init-qs.sh deployed to skel."
+        fi
+
+        # Deploy Mainstream Plymouth theme into the live ISO airootfs so the
+        # live boot splash matches the brand. plymouthd.conf already points at
+        # Theme=mainstream; without this copy, plymouth would fall back to the
+        # generic "text" theme.
+        PLYMOUTH_SRC="$DOTS_WORK/sdata/plymouth/mainstream"
+        PLYMOUTH_DST="$PROFILE_DIR/airootfs/usr/share/plymouth/themes/mainstream"
+        if [[ -d "$PLYMOUTH_SRC" ]]; then
+            mkdir -p "$(dirname "$PLYMOUTH_DST")"
+            rm -rf "$PLYMOUTH_DST"
+            cp -a "$PLYMOUTH_SRC" "$PLYMOUTH_DST"
+            find "$PLYMOUTH_DST" -type d -exec chmod 755 {} +
+            find "$PLYMOUTH_DST" -type f -exec chmod 644 {} +
+            info "Mainstream Plymouth theme deployed to airootfs."
+        else
+            warn "Mainstream Plymouth theme missing from dotfiles repo — live splash will fall back."
         fi
 
         info "Dotfiles deployed to skel."

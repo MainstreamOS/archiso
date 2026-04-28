@@ -12,16 +12,16 @@ navigation: widget
 
 strings:
     productName:         Mainstream
-    shortProductName:    Arch Hyprland
+    shortProductName:    Mainstream OS
     version:             Rolling
     shortVersion:        Rolling
     versionedName:       Mainstream OS
-    shortVersionedName:  Arch Hyprland
+    shortVersionedName:  Mainstream OS
     bootloaderEntryName: Mainstream
-    productUrl:          https://archlinux.org
-    supportUrl:          https://wiki.archlinux.org
-    knownIssuesUrl:      https://github.com/gregorytrentmartinjr/dots-hyprland/issues
-    releaseNotesUrl:     https://github.com/gregorytrentmartinjr/dots-hyprland/releases
+    productUrl:          https://mainstreamos.github.io
+    supportUrl:          https://github.com/MainstreamOS/dots-hyprland/wiki
+    knownIssuesUrl:      https://github.com/MainstreamOS/dots-hyprland/issues
+    releaseNotesUrl:     https://github.com/MainstreamOS/dots-hyprland/releases
 
 images:
     productLogo:    "logo.png"
@@ -33,8 +33,9 @@ slideshowAPI: 2
 
 # These style keys apply to the fallback widget sidebar only.
 # The QML sidebar (calamares-sidebar.qml) defines its own colors inline.
+# Brand palette: Night surface, Bone text, Slate selection.
 style:
-    SidebarBackground:        "#1d1b20"
-    SidebarText:              "#cac4d0"
-    SidebarTextCurrent:       "#e8def8"
-    SidebarBackgroundCurrent: "#4a4458"
+    SidebarBackground:        "#191A1F"
+    SidebarText:              "#9397A0"
+    SidebarTextCurrent:       "#C9CCD4"
+    SidebarBackgroundCurrent: "#2A2B32"

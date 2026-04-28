@@ -13,21 +13,21 @@ import calamares.slideshow 1.0
 Presentation {
     id: presentation
 
-    // ── M3 dark color tokens ─────────────────────────────────────────────────
-    readonly property color colBg:           "#141313"
-    readonly property color colSurface:      "#1c1b1c"
-    readonly property color colSurfaceHigh:  "#2b2a2a"
-    readonly property color colOnSurface:    "#e6e1e1"
-    readonly property color colOnSurfaceVar: "#cbc5ca"
-    readonly property color colPrimary:      "#cfbcff"
-    readonly property color colSecCont:      "#4d4b4d"
-    readonly property color colOnSecCont:    "#ece6e9"
-    readonly property color colOutlineVar:   "#49464a"
+    // ── Mainstream OS brand tokens (see brand.html) ─────────────────────────
+    readonly property color colBg:           "#0B0D12"   // Abyss
+    readonly property color colSurface:      "#191A1F"   // Night
+    readonly property color colSurfaceHigh:  "#2A2B32"   // Slate
+    readonly property color colOnSurface:    "#ECE9E3"   // Ink
+    readonly property color colOnSurfaceVar: "#9397A0"   // Mist
+    readonly property color colPrimary:      "#1F87D8"   // Stream B
+    readonly property color colSecCont:      "#2A2B32"   // Slate
+    readonly property color colOnSecCont:    "#C9CCD4"   // Bone
+    readonly property color colOutlineVar:   "#40434A"   // Graphite
 
     // ── Background fill ───────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
-        color:        "#141313"
+        color:        "#0B0D12"
         z:            -100
     }
 
@@ -67,7 +67,7 @@ Presentation {
                 height: parent.height * 0.35
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 1.0; color: "#cc141313"   }
+                    GradientStop { position: 1.0; color: "#cc0B0D12"   }
                 }
             }
 

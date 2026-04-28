@@ -19,15 +19,15 @@ import io.calamares.ui 1.0
 Rectangle {
     id: root
 
-    // ── M3 dark color tokens — baseline purple scheme (seed #6750A4) ──────
-    readonly property color colBg:           "#1d1b20"   // surfaceContainerLow
-    readonly property color colOnSurface:    "#e6e1e6"   // onBackground
-    readonly property color colOnSurfaceVar: "#cac4d0"   // onSurfaceVariant
-    readonly property color colSecCont:      "#4a4458"   // secondaryContainer — active pill
-    readonly property color colOnSecCont:    "#e8def8"   // onSecondaryContainer
-    readonly property color colOutlineVar:   "#49454f"   // outlineVariant
-    readonly property color colOutline:      "#938f99"   // outline
-    readonly property color colPrimary:      "#cfbcff"   // primary
+    // ── Mainstream OS brand tokens (see brand.html) ─────────────────────────
+    readonly property color colBg:           "#191A1F"   // Night — top rail surface
+    readonly property color colOnSurface:    "#ECE9E3"   // Ink — emphasis text
+    readonly property color colOnSurfaceVar: "#9397A0"   // Mist — secondary text
+    readonly property color colSecCont:      "#2A2B32"   // Slate — active pill fill
+    readonly property color colOnSecCont:    "#ECE9E3"   // Ink — active pill text
+    readonly property color colOutlineVar:   "#2A2B32"   // outline-variant / divider
+    readonly property color colOutline:      "#40434A"   // Graphite — completed connector
+    readonly property color colPrimary:      "#1F87D8"   // Stream B — accent
 
     // ── Icon mapping by step index — names come dynamically from ViewManager ─
     // Icons correspond to the `show` sequence in settings.conf:
