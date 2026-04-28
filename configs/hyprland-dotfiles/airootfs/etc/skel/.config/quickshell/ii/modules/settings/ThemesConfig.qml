@@ -34,7 +34,7 @@ ContentPage {
     }
     property bool saveDialogOpen: false
     property bool countingDown: false
-    property int  countdownMax: 5      // slider value 0–30
+    property int  countdownMax: 1      // slider value 1–30
     property int  countdownLeft: 0
     property string saveThemeName: ""
     property string pendingUpdateSlug: ""   // when non-empty, save flow updates that slug
@@ -109,7 +109,7 @@ ContentPage {
         root.saveThemeName = updateSlug
             ? (root.themes.find(t => t.slug === updateSlug)?.name || "")
             : ""
-        root.countdownMax = 5
+        root.countdownMax = 1
         root.countdownLeft = 0
         root.countingDown = false
         root.saveDialogOpen = true
@@ -203,13 +203,14 @@ ContentPage {
         const name = (root.saveThemeName || slug).trim() || slug
         const wp = Config.options.background.wallpaperPath || ""
         const wpTrimmed = FileUtils.trimFileProtocol(wp)
-        const keepPreview = root.pendingUpdateSlug !== ""
+        const modeStr = Appearance.m3colors.darkmode ? "dark" : "light"
         root.lastSavedSlug = slug
         // Build bash payload
         const bash =
             `set -e\n` +
             `SLUG='${String(slug).replace(/'/g, "'\\''")}'\n` +
             `NAME='${String(name).replace(/'/g, "'\\''")}'\n` +
+            `MODE='${modeStr}'\n` +
             `THEMES='${root.themesDir}'\n` +
             `DIR="$THEMES/$SLUG"\n` +
             `mkdir -p "$DIR"\n` +
@@ -220,14 +221,37 @@ ContentPage {
                          `WP_FILE="wallpaper.$EXT"\n`
                        : `WP_FILE=""\n`) +
             // Screenshot of primary focused monitor
-            (keepPreview
-                ? `# Keep existing preview on update\n`
-                : `FOCUSED=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)\n` +
-                  `if [ -n "$FOCUSED" ]; then grim -o "$FOCUSED" "$DIR/preview.png"; else grim "$DIR/preview.png"; fi\n`) +
+            `FOCUSED=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)\n` +
+            `if [ -n "$FOCUSED" ]; then grim -o "$FOCUSED" "$DIR/preview.png"; else grim "$DIR/preview.png"; fi\n` +
             `CREATED=$(date +%s)\n` +
             `cat > "$DIR/meta.json" <<EOF\n` +
-            `{"slug":"$SLUG","name":"$NAME","wallpaperFile":"$WP_FILE","created":$CREATED}\n` +
+            `{"slug":"$SLUG","name":"$NAME","wallpaperFile":"$WP_FILE","mode":"$MODE","created":$CREATED}\n` +
             `EOF\n` +
+            // Snapshot current decoration flags (same parsing logic as
+            // InterfaceConfig.qml's decoReader) so applying this theme later
+            // restores the look the user had at save time.
+            `GENERAL='${root.homePath}/.config/hypr/hyprland/general.conf'\n` +
+            `CUSTOM='${root.homePath}/.config/hypr/custom/general.conf'\n` +
+            `python3 - "$DIR/decorations.json" "$GENERAL" "$CUSTOM" <<'PY'\n` +
+            `import json, os, re, sys\n` +
+            `out_path, general, custom = sys.argv[1], sys.argv[2], sys.argv[3]\n` +
+            `def truthy(v): return v.lower() in ("true", "1", "yes", "on")\n` +
+            `flags = {}\n` +
+            `try:\n` +
+            `    text = open(general).read()\n` +
+            `    for key, block in (("animations", "animations"), ("blur", "blur"), ("shadow", "shadow")):\n` +
+            `        m = re.search(block + r"\\s*\\{[^}]*?enabled\\s*=\\s*(\\w+)", text, re.S)\n` +
+            `        if m: flags[key] = truthy(m.group(1))\n` +
+            `    bm = re.search(r"^(\\s*)(#\\s*)?border_size\\s*=", text, re.M)\n` +
+            `    flags["borders"] = bool(bm and not bm.group(2))\n` +
+            `    rm = re.search(r"^\\s*rounding\\s*=\\s*(\\d+)", text, re.M)\n` +
+            `    if rm: flags["roundCorners"] = int(rm.group(1)) > 0\n` +
+            `except FileNotFoundError: pass\n` +
+            `try:\n` +
+            `    flags["titleBars"] = bool(re.search(r"^[ \\t]*plugin[ \\t]*=[ \\t]*.*hyprbars\\.so", open(custom).read(), re.M))\n` +
+            `except FileNotFoundError: pass\n` +
+            `with open(out_path, "w") as f: json.dump(flags, f, indent=2)\n` +
+            `PY\n` +
             // Newly saved themes are treated as the currently applied theme.
             `printf '%s' "$SLUG" > '${root.lastAppliedPath}.tmp' && mv -f '${root.lastAppliedPath}.tmp' '${root.lastAppliedPath}'\n` +
             // Rebuild index
@@ -284,11 +308,53 @@ ContentPage {
     }
 
     // ── Delete theme ────────────────────────────────────────────────────────
-    Process { id: deleteProc }
+    Process {
+        id: deleteProc
+        // Track which slug is in-flight so onExited can clear lastAppliedSlug
+        // if the user just deleted the currently active theme.
+        property string deletingSlug: ""
+    }
     function deleteTheme(theme) {
+        // Block the QML config adapter from racing with our config.json patch
+        // below — same pattern used by ThemeManager / apply-theme.sh.
+        Config.blockWrites = true
+        deleteProc.deletingSlug = theme.slug
+
+        const safeSlug = String(theme.slug).replace(/'/g, "\\'\\''")
         const bash =
             `set -e\n` +
-            `rm -rf -- '${root.themesDir}/${theme.slug}'\n` +
+            `SLUG='${safeSlug}'\n` +
+            `THEME_DIR='${root.themesDir}'/"$SLUG"\n` +
+            `CONF='${root.shellConfigPath}'\n` +
+            // ── Preserve wallpaper before delete ─────────────────────────────
+            // When a theme is applied, config.json's wallpaperPath is set to
+            // the bundled copy inside the theme dir.  Deleting the dir without
+            // relocating that file leaves a dead path in config.json, causing
+            // blank previews everywhere and no wallpaper after reboot.
+            `LIVE_WP=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('background',{}).get('wallpaperPath',''))" "$CONF" 2>/dev/null || true)\n` +
+            `case "$LIVE_WP" in\n` +
+            `    "$THEME_DIR"/*)\n` +
+            `        EXT="\${LIVE_WP##*.}"\n` +
+            `        SAVED_WP='${root.themesDir}'/last-wallpaper."$EXT"\n` +
+            `        cp -f "$LIVE_WP" "$SAVED_WP"\n` +
+            // Atomically patch wallpaperPath in config.json to the safe copy
+            `        python3 - "$CONF" "$SAVED_WP" <<'PY'\n` +
+            `import json, os, sys\n` +
+            `conf, new_wp = sys.argv[1], sys.argv[2]\n` +
+            `with open(conf) as f: data = json.load(f)\n` +
+            `data.setdefault('background', {})['wallpaperPath'] = new_wp\n` +
+            `tmp = conf + '.tmp'\n` +
+            `with open(tmp, 'w') as f: json.dump(data, f, indent=2)\n` +
+            `os.replace(tmp, conf)\n` +
+            `PY\n` +
+            `        ;;\n` +
+            `esac\n` +
+            // ── Clear last-applied marker if it pointed to this theme ─────────
+            `if [ -f '${root.lastAppliedPath}' ] && [ "$(cat '${root.lastAppliedPath}')" = "$SLUG" ]; then\n` +
+            `    rm -f '${root.lastAppliedPath}'\n` +
+            `fi\n` +
+            // ── Remove theme dir and rebuild index ────────────────────────────
+            `rm -rf -- "$THEME_DIR"\n` +
             `python3 - '${root.themesDir}' <<'PY'\n` +
             `import json, os, sys\n` +
             `themes_dir = sys.argv[1]\n` +
@@ -307,7 +373,18 @@ ContentPage {
     }
     Connections {
         target: deleteProc
-        function onExited() { root.refreshThemes(); root.showStatus(Translation.tr("Theme deleted")) }
+        function onExited() {
+            // Unblock the config adapter — the file watcher will now pick up
+            // any wallpaperPath change we wrote and reload Config automatically.
+            Config.blockWrites = false
+            // If the deleted theme was the one marked as active, clear the
+            // in-memory marker so no ghost "active" highlight lingers.
+            if (deleteProc.deletingSlug === root.lastAppliedSlug) {
+                root.lastAppliedSlug = ""
+            }
+            root.refreshThemes()
+            root.showStatus(Translation.tr("Theme deleted"))
+        }
     }
 
     // ── UI ───────────────────────────────────────────────────────────────────
@@ -315,6 +392,16 @@ ContentPage {
         icon: "style"
         title: Translation.tr("Themes")
         Layout.fillWidth: true
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.topMargin: 6
+            Layout.bottomMargin: 10
+            wrapMode: Text.WordWrap
+            color: Appearance.colors.colSubtext
+            font.pixelSize: Appearance.font.pixelSize.small
+            text: Translation.tr("A theme is a snapshot of your current look — wallpaper, colors, UI changes, and window decorations. Tap \"Save current as theme\" to capture what's on screen, then switch between saved themes any time with one tap. Use \"Update\" on the active theme to overwrite it with your latest tweaks.")
+        }
 
         // Status line
         StyledText {
@@ -429,7 +516,7 @@ ContentPage {
                                 anchors.fill: parent
                                 fillMode: Image.PreserveAspectCrop
                                 cache: false
-                                source: "file://" + root.themesDir + "/" + themeCard.modelData.slug + "/preview.png"
+                                source: "file://" + root.themesDir + "/" + themeCard.modelData.slug + "/preview.png?v=" + (themeCard.modelData.created || 0)
                                 sourceSize.width: parent.width
                                 sourceSize.height: parent.height
                                 layer.enabled: true
@@ -581,6 +668,12 @@ ContentPage {
                         placeholderText: Translation.tr("Theme name")
                         background: null
                         color: Appearance.colors.colOnLayer1
+                        placeholderTextColor: Appearance.m3colors.m3outline
+                        font {
+                            family: Appearance.font.family.main
+                            pixelSize: Appearance.font.pixelSize.small
+                            variableAxes: Appearance.font.variableAxes.main
+                        }
                         text: root.saveThemeName
                         onTextChanged: root.saveThemeName = text
                         enabled: !root.countingDown
@@ -608,7 +701,7 @@ ContentPage {
                     Slider {
                         id: countdownSlider
                         Layout.fillWidth: true
-                        from: 0; to: 30; stepSize: 1
+                        from: 1; to: 30; stepSize: 1
                         value: root.countdownMax
                         enabled: !root.countingDown
                         onMoved: root.countdownMax = Math.round(value)
@@ -632,9 +725,7 @@ ContentPage {
                         }
                     }
                     StyledText {
-                        text: root.pendingUpdateSlug
-                            ? Translation.tr("Update keeps the existing screenshot")
-                            : Translation.tr("Settings window hides during delay so the shot doesn't include it")
+                        text: Translation.tr("Settings window hides during delay so the shot doesn't include it")
                         color: Appearance.colors.colSubtext
                         font.pixelSize: Appearance.font.pixelSize.smaller
                         wrapMode: Text.WordWrap
