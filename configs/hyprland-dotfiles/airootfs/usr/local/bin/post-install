@@ -84,13 +84,34 @@ systemctl mask systemd-networkd-persistent-storage.service || true
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# 4b. PLYMOUTH WITH BGRT THEME
+# 4b. PLYMOUTH WITH MAINSTREAM THEME
 # ---------------------------------------------------------------------------
-info "Installing Plymouth boot splash with BGRT theme..."
+info "Installing Plymouth boot splash..."
 if pacman -S --noconfirm --needed plymouth; then
-    # Set BGRT theme — shows the UEFI firmware/manufacturer logo during boot
-    plymouth-set-default-theme bgrt
-    info "Plymouth BGRT theme configured."
+    THEME_SRC="/tmp/dotfiles-setup/sdata/plymouth/mainstream"
+    THEME_DST="/usr/share/plymouth/themes/mainstream"
+
+    if [[ -d "$THEME_SRC" ]]; then
+        info "Deploying Mainstream Plymouth theme..."
+        rm -rf "$THEME_DST"
+        cp -r "$THEME_SRC" "$THEME_DST"
+        chown -R root:root "$THEME_DST"
+        find "$THEME_DST" -type d -exec chmod 755 {} +
+        find "$THEME_DST" -type f -exec chmod 644 {} +
+        plymouth-set-default-theme mainstream
+        info "Mainstream Plymouth theme configured."
+    else
+        warn "Mainstream Plymouth theme not found in cloned dotfiles repo — falling back to BGRT."
+        plymouth-set-default-theme bgrt
+        info "Plymouth BGRT theme configured."
+    fi
+
+    if ! grep -q '\bplymouth\b' /etc/mkinitcpio.conf 2>/dev/null; then
+        sed -i 's/\(HOOKS=([^)]*\budev\b\)/\1 plymouth/' /etc/mkinitcpio.conf
+        info "Added plymouth hook to /etc/mkinitcpio.conf"
+    else
+        info "plymouth hook already present in /etc/mkinitcpio.conf"
+    fi
 else
     warn "Plymouth failed to install — boot splash will be skipped."
 fi
@@ -666,7 +687,7 @@ info "Installing pixie SDDM theme..."
 
 SDDM_THEME_DIR="/usr/share/sddm/themes/pixie"
 if ping -c1 -W3 github.com &>/dev/null; then
-    if git clone --depth=1 https://github.com/gregorytrentmartinjr/pixie-sddm.git "$SDDM_THEME_DIR"; then
+    if git clone --depth=1 https://github.com/MainstreamOS/pixie-sddm.git "$SDDM_THEME_DIR"; then
         info "pixie SDDM theme installed successfully."
     else
         warn "Failed to clone pixie-sddm — SDDM will use default theme."
@@ -1396,7 +1417,7 @@ info "gamescope-init.service registered — will run on first boot after netinst
 # in chroot. Instead, we mirror setup_hyprland_plugins() from 3_files.sh:
 #   1. Remove any artifacts from a previous hyprpm-based approach.
 #   2. Check that the required pkg-config deps are present in the chroot.
-#   3. Clone hyprwm/hyprland-plugins and compile hyprbars with `make`.
+#   3. Clone MainstreamOS/hyprland-plugins and compile hyprbars with `make`.
 #   4. Install hyprbars.so to $MAIN_USER_HOME/.local/share/hyprland/plugins/.
 #   5. Prepend a *commented-out* `plugin = ...` directive to custom/general.conf
 #      so the user can enable Title Bars via the settings toggle without any
@@ -1447,8 +1468,8 @@ if [[ -n "$MAIN_USER" ]]; then
             echo "---"
         } > "$_BUILD_LOG"
 
-        info "Cloning hyprwm/hyprland-plugins into $_SRC_DIR..."
-        if ! git -C "$_SRC_DIR" clone --depth=1 https://github.com/hyprwm/hyprland-plugins . \
+        info "Cloning MainstreamOS/hyprland-plugins into $_SRC_DIR..."
+        if ! git -C "$_SRC_DIR" clone --depth=1 https://github.com/MainstreamOS/hyprland-plugins . \
                 >> "$_BUILD_LOG" 2>&1; then
             warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
             rm -rf "$_SRC_DIR"

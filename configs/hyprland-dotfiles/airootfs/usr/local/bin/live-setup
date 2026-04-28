@@ -20,7 +20,7 @@ DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 # init-qs.sh normally creates the venv, but on the live ISO uv is absent and
 # dots-hyprland/sdata/uv/requirements.txt doesn't exist in skel, so the venv
-# is never created.  illogical-impulse-python installs materialyoucolor,
+# is never created.  mainstream-python installs materialyoucolor,
 # Pillow etc. as system-wide pacman packages, so python3 works without a venv.
 # We still export the path so switchwall.sh's "source .../activate" at least
 # targets the right location (it will fail silently; python3 then falls back to
@@ -85,7 +85,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Generate Material You colors
 #    On the live ISO the venv is never created (uv is not installed and
-#    requirements.txt is absent from skel).  illogical-impulse-python provides
+#    requirements.txt is absent from skel).  mainstream-python provides
 #    the needed packages system-wide, so we skip waiting for the venv and run
 #    switchwall.sh directly.  Its internal "source .../activate" will fail
 #    harmlessly; python3 then uses the system-wide packages.

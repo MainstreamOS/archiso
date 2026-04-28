@@ -19,8 +19,8 @@ export TERM=xterm-256color
 
 # Pre-built packages are baked into the ISO at this path
 PKG_DIR="/usr/local/share/pkgs"
-DOTFILES_REPO="https://github.com/gregorytrentmartinjr/dots-hyprland.git"
-DOTFILES_BRANCH="newcustom"
+DOTFILES_REPO="https://github.com/MainstreamOS/dots-hyprland.git"
+DOTFILES_BRANCH="mainstream"
 
 # ---------------------------------------------------------------------------
 # 2. IDENTIFY TARGET USER (UID 1000 or 1001)
@@ -79,10 +79,10 @@ fi
 # available in the local repo at /usr/local/share/pkgs/.  Register it in
 # pacman.conf so pacman -U (step 8) can auto-resolve them — no yay needed.
 info "Registering local package repo for dependency resolution..."
-if [[ -d "$PKG_DIR" ]] && ! grep -q '^\[illogical-impulse\]' /etc/pacman.conf 2>/dev/null; then
+if [[ -d "$PKG_DIR" ]] && ! grep -q '^\[mainstream\]' /etc/pacman.conf 2>/dev/null; then
     cat >> /etc/pacman.conf << 'LOCALREPO'
 
-[illogical-impulse]
+[mainstream]
 SigLevel = Never
 Server = file:///usr/local/share/pkgs
 LOCALREPO
@@ -113,22 +113,21 @@ info "Clone successful."
 # 8. INSTALL PRE-BUILT META-PACKAGES
 # ---------------------------------------------------------------------------
 METAPKGS=(
-    "illogical-impulse-audio"
-    "illogical-impulse-backlight"
-    "illogical-impulse-basic"
-    "illogical-impulse-fonts-themes"
-    "illogical-impulse-gnome"
-    "illogical-impulse-hyprland"
-    "illogical-impulse-kde"
-    "illogical-impulse-portal"
-    "illogical-impulse-python"
-    "illogical-impulse-screencapture"
-    "illogical-impulse-toolkit"
-    "illogical-impulse-widgets"
-    "illogical-impulse-microtex-git"
-    "illogical-impulse-quickshell-git"
-    "illogical-impulse-extras"
-    "illogical-impulse-bibata-modern-classic-bin"
+    "mainstream-audio"
+    "mainstream-backlight"
+    "mainstream-basic"
+    "mainstream-fonts-themes"
+    "mainstream-gnome"
+    "mainstream-hyprland"
+    "mainstream-portal"
+    "mainstream-python"
+    "mainstream-screencapture"
+    "mainstream-toolkit"
+    "mainstream-widgets"
+    "mainstream-microtex-git"
+    "mainstream-quickshell-git"
+    "mainstream-extras"
+    "mainstream-bibata-modern-classic-bin"
     "topgrade"
 )
 

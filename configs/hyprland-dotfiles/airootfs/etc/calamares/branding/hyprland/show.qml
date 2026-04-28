@@ -90,7 +90,7 @@ Presentation {
                 }
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text:             "Hyprland · illogical-impulse · Material Design 3"
+                    text:             "Hyprland · Mainstream OS · Material Design 3"
                     font.pixelSize:   13
                     color:            presentation.colOnSurfaceVar
                     renderType:       Text.NativeRendering
@@ -209,7 +209,7 @@ Presentation {
                                 { icon: "download",         text: "AUR packages complete on first boot — internet required"  },
                                 { icon: "settings_suggest", text: "SDDM, NetworkManager, PipeWire and cups pre-configured"   },
                                 { icon: "palette",          text: "Colors adapt to your wallpaper via matugen"               },
-                                { icon: "open_in_new",      text: "github.com/gregorytrentmartinjr/dots-hyprland"            }
+                                { icon: "open_in_new",      text: "github.com/MainstreamOS/dots-hyprland"                    }
                             ]
 
                             delegate: RowLayout {

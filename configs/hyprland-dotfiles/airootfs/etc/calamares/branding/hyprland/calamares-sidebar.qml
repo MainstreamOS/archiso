@@ -8,7 +8,7 @@
  *
  * Color system: Material Design 3 dark scheme (from ii Appearance.qml).
  * Icons: Material Symbols Rounded (variable font, ligature rendering).
- *        Provided by the illogical-impulse-fonts-themes package on the live ISO.
+ *        Provided by the mainstream-fonts-themes package on the live ISO.
  * =========================================================================== */
 
 import QtQuick 2.15

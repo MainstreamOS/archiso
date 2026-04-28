@@ -82,11 +82,13 @@ sanitize_local_repo() {
         warn "$removed corrupted package(s) removed from $repo_dir."
         info "Regenerating repo database..."
         # Remove stale db files so repo-add starts clean
-        rm -f "$repo_dir"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
+        rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
+              "$repo_dir"/mainstream.files{,.tar.gz,.tar.gz.old} \
+              "$repo_dir"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
               "$repo_dir"/illogical-impulse.files{,.tar.gz,.tar.gz.old}
         # Only call repo-add if at least one package still exists
         if compgen -G "$repo_dir/*.pkg.tar.zst" > /dev/null 2>&1; then
-            repo-add "$repo_dir/illogical-impulse.db.tar.gz" "$repo_dir"/*.pkg.tar.zst
+            repo-add "$repo_dir/mainstream.db.tar.gz" "$repo_dir"/*.pkg.tar.zst
             success "Repo database regenerated."
         else
             warn "No packages remain in $repo_dir after sanitization — repo DB not created."
@@ -192,27 +194,30 @@ info "════════════════════════�
 
 # ── Package-build config ────────────────────────────────────────────────────
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
-DOTFILES_REPO="https://github.com/gregorytrentmartinjr/dots-hyprland.git"
+DOTFILES_REPO="https://github.com/MainstreamOS/dots-hyprland.git"
 DOTFILES_BRANCH="mainstream"
 PKG_WORK_DIR="/tmp/iso-pkg-build"
 BUILD_USER="iso-builder"
 
 METAPKGS=(
-    "illogical-impulse-audio"
-    "illogical-impulse-backlight"
-    "illogical-impulse-basic"
-    "illogical-impulse-fonts-themes"
-    "illogical-impulse-gnome"
-    "illogical-impulse-hyprland"
-    "illogical-impulse-portal"
-    "illogical-impulse-python"
-    "illogical-impulse-screencapture"
-    "illogical-impulse-toolkit"
-    "illogical-impulse-widgets"
-    "illogical-impulse-quickshell-git"
-    "illogical-impulse-extras"
-    "illogical-impulse-bibata-modern-classic-bin"
+    "mainstream-audio"
+    "mainstream-backlight"
+    "mainstream-basic"
+    "mainstream-fonts-themes"
+    "mainstream-gnome"
+    "mainstream-hyprland"
+    "mainstream-portal"
+    "mainstream-python"
+    "mainstream-screencapture"
+    "mainstream-toolkit"
+    "mainstream-widgets"
+    "mainstream-quickshell-git"
+    "mainstream-extras"
+    "mainstream-bibata-modern-classic-bin"
 )
+# mainstream-microtex-git is built separately below — its cmake source build
+# needs makepkg -s (syncdeps) and --skippgpcheck, which the generic
+# METAPKGS BUILD_SCRIPT (--nodeps) doesn't provide.
 
 AUR_DEPS=(
     "ckbcomp"
@@ -556,7 +561,7 @@ GIT_PKGS_DIR="$PKG_WORK_DIR/git-pkgs"
 mkdir -p "$GIT_PKGS_DIR"
 chown "$BUILD_USER":"$BUILD_USER" "$GIT_PKGS_DIR"
 
-GSF_PKG="illogical-impulse-google-sans-flex"
+GSF_PKG="mainstream-google-sans-flex"
 existing_gsf=$(find "$PKG_OUTPUT_DIR" -name "${GSF_PKG}-*.pkg.tar.zst" 2>/dev/null | head -1)
 if [[ -n "$existing_gsf" ]] && [[ "$CLEAN_BUILD" == false ]]; then
     info "$GSF_PKG — already built, skipping."
@@ -566,13 +571,19 @@ else
     mkdir -p "$GSF_BUILD"
     chown "$BUILD_USER":"$BUILD_USER" "$GSF_BUILD"
     cat > "$GSF_BUILD/PKGBUILD" << 'GSFPKGBUILD'
-pkgname=illogical-impulse-google-sans-flex
+pkgname=mainstream-google-sans-flex
 pkgver=1.0
-pkgrel=1
-pkgdesc='Google Sans Flex variable font as used by end-4/dots-hyprland'
+pkgrel=2
+pkgdesc='Google Sans Flex variable font, packaged for Mainstream OS dotfiles'
 arch=(any)
 license=(OFL)
 url="https://github.com/end-4/google-sans-flex"
+provides=('illogical-impulse-google-sans-flex')
+replaces=('illogical-impulse-google-sans-flex')
+# The system-side install path keeps the illogical-impulse-google-sans-flex
+# directory name so it lines up with the dotfiles' user-side font dir
+# (XDG_DATA_HOME/fonts/illogical-impulse-google-sans-flex/) — easier mental
+# model when debugging which font dir holds the live ISO copy.
 source=("google-sans-flex::git+https://github.com/end-4/google-sans-flex.git")
 sha256sums=('SKIP')
 
@@ -601,55 +612,24 @@ GSFPKGBUILD
     fi
 fi
 
-# ── Build illogical-impulse-microtex-git ──────────────────────────────────
-MICROTEX_PKG="illogical-impulse-microtex-git"
+# ── Build mainstream-microtex-git ─────────────────────────────────────────
+# Built from the dotfiles repo's PKGBUILD so the rename (illogical-impulse-* →
+# mainstream-*), pkgrel bumps, and provides/replaces metadata stay in sync.
+# We don't use the METAPKGS loop because microtex needs makepkg -s (syncdeps)
+# to pull cmake/tinyxml2/gtkmm3 etc. and --skippgpcheck on the git source.
+MICROTEX_PKG="mainstream-microtex-git"
+MICROTEX_SRC="$DIST_ARCH_PATH/$MICROTEX_PKG"
 existing_microtex=$(find "$PKG_OUTPUT_DIR" -name "${MICROTEX_PKG}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
 if [[ -n "$existing_microtex" ]] && [[ "$CLEAN_BUILD" == false ]]; then
     info "$MICROTEX_PKG — already built, skipping."
+elif [[ ! -d "$MICROTEX_SRC" ]]; then
+    warn "$MICROTEX_PKG — directory missing at $MICROTEX_SRC, skipping."
 else
     info "Building $MICROTEX_PKG (compiles MicroTeX from source — this may take a few minutes)..."
     MICROTEX_BUILD="$GIT_PKGS_DIR/microtex"
-    mkdir -p "$MICROTEX_BUILD"
-    chown "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD"
-    cat > "$MICROTEX_BUILD/PKGBUILD" << 'MICROTEXPKGBUILD'
-pkgname=illogical-impulse-microtex-git
-_pkgname=MicroTeX
-pkgver=r494.0e3707f
-pkgrel=2
-pkgdesc='MicroTeX for illogical-impulse dotfiles.'
-arch=("x86_64")
-url="https://github.com/NanoMichael/${_pkgname}"
-license=('MIT')
-depends=(
-  tinyxml2
-  gtkmm3
-  gtksourceviewmm
-  cairomm
-)
-makedepends=("git" "cmake")
-source=("git+${url}.git")
-sha256sums=("SKIP")
-
-prepare() {
-  cd $_pkgname
-  sed -i 's/gtksourceviewmm-3.0/gtksourceviewmm-4.0/' CMakeLists.txt
-  sed -i 's/tinyxml2.so.10/tinyxml2.so.11/' CMakeLists.txt
-}
-
-build() {
-  cd $_pkgname
-  cmake -B build -S . -DCMAKE_BUILD_TYPE=None
-  cmake --build build
-}
-
-package() {
-  cd $_pkgname
-  install -Dm0755 -t "$pkgdir/opt/$_pkgname/" build/LaTeX
-  cp -r build/res "$pkgdir/opt/$_pkgname/"
-  install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
-}
-MICROTEXPKGBUILD
-    chown "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD/PKGBUILD"
+    rm -rf "$MICROTEX_BUILD"
+    cp -a "$MICROTEX_SRC" "$MICROTEX_BUILD"
+    chown -R "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD"
     if su "$BUILD_USER" -c "
         cd '$MICROTEX_BUILD'
         PACMAN=/usr/local/bin/pacman-noconfirm \
@@ -670,6 +650,7 @@ MICROTEXPKGBUILD
         warn "$MICROTEX_PKG — build failed."
     fi
 fi
+
 if [[ ${#PREBUILT_PKGS[@]} -gt 0 ]]; then
     info "Downloading ${#PREBUILT_PKGS[@]} prebuilt packages..."
     for entry in "${PREBUILT_PKGS[@]}"; do
@@ -696,8 +677,12 @@ sanitize_local_repo "$PKG_OUTPUT_DIR"
 
 # ── Generate local pacman repo database ────────────────────────────────────
 info "Generating local pacman repo database..."
-repo-add "$PKG_OUTPUT_DIR/illogical-impulse.db.tar.gz" "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
-info "Repo database generated at $PKG_OUTPUT_DIR/illogical-impulse.db.tar.gz"
+# Drop any leftover illogical-impulse.* db files from earlier ISO builds so
+# pacman doesn't see two repos pointing at the same dir.
+rm -f "$PKG_OUTPUT_DIR"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
+      "$PKG_OUTPUT_DIR"/illogical-impulse.files{,.tar.gz,.tar.gz.old}
+repo-add "$PKG_OUTPUT_DIR/mainstream.db.tar.gz" "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
+info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz"
 
 # ── Deploy dotfiles to /etc/skel ───────────────────────────────────────────
 SKEL_DIR="$PROFILE_DIR/airootfs/etc/skel"
