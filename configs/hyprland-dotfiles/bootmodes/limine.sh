@@ -55,7 +55,7 @@ _validate_requirements_bootmode_bios.limine() {
         return
     fi
     local _f
-    for _f in /usr/share/limine/limine-bios-cd.bin /usr/share/limine/limine-bios.sys; do
+    for _f in "${LIMINE_DIR:-/usr/share/limine}/limine-bios-cd.bin" "${LIMINE_DIR:-/usr/share/limine}/limine-bios.sys"; do
         if [[ ! -f "${_f}" ]]; then
             _msg_error "Validating '${bootmode}': ${_f} not found. Install 'limine' on the build host." 0
             (( validation_error=validation_error+1 ))
@@ -70,9 +70,9 @@ _validate_requirements_bootmode_bios.limine() {
 _make_bootmode_bios.limine() {
     _msg_info "Setting up Limine for BIOS booting..."
     # Limine BIOS CD boot binary (El Torito boot image)
-    install -m 0644 -- /usr/share/limine/limine-bios-cd.bin "${isofs_dir}/limine-bios-cd.bin"
+    install -m 0644 -- "${LIMINE_DIR:-/usr/share/limine}/limine-bios-cd.bin" "${isofs_dir}/limine-bios-cd.bin"
     # Limine BIOS system binary (needed by limine bios-install for USB hybrid)
-    install -m 0644 -- /usr/share/limine/limine-bios.sys "${isofs_dir}/limine-bios.sys"
+    install -m 0644 -- "${LIMINE_DIR:-/usr/share/limine}/limine-bios.sys" "${isofs_dir}/limine-bios.sys"
     _make_limine_iso_config
     _msg_info "Done! Limine set up for BIOS booting."
 }
@@ -102,7 +102,7 @@ _validate_requirements_bootmode_uefi.limine() {
     # Re-use the common UEFI checks (mkfs.fat, mmd/mcopy availability, arch)
     _validate_common_requirements_bootmode_uefi
     local _f
-    for _f in /usr/share/limine/BOOTX64.EFI; do
+    for _f in "${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI"; do
         if [[ ! -f "${_f}" ]]; then
             _msg_error "Validating '${bootmode}': ${_f} not found. Install 'limine' on the build host." 0
             (( validation_error=validation_error+1 ))
@@ -120,16 +120,16 @@ _make_bootmode_uefi.limine() {
     # Stage BOOTX64.EFI for size calculation, then build the FAT ESP image.
     # _make_efibootimg() sizes the image from efiboot_files[] and creates
     # the EFI/BOOT directory structure inside the image.
-    efiboot_files+=('/usr/share/limine/BOOTX64.EFI')
+    efiboot_files+=("${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI")
     _make_efibootimg
 
     # Copy Limine's UEFI binary into the FAT ESP at the standard fallback path.
-    mcopy -i "${efibootimg}" /usr/share/limine/BOOTX64.EFI '::/EFI/BOOT/BOOTX64.EFI'
+    mcopy -i "${efibootimg}" "${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI" '::/EFI/BOOT/BOOTX64.EFI'
 
     # Also copy into ISO 9660 so a user can manually partition a disk and copy
     # the ISO tree; the UEFI firmware will find BOOTX64.EFI at EFI/BOOT/.
     install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
-    install -m 0644 -- /usr/share/limine/BOOTX64.EFI "${isofs_dir}/EFI/BOOT/BOOTX64.EFI"
+    install -m 0644 -- "${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI" "${isofs_dir}/EFI/BOOT/BOOTX64.EFI"
 
     _make_limine_iso_config
     _msg_info "Done! Limine set up for UEFI booting."

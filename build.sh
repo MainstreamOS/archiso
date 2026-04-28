@@ -835,21 +835,120 @@ info "  PHASE 2: Building ISO"
 info "═══════════════════════════════════════════════════════════════"
 
 # ── ISO build dependency check ─────────────────────────────────────────────
-for _bin in limine mkfs.fat mmd mcopy xorriso mksquashfs; do
+for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar; do
     if ! command -v "${_bin}" &>/dev/null; then
         echo "ERROR: '${_bin}' not found. Install it on the build host." >&2
         exit 1
     fi
 done
 
-for _f in /usr/share/limine/limine-bios-cd.bin \
-           /usr/share/limine/limine-bios.sys \
-           /usr/share/limine/BOOTX64.EFI; do
+# ── Fetch latest upstream Limine ───────────────────────────────────────────
+# Arch's [extra] repo lags upstream Limine. We pull the latest binary release
+# from limine-bootloader/limine on GitHub so each ISO ships current bootloader
+# code (UEFI security fixes, new firmware compat, etc.).  Falls back to the
+# system-installed limine if the network fetch fails.
+#
+# After this step:
+#   $LIMINE_DIR/{limine, limine-bios-cd.bin, limine-bios.sys, BOOTX64.EFI, ...}
+# are the binaries used by mkarchiso (via bootmodes/limine.sh) and by the
+# `limine bios-install` step that embeds the MBR bootstrap.
+LIMINE_STAGE="$(mktemp -d /tmp/limine-upstream-XXXXXX)"
+LIMINE_DIR="/usr/share/limine"   # fallback default
+LIMINE_VERSION=""
+
+info "Fetching latest Limine release from GitHub..."
+if _LATEST_TAG="$(curl -fsSL --retry 3 \
+        https://api.github.com/repos/limine-bootloader/limine/releases/latest \
+        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | head -1)" \
+   && [[ -n "${_LATEST_TAG}" ]]; then
+
+    _ASSET_URL="https://github.com/limine-bootloader/limine/releases/download/${_LATEST_TAG}/limine-binary.tar.xz"
+    info "Downloading Limine ${_LATEST_TAG} binary tarball..."
+    if curl -fsSL --retry 3 -o "${LIMINE_STAGE}/limine.tar.xz" "${_ASSET_URL}"; then
+        if tar -xf "${LIMINE_STAGE}/limine.tar.xz" -C "${LIMINE_STAGE}"; then
+            # Tarball extracts to limine-binary/
+            _UPSTREAM_DIR="$(find "${LIMINE_STAGE}" -maxdepth 2 -type d -name 'limine-*' | head -1)"
+            if [[ -n "${_UPSTREAM_DIR}" \
+                  && -f "${_UPSTREAM_DIR}/limine-bios-cd.bin" \
+                  && -f "${_UPSTREAM_DIR}/limine-bios.sys" \
+                  && -f "${_UPSTREAM_DIR}/BOOTX64.EFI" \
+                  && -x "${_UPSTREAM_DIR}/limine" ]]; then
+                LIMINE_DIR="${_UPSTREAM_DIR}"
+                LIMINE_VERSION="${_LATEST_TAG}"
+                info "Using upstream Limine ${LIMINE_VERSION} from ${LIMINE_DIR}"
+            else
+                warn "Upstream Limine tarball missing expected files — falling back to system /usr/share/limine."
+            fi
+        else
+            warn "Failed to extract upstream Limine tarball — falling back to system /usr/share/limine."
+        fi
+    else
+        warn "Failed to download upstream Limine — falling back to system /usr/share/limine."
+    fi
+else
+    warn "Failed to query GitHub for latest Limine release — falling back to system /usr/share/limine."
+fi
+export LIMINE_DIR
+
+# Validate whichever source we ended up with.
+for _f in "${LIMINE_DIR}/limine-bios-cd.bin" \
+          "${LIMINE_DIR}/limine-bios.sys" \
+          "${LIMINE_DIR}/BOOTX64.EFI"; do
     if [[ ! -f "${_f}" ]]; then
-        echo "ERROR: ${_f} not found. Install 'limine' on the build host." >&2
+        echo "ERROR: ${_f} not found. Install 'limine' on the build host or check network connectivity." >&2
         exit 1
     fi
 done
+
+# `limine bios-install` needs an executable. Use the upstream-provided one if
+# we've got it, otherwise fall back to whatever's on $PATH.
+if [[ -x "${LIMINE_DIR}/limine" ]]; then
+    LIMINE_BIN="${LIMINE_DIR}/limine"
+elif command -v limine &>/dev/null; then
+    LIMINE_BIN="$(command -v limine)"
+else
+    echo "ERROR: no usable 'limine' binary found." >&2
+    exit 1
+fi
+
+# Stage the upstream binaries into airootfs so the live ISO and the installed
+# system carry the same Limine version we just embedded into the ISO. The
+# airootfs overlay is applied after pacstrap, so these files win over the
+# pacman-installed [extra]/limine package.  Reverted on EXIT.
+LIMINE_AIROOT_BIN="${PROFILE_DIR}/airootfs/usr/bin/limine"
+LIMINE_AIROOT_SHARE="${PROFILE_DIR}/airootfs/usr/share/limine"
+LIMINE_STAGED_FILES=()
+if [[ -n "${LIMINE_VERSION}" ]]; then
+    info "Staging upstream Limine ${LIMINE_VERSION} into airootfs..."
+    mkdir -p "${LIMINE_AIROOT_SHARE}" "$(dirname "${LIMINE_AIROOT_BIN}")"
+
+    install -m 0755 "${LIMINE_DIR}/limine" "${LIMINE_AIROOT_BIN}"
+    LIMINE_STAGED_FILES+=("${LIMINE_AIROOT_BIN}")
+
+    for _share in "${LIMINE_DIR}"/limine-bios-cd.bin \
+                  "${LIMINE_DIR}"/limine-bios-pxe.bin \
+                  "${LIMINE_DIR}"/limine-bios.sys \
+                  "${LIMINE_DIR}"/BOOTX64.EFI \
+                  "${LIMINE_DIR}"/BOOTIA32.EFI \
+                  "${LIMINE_DIR}"/BOOTAA64.EFI; do
+        [[ -f "${_share}" ]] || continue
+        install -m 0644 "${_share}" "${LIMINE_AIROOT_SHARE}/$(basename "${_share}")"
+        LIMINE_STAGED_FILES+=("${LIMINE_AIROOT_SHARE}/$(basename "${_share}")")
+    done
+fi
+_cleanup_staged_limine() {
+    local _f
+    for _f in "${LIMINE_STAGED_FILES[@]}"; do
+        rm -f -- "${_f}"
+    done
+    # Remove dirs we created if empty (won't touch dirs with other content)
+    rmdir "${LIMINE_AIROOT_SHARE}"                          2>/dev/null || true
+    rmdir "${PROFILE_DIR}/airootfs/usr/share"               2>/dev/null || true
+    rmdir "$(dirname "${LIMINE_AIROOT_BIN}")"               2>/dev/null || true
+    rmdir "${PROFILE_DIR}/airootfs/usr"                     2>/dev/null || true
+    rm -rf -- "${LIMINE_STAGE}"
+}
+trap '_cleanup_staged_limine; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
 
 # ── Work directory ─────────────────────────────────────────────────────────
 if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
@@ -861,7 +960,6 @@ mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 
 # ── Patch mkarchiso with Limine bootmode functions ─────────────────────────
 PATCHED_MKARCHISO="$(mktemp /tmp/mkarchiso-limine-XXXXXX)"
-trap 'rm -f -- "${PATCHED_MKARCHISO}"' EXIT
 chmod +x -- "${PATCHED_MKARCHISO}"
 
 {
@@ -895,7 +993,7 @@ echo ">>> ISO created: ${ISO_PATH}"
 
 # ── Embed Limine BIOS bootstrap for USB hybrid boot ───────────────────────
 echo ">>> Embedding Limine BIOS bootstrap (limine bios-install)..."
-limine bios-install "${ISO_PATH}"
+"${LIMINE_BIN}" bios-install "${ISO_PATH}"
 
 echo ""
 echo "Build complete."
