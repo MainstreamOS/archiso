@@ -181,6 +181,9 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/MainstreamOS/dots-hyprland.git}"
+DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
+
 # #############################################################################
 #
 #   PHASE 1: PACKAGE BUILD  (only when --refresh / --clean / --cleancal)
@@ -194,8 +197,6 @@ info "════════════════════════�
 
 # ── Package-build config ────────────────────────────────────────────────────
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
-DOTFILES_REPO="https://github.com/MainstreamOS/dots-hyprland.git"
-DOTFILES_BRANCH="mainstream"
 PKG_WORK_DIR="/tmp/iso-pkg-build"
 BUILD_USER="iso-builder"
 
@@ -710,7 +711,7 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
 
         if [[ -f "$EXECS_CONF" ]] && ! grep -q "dotfiles-first-login" "$EXECS_CONF"; then
             info "Adding dotfiles-first-login to skel execs.conf..."
-            echo "exec-once = /usr/local/bin/dotfiles-first-login" >> "$EXECS_CONF"
+            echo "exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login" >> "$EXECS_CONF"
         fi
 
         SCRIPTS_DIR="$SKEL_DIR/.config/hypr/scripts"
@@ -758,16 +759,12 @@ if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
     if uv venv "$VENV_SKEL_PATH" 2>&1 && \
        uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS" 2>&1 && \
        compgen -G "$VENV_SKEL_PATH/lib/python*/site-packages/materialyoucolor*" >/dev/null; then
-        # Patch shebangs from build path to SKEL_USER placeholder
+        # Patch venv paths from the build tree to the SKEL_USER placeholder.
+        # uv console scripts use a /bin/sh trampoline with the Python path on
+        # line 2, so patch the whole file rather than only the shebang.
         find "$VENV_SKEL_PATH/bin" -type f -exec \
-            sed -i "1s|^#!${VENV_SKEL_PATH}|#!/home/SKEL_USER/.local/state/quickshell/.venv|" {} + 2>/dev/null || true
-        # Patch VIRTUAL_ENV path in activate scripts (not just shebangs)
-        for _activate in "$VENV_SKEL_PATH/bin/activate" \
-                         "$VENV_SKEL_PATH/bin/activate.csh" \
-                         "$VENV_SKEL_PATH/bin/activate.fish"; do
-            [[ -f "$_activate" ]] && \
-                sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" "$_activate"
-        done
+            sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" {} + 2>/dev/null || true
+        find "$VENV_SKEL_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
         # Patch pyvenv.cfg if it references the build path
         [[ -f "$VENV_SKEL_PATH/pyvenv.cfg" ]] && \
             sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" "$VENV_SKEL_PATH/pyvenv.cfg"

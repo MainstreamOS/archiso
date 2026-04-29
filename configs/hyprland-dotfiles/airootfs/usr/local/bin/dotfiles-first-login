@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
 # dotfiles-first-login
-# Triggered as an XDG autostart entry on first graphical session.
+# Triggered by a Hyprland exec-once backed by a per-user systemd service.
 # Sets dark mode, builds the python venv (if missing), runs the full color
 # pipeline, and restarts Quickshell so the bar/clock pick up wallpaper colors.
-# Self-removes the autostart entry and dotfiles repo on success.
+# Self-removes first-login triggers and dotfiles repo on success.
 # =============================================================================
 MARKER="$HOME/.dotfiles-pending-user-setup"
 [[ -f "$MARKER" ]] || exit 0
-rm -f "$MARKER"
+
+# -----------------------------------------------------------------------------
+# FIX: Ensure ~/.local/bin is in PATH.
+# SDDM launches Hyprland without sourcing the user's shell config, so tools
+# installed to ~/.local/bin (uv, matugen, etc.) are invisible to this script
+# when it runs via XDG autostart or exec-once. Without this, `command -v uv`
+# silently fails, the venv is never built, and setup is stuck indefinitely
+# until the user runs the script manually from a terminal where PATH is full.
+# -----------------------------------------------------------------------------
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 DOTFILES_DIR="$HOME/dots-hyprland"
 [[ -d "$DOTFILES_DIR" ]] || DOTFILES_DIR="/opt/dots-hyprland"
@@ -17,16 +26,113 @@ VENV_PATH="$HOME/.local/state/quickshell/.venv"
 DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 AUTOSTART_FILE="$HOME/.config/autostart/dotfiles-first-login.desktop"
-LOG=/tmp/dotfiles-first-login.log
+SYSTEMD_SERVICE_FILE="$HOME/.config/systemd/user/dotfiles-first-login.service"
+HYPR_EXECS_FILE="$HOME/.config/hypr/custom/execs.conf"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-first-login.log"
+mkdir -p "$(dirname "$LOG")"
 
-{
+install_venv_requirements() {
+    local python_bin="$1"
+    local requirements="$2"
+    local relaxed_requirements
+
+    if uv pip install --python "$python_bin" -r "$requirements"; then
+        return 0
+    fi
+
+    echo "[first-login] pinned requirements failed; retrying without the cffi pin"
+    relaxed_requirements=$(mktemp)
+    grep -vE '^cffi==' "$requirements" > "$relaxed_requirements"
+
+    if uv pip install --python "$python_bin" -r "$relaxed_requirements"; then
+        rm -f "$relaxed_requirements"
+        return 0
+    fi
+
+    rm -f "$relaxed_requirements"
+    return 1
+}
+
+venv_has_materialyoucolor() {
+    local venv_path="$1"
+    compgen -G "$venv_path/lib/python*/site-packages/materialyoucolor*" >/dev/null
+}
+
+repair_venv_paths() {
+    local venv_path="$1"
+    [[ -d "$venv_path" ]] || return 0
+
+    # uv console scripts may put the venv Python path on line 2. Older
+    # pre-baked venvs also carried the absolute ISO build-tree path.
+    find "$venv_path/bin" -type f -exec \
+        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$venv_path|g" {} + 2>/dev/null || true
+    find "$venv_path/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
+    [[ -f "$venv_path/pyvenv.cfg" ]] && \
+        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$venv_path|g" "$venv_path/pyvenv.cfg" 2>/dev/null || true
+}
+
+generated_colors_ready() {
+    grep -Eq '^\$onBackground: #[[:xdigit:]]{6};$' \
+        "$HOME/.local/state/quickshell/user/generated/material_colors.scss" 2>/dev/null
+}
+
+restart_quickshell() {
+    local qs_bin
+    local launch_cmd
+
+    qs_bin="$(command -v qs || command -v quickshell || true)"
+    if [[ -z "$qs_bin" ]]; then
+        echo "[first-login] ERROR: cannot restart Quickshell; qs/quickshell not found"
+        return 1
+    fi
+
+    echo "[first-login] restarting Quickshell"
+    pkill -x qs 2>/dev/null || true
+    pkill -x quickshell 2>/dev/null || true
+
+    for _i in $(seq 1 30); do
+        pgrep -x qs >/dev/null 2>&1 || pgrep -x quickshell >/dev/null 2>&1 || break
+        sleep 0.2
+    done
+
+    # When run from dotfiles-first-login.service, children started directly
+    # here are killed as the oneshot service exits. Ask Hyprland to spawn the
+    # replacement so it survives outside this service cgroup.
+    launch_cmd="$qs_bin -c ii"
+    if command -v hyprctl &>/dev/null && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        if hyprctl dispatch exec "$launch_cmd" >/dev/null 2>&1; then
+            echo "[first-login] Quickshell restart requested through Hyprland"
+            return 0
+        fi
+        echo "[first-login] WARN: Hyprland exec dispatch failed; trying systemd-run"
+    fi
+
+    if command -v systemd-run &>/dev/null; then
+        if systemd-run --user --scope --quiet --collect "$qs_bin" -c ii >/dev/null 2>&1; then
+            echo "[first-login] Quickshell restart requested through systemd-run"
+            return 0
+        fi
+        echo "[first-login] WARN: systemd-run restart failed; falling back to direct launch"
+    fi
+
+    "$qs_bin" -c ii >/dev/null 2>&1 &
+    disown
+}
+
+run_first_login_setup() {
     echo "[first-login] start $(date -Is)"
+    echo "[first-login] PATH=$PATH"
 
     # Wait for compositor — autostart can fire before WAYLAND_DISPLAY is set.
-    for _i in $(seq 1 30); do
+    # Increased to 60 seconds to cover slower hardware and SDDM startup races.
+    for _i in $(seq 1 60); do
         [[ -n "$WAYLAND_DISPLAY" || -n "$DISPLAY" ]] && break
         sleep 1
     done
+
+    if [[ -z "$WAYLAND_DISPLAY" && -z "$DISPLAY" ]]; then
+        echo "[first-login] WARN: no compositor display after 60s; continuing anyway"
+    fi
 
     # PHASE 1 — fast path: dark mode + initial matugen colors
     if command -v gsettings &>/dev/null; then
@@ -37,12 +143,36 @@ LOG=/tmp/dotfiles-first-login.log
         gsettings set org.gnome.desktop.wm.preferences button-layout ":" 2>/dev/null || true
     fi
 
+    # FIX: Added --prefer less-saturation (pick least saturated candidate color
+    # non-interactively — no terminal needed) and --type scheme-neutral.
+    # Without --prefer, matugen detects multiple source colors in the wallpaper
+    # and halts waiting for user input via an interactive TUI, which never
+    # arrives in an autostart context. Valid values are: darkness, lightness,
+    # saturation, less-saturation, value, closest-to-fallback.
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
-        matugen image "$DEFAULT_WALL" --mode dark || true
+        matugen image "$DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral || true
     fi
 
     hyprctl reload 2>/dev/null || true
+
+    # FIX: Create a stub for plasma-apply-colorscheme if it doesn't exist.
+    # kde-material-you-colors calls this KDE Plasma binary unconditionally; on
+    # a pure Hyprland system it's absent (exit 127), causing kde-material-you-
+    # colors to crash mid-run. The stub lets it exit cleanly — the color scheme
+    # files it writes to ~/.local/share/color-schemes/ are still generated and
+    # used by switchwall for GTK/Qt theming regardless.
+    if ! command -v plasma-apply-colorscheme &>/dev/null; then
+        STUB_DIR="$HOME/.local/bin"
+        mkdir -p "$STUB_DIR"
+        cat > "$STUB_DIR/plasma-apply-colorscheme" << 'STUB_EOF'
+#!/usr/bin/env bash
+# stub — plasma-apply-colorscheme not available on this Hyprland system
+exit 0
+STUB_EOF
+        chmod +x "$STUB_DIR/plasma-apply-colorscheme"
+        echo "[first-login] created plasma-apply-colorscheme stub at $STUB_DIR"
+    fi
 
     # PHASE 2 — venv build + full color pipeline
     if systemctl --user list-unit-files ydotool.service &>/dev/null 2>&1; then
@@ -52,20 +182,46 @@ LOG=/tmp/dotfiles-first-login.log
     REQUIREMENTS="$DOTFILES_DIR/sdata/uv/requirements.txt"
     [[ -f "$REQUIREMENTS" ]] || REQUIREMENTS="$HOME/.local/share/quickshell/sdata/uv/requirements.txt"
 
-    # Rebuild venv if it is empty (no site-packages content).
+    repair_venv_paths "$VENV_PATH"
+
+    # Rebuild venv if it is missing or incomplete.
     NEED_VENV=0
     if [[ ! -f "$VENV_PATH/bin/python" ]]; then
         NEED_VENV=1
-    elif ! ls "$VENV_PATH"/lib/python*/site-packages/materialyoucolor* &>/dev/null; then
+    elif ! venv_has_materialyoucolor "$VENV_PATH"; then
         NEED_VENV=1
     fi
 
-    if (( NEED_VENV )) && command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
-        echo "[first-login] (re)building venv at $VENV_PATH"
-        rm -rf "$VENV_PATH"
-        mkdir -p "$(dirname "$VENV_PATH")"
-        uv venv "$VENV_PATH"
-        uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+    if (( NEED_VENV )); then
+        # Diagnose exactly why we cannot build before attempting, so the log
+        # is useful if startup fails again instead of silently doing nothing.
+        if ! command -v uv &>/dev/null; then
+            echo "[first-login] ERROR: uv not found in PATH — cannot build venv"
+            echo "[first-login]   PATH was: $PATH"
+            echo "[first-login]   Check that uv is installed (pacman -Q uv or ~/.local/bin/uv)"
+        elif [[ ! -x /usr/bin/python ]]; then
+            echo "[first-login] ERROR: /usr/bin/python not executable — cannot build venv"
+        elif [[ ! -f "$REQUIREMENTS" ]]; then
+            echo "[first-login] ERROR: requirements.txt not found at $REQUIREMENTS"
+        else
+            echo "[first-login] (re)building venv at $VENV_PATH"
+            rm -rf "$VENV_PATH"
+            mkdir -p "$(dirname "$VENV_PATH")"
+            if uv venv --python /usr/bin/python "$VENV_PATH" && \
+               install_venv_requirements "$VENV_PATH/bin/python" "$REQUIREMENTS" && \
+               venv_has_materialyoucolor "$VENV_PATH"; then
+                repair_venv_paths "$VENV_PATH"
+                echo "[first-login] venv ready"
+            else
+                echo "[first-login] venv build failed; keeping first-login retry state"
+                rm -rf "$VENV_PATH"
+            fi
+        fi
+    fi
+
+    VENV_READY=0
+    if [[ -f "$VENV_PATH/bin/python" ]] && venv_has_materialyoucolor "$VENV_PATH"; then
+        VENV_READY=1
     fi
 
     FISH_ENV_DIR="$HOME/.config/fish/conf.d"
@@ -75,27 +231,52 @@ LOG=/tmp/dotfiles-first-login.log
     grep -q "ILLOGICAL_IMPULSE_VIRTUAL_ENV" "$HOME/.bashrc" 2>/dev/null || \
         echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" >> "$HOME/.bashrc"
 
-    if [[ -f "$VENV_PATH/bin/python" ]] && [[ -f "$SWITCHWALL" ]]; then
+    COLORS_READY=0
+    if (( VENV_READY )) && [[ -f "$SWITCHWALL" ]]; then
         echo "[first-login] running switchwall full pipeline"
         export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
-        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark || true
+        # FIX: Redirect stdin from /dev/null so switchwall's stty probe doesn't
+        # error with "Inappropriate ioctl for device" when running without a TTY.
+        if bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark </dev/null && generated_colors_ready; then
+            COLORS_READY=1
+        else
+            echo "[first-login] switchwall failed; keeping first-login retry state"
+        fi
 
-        pkill qs 2>/dev/null || true
-        sleep 2
-        qs -c ii &
-        disown
+        if (( COLORS_READY )); then
+            restart_quickshell || true
+        fi
     fi
 
-    if command -v notify-send &>/dev/null; then
+    if (( COLORS_READY )) && command -v notify-send &>/dev/null; then
         notify-send "Setup Complete" \
             "Your Hyprland desktop is fully configured!" \
             --icon=system-software-install 2>/dev/null || true
     fi
 
-    # Cleanup — autostart entry only fires once now, dotfiles repo no longer needed.
-    rm -f "$AUTOSTART_FILE"
-    rm -rf "$DOTFILES_DIR"
+    if (( VENV_READY && COLORS_READY )); then
+        rm -f "$MARKER"
+        rm -f "$AUTOSTART_FILE"
+        rm -f "$SYSTEMD_SERVICE_FILE"
+        if [[ -f "$HYPR_EXECS_FILE" ]]; then
+            sed -i \
+                -e '\|dotfiles-first-login.service|d' \
+                -e '\|/usr/local/bin/dotfiles-first-login|d' \
+                "$HYPR_EXECS_FILE" 2>/dev/null || true
+        fi
+        if [[ "$DOTFILES_DIR" == "$HOME/dots-hyprland" ]]; then
+            rm -rf "$DOTFILES_DIR"
+        fi
+    else
+        echo "[first-login] setup is still incomplete; keeping retry marker and autostart entry"
+    fi
 
     echo "[first-login] done $(date -Is)"
-} &> "$LOG" &
-disown
+}
+
+if [[ "${DOTFILES_FIRST_LOGIN_FOREGROUND:-0}" == "1" ]]; then
+    run_first_login_setup &> "$LOG"
+else
+    run_first_login_setup &> "$LOG" &
+    disown
+fi

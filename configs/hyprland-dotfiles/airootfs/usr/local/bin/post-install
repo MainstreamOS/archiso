@@ -930,27 +930,58 @@ if [[ -n "$MAIN_USER" ]]; then
     fi
 
     # ---------------------------------------------------------------------------
-    # Deploy dotfiles-first-login as an XDG autostart entry.
-    # profile.d is unreliable here: SDDM execs Hyprland directly (no login shell),
-    # and terminals like kitty/foot don't start login shells either, so a
-    # profile.d hook never fires. XDG autostart fires once per graphical session
-    # and is honored by the dots-hyprland xdg-autostart wiring.
+    # Deploy dotfiles-first-login using Hyprland + user systemd.
+    # XDG autostart depends on a session helper being present and running; the
+    # one thing we know the installed desktop will parse is Hyprland's exec-once.
+    # Hyprland starts the user service so the setup has journal visibility, and
+    # falls back to the script directly if the user systemd manager is not ready.
     # ---------------------------------------------------------------------------
     if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
-        info "Deploying dotfiles-first-login as XDG autostart entry..."
+        info "Deploying dotfiles-first-login first-session triggers..."
+        SYSTEMD_USER_DIR="$MAIN_USER_HOME/.config/systemd/user"
+        mkdir -p "$SYSTEMD_USER_DIR"
+        cat > "$SYSTEMD_USER_DIR/dotfiles-first-login.service" << 'SERVICEEOF'
+[Unit]
+Description=Dotfiles first graphical login setup
+Documentation=man:systemd.service(5)
+ConditionPathExists=%h/.dotfiles-pending-user-setup
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+KillMode=process
+Environment=DOTFILES_FIRST_LOGIN_FOREGROUND=1
+ExecStart=/usr/local/bin/dotfiles-first-login
+SERVICEEOF
+        chown -R "$MAIN_USER:$MAIN_USER" "$SYSTEMD_USER_DIR"
+
+        EXECS_CONF="$MAIN_USER_HOME/.config/hypr/custom/execs.conf"
+        mkdir -p "$(dirname "$EXECS_CONF")"
+        touch "$EXECS_CONF"
+        sed -i \
+            -e '\|dotfiles-first-login.service|d' \
+            -e '\|/usr/local/bin/dotfiles-first-login|d' \
+            "$EXECS_CONF" 2>/dev/null || true
+        cat >> "$EXECS_CONF" << 'EXECSEOF'
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login
+EXECSEOF
+        chown "$MAIN_USER:$MAIN_USER" "$EXECS_CONF"
+
+        # Keep an XDG autostart entry as a harmless backup for sessions that do
+        # run an autostart helper.
         AUTOSTART_DIR="$MAIN_USER_HOME/.config/autostart"
         mkdir -p "$AUTOSTART_DIR"
         cat > "$AUTOSTART_DIR/dotfiles-first-login.desktop" << 'AUTOSTARTEOF'
 [Desktop Entry]
 Type=Application
 Name=Dotfiles First-Login Setup
-Exec=/usr/local/bin/dotfiles-first-login
+Exec=sh -c 'dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login'
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 AUTOSTARTEOF
         chown -R "$MAIN_USER:$MAIN_USER" "$AUTOSTART_DIR"
     else
-        warn "dotfiles-first-login not found in /usr/local/bin — skipping autostart deploy."
+        warn "dotfiles-first-login not found in /usr/local/bin — skipping first-session trigger deploy."
     fi
 
     # ---------------------------------------------------------------------------
@@ -1000,17 +1031,14 @@ AUTOSTARTEOF
     if [[ -f "$VENV_PATH/bin/python" ]]; then
         # Venv was pre-baked into skel by build.sh --refresh — just fix shebangs
         info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
+        # uv console scripts may contain the venv path on line 2, and older
+        # ISOs may have copied the absolute build-tree path into skel. Rewrite
+        # any baked quickshell venv path to the installed user's venv.
         find "$VENV_PATH/bin" -type f -exec \
-            sed -i "1s|#!/home/SKEL_USER/|#!$MAIN_USER_HOME/|" {} + 2>/dev/null || true
-        # Fix VIRTUAL_ENV path in activate scripts (not just shebangs)
-        for _activate in "$VENV_PATH/bin/activate" \
-                         "$VENV_PATH/bin/activate.csh" \
-                         "$VENV_PATH/bin/activate.fish"; do
-            [[ -f "$_activate" ]] && \
-                sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$_activate"
-        done
+            sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" {} + 2>/dev/null || true
+        find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
         # Fix pyvenv.cfg home path
-        sed -i "s|/home/SKEL_USER/|$MAIN_USER_HOME/|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
+        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
         chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
         info "Python venv ready (pre-baked)."
     else
@@ -1035,6 +1063,7 @@ VENVEOF
             chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
 
             if su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1; then
+                find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
                 chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
                 info "Python venv created successfully."
             else
