@@ -77,7 +77,7 @@ if [ "$IS_UEFI" = true ]; then
 
     PART_NUM=$(lsblk -no PARTN "$EFI_DEV")
     efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
-        --label "Arch Linux (Limine)" \
+        --label "Mainstream" \
         --loader "\\EFI\\limine\\BOOTX64.EFI" \
         --unicode 2>/dev/null || true
 else

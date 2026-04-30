@@ -14,12 +14,12 @@ Presentation {
     id: presentation
 
     // ── Mainstream OS brand tokens (see brand.html) ─────────────────────────
-    readonly property color colBg:           "#0B0D12"   // Abyss
+    readonly property color colBg:           "#191A1F"   // Night — installer base
     readonly property color colSurface:      "#191A1F"   // Night
     readonly property color colSurfaceHigh:  "#2A2B32"   // Slate
     readonly property color colOnSurface:    "#ECE9E3"   // Ink
     readonly property color colOnSurfaceVar: "#9397A0"   // Mist
-    readonly property color colPrimary:      "#1F87D8"   // Stream B
+    readonly property color colPrimary:      "#008DC3"   // Stream B — action/focus accent
     readonly property color colSecCont:      "#2A2B32"   // Slate
     readonly property color colOnSecCont:    "#C9CCD4"   // Bone
     readonly property color colOutlineVar:   "#40434A"   // Graphite
@@ -27,7 +27,7 @@ Presentation {
     // ── Background fill ───────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
-        color:        "#0B0D12"
+        color:        presentation.colBg
         z:            -100
     }
 
@@ -67,7 +67,7 @@ Presentation {
                 height: parent.height * 0.35
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 1.0; color: "#cc0B0D12"   }
+                    GradientStop { position: 1.0; color: "#cc191A1F"   }
                 }
             }
 

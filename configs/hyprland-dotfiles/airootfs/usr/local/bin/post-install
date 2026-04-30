@@ -582,6 +582,14 @@ if command -v yay &>/dev/null; then
         pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
 fi
 
+# Configure Limine's entry generator before mkinitcpio/limine-mkinitcpio runs.
+# The trailing slash keeps kernel sub-entries nested under "Mainstream OS".
+mkdir -p /etc/default
+cat > /etc/default/limine << 'LIMINEDEF'
+TARGET_OS_NAME="Mainstream OS\\"
+FIND_BOOTLOADERS=no
+SNAPPER_CONFIG_NAME=root
+LIMINEDEF
 # ---------------------------------------------------------------------------
 # MKINITCPIO — immediate or deferred depending on GPU driver type
 # ---------------------------------------------------------------------------
@@ -1207,9 +1215,10 @@ LSSCONF
         # existing configs as a side effect).
         mkdir -p /etc/default
         cat > /etc/default/limine << 'LIMINEDEF'
+TARGET_OS_NAME="Mainstream OS\\"
+FIND_BOOTLOADERS=no
 SNAPPER_CONFIG_NAME=root
 LIMINEDEF
-
         info "limine-snapper-sync config deployed."
     else
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."

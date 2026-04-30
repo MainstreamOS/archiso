@@ -27,7 +27,7 @@ Rectangle {
     readonly property color colOnSecCont:    "#ECE9E3"   // Ink — active pill text
     readonly property color colOutlineVar:   "#2A2B32"   // outline-variant / divider
     readonly property color colOutline:      "#40434A"   // Graphite — completed connector
-    readonly property color colPrimary:      "#1F87D8"   // Stream B — accent
+    readonly property color colPrimary:      "#008DC3"   // Stream B — action/focus accent
 
     // ── Icon mapping by step index — names come dynamically from ViewManager ─
     // Icons correspond to the `show` sequence in settings.conf:
@@ -68,16 +68,16 @@ Rectangle {
             spacing: 10
 
             Image {
-                Layout.preferredWidth:  26
+                Layout.preferredWidth:  52
                 Layout.preferredHeight: 26
                 fillMode:  Image.PreserveAspectFit
-                source:    Qt.resolvedUrl("logo.png")
+                source:    Qt.resolvedUrl("mark-primary.svg")
                 smooth:    true
                 mipmap:    true
             }
 
             Text {
-                text:            "Mainstream"
+                text:            ""
                 font.pixelSize:  14
                 font.weight:     Font.Medium
                 color:           root.colOnSurface

@@ -1,19 +1,21 @@
 /*
  * stylesheet.qss — Mainstream OS Calamares Theme
  *
- * Mainstream OS brand palette (graphite + warm-cool dark, Stream B accent).
+ * Mainstream OS brand palette (Night base + quiet graphite surfaces).
  *
  * Token reference (see brand.html in MainstreamOS.github.io):
- *   #0B0D12  Abyss        — primary surface
- *   #191A1F  Night        — panels & cards
+ *   #0B0D12  Abyss        — available brand surface, not the installer base
+ *   #191A1F  Night        — installer base / background
  *   #2A2B32  Slate        — elevated / hover / selection container
  *   #40434A  Graphite     — chrome / lines / outlines
  *   #5B5E66  Graphite-soft
  *   #9397A0  Mist         — secondary text
  *   #C9CCD4  Bone         — primary text
  *   #ECE9E3  Ink          — emphasis text on dark
- *   #1F87D8  Stream B     — ocean-blue accent (primary)
- *   #00B0CC  Stream A     — cyan-teal accent (gradient pair)
+ *   #008DC3  Stream B     — ocean-blue action/focus accent
+ *   #009CA5  Stream A     — cyan-teal hover/gradient pair
+ *   #9397A0  Mist         — progress track
+ *   #C9CCD4  Bone         — progress fill
  */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -25,7 +27,7 @@
 }
 
 QWidget {
-    background-color: #0B0D12;
+    background-color: #191A1F;
     color:            #C9CCD4;
     font-family:      "DM Sans", "Google Sans Flex", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size:        14px;
@@ -42,7 +44,7 @@ QWidget:disabled {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 #mainApp {
-    background-color: #0B0D12;
+    background-color: #191A1F;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -62,8 +64,9 @@ QWidget:disabled {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QPushButton {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #C9CCD4;
+    border:           1px solid #40434A;
     border-radius:    25px;
     padding:          8px 24px;
     font-size:        14px;
@@ -75,7 +78,7 @@ QPushButton {
 QPushButton:hover {
     background-color: #2A2B32;
     color:            #ECE9E3;
-    border-color:     #40434A;
+    border-color:     #5B5E66;
 }
 
 QPushButton:pressed {
@@ -84,7 +87,7 @@ QPushButton:pressed {
 }
 
 QPushButton:disabled {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #5B5E66;
     border-color:     #40434A;
 }
@@ -92,19 +95,19 @@ QPushButton:disabled {
 /* Primary / default button (Next, Install Now) — Stream B filled */
 QPushButton:default,
 QPushButton[type="primary"] {
-    background-color: #1F87D8;
+    background-color: #008DC3;
     color:            #ffffff;
     border:           none;
     font-weight:      500;
 }
 
 QPushButton:default:hover {
-    background-color: #2A95E2;
+    background-color: #009CA5;
     color:            #ffffff;
 }
 
 QPushButton:default:pressed {
-    background-color: #1875BD;
+    background-color: #007AA8;
 }
 
 QPushButton:default:disabled {
@@ -172,22 +175,29 @@ QLabel {
 QLineEdit,
 QTextEdit,
 QPlainTextEdit {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #ECE9E3;
+    border:           1px solid #40434A;
     border-radius:    12px;
     padding:          10px 16px;
+}
+
+QLineEdit:hover,
+QTextEdit:hover,
+QPlainTextEdit:hover {
+    border-color: #5B5E66;
 }
 
 QLineEdit:focus,
 QTextEdit:focus,
 QPlainTextEdit:focus {
-    border-color: #1F87D8;
+    border-color: #008DC3;
 }
 
 QLineEdit:disabled,
 QTextEdit:disabled,
 QPlainTextEdit:disabled {
-    background-color: transparent;
+    background-color: #191A1F;
     color:            #5B5E66;
     border-color:     #40434A;
 }
@@ -197,15 +207,16 @@ QPlainTextEdit:disabled {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QComboBox {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #ECE9E3;
+    border:           1px solid #40434A;
     border-radius:    12px;
     padding:          7px 14px;
     min-width:        120px;
 }
 
-QComboBox:hover  { border-color: #40434A; }
-QComboBox:focus  { border-color: #1F87D8; }
+QComboBox:hover  { border-color: #5B5E66; }
+QComboBox:focus  { border-color: #008DC3; }
 
 QComboBox::drop-down {
     border:       none;
@@ -220,8 +231,9 @@ QComboBox::down-arrow {
 }
 
 QComboBox QAbstractItemView {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #ECE9E3;
+    border:           1px solid #40434A;
     border-radius:    16px;
     selection-background-color: #2A2B32;
     selection-color:            #ECE9E3;
@@ -252,8 +264,9 @@ QComboBox QAbstractItemView::item:selected {
 QListView,
 QTreeView,
 QTableView {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #C9CCD4;
+    border:           1px solid #40434A;
     border-radius:    12px;
     outline:          none;
     gridline-color:   #40434A;
@@ -371,7 +384,7 @@ QGroupBox::title {
     subcontrol-origin:   margin;
     subcontrol-position: top left;
     padding:             2px 10px;
-    color:               #1F87D8;
+    color:               #008DC3;
     background-color:    #191A1F;
     border-radius:       6px;
 }
@@ -395,20 +408,20 @@ QListView::indicator:unchecked {
 
 QTreeView::indicator:unchecked:hover,
 QListView::indicator:unchecked:hover {
-    border-color: #1F87D8;
+    border-color: #008DC3;
 }
 
 QTreeView::indicator:checked,
 QListView::indicator:checked {
-    border:           2px solid #1F87D8;
+    border:           2px solid #008DC3;
     border-radius:    4px;
-    background-color: #1F87D8;
+    background-color: #008DC3;
     image: url(/etc/calamares/branding/hyprland/icons/check.svg);
 }
 
 QTreeView::indicator:indeterminate,
 QListView::indicator:indeterminate {
-    border:           2px solid #1F87D8;
+    border:           2px solid #008DC3;
     border-radius:    4px;
     background-color: #2A2B32;
 }
@@ -449,12 +462,12 @@ QCheckBox::indicator {
 }
 
 QCheckBox::indicator:hover {
-    border-color: #1F87D8;
+    border-color: #008DC3;
 }
 
 QCheckBox::indicator:checked {
-    background-color: #1F87D8;
-    border-color:     #1F87D8;
+    background-color: #008DC3;
+    border-color:     #008DC3;
     image: url(/etc/calamares/branding/hyprland/icons/check.svg);
 }
 
@@ -472,12 +485,12 @@ QRadioButton::indicator {
 }
 
 QRadioButton::indicator:hover {
-    border-color: #1F87D8;
+    border-color: #008DC3;
 }
 
 QRadioButton::indicator:checked {
-    background-color: #1F87D8;
-    border-color:     #1F87D8;
+    background-color: #008DC3;
+    border-color:     #008DC3;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -485,18 +498,18 @@ QRadioButton::indicator:checked {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QProgressBar {
-    background-color: #191A1F;
+    background-color: #9397A0;
     border:           none;
     border-radius:    6px;
     text-align:       center;
-    color:            #0B0D12;
+    color:            #191A1F;
     font-size:        13px;
     font-weight:      700;
     min-height:       8px;
 }
 
 QProgressBar::chunk {
-    background-color: #1F87D8;
+    background-color: #C9CCD4;
     border-radius:    6px;
 }
 
@@ -536,7 +549,7 @@ QTabBar::tab:hover:!selected {
 
 QSpinBox,
 QDoubleSpinBox {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #ECE9E3;
     border:           1px solid #40434A;
     border-radius:    12px;
@@ -545,7 +558,7 @@ QDoubleSpinBox {
 
 QSpinBox:focus,
 QDoubleSpinBox:focus {
-    border-color: #1F87D8;
+    border-color: #008DC3;
 }
 
 QSpinBox::up-button,
@@ -584,8 +597,9 @@ QFrame[frameShape="5"] {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QMenu {
-    background-color: #191A1F;
+    background-color: #1F2026;
     color:            #ECE9E3;
+    border:           1px solid #40434A;
     border-radius:    12px;
     padding:          6px;
 }
@@ -630,6 +644,6 @@ PartitionLabelsView {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 QQuickWidget {
-    background-color: #0B0D12;
+    background-color: #191A1F;
     border:           none;
 }
