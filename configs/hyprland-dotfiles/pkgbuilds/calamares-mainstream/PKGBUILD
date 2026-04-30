@@ -15,10 +15,13 @@
 #     the hardcoded border pen on partition colour squares.
 #   - sed in prepare(): strips keyboard-shortcut & ampersands from every
 #     navigation button label (Back, Next, Cancel, Done, Install, Set Up).
+#   - sed in prepare(): fixes users-page validation icons by rendering
+#     state-ok/error/warning SVGs at the 24x24 icon-label size instead of the
+#     adjacent message-label size, avoiding smeared scaled-down pixmaps.
 
 pkgname=calamares-mainstream
 pkgver=3.3.14
-pkgrel=7
+pkgrel=8
 pkgdesc='Distribution-independent installer framework (Mainstream edition)'
 arch=('x86_64')
 url='https://calamares.io'
@@ -186,6 +189,15 @@ CALEOF
         -e 's/tr( "&Set Up Now", "@button" )/tr( "Set Up Now", "@button" )/g' \
         -e 's/tr( "Go &Back", "@button" )/tr( "Go Back", "@button" )/g' \
         src/libcalamaresui/ViewManager.cpp
+
+    # ── Users page validation icons: render at icon-label size ─────────────
+    # Upstream passes the text message QLabel size when rasterizing status
+    # SVGs, then scales the wide pixmap into a 24x24 QLabel. On Qt 6 this can
+    # blur the red X / green check into a colored smear.
+    sed -i \
+        -e 's/defaultPixmap( icon, Calamares::Original, label->size() )/defaultPixmap( icon, Calamares::Original, pix->size() )/' \
+        -e 's/defaultPixmap( Calamares::StatusOk, Calamares::Original, label->size() )/defaultPixmap( Calamares::StatusOk, Calamares::Original, pix->size() )/' \
+        src/modules/users/UsersPage.cpp
 }
 
 build() {
