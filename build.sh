@@ -833,7 +833,7 @@ info "  PHASE 2: Building ISO"
 info "═══════════════════════════════════════════════════════════════"
 
 # ── ISO build dependency check ─────────────────────────────────────────────
-for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar; do
+for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar make cc; do
     if ! command -v "${_bin}" &>/dev/null; then
         echo "ERROR: '${_bin}' not found. Install it on the build host." >&2
         exit 1
@@ -841,10 +841,10 @@ for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar; do
 done
 
 # ── Fetch latest upstream Limine ───────────────────────────────────────────
-# Arch's [extra] repo lags upstream Limine. We pull the latest binary release
+# Arch's [extra] repo can lag upstream Limine. Pull the latest binary release
 # from limine-bootloader/limine on GitHub so each ISO ships current bootloader
-# code (UEFI security fixes, new firmware compat, etc.).  Falls back to the
-# system-installed limine if the network fetch fails.
+# code (UEFI security fixes, new firmware compat, etc.). Refuse to build with a
+# stale system Limine unless ALLOW_SYSTEM_LIMINE_FALLBACK=1 is set explicitly.
 #
 # After this step:
 #   $LIMINE_DIR/{limine, limine-bios-cd.bin, limine-bios.sys, BOOTX64.EFI, ...}
@@ -853,6 +853,8 @@ done
 LIMINE_STAGE="$(mktemp -d /tmp/limine-upstream-XXXXXX)"
 LIMINE_DIR="/usr/share/limine"   # fallback default
 LIMINE_VERSION=""
+ALLOW_SYSTEM_LIMINE_FALLBACK="${ALLOW_SYSTEM_LIMINE_FALLBACK:-0}"
+_LIMINE_FETCH_OK=0
 
 info "Fetching latest Limine release from GitHub..."
 if _LATEST_TAG="$(curl -fsSL --retry 3 \
@@ -865,26 +867,46 @@ if _LATEST_TAG="$(curl -fsSL --retry 3 \
     if curl -fsSL --retry 3 -o "${LIMINE_STAGE}/limine.tar.xz" "${_ASSET_URL}"; then
         if tar -xf "${LIMINE_STAGE}/limine.tar.xz" -C "${LIMINE_STAGE}"; then
             # Tarball extracts to limine-binary/
-            _UPSTREAM_DIR="$(find "${LIMINE_STAGE}" -maxdepth 2 -type d -name 'limine-*' | head -1)"
+            _UPSTREAM_DIR="$(find "${LIMINE_STAGE}" -mindepth 1 -maxdepth 2 -type d \( -name 'limine-binary' -o -name 'limine-binary-*' \) | head -1)"
             if [[ -n "${_UPSTREAM_DIR}" \
                   && -f "${_UPSTREAM_DIR}/limine-bios-cd.bin" \
                   && -f "${_UPSTREAM_DIR}/limine-bios.sys" \
-                  && -f "${_UPSTREAM_DIR}/BOOTX64.EFI" \
-                  && -x "${_UPSTREAM_DIR}/limine" ]]; then
-                LIMINE_DIR="${_UPSTREAM_DIR}"
-                LIMINE_VERSION="${_LATEST_TAG}"
-                info "Using upstream Limine ${LIMINE_VERSION} from ${LIMINE_DIR}"
+                  && -f "${_UPSTREAM_DIR}/BOOTX64.EFI" ]]; then
+                if [[ ! -x "${_UPSTREAM_DIR}/limine" ]]; then
+                    info "Building upstream Limine installer tool..."
+                    make -C "${_UPSTREAM_DIR}" limine >/dev/null
+                fi
+                if [[ -x "${_UPSTREAM_DIR}/limine" ]]; then
+                    LIMINE_DIR="${_UPSTREAM_DIR}"
+                    LIMINE_VERSION="${_LATEST_TAG#v}"
+                    if grep -aom1 "Limine ${LIMINE_VERSION}" "${LIMINE_DIR}/BOOTX64.EFI" >/dev/null; then
+                        _LIMINE_FETCH_OK=1
+                        info "Using upstream Limine ${LIMINE_VERSION} from ${LIMINE_DIR}"
+                    else
+                        warn "Upstream BOOTX64.EFI does not report Limine ${LIMINE_VERSION} — refusing to use it."
+                    fi
+                else
+                    warn "Failed to build upstream Limine installer tool."
+                fi
             else
-                warn "Upstream Limine tarball missing expected files — falling back to system /usr/share/limine."
+                warn "Upstream Limine tarball missing expected files."
             fi
         else
-            warn "Failed to extract upstream Limine tarball — falling back to system /usr/share/limine."
+            warn "Failed to extract upstream Limine tarball."
         fi
     else
-        warn "Failed to download upstream Limine — falling back to system /usr/share/limine."
+        warn "Failed to download upstream Limine."
     fi
 else
-    warn "Failed to query GitHub for latest Limine release — falling back to system /usr/share/limine."
+    warn "Failed to query GitHub for latest Limine release."
+fi
+
+if (( _LIMINE_FETCH_OK == 0 )); then
+    if [[ "${ALLOW_SYSTEM_LIMINE_FALLBACK}" == "1" ]]; then
+        warn "Using system Limine from ${LIMINE_DIR}; this may not be the latest upstream release."
+    else
+        die "Could not fetch/build latest upstream Limine. Refusing to build an ISO with stale bootloader binaries. Set ALLOW_SYSTEM_LIMINE_FALLBACK=1 to override."
+    fi
 fi
 export LIMINE_DIR
 
@@ -909,44 +931,12 @@ else
     exit 1
 fi
 
-# Stage the upstream binaries into airootfs so the live ISO and the installed
-# system carry the same Limine version we just embedded into the ISO. The
-# airootfs overlay is applied after pacstrap, so these files win over the
-# pacman-installed [extra]/limine package.  Reverted on EXIT.
-LIMINE_AIROOT_BIN="${PROFILE_DIR}/airootfs/usr/bin/limine"
-LIMINE_AIROOT_SHARE="${PROFILE_DIR}/airootfs/usr/share/limine"
-LIMINE_STAGED_FILES=()
 if [[ -n "${LIMINE_VERSION}" ]]; then
-    info "Staging upstream Limine ${LIMINE_VERSION} into airootfs..."
-    mkdir -p "${LIMINE_AIROOT_SHARE}" "$(dirname "${LIMINE_AIROOT_BIN}")"
-
-    install -m 0755 "${LIMINE_DIR}/limine" "${LIMINE_AIROOT_BIN}"
-    LIMINE_STAGED_FILES+=("${LIMINE_AIROOT_BIN}")
-
-    for _share in "${LIMINE_DIR}"/limine-bios-cd.bin \
-                  "${LIMINE_DIR}"/limine-bios-pxe.bin \
-                  "${LIMINE_DIR}"/limine-bios.sys \
-                  "${LIMINE_DIR}"/BOOTX64.EFI \
-                  "${LIMINE_DIR}"/BOOTIA32.EFI \
-                  "${LIMINE_DIR}"/BOOTAA64.EFI; do
-        [[ -f "${_share}" ]] || continue
-        install -m 0644 "${_share}" "${LIMINE_AIROOT_SHARE}/$(basename "${_share}")"
-        LIMINE_STAGED_FILES+=("${LIMINE_AIROOT_SHARE}/$(basename "${_share}")")
-    done
+    "${LIMINE_BIN}" --version | head -1 | grep -F "Limine ${LIMINE_VERSION}" >/dev/null \
+        || die "Limine installer tool version does not match ${LIMINE_VERSION}."
 fi
-_cleanup_staged_limine() {
-    local _f
-    for _f in "${LIMINE_STAGED_FILES[@]}"; do
-        rm -f -- "${_f}"
-    done
-    # Remove dirs we created if empty (won't touch dirs with other content)
-    rmdir "${LIMINE_AIROOT_SHARE}"                          2>/dev/null || true
-    rmdir "${PROFILE_DIR}/airootfs/usr/share"               2>/dev/null || true
-    rmdir "$(dirname "${LIMINE_AIROOT_BIN}")"               2>/dev/null || true
-    rmdir "${PROFILE_DIR}/airootfs/usr"                     2>/dev/null || true
-    rm -rf -- "${LIMINE_STAGE}"
-}
-trap '_cleanup_staged_limine; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
+
+trap 'rm -rf -- "${LIMINE_STAGE}"; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
 
 # ── Work directory ─────────────────────────────────────────────────────────
 if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
@@ -955,6 +945,18 @@ if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
 fi
 
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
+
+# mkarchiso caches bootmode function execution with work/base._make_bootmode_*.
+# Always invalidate only the Limine boot artifacts so a reused work directory
+# cannot carry old BOOTX64.EFI/BIOS binaries into a new ISO.
+info "Invalidating cached Limine boot artifacts in work directory..."
+rm -f -- \
+    "${WORK_DIR}/base._make_bootmode_bios.limine" \
+    "${WORK_DIR}/base._make_bootmode_uefi.limine" \
+    "${WORK_DIR}/efiboot.img" \
+    "${WORK_DIR}/iso/limine-bios-cd.bin" \
+    "${WORK_DIR}/iso/limine-bios.sys" \
+    "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI"
 
 # ── Patch mkarchiso with Limine bootmode functions ─────────────────────────
 PATCHED_MKARCHISO="$(mktemp /tmp/mkarchiso-limine-XXXXXX)"
@@ -980,6 +982,14 @@ fi
     -w "${WORK_DIR}" \
     -o "${OUT_DIR}" \
     "${PROFILE_DIR}"
+
+if [[ -n "${LIMINE_VERSION}" ]]; then
+    grep -aom1 "Limine ${LIMINE_VERSION}" "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI" >/dev/null \
+        || die "Built ISO tree does not contain Limine ${LIMINE_VERSION} BOOTX64.EFI."
+    grep -aom1 "Limine ${LIMINE_VERSION}" "${WORK_DIR}/iso/limine-bios.sys" >/dev/null \
+        || die "Built ISO tree does not contain Limine ${LIMINE_VERSION} BIOS support binary."
+    success "Verified ISO Limine boot binaries are ${LIMINE_VERSION}."
+fi
 
 # ── Find the output ISO ───────────────────────────────────────────────────
 ISO_PATH="$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)"
