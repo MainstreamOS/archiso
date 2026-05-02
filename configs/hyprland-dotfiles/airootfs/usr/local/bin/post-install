@@ -9,6 +9,55 @@ log()  { echo "[post-install] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 
+write_limine_defaults() {
+    mkdir -p /etc/default
+    cat > /etc/default/limine << 'LIMINEDEF'
+TARGET_OS_NAME="Mainstream OS\\"
+FIND_BOOTLOADERS=no
+SNAPPER_CONFIG_NAME=root
+ENABLE_UKI=yes
+CUSTOM_UKI_NAME="mainstream"
+LIMINEDEF
+}
+
+refresh_limine_uki_entry() {
+    local esp_path=""
+    local limine_conf=""
+    local uki_path=""
+    local tmpfile
+
+    [[ -d /boot/efi ]] && esp_path="/boot/efi"
+    [[ -z "$esp_path" && -d /boot ]] && esp_path="/boot"
+    [[ -n "$esp_path" ]] || return 0
+
+    limine_conf="$esp_path/limine.conf"
+    uki_path="$esp_path/EFI/Linux/mainstream_linux.efi"
+    [[ -f "$uki_path" ]] || return 0
+    [[ -f "$limine_conf" ]] || return 0
+
+    tmpfile=$(mktemp)
+
+    # Strip ALL existing entry blocks (top-level /Entry lines and everything
+    # indented under them) then write the single correct UKI entry.
+    awk '
+        /^\/[^\/]/ { skip = 1; next }
+        /^[^[:space:]]/ { skip = 0 }
+        !skip { print }
+    ' "$limine_conf" > "$tmpfile"
+
+    # Single flat entry — no //sub-label needed for one kernel
+    cat >> "$tmpfile" << 'LIMINEUKI'
+
+/Mainstream OS\\
+    protocol: efi
+    path: boot():///EFI/Linux/mainstream_linux.efi
+LIMINEUKI
+
+    install -m 644 "$tmpfile" "$limine_conf"
+    rm -f "$tmpfile"
+    info "limine.conf updated: single 'Mainstream OS\\' UKI entry written."
+}
+
 parse_disk_part_from_source() {
     local source="$1"
 
@@ -33,12 +82,7 @@ cleanup_limine_boot_entries() {
     [[ -z "$esp_path" && -d /boot ]] && esp_path="/boot"
     [[ -n "$esp_path" ]] || { warn "No ESP mount found — skipping boot entry cleanup."; return 0; }
 
-    mkdir -p /etc/default
-    cat > /etc/default/limine << 'LIMINEDEF'
-TARGET_OS_NAME="Mainstream OS\\"
-FIND_BOOTLOADERS=no
-SNAPPER_CONFIG_NAME=root
-LIMINEDEF
+    write_limine_defaults
 
     if [[ -d "$esp_path/EFI" ]]; then
         info "Removing stale fallback and old bootloader files from $esp_path..."
@@ -50,6 +94,14 @@ LIMINEDEF
             "$esp_path/EFI/refind" \
             "$esp_path/loader" \
             "$esp_path/grub" \
+            2>/dev/null || true
+    fi
+
+    if [[ -f "$esp_path/EFI/Linux/mainstream_linux.efi" ]]; then
+        rm -f \
+            "$esp_path/vmlinuz-linux" \
+            "$esp_path/initramfs-linux.img" \
+            "$esp_path/initramfs-linux-fallback.img" \
             2>/dev/null || true
     fi
 
@@ -90,6 +142,12 @@ LIMINEDEF
                 efibootmgr -b "$bootnum" -B >/dev/null 2>&1 || true
                 ;;
         esac
+
+        # Also delete any entry labelled bare "Limine" (the default label that
+        # limine-install uses) regardless of path — these are stale live-ISO entries.
+        if grep -Eqi "^Boot${bootnum}\*?[[:space:]]+Limine[[:space:]]" <<< "$line"; then
+            efibootmgr -b "$bootnum" -B >/dev/null 2>&1 || true
+        fi
     done <<< "$efibootmgr_output"
 
     if ! $keep_existing; then
@@ -278,6 +336,24 @@ if [[ -n "$GPU_INFO" ]]; then
         else
             warn "limine.conf not found — could not add: $params"
         fi
+
+        mkdir -p /etc/kernel
+        if [[ ! -s /etc/kernel/cmdline && -n "$LIMINE_CONF" ]]; then
+            awk '/^[[:space:]]*cmdline:/ { sub(/^[[:space:]]*cmdline:[[:space:]]*/, ""); print; exit }' \
+                "$LIMINE_CONF" > /etc/kernel/cmdline
+        fi
+        touch /etc/kernel/cmdline
+
+        local existing token key
+        existing="$(tr '\n' ' ' < /etc/kernel/cmdline)"
+        for token in $params; do
+            key="${token%%=*}"
+            if grep -Eq "(^|[[:space:]])${key}(=|[[:space:]]|$)" <<< "$existing"; then
+                continue
+            fi
+            existing="${existing% } $token"
+        done
+        printf '%s\n' "${existing# }" > /etc/kernel/cmdline
     }
     gpu_append_env() { echo "$1" >> /etc/environment; info "Set environment: $1"; }
     # Write a single 'env = KEY,VALUE' line into the user's Hyprland custom env.conf
@@ -361,7 +437,8 @@ if [[ -n "$GPU_INFO" ]]; then
         local LIMINE_CONF=""
         [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
         [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
-        if [[ -n "$LIMINE_CONF" ]] && grep -q '\bresume=' "$LIMINE_CONF" 2>/dev/null; then
+        if { [[ -n "$LIMINE_CONF" ]] && grep -q '\bresume=' "$LIMINE_CONF" 2>/dev/null; } \
+            || grep -q '\bresume=' /etc/kernel/cmdline 2>/dev/null; then
             info "resume= already present in limine.conf — skipping."
             return
         fi
@@ -637,9 +714,20 @@ else
     warn "No GPU detected via lspci — skipping GPU configuration."
 fi
 
-# Restore a standard installed-system mkinitcpio preset so mkinitcpio -P
-# produces a normal default + fallback initramfs from /etc/mkinitcpio.conf.
-cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+# Restore a standard installed-system mkinitcpio preset. On UEFI installs,
+# also emit UKIs that Limine can chainload from the ESP.
+if [[ -d /boot/efi ]]; then
+    mkdir -p /boot/efi/EFI/Linux
+    # UEFI: build only the default UKI; no fallback entry means no fallback in menu
+    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+PRESETS=('default')
+ALL_kver='/boot/vmlinuz-linux'
+default_config='/etc/mkinitcpio.conf'
+default_image='/boot/initramfs-linux.img'
+default_uki='/boot/efi/EFI/Linux/mainstream_linux.efi'
+PRESET
+else
+    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
 PRESETS=('default' 'fallback')
 ALL_kver='/boot/vmlinuz-linux'
 default_config='/etc/mkinitcpio.conf'
@@ -648,6 +736,7 @@ fallback_config='/etc/mkinitcpio.conf'
 fallback_image='/boot/initramfs-linux-fallback.img'
 fallback_options='-S autodetect'
 PRESET
+fi
 
 # ---------------------------------------------------------------------------
 # ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
@@ -683,12 +772,7 @@ fi
 
 # Configure Limine's entry generator before mkinitcpio/limine-mkinitcpio runs.
 # The trailing slash keeps kernel sub-entries nested under "Mainstream OS".
-mkdir -p /etc/default
-cat > /etc/default/limine << 'LIMINEDEF'
-TARGET_OS_NAME="Mainstream OS\\"
-FIND_BOOTLOADERS=no
-SNAPPER_CONFIG_NAME=root
-LIMINEDEF
+write_limine_defaults
 # ---------------------------------------------------------------------------
 # MKINITCPIO — immediate or deferred depending on GPU driver type
 # ---------------------------------------------------------------------------
@@ -720,7 +804,7 @@ Type=oneshot
 RemainAfterExit=yes
 # Rebuild initramfs with all modules now present on disk
 ExecStart=/usr/bin/mkinitcpio -P
-# Sync kernel/initramfs to EFI partition
+# Refresh Limine UKIs and boot entries on the EFI partition
 ExecStartPost=/bin/bash -c '\
     if command -v limine-mkinitcpio &>/dev/null; then \
         limine-mkinitcpio 2>/dev/null || true; \
@@ -729,9 +813,12 @@ ExecStartPost=/bin/bash -c '\
     [ -d /boot/efi ] && efi_root="/boot/efi"; \
     [ -z "$efi_root" ] && [ -d /efi ] && efi_root="/efi"; \
     if [ -n "$efi_root" ]; then \
-        cp -f /boot/vmlinuz-linux "$efi_root/vmlinuz-linux" || true; \
-        cp -f /boot/initramfs-linux.img "$efi_root/initramfs-linux.img" || true; \
-        cp -f /boot/initramfs-linux-fallback.img "$efi_root/initramfs-linux-fallback.img" || true; \
+        mkdir -p "$efi_root/EFI/Linux"; \
+        if [ ! -f "$efi_root/EFI/Linux/mainstream_linux.efi" ]; then \
+            cp -f /boot/vmlinuz-linux "$efi_root/vmlinuz-linux" || true; \
+            cp -f /boot/initramfs-linux.img "$efi_root/initramfs-linux.img" || true; \
+        fi; \
+        /usr/local/bin/post-install --refresh-uki-only 2>/dev/null || true; \
     fi'
 # Disable ourselves — one-shot job done
 ExecStartPost=/usr/bin/systemctl disable mkinitcpio-firstboot.service
@@ -780,10 +867,14 @@ else
         info "Updating Limine boot entries via limine-mkinitcpio..."
         limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
     fi
+    refresh_limine_uki_entry
 
-    if [ -d "/boot/efi" ]; then
-        cp -f /boot/vmlinuz-linux       /boot/efi/ || true
-        cp -f /boot/initramfs-linux.img /boot/efi/ || true
+    # Clean up plain kernel/initramfs from ESP root now that UKI is in place.
+    # These were copied by install-limine as a bootstrap fallback; the UKI
+    # supersedes them and limine-mkinitcpio will only generate entries for
+    # files it finds, so removing them prevents the stale non-UKI menu entry.
+    if [ -d "/boot/efi" ] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+        rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
     fi
 fi
 
@@ -1312,12 +1403,7 @@ LSSCONF
         # Tell limine-snapper-sync which snapper config to use, so it never
         # tries to auto-create one via "snapper create-config" (which deletes
         # existing configs as a side effect).
-        mkdir -p /etc/default
-        cat > /etc/default/limine << 'LIMINEDEF'
-TARGET_OS_NAME="Mainstream OS\\"
-FIND_BOOTLOADERS=no
-SNAPPER_CONFIG_NAME=root
-LIMINEDEF
+        write_limine_defaults
         info "limine-snapper-sync config deployed."
     else
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."

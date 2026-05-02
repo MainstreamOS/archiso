@@ -23,9 +23,11 @@ term_palette:          191A1F;D98888;7FA88C;D9B373;008DC3;8A7FB2;009CA5;C9CCD4
 term_palette_bright:   40434A;EAA0A0;9EC9AA;EFCB94;00B3D4;A99DC9;00B3D4;ECE9E3
 backdrop:              191A1F
 
+# NOTE: This entry is a temporary fallback used only before the UKI is built
+# by mkinitcpio on first boot. post-install will replace it with the UKI entry
+# once mainstream_linux.efi exists on the ESP.
 /Mainstream OS\\
-    //linux
-        protocol: linux
-        kernel_path: boot():///vmlinuz-linux
-        cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=/@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0
-        module_path: boot():///initramfs-linux.img
+    protocol: linux
+    kernel_path: boot():///vmlinuz-linux
+    cmdline: root=PARTUUID=REPLACE_ME_UUID rootflags=subvol=/@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0
+    module_path: boot():///initramfs-linux.img
