@@ -19,7 +19,10 @@ import io.calamares.ui 1.0
 
 Rectangle {
     id: root
-    color: "transparent"            // m3background of the parent window shows through
+    // QQuickWidget clears to opaque white before QML paints, so a transparent
+    // root would leak that through. Paint m3background here to seamlessly
+    // continue the parent window's surface.
+    color: "#141313"                // m3background
 
     // ── M3 dark palette (from Appearance.qml live snapshot) ─────────────────
     readonly property color colOnSurface:    "#e6e1e1"   // m3onBackground
