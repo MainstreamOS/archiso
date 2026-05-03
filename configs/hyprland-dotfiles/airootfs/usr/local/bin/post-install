@@ -1341,15 +1341,16 @@ VENVEOF
             cat > "$SW_HELPER" << SWEOF
 #!/usr/bin/env bash
 export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
-bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark
+# Redirect stdin from /dev/null to avoid stty/ioctl errors
+bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark </dev/null
 SWEOF
             chmod 755 "$SW_HELPER"
             chown "$MAIN_USER:$MAIN_USER" "$SW_HELPER"
             su -s /bin/bash "$MAIN_USER" -c "bash $SW_HELPER" 2>&1 ||                 warn "switchwall failed — falling back to matugen only"
             rm -f "$SW_HELPER"
         else
-            # Fallback: just run matugen for the basic color templates
-            su -s /bin/bash "$MAIN_USER" -c "matugen image $DEFAULT_WALL" 2>/dev/null || true
+            # Fallback: just run matugen for the basic color templates (neutral)
+            su -s /bin/bash "$MAIN_USER" -c "matugen image $DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral 2>/dev/null || true
             warn "Venv not ready — terminal colors will be set on first login"
         fi
         info "Initial color scheme generated."

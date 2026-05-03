@@ -16,6 +16,14 @@ MARKER="$HOME/.live-setup-done"
 [[ -f "$MARKER" ]] && exit 0
 touch "$MARKER"
 
+# -----------------------------------------------------------------------------
+# FIX: Ensure ~/.local/bin is in PATH.
+# SDDM launches Hyprland without sourcing the user's shell config, so tools
+# installed to ~/.local/bin (uv, matugen, etc.) are invisible to this script
+# when it runs via XDG autostart or exec-once.
+# -----------------------------------------------------------------------------
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+
 DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 # init-qs.sh normally creates the venv, but on the live ISO uv is absent and
@@ -27,6 +35,19 @@ SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 # system packages because switchwall.sh has no set -e).
 VENV_PATH="$HOME/.local/state/quickshell/.venv"
 
+repair_venv_paths() {
+    local venv_path="$1"
+    [[ -d "$venv_path" ]] || return 0
+
+    # uv console scripts may put the venv Python path on line 2. Older
+    # pre-baked venvs also carried the absolute ISO build-tree path.
+    find "$venv_path/bin" -type f -exec \
+        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$venv_path|g" {} + 2>/dev/null || true
+    find "$venv_path/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
+    [[ -f "$venv_path/pyvenv.cfg" ]] && \
+        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$venv_path|g" "$venv_path/pyvenv.cfg" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # 1. Create a minimal illogical-impulse config so Quickshell knows which
 #    wallpaper to render and enables theming.  Without this file QS has no
@@ -36,7 +57,8 @@ CONFIG_DIR="$HOME/.config/illogical-impulse"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 if [[ ! -f "$CONFIG_FILE" ]]; then
     mkdir -p "$CONFIG_DIR"
-    jq -n --arg wall "$DEFAULT_WALL" '{
+    jq -n --arg wall "$DEFAULT_WALL" \
+          --arg type "scheme-neutral" '{
         "background": {
             "wallpaperPath": $wall,
             "thumbnailPath": ""
@@ -50,7 +72,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
                 }
             },
             "palette": {
-                "type": "auto",
+                "type": $type,
                 "accentColor": ""
             }
         }
@@ -84,21 +106,27 @@ fi
 
 # ---------------------------------------------------------------------------
 # 4. Generate Material You colors
-#    On the live ISO the venv is never created (uv is not installed and
-#    requirements.txt is absent from skel).  mainstream-python provides
-#    the needed packages system-wide, so we skip waiting for the venv and run
-#    switchwall.sh directly.  Its internal "source .../activate" will fail
-#    harmlessly; python3 then uses the system-wide packages.
+#    On the live ISO the venv is normally not created, but it may be pre-baked
+#    into skel by build.sh. We repair paths just in case, then run a fast-path
+#    matugen call to ensure the desktop is themed (neutral) before switchwall.
 # ---------------------------------------------------------------------------
+repair_venv_paths "$VENV_PATH"
+
 if command -v matugen &>/dev/null && [[ -f "$DEFAULT_WALL" ]]; then
     mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
 
+    # PHASE 1 — fast path: dark mode + initial matugen colors (neutral)
+    # Without --prefer, matugen detects multiple source colors in the wallpaper
+    # and halts waiting for user input via an interactive TUI.
+    matugen image "$DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral || true
+
     if [[ -f "$SWITCHWALL" ]]; then
         export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
-        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+        # Redirect stdin from /dev/null to avoid stty/ioctl errors
+        bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark </dev/null 2>/dev/null || true
     else
         # Fallback: basic Hyprland/SCSS colors only
-        matugen image "$DEFAULT_WALL" --mode dark 2>/dev/null || true
+        matugen image "$DEFAULT_WALL" --mode dark --prefer less-saturation 2>/dev/null || true
     fi
 fi
 
