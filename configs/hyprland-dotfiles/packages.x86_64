@@ -196,6 +196,8 @@ imagemagick
 expect
 jq
 python-evdev
+python-opencv
+python-numpy
 seatd
 rsync
 bc
