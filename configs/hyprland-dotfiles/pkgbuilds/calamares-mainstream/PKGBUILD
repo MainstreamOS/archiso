@@ -1,30 +1,29 @@
-# Maintainer: Mainstream <https://github.com/gregorytrentmartinjr/archiso>
-# Based on the AUR calamares package.
+# Maintainer: Mainstream <https://github.com/MainstreamOS>
 #
-# Differences from upstream:
-#   - pkgname is calamares-mainstream (provides/conflicts calamares)
-#   - awk/sed in prepare(): sets the application font to the dotfiles font
-#     stack (Google Sans Flex → Noto Sans → DejaVu Sans) early in main() so
-#     every widget inherits it.
-#   - Python in prepare(): makes the window frameless (Qt::FramelessWindowHint)
-#     so Hyprland draws its compositor-level rounding and shadows.  Adds
-#     mousePressEvent with startSystemMove() so the window can still be dragged
-#     by clicking the top navigation-bar strip.
-#   - sed in prepare(): fixes partition-label text colours (Qt::black/gray →
-#     palette Text/PlaceholderText), increases CORNER_RADIUS 2→6, removes
-#     the hardcoded border pen on partition colour squares.
-#   - sed in prepare(): strips keyboard-shortcut & ampersands from every
-#     navigation button label (Back, Next, Cancel, Done, Install, Set Up).
-#   - sed in prepare(): fixes users-page validation icons by rendering
-#     state-ok/error/warning SVGs at the 24x24 icon-label size instead of the
-#     adjacent message-label size, avoiding smeared scaled-down pixmaps.
+# Builds Calamares directly from the MainstreamOS fork's `mainstream`
+# branch (https://github.com/MainstreamOS/calamares). The fork carries
+# all Mainstream-specific source patches as proper commits, so this
+# PKGBUILD is now a thin wrapper: clone, cmake, install. No prepare()
+# step.
+#
+# Versioning:
+#   - pkgver tracks upstream Calamares CMakeLists.txt CALAMARES_VERSION.
+#   - pkgrel is bumped manually when only the Mainstream patches change
+#     and upstream is unchanged.
+#   - Run `sudo ./build.sh --cleancal` to force a rebuild from the tip
+#     of mainstream regardless of pkgver/pkgrel — the existing pkg cache
+#     is wiped first, so the next ISO build picks up the new clone.
+#
+# To pin to an older known-good commit during incidents, set
+# CALAMARES_REF in the build environment, e.g.:
+#   CALAMARES_REF=v3.4.3 sudo ./build.sh --cleancal
 
 pkgname=calamares-mainstream
-pkgver=3.3.14
-pkgrel=8
+pkgver=3.4.3
+pkgrel=1
 pkgdesc='Distribution-independent installer framework (Mainstream edition)'
 arch=('x86_64')
-url='https://calamares.io'
+url='https://github.com/MainstreamOS/calamares'
 license=('GPL-3.0-only' 'LGPL-2.1-or-later')
 
 depends=(
@@ -74,140 +73,22 @@ makedepends=(
 provides=('calamares')
 conflicts=('calamares')
 
-source=(
-    # Official upstream release tarball
-    "https://github.com/calamares/calamares/releases/download/v${pkgver}/calamares-${pkgver}.tar.gz"
-)
-
-# sha256sums[0] can be updated with: sha256sum calamares-${pkgver}.tar.gz
-sha256sums=(
-    'SKIP'
-)
-
-prepare() {
-    cd "calamares-${pkgver}"
-
-    # ── Application font — src/calamares/main.cpp ──────────────────────────
-    # Add #include <QFontDatabase> after #include <QDir>
-    sed -i 's|#include <QDir>|#include <QDir>\n#include <QFontDatabase>|' \
-        src/calamares/main.cpp
-    # Insert font-selection block immediately after CalamaresApplication construction.
-    # awk: on matching the construction line, emit it then emit the new block.
-    awk '/CalamaresApplication a\( argc, argv \);/ {
-        print
-        print ""
-        print "    // Mainstream: prefer the dotfiles font stack when available"
-        print "    {"
-        print "        const char* families[] = { \"Google Sans Flex\", \"Noto Sans\", \"DejaVu Sans\", nullptr };"
-        print "        for ( int i = 0; families[ i ]; ++i )"
-        print "        {"
-        print "            if ( QFontDatabase::hasFamily( QLatin1String( families[ i ] ) ) )"
-        print "            {"
-        print "                QFont f = a.font();"
-        print "                f.setFamily( QLatin1String( families[ i ] ) );"
-        print "                a.setFont( f );"
-        print "                break;"
-        print "            }"
-        print "        }"
-        print "    }"
-        next
-    }
-    { print }' src/calamares/main.cpp > /tmp/_ms_main.cpp \
-        && mv /tmp/_ms_main.cpp src/calamares/main.cpp
-
-    # ── Frameless window + drag — CalamaresWindow.h + .cpp ────────────────
-    # .h: add QMouseEvent include
-    sed -i 's|#include <QWidget>|#include <QMouseEvent>\n#include <QWidget>|' \
-        src/calamares/CalamaresWindow.h
-    # .h: add mousePressEvent declaration after closeEvent
-    sed -i 's|virtual void closeEvent( QCloseEvent\* e ) override;|virtual void closeEvent( QCloseEvent* e ) override;\n    void mousePressEvent( QMouseEvent* event ) override;|' \
-        src/calamares/CalamaresWindow.h
-
-    # .cpp: add QMouseEvent include
-    sed -i 's|#include <QLabel>|#include <QLabel>\n#include <QMouseEvent>|' \
-        src/calamares/CalamaresWindow.cpp
-    # .cpp: insert FramelessWindowHint after the closing } of the disableCancel block.
-    # awk: set a flag when we see the WindowCloseButtonHint line, then on the
-    # next line that is exactly "    }" emit it plus the new flag call.
-    awk '
-    /setWindowFlag\( Qt::WindowCloseButtonHint, false \);/ { found=1 }
-    found && /^    \}/ {
-        print
-        print ""
-        print "    // Mainstream: frameless -- Hyprland applies rounding and shadows"
-        print "    setWindowFlag( Qt::FramelessWindowHint );"
-        found=0
-        next
-    }
-    { print }' src/calamares/CalamaresWindow.cpp > /tmp/_ms_calwin.cpp \
-        && mv /tmp/_ms_calwin.cpp src/calamares/CalamaresWindow.cpp
-    # .cpp: append mousePressEvent implementation
-    cat >> src/calamares/CalamaresWindow.cpp << 'CALEOF'
-
-void
-CalamaresWindow::mousePressEvent( QMouseEvent* event )
-{
-    // Drag the frameless window from the nav-bar strip (top 56 px)
-    if ( event->button() == Qt::LeftButton && event->position().y() <= 56 )
-    {
-        if ( auto* h = windowHandle() )
-        {
-            h->startSystemMove();
-            event->accept();
-            return;
-        }
-    }
-    QWidget::mousePressEvent( event );
-}
-CALEOF
-
-    # ── Partition labels: dark-theme colours + M3 corner radius ───────────
-    sed -i \
-        -e 's/static const int CORNER_RADIUS = 2;/static const int CORNER_RADIUS = 6;/' \
-        -e 's/painter->setPen( QPalette().shadow().color() );/painter->setPen( Qt::NoPen );/' \
-        -e 's/painter->setPen( Qt::black );/painter->setPen( palette().color( QPalette::Text ) );/g' \
-        -e 's/painter->setPen( Qt::gray );/painter->setPen( palette().color( QPalette::PlaceholderText ) );/g' \
-        src/modules/partition/gui/PartitionLabelsView.cpp
-
-    # ── Navigation button labels: strip keyboard-shortcut ampersands ───────
-    # CalamaresWindow.cpp — initial button text at widget creation
-    sed -i \
-        -e 's/"&Back"/"Back"/g' \
-        -e 's/"&Next"/"Next"/g' \
-        -e 's/"&Cancel"/"Cancel"/g' \
-        src/calamares/CalamaresWindow.cpp
-
-    # ViewManager.cpp — dynamic labels set/updated at runtime
-    sed -i \
-        -e 's/tr( "&Next", "@button" )/tr( "Next", "@button" )/g' \
-        -e 's/tr( "&Back", "@button" )/tr( "Back", "@button" )/g' \
-        -e 's/tr( "&Cancel", "@button" )/tr( "Cancel", "@button" )/g' \
-        -e 's/tr( "&Done", "@button" )/tr( "Done", "@button" )/g' \
-        -e 's/tr( "&Install", "@button" )/tr( "Install", "@button" )/g' \
-        -e 's/tr( "&Set Up", "@button" )/tr( "Set Up", "@button" )/g' \
-        -e 's/tr( "&Install Now", "@button" )/tr( "Install Now", "@button" )/g' \
-        -e 's/tr( "&Set Up Now", "@button" )/tr( "Set Up Now", "@button" )/g' \
-        -e 's/tr( "Go &Back", "@button" )/tr( "Go Back", "@button" )/g' \
-        src/libcalamaresui/ViewManager.cpp
-
-    # ── Users page validation icons: render at icon-label size ─────────────
-    # Upstream passes the text message QLabel size when rasterizing status
-    # SVGs, then scales the wide pixmap into a 24x24 QLabel. On Qt 6 this can
-    # blur the red X / green check into a colored smear.
-    sed -i \
-        -e 's/defaultPixmap( icon, Calamares::Original, label->size() )/defaultPixmap( icon, Calamares::Original, pix->size() )/' \
-        -e 's/defaultPixmap( Calamares::StatusOk, Calamares::Original, label->size() )/defaultPixmap( Calamares::StatusOk, Calamares::Original, pix->size() )/' \
-        src/modules/users/UsersPage.cpp
-}
+# Source the mainstream branch directly. The #branch= fragment makes
+# makepkg track the tip of that branch; pkgver() below derives a
+# repeatable version string from the working tree.
+_branch="${CALAMARES_REF:-mainstream}"
+source=("calamares::git+https://github.com/MainstreamOS/calamares.git#branch=${_branch}")
+sha256sums=('SKIP')
 
 build() {
-    cd "calamares-${pkgver}"
+    cd "${srcdir}/calamares"
 
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DWITH_QT6=ON \
+        -DWITH_PYBIND11=ON \
         -DWITH_PYTHONQT=OFF \
         -DBoost_NO_BOOST_CMAKE=ON \
         -DSKIP_MODULES="tracking webview interactiveterminal \
@@ -219,6 +100,6 @@ build() {
 }
 
 package() {
-    cd "calamares-${pkgver}"
+    cd "${srcdir}/calamares"
     DESTDIR="${pkgdir}" cmake --install build
 }
