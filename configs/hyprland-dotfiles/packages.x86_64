@@ -9,6 +9,12 @@ linux-firmware
 sudo
 git
 
+# Default user shell — users.conf sets shell to /usr/bin/zsh; without these
+# the new account is created pointing at a missing binary, so login auths
+# fine via PAM but the shell exec fails (looks identical to a wrong password).
+zsh
+zsh-completions
+
 # ==============================================================================
 # CPU microcode (both for hardware compatibility)
 # ==============================================================================
