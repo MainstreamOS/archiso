@@ -43,9 +43,13 @@
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * BASE
+ *
+ * Container QWidgets default to transparent so the rounded #contentFrame
+ * surface shows through. Top-level chrome (#mainApp, #titleBar) and named
+ * styled widgets explicitly set their own backgrounds below.
  * ──────────────────────────────────────────────────────────────────────────── */
 QWidget {
-    background-color: #141313;                     /* m3background */
+    background-color: transparent;
     color:            #e6e1e1;                     /* m3onBackground */
     font-family:      "Google Sans Flex", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size:        15px;                        /* Appearance.font.pixelSize.small */
@@ -58,16 +62,63 @@ QWidget:disabled {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * MAIN WINDOW + PAGE PADDING
+ * MAIN WINDOW + TITLE BAR + CONTENT FRAME
+ *
+ * Mirrors dots-hyprland Quickshell settings.qml:
+ *   #mainApp      = m3background canvas, 8px outer margin (set in C++)
+ *   #titleBar     = transparent strip, centered title + close button
+ *   #contentFrame = rounded m3surfaceContainerLow card holding the install
+ *                   step UI and the bottom Back/Next/Cancel row
  * ──────────────────────────────────────────────────────────────────────────── */
 #mainApp {
-    background-color: #141313;
+    background-color: #141313;                     /* m3background */
     border-radius:    18px;                        /* Appearance.rounding.windowRounding */
 }
 
+#titleBar {
+    background-color: transparent;
+}
+
+#titleLabel {
+    color:       #e6e1e1;
+    font-size:   18px;                             /* Appearance.font.pixelSize.title */
+    font-weight: 500;
+    background-color: transparent;
+}
+
+/* Frameless-window close button — round, transparent until hovered */
+QPushButton#titleCloseButton {
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/close.svg);
+    icon-size:      20px 20px;
+    background-color: transparent;
+    color:            #cbc5ca;
+    border:           1px solid transparent;       /* Qt6 needs an explicit border for radius */
+    border-radius:    17px;                        /* 35/2 = pill */
+    min-width:        35px;
+    min-height:       35px;
+    max-width:        35px;
+    max-height:       35px;
+    padding:          0;
+}
+
+QPushButton#titleCloseButton:hover {
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
+}
+
+QPushButton#titleCloseButton:pressed {
+    background-color: #363435;                     /* m3surfaceContainerHighest */
+}
+
+#contentFrame {
+    background-color: #1c1b1c;                     /* m3surfaceContainerLow */
+    border-radius:    14px;                        /* windowRounding (18) − contentPadding (8) ≈ 10–14 */
+}
+
+/* Central widget sits inside #contentFrame — let the frame's color show through. */
 #viewManager {
-    padding-left:  56px;
-    padding-right: 56px;
+    background-color: transparent;
+    padding-left:     32px;                        /* trimmed from 56: the frame already provides visual containment */
+    padding-right:    32px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -88,7 +139,7 @@ QPushButton {
     background-color: #4d4b4d;                     /* m3secondaryContainer */
     color:            #ece6e9;                     /* m3onSecondaryContainer */
     border:           1px solid transparent;
-    border-radius:    20px;                        /* min-height 40 / 2 = pill */
+    border-radius:    25px;                        /* min-height 50 / 2 = pill */
     padding:          9px 24px;
     font-size:        15px;
     font-weight:      500;
@@ -137,7 +188,7 @@ QPushButton#view-button-cancel {
     background-color: transparent;
     color:            #cbc4cb;                     /* m3primary */
     border:           1px solid transparent;
-    border-radius:    20px;
+    border-radius:    25px;
     padding:          9px 16px;
     min-width:        72px;
     min-height:       40px;

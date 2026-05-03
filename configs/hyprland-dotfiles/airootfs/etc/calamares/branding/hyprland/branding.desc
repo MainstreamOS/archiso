@@ -6,8 +6,10 @@ windowExpanding:    normal
 windowSize:         1100px,620px
 windowPlacement:    center
 
-### PANELS — custom QML nav rail at top, widget nav buttons at bottom
-sidebar:    qml,top
+### PANELS — vertical M3 nav rail on the left, widget Back/Next/Cancel
+### at the bottom of the rounded content frame. Side hints are advisory:
+### the Mainstream CalamaresWindow fork hardcodes the M3 settings layout.
+sidebar:    qml,left
 navigation: widget
 
 strings:
