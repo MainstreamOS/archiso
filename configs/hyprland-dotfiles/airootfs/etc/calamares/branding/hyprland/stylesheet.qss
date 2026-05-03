@@ -81,17 +81,19 @@ QWidget:disabled {
  *   support/issues/notes/donate → tonal
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/* Tonal (default) — secondaryContainer fill */
+/* Tonal (default) — secondaryContainer fill.
+ * Note: Qt6 QPushButton drops border-radius unless an explicit border is set
+ * (even transparent). Half-of-min-height gives a true pill with no clamping. */
 QPushButton {
     background-color: #4d4b4d;                     /* m3secondaryContainer */
     color:            #ece6e9;                     /* m3onSecondaryContainer */
-    border:           none;
-    border-radius:    9999px;                      /* M3 pill */
-    padding:          10px 24px;
+    border:           1px solid transparent;
+    border-radius:    20px;                        /* min-height 40 / 2 = pill */
+    padding:          9px 24px;
     font-size:        15px;
     font-weight:      500;
-    min-width:        80px;
-    min-height:       36px;
+    min-width:        88px;
+    min-height:       40px;
 }
 
 QPushButton:hover {
@@ -134,8 +136,11 @@ QPushButton#view-button-next:disabled {
 QPushButton#view-button-cancel {
     background-color: transparent;
     color:            #cbc4cb;                     /* m3primary */
-    padding:          10px 16px;
-    min-width:        64px;
+    border:           1px solid transparent;
+    border-radius:    20px;
+    padding:          9px 16px;
+    min-width:        72px;
+    min-height:       40px;
 }
 
 QPushButton#view-button-cancel:hover {
@@ -306,13 +311,14 @@ QComboBox QAbstractItemView {
     background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
     color:            #e6e1e1;
     border:           1px solid #49464a;           /* m3outlineVariant */
-    border-radius:    17px;                        /* Appearance.rounding.normal */
+    border-radius:    12px;                        /* Appearance.rounding.small — matches inset items cleanly */
     selection-background-color: transparent;       /* per-item :selected handles it */
-    padding:          6px;
+    padding:          4px;
     outline:          none;
 }
 
 QComboBox QAbstractItemView::item {
+    margin:        0px 4px;                        /* horizontal inset so :selected highlight stays inside the rounded popup */
     border-radius: 8px;
     padding:       8px 12px;
     min-height:    32px;
@@ -340,12 +346,14 @@ QTableView {
     outline:          none;
     gridline-color:   #49464a;
     alternate-background-color: #1c1b1c;
+    padding:          4px;                         /* breathing room so :selected highlight stays inside rounded view */
 }
 
 QListView::item,
 QTreeView::item,
 QTableView::item {
-    padding:       8px 10px;
+    margin:        1px 4px;                        /* horizontal inset for rounded selection */
+    padding:       8px 8px;
     border-radius: 8px;
 }
 
@@ -364,6 +372,19 @@ QTableView::item:selected {
 
 QTreeView::branch {
     background-color: transparent;
+}
+
+/* Custom chevrons replace the default Qt branch dotted-line indicator.
+ * The four selectors are required to cover the full Qt branch state matrix
+ * (siblings/no-siblings × open/closed). Ditto image-position drawing. */
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:has-children:has-siblings:closed {
+    image: url(/etc/calamares/branding/hyprland/icons/chevron_right.svg);
+}
+
+QTreeView::branch:open:has-children:!has-siblings,
+QTreeView::branch:open:has-children:has-siblings {
+    image: url(/etc/calamares/branding/hyprland/icons/expand_more.svg);
 }
 
 QHeaderView {
@@ -522,18 +543,17 @@ QGroupBox::title {
 QProgressBar {
     background-color: #49464a;                     /* m3outlineVariant — track */
     border:           none;
-    border-radius:    4px;
+    border-radius:    11px;
     text-align:       center;
-    color:            #322f34;
+    color:            #e6e1e1;                     /* readable on dark track + light chunk both */
     font-size:        13px;
     font-weight:      500;
-    min-height:       8px;
-    max-height:       8px;
+    min-height:       22px;
 }
 
 QProgressBar::chunk {
     background-color: #cbc4cb;                     /* m3primary — fill */
-    border-radius:    4px;
+    border-radius:    11px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
