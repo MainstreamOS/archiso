@@ -243,9 +243,10 @@ STUB_EOF
             echo "[first-login] switchwall failed; keeping first-login retry state"
         fi
 
-        if (( COLORS_READY )); then
-            restart_quickshell || true
-        fi
+        # Intentionally no Quickshell restart here: switchwall's fs-event
+        # already triggers a live reload of the bar/clock, and a pkill+respawn
+        # during first login produced a visible flicker / blank shell window
+        # while the venv pipeline was still settling.
     fi
 
     if (( COLORS_READY )) && command -v notify-send &>/dev/null; then
