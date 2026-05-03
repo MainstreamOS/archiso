@@ -5,9 +5,16 @@
 
 set -euo pipefail
 
+# Merge stderr into stdout so every message — including output from subprocesses
+# like uv, find, ls, and sed — appears in the Calamares log in order.
+# Calamares captures the shellprocess stdout; without this, stderr lines are
+# either interleaved unpredictably or dropped entirely depending on the version.
+exec 2>&1
+
 log()  { echo "[post-install] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
+
 
 write_limine_defaults() {
     mkdir -p /etc/default
@@ -1226,20 +1233,47 @@ AUTOSTARTEOF
     # ---------------------------------------------------------------------------
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
-    if [[ -f "$VENV_PATH/bin/python" ]]; then
-        # Venv was pre-baked into skel by build.sh --refresh — just fix shebangs
-        info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
-        # uv console scripts may contain the venv path on line 2, and older
-        # ISOs may have copied the absolute build-tree path into skel. Rewrite
-        # any baked quickshell venv path to the installed user's venv.
-        find "$VENV_PATH/bin" -type f -exec \
-            sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" {} + 2>/dev/null || true
-        find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
-        # Fix pyvenv.cfg home path
-        sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
-        chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
-        info "Python venv ready (pre-baked)."
-    else
+    if [[ -e "$VENV_PATH/bin/python" || -L "$VENV_PATH/bin/python" ]]; then
+        # Verify the baked Python version matches what's actually installed.
+        # build.sh writes .python-version = "MAJOR.MINOR" into the venv.
+        # If the stamp is absent (old ISO) we fall back to path-fix only.
+        # If the stamp is present but mismatched we discard the venv so the
+        # scratch-build path below runs on the correct installed interpreter.
+        _sys_python_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+        _baked_ver=$(cat "$VENV_PATH/.python-version" 2>/dev/null || true)
+
+        _abi_ok=false
+        if [[ -z "$_baked_ver" ]]; then
+            # No stamp → old ISO format; proceed with path-fix only (no regression).
+            _abi_ok=true
+        elif [[ "$_sys_python_ver" == "$_baked_ver" ]]; then
+            _abi_ok=true
+        else
+            warn "Venv ABI mismatch (baked=$_baked_ver, system=$_sys_python_ver) — discarding pre-baked venv."
+            rm -rf "$VENV_PATH"
+        fi
+
+        if [[ "$_abi_ok" == true ]]; then
+            # Venv was pre-baked into skel by build.sh --refresh — fix paths only
+            info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
+
+            # Rewrite all SKEL_USER placeholder paths (bin/ scripts + activate)
+            find "$VENV_PATH/bin" -type f -exec \
+                sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" {} + 2>/dev/null || true
+            find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
+
+            # Fix pyvenv.cfg — build.sh patches home/python/python_path lines to the
+            # SKEL_USER placeholder, so this single regex handles all of them.
+            sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" \
+                "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
+
+            chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
+            info "Python venv ready (pre-baked)."
+        fi
+        # If _abi_ok=false, VENV_PATH was rm -rf'd above; fall through to scratch build.
+    fi
+
+    if [[ ! -e "$VENV_PATH/bin/python" && ! -L "$VENV_PATH/bin/python" ]]; then
         # Fallback: create venv from scratch (slower, ~2-5 min)
         REQUIREMENTS="/tmp/dotfiles-setup/sdata/uv/requirements.txt"
         if [[ ! -f "$REQUIREMENTS" ]]; then
@@ -1251,10 +1285,13 @@ AUTOSTARTEOF
             mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
             chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
 
+            # No -p pin — use whatever python3 the installed system has.
+            # requirements.txt is compiled against the ISO's Python version
+            # so wheels are correct without needing to specify a version.
             VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
             cat > "$VENV_HELPER" << VENVEOF
 #!/usr/bin/env bash
-uv venv "$VENV_PATH"
+uv venv --prompt .venv "$VENV_PATH"
 uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
 VENVEOF
             chmod 755 "$VENV_HELPER"

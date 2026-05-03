@@ -194,6 +194,10 @@ if [[ "$REFRESH_PKGS" == true ]]; then
 info "═══════════════════════════════════════════════════════════════"
 info "  PHASE 1: Building packages"
 info "═══════════════════════════════════════════════════════════════"
+info "  [BUILD-DIAG] Build flags: REFRESH_PKGS=$REFRESH_PKGS  CLEAN_BUILD=$CLEAN_BUILD  CLEAN_CALAMARES=$CLEAN_CALAMARES"
+info "  [BUILD-DIAG] Script dir: $SCRIPT_DIR"
+info "  [BUILD-DIAG] Profile dir: $PROFILE_DIR"
+info "  [BUILD-DIAG] DOTFILES_REPO: $DOTFILES_REPO  branch: $DOTFILES_BRANCH"
 
 # ── Package-build config ────────────────────────────────────────────────────
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
@@ -687,9 +691,20 @@ info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz"
 
 # ── Deploy dotfiles to /etc/skel ───────────────────────────────────────────
 SKEL_DIR="$PROFILE_DIR/airootfs/etc/skel"
+DOTS_WORK="/tmp/iso-dots-deploy"
+
 info "Deploying dotfiles to $SKEL_DIR..."
 
-DOTS_WORK="/tmp/iso-dots-deploy"
+# Wipe any pre-existing skel venv when --clean or --refresh is active so that
+# uv venv cannot silently reuse a stale venv from a previous build run.
+# Without this, --refresh alone leaves the old venv in place and uv skips
+# recreating it, meaning the patched SKEL_USER paths from the last build are
+# baked in and the materialyoucolor check may pass against a stale install.
+_SKEL_VENV_PRE="$SKEL_DIR/.local/state/quickshell/.venv"
+if [[ "$REFRESH_PKGS" == true && -d "$_SKEL_VENV_PRE" ]]; then
+    rm -rf "$_SKEL_VENV_PRE"
+fi
+
 rm -rf "$DOTS_WORK"
 mkdir -p "$DOTS_WORK"
 chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
@@ -751,26 +766,187 @@ fi
 # ── Pre-bake Python venv into skel ─────────────────────────────────────────
 VENV_SKEL_PATH="$SKEL_DIR/.local/state/quickshell/.venv"
 REQUIREMENTS="$DOTS_WORK/sdata/uv/requirements.txt"
+PACKAGES_X86="$PROFILE_DIR/packages.x86_64"
 
-if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
-    info "Pre-building Python venv for skel..."
+
+
+# ── Step A: Determine what Python version the ISO will ship ─────────────────
+# Python is not listed directly in packages.x86_64 — it arrives as a dep of
+# a meta-package (e.g. mainstream-python).  Detection is two-stage:
+#   1. Find any package in packages.x86_64 whose deps include a bare "python"
+#      or "python3" — checked via `pacman -Si <pkg> | grep ^Depends`.
+#   2. Resolve that python package's version via pacman -Si python.
+ISO_PYTHON_PKG=""
+ISO_PYTHON_VER=""   # e.g. "3.13"
+
+_pacman_conf="$PROFILE_DIR/pacman.conf"
+[[ -f "$_pacman_conf" ]] || _pacman_conf="/etc/pacman.conf"
+
+if [[ -f "$PACKAGES_X86" ]]; then
+    # Stage 1a: direct match — bare "python" or "python3" in the package list
+    ISO_PYTHON_PKG=$(grep -E '^python3?$' "$PACKAGES_X86" | head -1 || true)
+
+    # Stage 1b: indirect match — scan deps of every listed package for "python"
+    if [[ -z "$ISO_PYTHON_PKG" ]]; then
+        while IFS= read -r _pkg; do
+            [[ -z "$_pkg" || "$_pkg" =~ ^# ]] && continue
+            _deps=$(pacman --config "$_pacman_conf" -Si "$_pkg" 2>/dev/null \
+                | awk '/^Depends/{found=1} found{print; if(/^[A-Z]/ && !/^Depends/){exit}}' \
+                | grep -oE '\bpython3?\b' | head -1 || true)
+            if [[ -n "$_deps" ]]; then
+                ISO_PYTHON_PKG="python"
+                break
+            fi
+        done < "$PACKAGES_X86"
+    fi
+
+    # Stage 2: resolve the actual version of the python package
+    if [[ -n "$ISO_PYTHON_PKG" ]]; then
+        _iso_full_ver=$(pacman --config "$_pacman_conf" -Si "$ISO_PYTHON_PKG" 2>/dev/null \
+            | awk '/^Version/{print $3; exit}')
+
+        # Collapse to MAJOR.MINOR (e.g. "3.13.3-1" → "3.13")
+        ISO_PYTHON_VER=$(echo "$_iso_full_ver" | grep -oE '^[0-9]+\.[0-9]+')
+    fi
+fi
+
+# ── Step B: Determine the host Python version ───────────────────────────────
+HOST_PYTHON_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+
+# ── Step C: Version gate ─────────────────────────────────────────────────────
+# The venv is always pinned to Python 3.12 (-p 3.12) for wheel compatibility
+# (cffi, cryptography, opencv etc. have prebuilt 3.12 wheels; newer Pythons
+# require source builds that hit ABI/dep conflicts).  So the gate is simply:
+# can uv resolve python3.12 on this build host?  The host/ISO version match
+# is no longer required — the stamp is written from the venv's own binary,
+# not from $HOST_PYTHON_VER, so it will correctly reflect 3.12 regardless of
+# what Python the build host runs.
+_version_ok=false
+if python3 -c 'import sys; assert (sys.version_info.major, sys.version_info.minor) >= (3,8)' \
+        &>/dev/null 2>&1; then
+    # uv can download/manage Python 3.12 itself if it's not on the host,
+    # so as long as uv is available we consider the gate passed.
+    _version_ok=true
+    info "Version gate passed — venv will be pinned to Python 3.12 (ISO ships $ISO_PYTHON_VER)."
+else
+    warn "python3 not found on build host — skipping venv pre-bake."
+fi
+
+# ── Main pre-bake (only if all gates pass) ──────────────────────────────────
+# Temporarily disable errexit so uv failures are non-fatal and the retry
+# logic below can actually run.  set -e is restored after this block.
+if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
+    set +e
+    info "Pre-building Python venv for skel (host Python: $HOST_PYTHON_VER)..."
     mkdir -p "$(dirname "$VENV_SKEL_PATH")"
 
-    if uv venv "$VENV_SKEL_PATH" 2>&1 && \
-       uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS" 2>&1 && \
-       compgen -G "$VENV_SKEL_PATH/lib/python*/site-packages/materialyoucolor*" >/dev/null; then
+    # Step 1: Create venv using the host Python (no pin — requirements.txt is
+    # compiled against the ISO's Python version so wheels are correct).
+    # --clear ensures no interactive prompt if a previous venv exists.
+    uv venv --prompt .venv --clear "$VENV_SKEL_PATH"
+    _uv_venv_exit=${PIPESTATUS[0]}
+
+    # Step 2: Install packages. bin/python still points at uv's managed cache
+    # at this point — that's intentional, uv needs it to resolve correct wheels.
+    # The symlink is replaced with the system python3 after install completes.
+    (set -o pipefail; uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS")
+    _uv_pip_exit=$?
+
+    # Step 2b: Query the venv Python version BEFORE replacing the symlink —
+    # while bin/python still resolves to uv's managed binary, it correctly
+    # reports the version the venv was actually built for.
+    _VENV_PY_VER=$("$VENV_SKEL_PATH/bin/python" -c \
+        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
+        2>/dev/null || echo "$HOST_PYTHON_VER")
+
+    # Step 2c: Replace dangling uv-cache symlinks with symlinks to system python3.
+    # Must happen AFTER pip install and version query — uv needs its own managed
+    # binary during install, and the version query needs it too.  After this the
+    # symlinks resolve on the installed system where uv's cache doesn't exist.
+    _SYS_PY3=$(command -v python3 2>/dev/null || true)
+    if [[ -n "$_SYS_PY3" ]]; then
+        while IFS= read -r _pylink; do
+            ln -sf "$_SYS_PY3" "$_pylink"
+            info "Relinked: $(basename "$_pylink") → $_SYS_PY3"
+        done < <(find "$VENV_SKEL_PATH/bin" -maxdepth 1 -type l \
+            -name 'python*' 2>/dev/null)
+        info "Replaced uv-cache python symlinks → $_SYS_PY3"
+    else
+        warn "Could not find system python3 — python symlinks in venv may be dangling on target."
+    fi
+
+    # Step 4: Gate on success then patch all paths
+    if [[ $_uv_venv_exit -eq 0 ]] && \
+       [[ $_uv_pip_exit  -eq 0 ]] && \
+       compgen -G "$VENV_SKEL_PATH/lib/python*/site-packages/materialyoucolor*" >/dev/null 2>&1; then
+
         # Patch venv paths from the build tree to the SKEL_USER placeholder.
         # uv console scripts use a /bin/sh trampoline with the Python path on
         # line 2, so patch the whole file rather than only the shebang.
+
         find "$VENV_SKEL_PATH/bin" -type f -exec \
             sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" {} + 2>/dev/null || true
         find "$VENV_SKEL_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
-        # Patch pyvenv.cfg if it references the build path
-        [[ -f "$VENV_SKEL_PATH/pyvenv.cfg" ]] && \
-            sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" "$VENV_SKEL_PATH/pyvenv.cfg"
+
+        # Spot-check: confirm placeholder was written into the wrapper scripts
+        find "$VENV_SKEL_PATH/bin" -maxdepth 1 -type f ! -name "*.py" | sort | while read -r f; do
+            _line1=$(head -1 "$f" 2>/dev/null || echo '<empty>')
+            _line2=$(sed -n '2p' "$f" 2>/dev/null || echo '<empty>')
+        done
+
+        # ── Patch pyvenv.cfg ────────────────────────────────────────────────
+        # uv writes several path-bearing lines that the original single-pass
+        # sed missed entirely because they don't contain VENV_SKEL_PATH:
+        #
+        #   home         = /usr/bin              ← host Python bin dir (NOT the venv path)
+        #   python       = /usr/bin/python3.x    ← absolute host binary
+        #   python_path  = /usr/bin/python3.x    ← same
+        #
+        # These survived unpatched into the ISO and told the installed system's
+        # Python to look for python3.X in /usr/bin with whatever ABI was on the
+        # build host — causing import failures when the versions differed.
+        #
+        # Fix: four passes —
+        #   Pass 1: replace any occurrence of the full VENV_SKEL_PATH (existing logic)
+        #   Pass 2: rewrite `home =` to point at the placeholder venv bin/
+        #   Pass 3: rewrite `python =` to the placeholder python binary
+        #   Pass 4: rewrite `python_path =` to the placeholder python binary
+        #
+        # post-install's existing regex
+        #   s|/[^"'[:space:]]*\.local/state/quickshell/\.venv|$VENV_PATH|g
+        # then rewrites all four placeholder values to the real installed path.
+        if [[ -f "$VENV_SKEL_PATH/pyvenv.cfg" ]]; then
+
+            # Pass 1: venv path occurrences (original)
+            sed -i "s|${VENV_SKEL_PATH}|/home/SKEL_USER/.local/state/quickshell/.venv|g" \
+                "$VENV_SKEL_PATH/pyvenv.cfg"
+
+            # Pass 2: home = <host-bin-dir>  →  home = <placeholder>/bin
+            sed -i -E \
+                's|^(home\s*=\s*).*|\1/home/SKEL_USER/.local/state/quickshell/.venv/bin|' \
+                "$VENV_SKEL_PATH/pyvenv.cfg"
+
+            # Pass 3: python = <host-binary>  →  python = <placeholder>/bin/python
+            sed -i -E \
+                's|^(python\s*=\s*).*|\1/home/SKEL_USER/.local/state/quickshell/.venv/bin/python|' \
+                "$VENV_SKEL_PATH/pyvenv.cfg"
+
+            # Pass 4: python_path = <host-binary>  →  python_path = <placeholder>/bin/python
+            sed -i -E \
+                's|^(python_path\s*=\s*).*|\1/home/SKEL_USER/.local/state/quickshell/.venv/bin/python|' \
+                "$VENV_SKEL_PATH/pyvenv.cfg"
+
+        fi
+
+        # ── Write Python version stamp ───────────────────────────────────────
+        # Queried from the venv binary in Step 2b above, before the symlink
+        # was replaced — so it accurately reflects the version uv built for.
+        printf '%s\n' "$_VENV_PY_VER" > "$VENV_SKEL_PATH/.python-version"
+        info "Python version stamp written: $_VENV_PY_VER"
+
         info "Python venv pre-built into skel ($VENV_SKEL_PATH)."
     else
-        warn "Pre-baked venv missing materialyoucolor — first-login will rebuild it."
+        warn "Pre-baked venv incomplete — post-install will rebuild it from scratch."
         rm -rf "$VENV_SKEL_PATH"
     fi
 
@@ -778,9 +954,22 @@ if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
     mkdir -p "$SKEL_SDATA"
     cp "$REQUIREMENTS" "$SKEL_SDATA/"
     info "requirements.txt deployed to skel."
+    set -e
 else
-    warn "uv or requirements.txt not found — Python venv will be created on first login."
+    [[ "$_version_ok" == true ]] || warn "  reason: Python version gate failed (see above)"
+    command -v uv &>/dev/null    || warn "  reason: uv not in PATH"
+    [[ -f "$REQUIREMENTS" ]]     || warn "  reason: requirements.txt not found at $REQUIREMENTS"
+    warn "Venv pre-bake skipped — post-install will build it on first run."
+
+    # Still deploy requirements.txt so post-install's scratch build can find it
+    if [[ -f "$REQUIREMENTS" ]]; then
+        SKEL_SDATA="$SKEL_DIR/.local/share/quickshell/sdata/uv"
+        mkdir -p "$SKEL_SDATA"
+        cp "$REQUIREMENTS" "$SKEL_SDATA/"
+        info "requirements.txt deployed to skel."
+    fi
 fi
+
 
 # Hand skel ownership back to the invoking user so Git can modify it later
 if [[ -n "${SUDO_USER:-}" ]]; then
