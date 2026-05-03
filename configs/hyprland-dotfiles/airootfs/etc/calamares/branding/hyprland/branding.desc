@@ -33,9 +33,10 @@ slideshowAPI: 2
 
 # These style keys apply to the fallback widget sidebar only.
 # The QML sidebar (calamares-sidebar.qml) defines its own colors inline.
-# Brand palette: Night surface, Bone text, Slate selection.
+# M3 dark tokens (mirrored from Appearance.qml — m3background, m3onSurfaceVariant,
+# m3onSecondaryContainer, m3secondaryContainer).
 style:
-    SidebarBackground:        "#191A1F"
-    SidebarText:              "#9397A0"
-    SidebarTextCurrent:       "#C9CCD4"
-    SidebarBackgroundCurrent: "#2A2B32"
+    SidebarBackground:        "#141313"
+    SidebarText:              "#cbc5ca"
+    SidebarTextCurrent:       "#ece6e9"
+    SidebarBackgroundCurrent: "#4d4b4d"

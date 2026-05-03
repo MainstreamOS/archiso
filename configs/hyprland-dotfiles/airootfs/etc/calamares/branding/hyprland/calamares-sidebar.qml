@@ -6,7 +6,10 @@
  * found in modules/common/widgets/NavigationRailButton.qml and
  * modules/common/widgets/NavigationRailTabArray.qml.
  *
- * Color system: Material Design 3 dark scheme (from ii Appearance.qml).
+ * Color system: Material Design 3 dark scheme mirrored from the live
+ * Quickshell appearance system (~/.config/quickshell/ii/modules/common/
+ * Appearance.qml). Tokens follow the m3* naming used there so a future
+ * palette resync can drop the values in directly.
  * Icons: Material Symbols Rounded (variable font, ligature rendering).
  *        Provided by the mainstream-fonts-themes package on the live ISO.
  * =========================================================================== */
@@ -19,15 +22,15 @@ import io.calamares.ui 1.0
 Rectangle {
     id: root
 
-    // ── Mainstream OS brand tokens (see brand.html) ─────────────────────────
-    readonly property color colBg:           "#191A1F"   // Night — top rail surface
-    readonly property color colOnSurface:    "#ECE9E3"   // Ink — emphasis text
-    readonly property color colOnSurfaceVar: "#9397A0"   // Mist — secondary text
-    readonly property color colSecCont:      "#2A2B32"   // Slate — active pill fill
-    readonly property color colOnSecCont:    "#ECE9E3"   // Ink — active pill text
-    readonly property color colOutlineVar:   "#2A2B32"   // outline-variant / divider
-    readonly property color colOutline:      "#40434A"   // Graphite — completed connector
-    readonly property color colPrimary:      "#008DC3"   // Stream B — action/focus accent
+    // ── M3 dark palette (from Appearance.qml live snapshot) ─────────────────
+    readonly property color colBg:           "#141313"   // m3background          rail surface
+    readonly property color colOnSurface:    "#e6e1e1"   // m3onBackground        primary text
+    readonly property color colOnSurfaceVar: "#cbc5ca"   // m3onSurfaceVariant    secondary text
+    readonly property color colSecCont:      "#4d4b4d"   // m3secondaryContainer  active pill fill
+    readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer active pill text
+    readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant      divider
+    readonly property color colOutline:      "#948f94"   // m3outline             completed connector
+    readonly property color colPrimary:      "#cbc4cb"   // m3primary             action/focus accent
 
     // ── Icon mapping by step index — names come dynamically from ViewManager ─
     // Icons correspond to the `show` sequence in settings.conf:

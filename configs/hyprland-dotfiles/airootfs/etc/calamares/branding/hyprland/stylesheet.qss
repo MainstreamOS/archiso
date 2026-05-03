@@ -1,227 +1,299 @@
-/*
- * stylesheet.qss — Mainstream OS Calamares Theme
+/* =============================================================================
+ * stylesheet.qss — Mainstream OS Calamares theme
  *
- * Mainstream OS brand palette (Night base + quiet graphite surfaces).
+ * Material 3 dark palette mirrored from the live Quickshell appearance system
+ * (~/.config/quickshell/ii/modules/common/Appearance.qml). The intent is for
+ * Calamares to look and feel like a native dotfiles app: pill buttons, M3
+ * filled/tonal/text variants, outlined inputs with primary focus underline,
+ * surface-container popups, layer-aware hover/pressed states.
  *
- * Token reference (see brand.html in MainstreamOS.github.io):
- *   #0B0D12  Abyss        — available brand surface, not the installer base
- *   #191A1F  Night        — installer base / background
- *   #2A2B32  Slate        — elevated / hover / selection container
- *   #40434A  Graphite     — chrome / lines / outlines
- *   #5B5E66  Graphite-soft
- *   #9397A0  Mist         — secondary text
- *   #C9CCD4  Bone         — primary text
- *   #ECE9E3  Ink          — emphasis text on dark
- *   #008DC3  Stream B     — ocean-blue action/focus accent
- *   #009CA5  Stream A     — cyan-teal hover/gradient pair
- *   #9397A0  Mist         — progress track
- *   #C9CCD4  Bone         — progress fill
- */
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   BASE
-   ═══════════════════════════════════════════════════════════════════════════ */
+ * Token map (kept in comments so future palette syncs stay greppable):
+ *   m3background           #141313  page bg
+ *   m3onBackground         #e6e1e1  primary text
+ *   m3surfaceContainerLow  #1c1b1c  layer1 (cards, inputs)
+ *   m3surfaceContainer     #201f20  layer2 (sections)
+ *   m3surfaceContainerHigh #2b2a2a  layer3 (popups, hover)
+ *   m3surfaceContainerHighest #363435 spin/active inputs
+ *   m3onSurface            #e6e1e1  text on surfaces
+ *   m3onSurfaceVariant     #cbc5ca  secondary text / labels
+ *   m3outline              #948f94  borders
+ *   m3outlineVariant       #49464a  dividers / idle indicator borders
+ *   m3primary              #cbc4cb  primary action bg / focus ring
+ *   m3onPrimary            #322f34  text on primary
+ *   m3secondaryContainer   #4d4b4d  tonal button bg, combo bg
+ *   m3onSecondaryContainer #ece6e9  text on tonal
+ *   m3error                #ffb4ab  error fg
+ *   m3errorContainer       #93000a  error bg
+ *   m3onErrorContainer     #ffdad6  text on error bg
+ *   m3success              #B5CCBA  success fg
+ *
+ * Shapes:
+ *   button.pill            border-radius: 9999px  (Appearance.rounding.full)
+ *   verysmall              8px                    (chip / small popup item)
+ *   small                  12px                   (input / list / tree)
+ *   normal                 17px                   (popup, card)
+ *   large                  23px                   (window-level container)
+ *
+ * Fonts: Google Sans Flex is set globally by main.cpp (Mainstream font patch).
+ * ============================================================================= */
 
 * {
     outline: none;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * BASE
+ * ──────────────────────────────────────────────────────────────────────────── */
 QWidget {
-    background-color: #191A1F;
-    color:            #C9CCD4;
-    font-family:      "DM Sans", "Google Sans Flex", "Noto Sans", "DejaVu Sans", sans-serif;
-    font-size:        14px;
-    selection-background-color: #2A2B32;
-    selection-color:            #ECE9E3;
+    background-color: #141313;                     /* m3background */
+    color:            #e6e1e1;                     /* m3onBackground */
+    font-family:      "Google Sans Flex", "Noto Sans", "DejaVu Sans", sans-serif;
+    font-size:        15px;                        /* Appearance.font.pixelSize.small */
+    selection-background-color: #4d4b4d;           /* m3secondaryContainer */
+    selection-color:            #ece6e9;           /* m3onSecondaryContainer */
 }
 
 QWidget:disabled {
-    color: #5B5E66;
+    color: rgba(230, 225, 225, 0.38);              /* m3onSurface @ 38% (M3 disabled spec) */
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   MAIN WINDOW
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * MAIN WINDOW + PAGE PADDING
+ * ──────────────────────────────────────────────────────────────────────────── */
 #mainApp {
-    background-color: #191A1F;
+    background-color: #141313;
+    border-radius:    18px;                        /* Appearance.rounding.windowRounding */
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   PAGE CONTENT PADDING
-   #viewManager / #viewManagerStack — confirmed objectNames from ViewManager.cpp.
-   #viewManager is a plain QWidget whose QVBoxLayout uses contentsRect(), which
-   propagates QSS padding so each page is inset 56px from the side rails.
-   ═══════════════════════════════════════════════════════════════════════════ */
 
 #viewManager {
     padding-left:  56px;
     padding-right: 56px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   BUTTONS
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * BUTTONS
+ *
+ * Material 3 button variants mapped to Calamares roles:
+ *   #view-button-next   → filled (primary action)
+ *   #view-button-back   → tonal  (secondary)
+ *   #view-button-cancel → text   (tertiary; transparent)
+ *   default QPushButton → tonal
+ *   support/issues/notes/donate → tonal
+ * ──────────────────────────────────────────────────────────────────────────── */
 
+/* Tonal (default) — secondaryContainer fill */
 QPushButton {
-    background-color: #1F2026;
-    color:            #C9CCD4;
-    border:           1px solid #40434A;
-    border-radius:    25px;
-    padding:          8px 24px;
-    font-size:        14px;
-    font-weight:      400;
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;                     /* m3onSecondaryContainer */
+    border:           none;
+    border-radius:    9999px;                      /* M3 pill */
+    padding:          10px 24px;
+    font-size:        15px;
+    font-weight:      500;
     min-width:        80px;
     min-height:       36px;
 }
 
 QPushButton:hover {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
-    border-color:     #5B5E66;
+    background-color: #5a585a;                     /* m3secondaryContainer + 8% onSurface state layer */
 }
 
 QPushButton:pressed {
-    background-color: #40434A;
-    color:            #ECE9E3;
+    background-color: #67656a;                     /* m3secondaryContainer + 16% onSurface state layer */
 }
 
 QPushButton:disabled {
-    background-color: #1F2026;
-    color:            #5B5E66;
-    border-color:     #40434A;
+    background-color: rgba(230, 225, 225, 0.12);   /* m3onSurface @ 12% */
+    color:            rgba(230, 225, 225, 0.38);
 }
 
-/* Primary / default button (Next, Install Now) — Stream B filled */
+/* Filled — primary action (Next / Install Now / Set Up Now) */
 QPushButton:default,
-QPushButton[type="primary"] {
-    background-color: #008DC3;
-    color:            #ffffff;
+QPushButton#view-button-next {
+    background-color: #cbc4cb;                     /* m3primary */
+    color:            #322f34;                     /* m3onPrimary */
+}
+
+QPushButton:default:hover,
+QPushButton#view-button-next:hover {
+    background-color: #d6d0d6;                     /* m3primary + 8% onPrimary state layer */
+}
+
+QPushButton:default:pressed,
+QPushButton#view-button-next:pressed {
+    background-color: #e2dde2;                     /* m3primary + 16% state layer */
+}
+
+QPushButton:default:disabled,
+QPushButton#view-button-next:disabled {
+    background-color: rgba(230, 225, 225, 0.12);
+    color:            rgba(230, 225, 225, 0.38);
+}
+
+/* Text — quiet action (Cancel) */
+QPushButton#view-button-cancel {
+    background-color: transparent;
+    color:            #cbc4cb;                     /* m3primary */
+    padding:          10px 16px;
+    min-width:        64px;
+}
+
+QPushButton#view-button-cancel:hover {
+    background-color: rgba(203, 196, 203, 0.08);   /* primary @ 8% */
+}
+
+QPushButton#view-button-cancel:pressed {
+    background-color: rgba(203, 196, 203, 0.12);
+}
+
+QPushButton#view-button-cancel:disabled {
+    background-color: transparent;
+    color:            rgba(230, 225, 225, 0.38);
+}
+
+/* About / Debug sidebar buttons render flat */
+QPushButton#aboutButton,
+QPushButton#debugButton {
+    background-color: transparent;
+    color:            #cbc5ca;                     /* m3onSurfaceVariant */
     border:           none;
-    font-weight:      500;
+    border-radius:    9999px;
+    padding:          8px 12px;
+    min-width:        0;
+    min-height:       32px;
+    text-align:       left;
 }
 
-QPushButton:default:hover {
-    background-color: #009CA5;
-    color:            #ffffff;
+QPushButton#aboutButton:hover,
+QPushButton#debugButton:hover {
+    background-color: rgba(230, 225, 225, 0.08);
 }
 
-QPushButton:default:pressed {
-    background-color: #007AA8;
-}
-
-QPushButton:default:disabled {
-    background-color: #2A2B32;
-    color:            #5B5E66;
-    border:           none;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   NAVIGATION BUTTON ICONS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION BUTTON ICONS
+ * ──────────────────────────────────────────────────────────────────────────── */
 QPushButton#view-button-back {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/arrow_back.svg);
     icon-size:      18px 18px;
 }
-
 QPushButton#view-button-next {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/arrow_forward.svg);
     icon-size:      18px 18px;
 }
-
 QPushButton#view-button-cancel {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/close.svg);
     icon-size:      18px 18px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   WELCOME PAGE BUTTON ICONS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* Welcome page link buttons */
 QPushButton#supportButton {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/help_outline.svg);
     icon-size:      18px 18px;
 }
-
 QPushButton#knownIssuesButton {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/bug_report.svg);
     icon-size:      18px 18px;
 }
-
 QPushButton#releaseNotesButton {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/article.svg);
     icon-size:      18px 18px;
 }
-
 QPushButton#donateButton {
     qproperty-icon: url(/etc/calamares/branding/hyprland/icons/favorite.svg);
     icon-size:      18px 18px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   LABELS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * LABELS
+ * ──────────────────────────────────────────────────────────────────────────── */
 QLabel {
     background-color: transparent;
-    color:            #C9CCD4;
+    color:            #e6e1e1;                     /* m3onSurface */
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEXT INPUT FIELDS — outlined style
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* Section headers and helper text */
+QLabel[heading="true"] {
+    color:       #e6e1e1;
+    font-size:   19px;                             /* font.pixelSize.larger */
+    font-weight: 500;
+}
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TEXT INPUTS — M3 outlined
+ * ──────────────────────────────────────────────────────────────────────────── */
 QLineEdit,
 QTextEdit,
 QPlainTextEdit {
-    background-color: #1F2026;
-    color:            #ECE9E3;
-    border:           1px solid #40434A;
-    border-radius:    12px;
+    background-color: transparent;                 /* outlined variant has no fill */
+    color:            #e6e1e1;
+    border:           1px solid #948f94;           /* m3outline */
+    border-radius:    12px;                        /* Appearance.rounding.small */
     padding:          10px 16px;
+    selection-background-color: #4d4b4d;
+    selection-color:            #ece6e9;
 }
 
 QLineEdit:hover,
 QTextEdit:hover,
 QPlainTextEdit:hover {
-    border-color: #5B5E66;
+    border-color: #cbc5ca;                         /* m3onSurfaceVariant — hover state */
 }
 
 QLineEdit:focus,
 QTextEdit:focus,
 QPlainTextEdit:focus {
-    border-color: #008DC3;
+    border:        2px solid #cbc4cb;              /* m3primary 2px focus ring */
+    padding:       9px 15px;                       /* compensate for thicker border */
 }
 
 QLineEdit:disabled,
 QTextEdit:disabled,
 QPlainTextEdit:disabled {
-    background-color: #191A1F;
-    color:            #5B5E66;
-    border-color:     #40434A;
+    color:        rgba(230, 225, 225, 0.38);
+    border-color: rgba(148, 143, 148, 0.38);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   COMBO BOX
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* Validation error styling — Calamares sets `_error` dynamic property on bad input */
+QLineEdit[_error="true"] {
+    border-color: #ffb4ab;                         /* m3error */
+}
+QLineEdit[_error="true"]:focus {
+    border:  2px solid #ffb4ab;
+    padding: 9px 15px;
+}
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * COMBO BOX — M3 tonal pill, surfaceContainerHigh popup
+ * ──────────────────────────────────────────────────────────────────────────── */
 QComboBox {
-    background-color: #1F2026;
-    color:            #ECE9E3;
-    border:           1px solid #40434A;
-    border-radius:    12px;
-    padding:          7px 14px;
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;
+    border:           none;
+    border-radius:    20px;                        /* pill at 40px tall */
+    padding:          8px 16px;
     min-width:        120px;
+    min-height:       24px;
 }
 
-QComboBox:hover  { border-color: #5B5E66; }
-QComboBox:focus  { border-color: #008DC3; }
+QComboBox:hover {
+    background-color: #5a585a;
+}
+
+QComboBox:focus,
+QComboBox:on {
+    background-color: #67656a;
+}
+
+QComboBox:disabled {
+    background-color: rgba(230, 225, 225, 0.12);
+    color:            rgba(230, 225, 225, 0.38);
+}
 
 QComboBox::drop-down {
-    border:       none;
-    width:        32px;
+    border:        none;
+    width:         32px;
     padding-right: 8px;
+    background:    transparent;
 }
 
 QComboBox::down-arrow {
@@ -231,90 +303,242 @@ QComboBox::down-arrow {
 }
 
 QComboBox QAbstractItemView {
-    background-color: #1F2026;
-    color:            #ECE9E3;
-    border:           1px solid #40434A;
-    border-radius:    16px;
-    selection-background-color: #2A2B32;
-    selection-color:            #ECE9E3;
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
+    color:            #e6e1e1;
+    border:           1px solid #49464a;           /* m3outlineVariant */
+    border-radius:    17px;                        /* Appearance.rounding.normal */
+    selection-background-color: transparent;       /* per-item :selected handles it */
     padding:          6px;
     outline:          none;
 }
 
 QComboBox QAbstractItemView::item {
-    border-radius: 10px;
+    border-radius: 8px;
     padding:       8px 12px;
     min-height:    32px;
 }
 
 QComboBox QAbstractItemView::item:hover {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: rgba(230, 225, 225, 0.08);   /* onSurface @ 8% state layer */
 }
 
 QComboBox QAbstractItemView::item:selected {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   LISTS, TREES, TABLES
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * LISTS / TREES / TABLES
+ * ──────────────────────────────────────────────────────────────────────────── */
 QListView,
 QTreeView,
 QTableView {
-    background-color: #1F2026;
-    color:            #C9CCD4;
-    border:           1px solid #40434A;
+    background-color: #1c1b1c;                     /* m3surfaceContainerLow */
+    color:            #e6e1e1;
+    border:           1px solid #49464a;           /* m3outlineVariant */
     border-radius:    12px;
     outline:          none;
-    gridline-color:   #40434A;
-    alternate-background-color: #1F2026;
+    gridline-color:   #49464a;
+    alternate-background-color: #1c1b1c;
 }
 
 QListView::item,
 QTreeView::item,
 QTableView::item {
-    padding:       6px 8px;
+    padding:       8px 10px;
     border-radius: 8px;
 }
 
 QListView::item:hover,
 QTreeView::item:hover,
 QTableView::item:hover {
-    background-color: #2A2B32;
+    background-color: rgba(230, 225, 225, 0.08);
 }
 
 QListView::item:selected,
 QTreeView::item:selected,
 QTableView::item:selected {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;
+}
+
+QTreeView::branch {
+    background-color: transparent;
 }
 
 QHeaderView {
-    background-color: #191A1F;
+    background-color: transparent;
     border:           none;
 }
 
 QHeaderView::section {
-    background-color: #1F2026;
-    color:            #9397A0;
+    background-color: #201f20;                     /* m3surfaceContainer */
+    color:            #cbc5ca;                     /* m3onSurfaceVariant */
     border:           none;
-    border-bottom:    1px solid #40434A;
-    padding:          7px 10px;
+    border-bottom:    1px solid #49464a;
+    padding:          8px 12px;
     font-weight:      500;
 }
 
 QHeaderView::section:hover {
-    background-color: #2A2B32;
+    background-color: #2b2a2a;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SCROLL BARS
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TREE / LIST CHECKBOX INDICATORS (used by netinstall / packagechooser)
+ * ──────────────────────────────────────────────────────────────────────────── */
+QTreeView::indicator,
+QListView::indicator {
+    width:  18px;
+    height: 18px;
+}
 
+QTreeView::indicator:unchecked,
+QListView::indicator:unchecked {
+    border:           2px solid #948f94;           /* m3outline */
+    border-radius:    2px;                         /* M3 checkbox radius */
+    background-color: transparent;
+}
+
+QTreeView::indicator:unchecked:hover,
+QListView::indicator:unchecked:hover {
+    border-color: #e6e1e1;
+}
+
+QTreeView::indicator:checked,
+QListView::indicator:checked {
+    border:           2px solid #cbc4cb;
+    border-radius:    2px;
+    background-color: #cbc4cb;                     /* m3primary */
+    image:            url(/etc/calamares/branding/hyprland/icons/check.svg);
+}
+
+QTreeView::indicator:indeterminate,
+QListView::indicator:indeterminate {
+    border:           2px solid #cbc4cb;
+    border-radius:    2px;
+    background-color: #cbc4cb;
+}
+
+QTreeView::indicator:disabled,
+QListView::indicator:disabled {
+    border-color:     rgba(148, 143, 148, 0.38);
+    background-color: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CHECK BOX & RADIO BUTTON
+ * ──────────────────────────────────────────────────────────────────────────── */
+QCheckBox,
+QRadioButton {
+    background-color: transparent;
+    color:            #e6e1e1;
+    spacing:          12px;
+}
+
+QCheckBox:disabled,
+QRadioButton:disabled {
+    color: rgba(230, 225, 225, 0.38);
+}
+
+/* M3 checkbox: 18×18, 2px outline, primary fill on checked */
+QCheckBox::indicator {
+    width:            18px;
+    height:           18px;
+    border:           2px solid #948f94;           /* m3outline */
+    border-radius:    2px;
+    background-color: transparent;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #e6e1e1;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #cbc4cb;                     /* m3primary */
+    border-color:     #cbc4cb;
+    image:            url(/etc/calamares/branding/hyprland/icons/check.svg);
+}
+
+QCheckBox::indicator:checked:disabled {
+    background-color: rgba(230, 225, 225, 0.12);
+    border-color:     rgba(230, 225, 225, 0.12);
+}
+
+QCheckBox::indicator:unchecked:disabled {
+    border-color: rgba(148, 143, 148, 0.38);
+}
+
+/* M3 radio: 20×20 outer ring, 10×10 inner dot when checked */
+QRadioButton::indicator {
+    width:            20px;
+    height:           20px;
+    border:           2px solid #948f94;
+    border-radius:    10px;
+    background-color: transparent;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #e6e1e1;
+}
+
+QRadioButton::indicator:checked {
+    border:           2px solid #cbc4cb;
+    background-color: transparent;
+    image:            url(/etc/calamares/branding/hyprland/icons/radio_dot.svg);
+}
+
+QRadioButton::indicator:disabled {
+    border-color: rgba(148, 143, 148, 0.38);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GROUP BOX
+ * ──────────────────────────────────────────────────────────────────────────── */
+QGroupBox {
+    background-color: #1c1b1c;                     /* m3surfaceContainerLow */
+    color:            #e6e1e1;
+    border:           1px solid #49464a;
+    border-radius:    17px;                        /* Appearance.rounding.normal */
+    margin-top:       18px;
+    padding:          18px 16px 12px 16px;
+    font-weight:      500;
+}
+
+QGroupBox::title {
+    subcontrol-origin:   margin;
+    subcontrol-position: top left;
+    left:                14px;
+    padding:             2px 8px;
+    color:               #cbc5ca;                  /* m3onSurfaceVariant */
+    background-color:    #141313;
+    border-radius:       6px;
+    font-size:           13px;                     /* font.pixelSize.smallie */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * PROGRESS BAR
+ * ──────────────────────────────────────────────────────────────────────────── */
+QProgressBar {
+    background-color: #49464a;                     /* m3outlineVariant — track */
+    border:           none;
+    border-radius:    4px;
+    text-align:       center;
+    color:            #322f34;
+    font-size:        13px;
+    font-weight:      500;
+    min-height:       8px;
+    max-height:       8px;
+}
+
+QProgressBar::chunk {
+    background-color: #cbc4cb;                     /* m3primary — fill */
+    border-radius:    4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SCROLL BARS — minimal track, pill-style handle
+ * ──────────────────────────────────────────────────────────────────────────── */
 QScrollBar:vertical {
     background-color: transparent;
     width:            8px;
@@ -322,13 +546,13 @@ QScrollBar:vertical {
 }
 
 QScrollBar::handle:vertical {
-    background-color: #40434A;
+    background-color: #49464a;                     /* m3outlineVariant */
     border-radius:    4px;
     min-height:       24px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background-color: #5B5E66;
+    background-color: #948f94;
 }
 
 QScrollBar::add-line:vertical,
@@ -348,13 +572,13 @@ QScrollBar:horizontal {
 }
 
 QScrollBar::handle:horizontal {
-    background-color: #40434A;
+    background-color: #49464a;
     border-radius:    4px;
     min-width:        24px;
 }
 
 QScrollBar::handle:horizontal:hover {
-    background-color: #5B5E66;
+    background-color: #948f94;
 }
 
 QScrollBar::add-line:horizontal,
@@ -367,198 +591,57 @@ QScrollBar::sub-page:horizontal {
     background: none;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GROUP BOX
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QGroupBox {
-    background-color: #191A1F;
-    color:            #C9CCD4;
-    border-radius:    12px;
-    margin-top:       22px;
-    padding-top:      12px;
-    font-weight:      500;
-}
-
-QGroupBox::title {
-    subcontrol-origin:   margin;
-    subcontrol-position: top left;
-    padding:             2px 10px;
-    color:               #008DC3;
-    background-color:    #191A1F;
-    border-radius:       6px;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   TREE / LIST VIEW CHECKBOX INDICATORS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QTreeView::indicator,
-QListView::indicator {
-    width:  18px;
-    height: 18px;
-}
-
-QTreeView::indicator:unchecked,
-QListView::indicator:unchecked {
-    border:           2px solid #40434A;
-    border-radius:    4px;
-    background-color: transparent;
-}
-
-QTreeView::indicator:unchecked:hover,
-QListView::indicator:unchecked:hover {
-    border-color: #008DC3;
-}
-
-QTreeView::indicator:checked,
-QListView::indicator:checked {
-    border:           2px solid #008DC3;
-    border-radius:    4px;
-    background-color: #008DC3;
-    image: url(/etc/calamares/branding/hyprland/icons/check.svg);
-}
-
-QTreeView::indicator:indeterminate,
-QListView::indicator:indeterminate {
-    border:           2px solid #008DC3;
-    border-radius:    4px;
-    background-color: #2A2B32;
-}
-
-QTreeView::indicator:unchecked:disabled,
-QListView::indicator:unchecked:disabled {
-    border-color: #40434A;
-}
-
-QTreeView::indicator:checked:disabled,
-QListView::indicator:checked:disabled {
-    background-color: #40434A;
-    border-color:     #40434A;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   CHECK BOX & RADIO BUTTON
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QCheckBox,
-QRadioButton {
-    background-color: transparent;
-    color:            #C9CCD4;
-    spacing:          10px;
-}
-
-QCheckBox:disabled,
-QRadioButton:disabled {
-    color: #5B5E66;
-}
-
-QCheckBox::indicator {
-    width:         18px;
-    height:        18px;
-    border:        2px solid #40434A;
-    border-radius: 4px;
-    background-color: transparent;
-}
-
-QCheckBox::indicator:hover {
-    border-color: #008DC3;
-}
-
-QCheckBox::indicator:checked {
-    background-color: #008DC3;
-    border-color:     #008DC3;
-    image: url(/etc/calamares/branding/hyprland/icons/check.svg);
-}
-
-QCheckBox::indicator:checked:disabled {
-    background-color: #40434A;
-    border-color:     #40434A;
-}
-
-QRadioButton::indicator {
-    width:         18px;
-    height:        18px;
-    border:        2px solid #40434A;
-    border-radius: 9px;
-    background-color: transparent;
-}
-
-QRadioButton::indicator:hover {
-    border-color: #008DC3;
-}
-
-QRadioButton::indicator:checked {
-    background-color: #008DC3;
-    border-color:     #008DC3;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   PROGRESS BAR
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-QProgressBar {
-    background-color: #9397A0;
-    border:           none;
-    border-radius:    6px;
-    text-align:       center;
-    color:            #191A1F;
-    font-size:        13px;
-    font-weight:      700;
-    min-height:       8px;
-}
-
-QProgressBar::chunk {
-    background-color: #C9CCD4;
-    border-radius:    6px;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   TAB WIDGET
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TAB BAR (used by partition core + a few wizards)
+ * ──────────────────────────────────────────────────────────────────────────── */
 QTabWidget::pane {
-    background-color: #191A1F;
-    border-radius:    12px;
+    background-color: transparent;
+    border:           none;
     top:              -1px;
 }
 
 QTabBar::tab {
     background-color: transparent;
-    color:            #9397A0;
+    color:            #cbc5ca;                     /* m3onSurfaceVariant */
     border:           none;
     padding:          8px 18px;
-    border-radius:    8px;
+    border-radius:    9999px;                      /* M3 secondary tab pill */
     min-width:        60px;
+    margin-right:     4px;
 }
 
 QTabBar::tab:selected {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;
     font-weight:      500;
 }
 
 QTabBar::tab:hover:!selected {
-    background-color: #2A2B32;
-    color:            #C9CCD4;
+    background-color: rgba(230, 225, 225, 0.08);
+    color:            #e6e1e1;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SPIN BOX
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SPIN BOX
+ * ──────────────────────────────────────────────────────────────────────────── */
 QSpinBox,
 QDoubleSpinBox {
-    background-color: #1F2026;
-    color:            #ECE9E3;
-    border:           1px solid #40434A;
+    background-color: transparent;
+    color:            #e6e1e1;
+    border:           1px solid #948f94;
     border-radius:    12px;
-    padding:          7px 12px;
+    padding:          8px 12px;
+}
+
+QSpinBox:hover,
+QDoubleSpinBox:hover {
+    border-color: #cbc5ca;
 }
 
 QSpinBox:focus,
 QDoubleSpinBox:focus {
-    border-color: #008DC3;
+    border:  2px solid #cbc4cb;
+    padding: 7px 11px;
 }
 
 QSpinBox::up-button,
@@ -570,37 +653,63 @@ QDoubleSpinBox::down-button {
     width:            18px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TOOLTIP
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SLIDER
+ * ──────────────────────────────────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    background-color: #49464a;
+    height:           4px;
+    border-radius:    2px;
+}
 
+QSlider::sub-page:horizontal {
+    background-color: #cbc4cb;
+    border-radius:    2px;
+}
+
+QSlider::handle:horizontal {
+    background-color: #cbc4cb;
+    width:            16px;
+    height:           16px;
+    margin:           -6px 0;
+    border-radius:    8px;
+}
+
+QSlider::handle:horizontal:hover {
+    background-color: #d6d0d6;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOOLTIP
+ * ──────────────────────────────────────────────────────────────────────────── */
 QToolTip {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
+    color:            #e6e1e1;
+    border:           1px solid #49464a;
     border-radius:    8px;
     padding:          6px 10px;
     font-size:        13px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   FRAME / SEPARATOR
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * FRAME / SEPARATOR — HLine / VLine
+ * ──────────────────────────────────────────────────────────────────────────── */
 QFrame[frameShape="4"],
 QFrame[frameShape="5"] {
-    color:            #40434A;
-    background-color: #40434A;
+    color:            #49464a;
+    background-color: #49464a;
+    max-height:       1px;
+    max-width:        1px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   MENU
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * MENU
+ * ──────────────────────────────────────────────────────────────────────────── */
 QMenu {
-    background-color: #1F2026;
-    color:            #ECE9E3;
-    border:           1px solid #40434A;
-    border-radius:    12px;
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
+    color:            #e6e1e1;
+    border:           1px solid #49464a;
+    border-radius:    17px;                        /* Appearance.rounding.normal */
     padding:          6px;
 }
 
@@ -610,40 +719,43 @@ QMenu::item {
 }
 
 QMenu::item:selected {
-    background-color: #2A2B32;
-    color:            #ECE9E3;
+    background-color: rgba(230, 225, 225, 0.08);
 }
 
 QMenu::separator {
     height:           1px;
-    background-color: #40434A;
+    background-color: #49464a;
     margin:           4px 8px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   CALAMARES-SPECIFIC PARTITION VIEW
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * MESSAGE BOX (warnings, partition confirmations)
+ * ──────────────────────────────────────────────────────────────────────────── */
+QMessageBox {
+    background-color: #201f20;                     /* m3surfaceContainer */
+}
+QMessageBox QPushButton {
+    min-width: 80px;
+}
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CALAMARES-SPECIFIC PARTITION VIEW
+ * ──────────────────────────────────────────────────────────────────────────── */
 #partitionBarView {
-    background-color: #191A1F;
-    border-radius:    8px;
-}
-
-PartitionBarsView {
-    color:            #C9CCD4;
     background-color: transparent;
+    border:           none;
 }
 
+PartitionBarsView,
 PartitionLabelsView {
-    color:            #C9CCD4;
     background-color: transparent;
+    color:            #e6e1e1;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   QUICK WIDGET HOST
-   ═══════════════════════════════════════════════════════════════════════════ */
-
+/* ─────────────────────────────────────────────────────────────────────────────
+ * QQUICK WIDGET HOST
+ * ──────────────────────────────────────────────────────────────────────────── */
 QQuickWidget {
-    background-color: #191A1F;
+    background-color: transparent;
     border:           none;
 }

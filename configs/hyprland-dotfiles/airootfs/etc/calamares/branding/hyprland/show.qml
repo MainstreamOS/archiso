@@ -13,16 +13,16 @@ import calamares.slideshow 1.0
 Presentation {
     id: presentation
 
-    // ── Mainstream OS brand tokens (see brand.html) ─────────────────────────
-    readonly property color colBg:           "#191A1F"   // Night — installer base
-    readonly property color colSurface:      "#191A1F"   // Night
-    readonly property color colSurfaceHigh:  "#2A2B32"   // Slate
-    readonly property color colOnSurface:    "#ECE9E3"   // Ink
-    readonly property color colOnSurfaceVar: "#9397A0"   // Mist
-    readonly property color colPrimary:      "#008DC3"   // Stream B — action/focus accent
-    readonly property color colSecCont:      "#2A2B32"   // Slate
-    readonly property color colOnSecCont:    "#C9CCD4"   // Bone
-    readonly property color colOutlineVar:   "#40434A"   // Graphite
+    // ── M3 dark palette (mirrored from Appearance.qml live snapshot) ──────
+    readonly property color colBg:           "#141313"   // m3background
+    readonly property color colSurface:      "#141313"   // m3surface
+    readonly property color colSurfaceHigh:  "#2b2a2a"   // m3surfaceContainerHigh
+    readonly property color colOnSurface:    "#e6e1e1"   // m3onSurface
+    readonly property color colOnSurfaceVar: "#cbc5ca"   // m3onSurfaceVariant
+    readonly property color colPrimary:      "#cbc4cb"   // m3primary
+    readonly property color colSecCont:      "#4d4b4d"   // m3secondaryContainer
+    readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer
+    readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant
 
     // ── Background fill ───────────────────────────────────────────────────────
     Rectangle {
@@ -67,7 +67,7 @@ Presentation {
                 height: parent.height * 0.35
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 1.0; color: "#cc191A1F"   }
+                    GradientStop { position: 1.0; color: "#cc141313"   }
                 }
             }
 
