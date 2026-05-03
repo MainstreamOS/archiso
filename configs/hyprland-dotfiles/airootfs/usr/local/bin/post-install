@@ -52,17 +52,24 @@ refresh_limine_uki_entry() {
         !skip { print }
     ' "$limine_conf" > "$tmpfile"
 
-    # Single flat entry — no //sub-label needed for one kernel
+    # Sub-entry structure is required by limine-snapper-sync: it scans for
+    # //<Kernel name> sub-entries under /<OS name> as anchors for snapshot
+    # injection, and uses //Snapshots as the placeholder marking the
+    # insertion point. A flat parent (protocol/path directly under /OS)
+    # makes the OS block invisible to snapper-sync, so package installs
+    # and updates produce no snapshot menu entries.
     cat >> "$tmpfile" << 'LIMINEUKI'
 
 /Mainstream OS\\
-    protocol: efi
-    path: boot():///EFI/Linux/mainstream_linux.efi
+    //Linux
+        protocol: efi
+        path: boot():///EFI/Linux/mainstream_linux.efi
+    //Snapshots
 LIMINEUKI
 
     install -m 644 "$tmpfile" "$limine_conf"
     rm -f "$tmpfile"
-    info "limine.conf updated: single 'Mainstream OS\\' UKI entry written."
+    info "limine.conf updated: 'Mainstream OS\\' UKI entry + //Snapshots anchor written."
 }
 
 parse_disk_part_from_source() {
