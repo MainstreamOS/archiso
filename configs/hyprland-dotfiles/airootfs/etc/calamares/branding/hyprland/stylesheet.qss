@@ -160,52 +160,45 @@ QPushButton:disabled {
     color:            rgba(230, 225, 225, 0.38);
 }
 
-/* Filled — primary action (Next / Install Now / Set Up Now) */
-QPushButton:default,
-QPushButton#view-button-next {
-    background-color: #cbc4cb;                     /* m3primary */
-    color:            #322f34;                     /* m3onPrimary */
+/* Bottom navigation row — Back / Next / Cancel.
+ * Size + shape + color mirror an active (toggled) sidebar nav pill exactly:
+ *   56px tall stadium · m3secondaryContainer fill · m3onSecondaryContainer text.
+ * Hover/pressed state-layer tints match the rest of the tonal-button family. */
+QPushButton#view-button-back,
+QPushButton#view-button-next,
+QPushButton#view-button-cancel {
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;                     /* m3onSecondaryContainer */
+    border:           1px solid transparent;
+    border-radius:    28px;                        /* 56 / 2 = pill */
+    padding:          0 28px;
+    font-size:        15px;
+    font-weight:      500;
+    min-width:        110px;
+    min-height:       56px;
 }
 
-QPushButton:default:hover,
-QPushButton#view-button-next:hover {
-    background-color: #d6d0d6;                     /* m3primary + 8% onPrimary state layer */
+QPushButton#view-button-back:hover,
+QPushButton#view-button-next:hover,
+QPushButton#view-button-cancel:hover {
+    background-color: #5a585a;
 }
 
-QPushButton:default:pressed,
-QPushButton#view-button-next:pressed {
-    background-color: #e2dde2;                     /* m3primary + 16% state layer */
+QPushButton#view-button-back:pressed,
+QPushButton#view-button-next:pressed,
+QPushButton#view-button-cancel:pressed {
+    background-color: #67656a;
 }
 
-QPushButton:default:disabled,
-QPushButton#view-button-next:disabled {
+QPushButton#view-button-back:disabled,
+QPushButton#view-button-next:disabled,
+QPushButton#view-button-cancel:disabled {
     background-color: rgba(230, 225, 225, 0.12);
     color:            rgba(230, 225, 225, 0.38);
 }
 
-/* Text — quiet action (Cancel) */
-QPushButton#view-button-cancel {
-    background-color: transparent;
-    color:            #cbc4cb;                     /* m3primary */
-    border:           1px solid transparent;
-    border-radius:    25px;
-    padding:          9px 16px;
-    min-width:        72px;
-    min-height:       40px;
-}
-
-QPushButton#view-button-cancel:hover {
-    background-color: rgba(203, 196, 203, 0.08);   /* primary @ 8% */
-}
-
-QPushButton#view-button-cancel:pressed {
-    background-color: rgba(203, 196, 203, 0.12);
-}
-
-QPushButton#view-button-cancel:disabled {
-    background-color: transparent;
-    color:            rgba(230, 225, 225, 0.38);
-}
+/* QPushButton:default still picks up the generic tonal style above — no
+ * primary-filled override now that all three nav buttons match the rail. */
 
 /* About / Debug sidebar buttons render flat */
 QPushButton#aboutButton,
