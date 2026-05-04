@@ -134,26 +134,41 @@ QPushButton#titleCloseButton:pressed {
 
 /* Default + nav buttons — sized and coloured to match the toggled state of
  * a dots-hyprland QuickConfig SelectionGroupButton (e.g. the "Bar position"
- * row under "Bar & screen"). Those buttons use:
- *   horizontalPadding: 12, verticalPadding: 8     → padding 8px 12px
- *   GroupButton background.implicitHeight: 50     → min-height 50
- *   toggled radius: height / 2                    → 25px (full pill)
- *   toggled background: colPrimary  #cbc4cb
- *   toggled foreground: colOnPrimary #322f34      (the "darker text" the user asked for)
- * Hover / pressed state layers approximate Appearance.colors.colPrimaryHover
- * and colPrimaryActive in the M3 dark scheme.
- * Note: Qt6 QPushButton drops border-radius unless an explicit border is set
+ * row under "Bar & screen").
+ *
+ * The QML pill's actual rendered height comes from
+ *   Button.implicitHeight = contentItem.implicitHeight + verticalPadding * 2
+ * (≈ 38px once the StyledText label is laid out). The Rectangle background
+ * inside it has implicitHeight: 50 but that does NOT propagate to the Button
+ * itself, so QuickConfig pills end up around 38px tall — visibly shorter
+ * and tighter than the 50-px-tall slabs the previous QSS produced.
+ *
+ * Match the Quickshell pill exactly:
+ *   • min-height 38                → Button.implicitHeight
+ *   • padding    4px 14px          → verticalPadding 4, horizontalPadding 14
+ *                                   (Qt's box model adds padding on top of
+ *                                    min-height, so a 4-px vertical pad on a
+ *                                    38-min keeps total ≈ 38–46 — same band
+ *                                    as the QML pill once content is laid in)
+ *   • border-radius 19px           → height/2, full pill
+ *   • min-width 60                 → loose enough not to force "Back" wider
+ *                                   than its content + 2*horizontalPadding
+ *   • font-size 14, weight 500     → matches Appearance.font.pixelSize.normal
+ *   • toggled background           → colPrimary  #cbc4cb
+ *   • toggled foreground           → colOnPrimary #322f34
+ * Hover / pressed state layers approximate colPrimaryHover / colPrimaryActive.
+ * Qt6 QPushButton drops border-radius unless an explicit border is set
  * (even transparent), hence the 1px transparent border on every state. */
 QPushButton {
     background-color: #cbc4cb;                     /* m3primary — "selected" group-button fill */
     color:            #322f34;                     /* m3onPrimary — darker text/icon */
     border:           1px solid transparent;
-    border-radius:    25px;                        /* 50 / 2 = pill — matches QuickConfig button height */
-    padding:          8px 12px;                    /* horizontal/vertical padding from GroupButton */
-    font-size:        15px;
+    border-radius:    19px;                        /* full pill on a ~38px tall button */
+    padding:          4px 14px;                    /* matches Quickshell pill content padding */
+    font-size:        14px;
     font-weight:      500;
-    min-width:        90px;
-    min-height:       50px;
+    min-width:        60px;
+    min-height:       38px;
 }
 
 QPushButton:hover {
@@ -178,12 +193,12 @@ QPushButton#view-button-cancel {
     background-color: #cbc4cb;                     /* m3primary */
     color:            #322f34;                     /* m3onPrimary */
     border:           1px solid transparent;
-    border-radius:    25px;
-    padding:          8px 12px;
-    font-size:        15px;
+    border-radius:    19px;
+    padding:          4px 14px;
+    font-size:        14px;
     font-weight:      500;
-    min-width:        90px;
-    min-height:       50px;
+    min-width:        60px;
+    min-height:       38px;
 }
 
 QPushButton#view-button-back:hover,
@@ -360,13 +375,12 @@ QComboBox::down-arrow {
 }
 
 /* QComboBox popup — translated from dots-hyprland StyledComboBox.qml:
- *   • surfaceContainerHigh elevated container with NO outer border-radius:
- *     Qt paints the popup window in two layers (an outer QFrame plus the
- *     QAbstractItemView). Rounding only the inner view leaves the outer
- *     window's dark fill exposed at the corners as square shadow patches,
- *     so the popup is kept as a plain rectangle here. The Quickshell
- *     dropdown look comes from the rounded *per-item* selection inside.
- *   • 8px padding so items inset cleanly.
+ *   • surfaceContainerHigh elevated container at Appearance.rounding.normal
+ *     (16px). The popup *window* itself is masked to the same 16px rounded
+ *     rect by ComboBoxPopupStyler in CalamaresApplication.cpp, so nothing
+ *     is drawn outside the rounded shape — the dark installer surface no
+ *     longer leaks through the corners.
+ *   • 8px padding so items inset cleanly inside the rounded container.
  *   • 40px tall delegate rows with 2px gap between items (popup ListView
  *     `spacing: 2`).
  *   • Item background radius = Appearance.rounding.small (8px), with a 4px
@@ -381,7 +395,7 @@ QComboBox QAbstractItemView {
     background-color: #2b2a2a;                     /* m3surfaceContainerHigh — popup elevated surface */
     color:            #cbc5ca;                     /* m3onSurfaceVariant — onLayer3 in dots-hyprland */
     border:           none;                        /* shadow-only frame, no outline */
-    border-radius:    0;                           /* keep popup square so corners don't expose dark patches */
+    border-radius:    16px;                        /* Appearance.rounding.normal — outer popup window also masked to this radius */
     selection-background-color: #4d4b4d;           /* m3secondaryContainer — matches ::item:selected below */
     selection-color:  #ece6e9;                     /* m3onSecondaryContainer */
     padding:          8px;                         /* matches popup.padding */
