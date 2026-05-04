@@ -133,18 +133,21 @@ QPushButton#titleCloseButton:pressed {
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /* Tonal (default) — secondaryContainer fill.
+ * Sized identically to the bottom-nav and pressed-sidebar pills so any
+ * inline button (Change, Edit, dialog actions, welcome link buttons, …)
+ * matches the rest of the chrome out of the box.
  * Note: Qt6 QPushButton drops border-radius unless an explicit border is set
  * (even transparent). Half-of-min-height gives a true pill with no clamping. */
 QPushButton {
     background-color: #4d4b4d;                     /* m3secondaryContainer */
     color:            #ece6e9;                     /* m3onSecondaryContainer */
     border:           1px solid transparent;
-    border-radius:    25px;                        /* min-height 50 / 2 = pill */
-    padding:          9px 24px;
+    border-radius:    28px;                        /* 56 / 2 = pill — matches nav buttons */
+    padding:          0 28px;
     font-size:        15px;
     font-weight:      500;
-    min-width:        88px;
-    min-height:       40px;
+    min-width:        110px;
+    min-height:       56px;
 }
 
 QPushButton:hover {
@@ -414,8 +417,21 @@ QTableView::item:selected {
     color:            #ece6e9;
 }
 
+/* Branch cell — kept rounded so the chevron's hit/selection rectangle
+ * matches the rounded QTreeView::item next to it instead of leaving a
+ * square selection block when a parent row is highlighted. */
 QTreeView::branch {
     background-color: transparent;
+    border-radius:    8px;
+    margin:           1px 0;
+}
+
+QTreeView::branch:hover {
+    background-color: rgba(230, 225, 225, 0.08);
+}
+
+QTreeView::branch:selected {
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
 }
 
 /* Custom chevrons replace the default Qt branch dotted-line indicator.
