@@ -360,29 +360,36 @@ QComboBox::down-arrow {
 }
 
 /* QComboBox popup — translated from dots-hyprland StyledComboBox.qml:
- *   • surfaceContainerHigh elevated container at Appearance.rounding.normal
- *     (16px) with no outline (the popup is a top-level frameless window so
- *     the WM/Qt provides the shadow — matching the QML's StyledRectangularShadow).
- *   • 8px padding so items inset cleanly inside the rounded container.
- *   • 40px tall delegate rows with 2px gap between items (mirrors the
- *     popup ListView's `spacing: 2`).
- *   • Item background radius = Appearance.rounding.small (8px).
- *   • State layers split by selection state, exactly like the QML delegate:
- *       current row     → secondaryContainer (resting / hover / pressed tints)
- *       non-current row → transparent / onSurface 8% / onSurface 12%
- *     so the popup feels identical to the Quickshell settings dropdown. */
+ *   • surfaceContainerHigh elevated container with NO outer border-radius:
+ *     Qt paints the popup window in two layers (an outer QFrame plus the
+ *     QAbstractItemView). Rounding only the inner view leaves the outer
+ *     window's dark fill exposed at the corners as square shadow patches,
+ *     so the popup is kept as a plain rectangle here. The Quickshell
+ *     dropdown look comes from the rounded *per-item* selection inside.
+ *   • 8px padding so items inset cleanly.
+ *   • 40px tall delegate rows with 2px gap between items (popup ListView
+ *     `spacing: 2`).
+ *   • Item background radius = Appearance.rounding.small (8px), with a 4px
+ *     horizontal margin so the rounded selection sits visibly inside the
+ *     popup edge — mirrors the welcome page's QListView behaviour and stops
+ *     QComboBox dropdowns (region, zone, keyboard model, switch keyboard,
+ *     select storage device) from rendering an edge-to-edge square highlight.
+ *   • An explicit `selection-background-color` is required: leaving it
+ *     transparent causes Qt to paint its native blue selection over the
+ *     `::item:selected` layer for QComboBox-internal views. */
 QComboBox QAbstractItemView {
     background-color: #2b2a2a;                     /* m3surfaceContainerHigh — popup elevated surface */
     color:            #cbc5ca;                     /* m3onSurfaceVariant — onLayer3 in dots-hyprland */
     border:           none;                        /* shadow-only frame, no outline */
-    border-radius:    16px;                        /* Appearance.rounding.normal */
-    selection-background-color: transparent;       /* per-item :selected handles it */
+    border-radius:    0;                           /* keep popup square so corners don't expose dark patches */
+    selection-background-color: #4d4b4d;           /* m3secondaryContainer — matches ::item:selected below */
+    selection-color:  #ece6e9;                     /* m3onSecondaryContainer */
     padding:          8px;                         /* matches popup.padding */
     outline:          none;
 }
 
 QComboBox QAbstractItemView::item {
-    margin:        1px 0px;                        /* listView spacing: 2 → 1px above + 1px below */
+    margin:        1px 4px;                        /* horizontal inset matches QListView item highlight */
     border-radius: 8px;                            /* Appearance.rounding.small */
     padding:       0 12px;                         /* 12px insets — anchors.{left,right}Margin */
     min-height:    40px;                           /* delegate implicitHeight */
