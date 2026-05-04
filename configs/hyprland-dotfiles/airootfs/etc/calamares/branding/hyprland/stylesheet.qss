@@ -132,30 +132,36 @@ QPushButton#titleCloseButton:pressed {
  *   support/issues/notes/donate → tonal
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/* Tonal (default) — secondaryContainer fill.
- * Sized identically to the bottom-nav and pressed-sidebar pills so any
- * inline button (Change, Edit, dialog actions, welcome link buttons, …)
- * matches the rest of the chrome out of the box.
+/* Default + nav buttons — sized and coloured to match the toggled state of
+ * a dots-hyprland QuickConfig SelectionGroupButton (e.g. the "Bar position"
+ * row under "Bar & screen"). Those buttons use:
+ *   horizontalPadding: 12, verticalPadding: 8     → padding 8px 12px
+ *   GroupButton background.implicitHeight: 50     → min-height 50
+ *   toggled radius: height / 2                    → 25px (full pill)
+ *   toggled background: colPrimary  #cbc4cb
+ *   toggled foreground: colOnPrimary #322f34      (the "darker text" the user asked for)
+ * Hover / pressed state layers approximate Appearance.colors.colPrimaryHover
+ * and colPrimaryActive in the M3 dark scheme.
  * Note: Qt6 QPushButton drops border-radius unless an explicit border is set
- * (even transparent). Half-of-min-height gives a true pill with no clamping. */
+ * (even transparent), hence the 1px transparent border on every state. */
 QPushButton {
-    background-color: #4d4b4d;                     /* m3secondaryContainer */
-    color:            #ece6e9;                     /* m3onSecondaryContainer */
+    background-color: #cbc4cb;                     /* m3primary — "selected" group-button fill */
+    color:            #322f34;                     /* m3onPrimary — darker text/icon */
     border:           1px solid transparent;
-    border-radius:    28px;                        /* 56 / 2 = pill — matches nav buttons */
-    padding:          0 28px;
+    border-radius:    25px;                        /* 50 / 2 = pill — matches QuickConfig button height */
+    padding:          8px 12px;                    /* horizontal/vertical padding from GroupButton */
     font-size:        15px;
     font-weight:      500;
-    min-width:        110px;
-    min-height:       56px;
+    min-width:        90px;
+    min-height:       50px;
 }
 
 QPushButton:hover {
-    background-color: #5a585a;                     /* m3secondaryContainer + 8% onSurface state layer */
+    background-color: #beb6be;                     /* m3primary + ~8% onPrimary state layer */
 }
 
 QPushButton:pressed {
-    background-color: #67656a;                     /* m3secondaryContainer + 16% onSurface state layer */
+    background-color: #b6aeb6;                     /* m3primary + ~12% onPrimary state layer */
 }
 
 QPushButton:disabled {
@@ -163,34 +169,33 @@ QPushButton:disabled {
     color:            rgba(230, 225, 225, 0.38);
 }
 
-/* Bottom navigation row — Back / Next / Cancel.
- * Size + shape + color mirror an active (toggled) sidebar nav pill exactly:
- *   56px tall stadium · m3secondaryContainer fill · m3onSecondaryContainer text.
- * Hover/pressed state-layer tints match the rest of the tonal-button family. */
+/* Back / Next / Cancel — same dimensions and colours as the default. The
+ * separate selector exists so future per-action tweaks have a hook without
+ * touching every other QPushButton. */
 QPushButton#view-button-back,
 QPushButton#view-button-next,
 QPushButton#view-button-cancel {
-    background-color: #4d4b4d;                     /* m3secondaryContainer */
-    color:            #ece6e9;                     /* m3onSecondaryContainer */
+    background-color: #cbc4cb;                     /* m3primary */
+    color:            #322f34;                     /* m3onPrimary */
     border:           1px solid transparent;
-    border-radius:    28px;                        /* 56 / 2 = pill */
-    padding:          0 28px;
+    border-radius:    25px;
+    padding:          8px 12px;
     font-size:        15px;
     font-weight:      500;
-    min-width:        110px;
-    min-height:       56px;
+    min-width:        90px;
+    min-height:       50px;
 }
 
 QPushButton#view-button-back:hover,
 QPushButton#view-button-next:hover,
 QPushButton#view-button-cancel:hover {
-    background-color: #5a585a;
+    background-color: #beb6be;
 }
 
 QPushButton#view-button-back:pressed,
 QPushButton#view-button-next:pressed,
 QPushButton#view-button-cancel:pressed {
-    background-color: #67656a;
+    background-color: #b6aeb6;
 }
 
 QPushButton#view-button-back:disabled,
@@ -233,7 +238,7 @@ QPushButton#view-button-next {
     icon-size:      18px 18px;
 }
 QPushButton#view-button-cancel {
-    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/close.svg);
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/close-dark.svg);
     icon-size:      18px 18px;
 }
 
