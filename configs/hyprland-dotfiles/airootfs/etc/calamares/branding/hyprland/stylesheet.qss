@@ -587,17 +587,17 @@ QGroupBox::title {
 QProgressBar {
     background-color: #49464a;                     /* m3outlineVariant — track */
     border:           none;
-    border-radius:    11px;
+    border-radius:    3px;                         /* near-square corners */
     text-align:       center;
-    color:            #e6e1e1;                     /* readable on dark track + light chunk both */
+    color:            #141313;                     /* m3background — darkest, sits on light chunk */
     font-size:        13px;
-    font-weight:      500;
+    font-weight:      600;
     min-height:       22px;
 }
 
 QProgressBar::chunk {
     background-color: #cbc4cb;                     /* m3primary — fill */
-    border-radius:    11px;
+    border-radius:    3px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

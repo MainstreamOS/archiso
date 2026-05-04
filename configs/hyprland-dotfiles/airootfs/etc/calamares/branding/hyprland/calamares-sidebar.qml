@@ -32,22 +32,31 @@ Rectangle {
     readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer
     readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant      — divider
 
-    // Step → Material Symbol ligature. Order follows settings.conf `show:`.
+    // Step → Material Symbol ligature. Order follows settings.conf `show:` plus
+    // the auto-inserted ExecutionViewStep that runs between Summary and Finished.
     readonly property var stepIcons: [
-        "waving_hand",   // Welcome
-        "language",      // Locale
-        "keyboard",      // Keyboard
-        "storage",       // Partitions
-        "person",        // Users
-        "fact_check",    // Summary
-        "check_circle"   // Finished
+        "waving_hand",            // Welcome
+        "globe",                  // Locale
+        "keyboard",               // Keyboard
+        "storage",                // Partitions
+        "contacts_product",       // Users
+        "deployed_code_update",   // Apps (netinstall)
+        "inactive_order",         // Summary
+        "install_desktop",        // Install (ExecutionViewStep)
+        "inventory"               // Finished
     ]
 
-    // Insert a separator AFTER these indices. Groupings mirror settings.qml:
-    //   Group 1  [0]      Welcome
-    //   Group 2  [1..4]   Locale · Keyboard · Partitions · Users
-    //   Group 3  [5..6]   Summary · Finished
-    readonly property var separatorAfter: [0, 4]
+    // Optional QML-side label override — keyed by step index so Calamares'
+    // built-in module display string can be replaced without editing .qm files.
+    readonly property var stepLabelOverrides: ({
+        5: "Apps"                 // netinstall → "Package Selection" → "Apps"
+    })
+
+    // Insert a separator AFTER these indices. Groupings:
+    //   [0]      Welcome
+    //   [1..5]   Locale · Keyboard · Partitions · Users · Apps
+    //   [6..8]   Summary · Install · Finished
+    readonly property var separatorAfter: [0, 5]
 
     readonly property int currentStep: ViewManager.currentStepIndex
 
@@ -76,7 +85,9 @@ Rectangle {
                     SettingsNavButton {
                         Layout.fillWidth: true
                         stepIdx: index
-                        stepText: display
+                        stepText: root.stepLabelOverrides[index] !== undefined
+                                  ? root.stepLabelOverrides[index]
+                                  : display
                     }
 
                     // Separator container — collapses to 0 when not in this group's tail.
@@ -142,10 +153,9 @@ Rectangle {
                 })
                 renderType: Text.NativeRendering
                 text:       root.stepIcons[navBtn.stepIdx] || "radio_button_unchecked"
-                color:      navBtn.isCurrent   ? root.colOnSecCont
-                          : navBtn.isCompleted ? root.colOnSurface
-                          :                      root.colOnSurfaceVar
-                opacity:    navBtn.isFuture ? 0.45 : 1.0
+                // Sidebar entries always render at full strength — current pill
+                // uses onSecondaryContainer, every other step uses onBackground.
+                color:      navBtn.isCurrent ? root.colOnSecCont : root.colOnSurface
                 Behavior on color { ColorAnimation { duration: 150 } }
             }
         }
@@ -157,10 +167,7 @@ Rectangle {
             font.pixelSize: 14
             font.weight:    navBtn.isCurrent ? Font.Medium : Font.Normal
             renderType:     Text.NativeRendering
-            color:          navBtn.isCurrent   ? root.colOnSecCont
-                          : navBtn.isCompleted ? root.colOnSurface
-                          :                      root.colOnSurfaceVar
-            opacity:        navBtn.isFuture ? 0.45 : 1.0
+            color:          navBtn.isCurrent ? root.colOnSecCont : root.colOnSurface
             Behavior on color { ColorAnimation { duration: 150 } }
         }
     }
