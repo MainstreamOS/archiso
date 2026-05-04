@@ -55,6 +55,11 @@ repair_venv_paths() {
 # 1. Create a minimal illogical-impulse config so Quickshell knows which
 #    wallpaper to render and enables theming.  Without this file QS has no
 #    background.wallpaperPath and renders nothing.
+#
+#    Also seed background.widgets.clock.style = "cookie" so the live ISO
+#    desktop ships with the cookie clock instead of the upstream "digital"
+#    default.  QS merges this file with its built-in JsonAdapter defaults on
+#    first load, so any unspecified keys still get correct fallbacks.
 # ---------------------------------------------------------------------------
 CONFIG_DIR="$HOME/.config/illogical-impulse"
 CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -64,7 +69,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
           --arg type "scheme-neutral" '{
         "background": {
             "wallpaperPath": $wall,
-            "thumbnailPath": ""
+            "thumbnailPath": "",
+            "widgets": {
+                "clock": {
+                    "style": "cookie"
+                }
+            }
         },
         "appearance": {
             "wallpaperTheming": {
@@ -80,6 +90,15 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
             }
         }
     }' > "$CONFIG_FILE"
+else
+    # Config already exists (e.g. user re-ran something post-marker-removal):
+    # patch in the cookie clock style without touching anything else.
+    tmp=$(mktemp)
+    if jq '.background.widgets.clock.style = "cookie"' "$CONFIG_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$CONFIG_FILE"
+    else
+        rm -f "$tmp"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
