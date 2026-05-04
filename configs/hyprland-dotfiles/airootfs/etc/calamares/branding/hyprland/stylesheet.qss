@@ -354,30 +354,58 @@ QComboBox::down-arrow {
     height: 18px;
 }
 
+/* QComboBox popup — translated from dots-hyprland StyledComboBox.qml:
+ *   • surfaceContainerHigh elevated container at Appearance.rounding.normal
+ *     (16px) with no outline (the popup is a top-level frameless window so
+ *     the WM/Qt provides the shadow — matching the QML's StyledRectangularShadow).
+ *   • 8px padding so items inset cleanly inside the rounded container.
+ *   • 40px tall delegate rows with 2px gap between items (mirrors the
+ *     popup ListView's `spacing: 2`).
+ *   • Item background radius = Appearance.rounding.small (8px).
+ *   • State layers split by selection state, exactly like the QML delegate:
+ *       current row     → secondaryContainer (resting / hover / pressed tints)
+ *       non-current row → transparent / onSurface 8% / onSurface 12%
+ *     so the popup feels identical to the Quickshell settings dropdown. */
 QComboBox QAbstractItemView {
-    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
-    color:            #e6e1e1;
-    border:           1px solid #49464a;           /* m3outlineVariant */
-    border-radius:    12px;                        /* Appearance.rounding.small — matches inset items cleanly */
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh — popup elevated surface */
+    color:            #cbc5ca;                     /* m3onSurfaceVariant — onLayer3 in dots-hyprland */
+    border:           none;                        /* shadow-only frame, no outline */
+    border-radius:    16px;                        /* Appearance.rounding.normal */
     selection-background-color: transparent;       /* per-item :selected handles it */
-    padding:          4px;
+    padding:          8px;                         /* matches popup.padding */
     outline:          none;
 }
 
 QComboBox QAbstractItemView::item {
-    margin:        0px 4px;                        /* horizontal inset so :selected highlight stays inside the rounded popup */
-    border-radius: 8px;
-    padding:       8px 12px;
-    min-height:    32px;
+    margin:        1px 0px;                        /* listView spacing: 2 → 1px above + 1px below */
+    border-radius: 8px;                            /* Appearance.rounding.small */
+    padding:       0 12px;                         /* 12px insets — anchors.{left,right}Margin */
+    min-height:    40px;                           /* delegate implicitHeight */
+    color:         #cbc5ca;                        /* onLayer3 for non-current rows */
 }
 
+/* Non-current row state layers — colLayer3 at increasing opacity. */
 QComboBox QAbstractItemView::item:hover {
-    background-color: rgba(230, 225, 225, 0.08);   /* onSurface @ 8% state layer */
+    background-color: rgba(230, 225, 225, 0.08);   /* colLayer3Hover  ≈ onSurface @ 8%  */
 }
 
+QComboBox QAbstractItemView::item:pressed {
+    background-color: rgba(230, 225, 225, 0.12);   /* colLayer3Active ≈ onSurface @ 12% */
+}
+
+/* Current row — solid secondaryContainer with its own state layers, mirroring
+ * the QML delegate's `(root.currentIndex === itemDelegate.index)` branch. */
 QComboBox QAbstractItemView::item:selected {
-    background-color: #4d4b4d;                     /* m3secondaryContainer */
-    color:            #ece6e9;
+    background-color: #4d4b4d;                     /* colSecondaryContainer */
+    color:            #ece6e9;                     /* colOnSecondaryContainer */
+}
+
+QComboBox QAbstractItemView::item:selected:hover {
+    background-color: #5a585a;                     /* colSecondaryContainerHover */
+}
+
+QComboBox QAbstractItemView::item:selected:pressed {
+    background-color: #67656a;                     /* colSecondaryContainerActive */
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
