@@ -450,21 +450,17 @@ QTableView::item:selected {
     color:            #ece6e9;
 }
 
-/* Branch cell — kept rounded so the chevron's hit/selection rectangle
- * matches the rounded QTreeView::item next to it instead of leaving a
- * square selection block when a parent row is highlighted. */
-QTreeView::branch {
+/* Branch cell — chevrons render with no backdrop in any state on the
+ * netinstall / packagechooser tree. Hover and selection highlights stay
+ * on QTreeView::item only, so the dropdown arrows themselves never get
+ * a coloured pill behind them. */
+QTreeView::branch,
+QTreeView::branch:hover,
+QTreeView::branch:selected,
+QTreeView::branch:selected:active,
+QTreeView::branch:selected:!active {
     background-color: transparent;
-    border-radius:    8px;
-    margin:           1px 0;
-}
-
-QTreeView::branch:hover {
-    background-color: rgba(230, 225, 225, 0.08);
-}
-
-QTreeView::branch:selected {
-    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    border:           none;
 }
 
 /* Custom chevrons replace the default Qt branch dotted-line indicator.
