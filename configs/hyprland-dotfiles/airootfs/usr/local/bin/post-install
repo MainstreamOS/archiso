@@ -277,12 +277,6 @@ if pacman -S --noconfirm --needed plymouth; then
         info "Plymouth BGRT theme configured."
     fi
 
-    if ! grep -q '\bplymouth\b' /etc/mkinitcpio.conf 2>/dev/null; then
-        sed -i 's/\(HOOKS=([^)]*\budev\b\)/\1 plymouth/' /etc/mkinitcpio.conf
-        info "Added plymouth hook to /etc/mkinitcpio.conf"
-    else
-        info "plymouth hook already present in /etc/mkinitcpio.conf"
-    fi
 else
     warn "Plymouth failed to install — boot splash will be skipped."
 fi
