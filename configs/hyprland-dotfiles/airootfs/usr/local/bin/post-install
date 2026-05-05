@@ -918,11 +918,18 @@ CompositorCommand=start-hyprland
 Current=pixie
 SDDMEOF
 
-# Remove the live ISO autologin config. If the user enabled autologin on the
+# Remove any live ISO autologin configs. If the user enabled autologin on the
 # Calamares users page, the displaymanager module writes that choice to
 # /etc/sddm.conf before this script runs.
-rm -f /etc/sddm.conf.d/autologin.conf
-info "Removed live ISO SDDM autologin drop-in."
+#
+# We only remove drop-ins that explicitly target 'liveuser' to avoid
+# clobbering a valid user-requested autologin if it was written to a drop-in.
+find /etc -name "autologin.conf" -type f | while read -r f; do
+    if grep -q "liveuser" "$f"; then
+        rm -f "$f"
+        info "Removed live ISO autologin config: $f"
+    fi
+done
 
 # SDDM user home directory, Hyprland greeter config, and permissions
 mkdir -p /var/lib/sddm/.config/hypr
