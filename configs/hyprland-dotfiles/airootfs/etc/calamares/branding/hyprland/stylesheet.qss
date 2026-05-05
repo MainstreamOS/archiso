@@ -385,10 +385,11 @@ QComboBox::down-arrow {
 
 /* QComboBox popup — translated from dots-hyprland StyledComboBox.qml:
  *   • surfaceContainerHigh elevated container at Appearance.rounding.normal
- *     (16px). The popup *window* itself is masked to the same 16px rounded
- *     rect by ComboBoxPopupStyler in CalamaresApplication.cpp, so nothing
- *     is drawn outside the rounded shape — the dark installer surface no
- *     longer leaks through the corners.
+ *     (16px). ComboBoxPopupStyler in CalamaresApplication.cpp paints the
+ *     rounded fill on the popup's QFrame container itself with antialiasing,
+ *     so the area outside the rounded shape stays transparent and corners
+ *     are smooth (a 1-bit setMask would quantise to integer pixels and leave
+ *     a faint greyish ring around the edge).
  *   • 8px padding so items inset cleanly inside the rounded container.
  *   • 40px tall delegate rows with 2px gap between items (popup ListView
  *     `spacing: 2`).
@@ -401,10 +402,10 @@ QComboBox::down-arrow {
  *     transparent causes Qt to paint its native blue selection over the
  *     `::item:selected` layer for QComboBox-internal views. */
 QComboBox QAbstractItemView {
-    background-color: #2b2a2a;                     /* m3surfaceContainerHigh — popup elevated surface */
+    background-color: transparent;                 /* the popup QFrame paints the rounded m3surfaceContainerHigh fill itself in ComboBoxPopupStyler — leaving the view bg opaque would spill #2b2a2a into the corners on top of the rounded paint */
     color:            #cbc5ca;                     /* m3onSurfaceVariant — onLayer3 in dots-hyprland */
     border:           none;                        /* shadow-only frame, no outline */
-    border-radius:    16px;                        /* Appearance.rounding.normal — outer popup window also masked to this radius */
+    border-radius:    16px;                        /* Appearance.rounding.normal — matches the rounded fill ComboBoxPopupStyler paints on the popup QFrame */
     selection-background-color: #4d4b4d;           /* m3secondaryContainer — matches ::item:selected below */
     selection-color:  #ece6e9;                     /* m3onSecondaryContainer */
     padding:          8px;                         /* matches popup.padding */
