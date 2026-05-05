@@ -1192,6 +1192,21 @@ echo ">>> ISO created: ${ISO_PATH}"
 echo ">>> Embedding Limine BIOS bootstrap (limine bios-install)..."
 "${LIMINE_BIN}" bios-install "${ISO_PATH}"
 
+# ── Strip the architecture suffix from the filename ───────────────────────
+# mkarchiso composes the output as ${iso_name}-${iso_version}-${arch}.iso and
+# offers no setting to suppress the -${arch} segment. Rename in place after
+# bios-install so the embed step still operates on the mkarchiso-named file
+# (avoids any chance of touching the wrong artefact mid-build).
+_ARCH_SUFFIX="-$(awk -F= '/^arch=/{gsub(/"/,"",$2); print $2}' "${PROFILE_DIR}/profiledef.sh")"
+if [[ -n "${_ARCH_SUFFIX}" && "${_ARCH_SUFFIX}" != "-" ]]; then
+    _NEW_ISO_PATH="${ISO_PATH/${_ARCH_SUFFIX}.iso/.iso}"
+    if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
+        mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
+        ISO_PATH="${_NEW_ISO_PATH}"
+        echo ">>> Renamed ISO to: ${ISO_PATH}"
+    fi
+fi
+
 echo ""
 echo "Build complete."
 echo "Output: ${ISO_PATH}"
