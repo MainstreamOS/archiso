@@ -29,10 +29,43 @@ fi
 # so it owns the final mkinitcpio -P call to avoid building the initramfs twice.
 
 # --- 1. Hardware Detection ---
-# Get the real root partition and its PARTUUID
-# We use lsblk because it is more reliable in a chroot than blkid
+# Get the real root partition. For an encrypted install findmnt returns the
+# LUKS mapper (e.g. /dev/mapper/luks-<uuid>) — the underlying partition is
+# what owns the LUKS UUID we need on the kernel cmdline.
 ROOT_PART_DEV=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
-ROOT_PARTUUID=$(lsblk -dno PARTUUID "$ROOT_PART_DEV")
+
+# ROOT_SPEC is what gets substituted into the cmdline. For plain installs
+# this is `root=PARTUUID=<partuuid>`; for LUKS installs it is
+# `rd.luks.name=<luksuuid>=<mapper> root=/dev/mapper/<mapper>` so that
+# sd-encrypt unlocks the partition before the kernel mounts root.
+# DISK_HOST_DEV is the partition we hand to lsblk PKNAME to learn which
+# whole disk hosts the install (used when there is no separate ESP).
+if [[ "$ROOT_PART_DEV" == /dev/mapper/* ]]; then
+    LUKS_MAPPER_NAME=$(basename "$ROOT_PART_DEV")
+    LUKS_BACKING_DEV=$(cryptsetup status "$LUKS_MAPPER_NAME" 2>/dev/null \
+        | awk '/^[[:space:]]*device:/ {print $2; exit}')
+    if [[ -z "$LUKS_BACKING_DEV" ]]; then
+        log "ERROR: cannot resolve LUKS backing device for $LUKS_MAPPER_NAME"
+        exit 1
+    fi
+    LUKS_UUID=$(cryptsetup luksUUID "$LUKS_BACKING_DEV")
+    if [[ -z "$LUKS_UUID" ]]; then
+        log "ERROR: cannot read LUKS UUID from $LUKS_BACKING_DEV"
+        exit 1
+    fi
+    ROOT_SPEC="rd.luks.name=${LUKS_UUID}=${LUKS_MAPPER_NAME} root=/dev/mapper/${LUKS_MAPPER_NAME}"
+    DISK_HOST_DEV="$LUKS_BACKING_DEV"
+    info "Encrypted root: $LUKS_BACKING_DEV (LUKS UUID=$LUKS_UUID) → mapper=$LUKS_MAPPER_NAME"
+else
+    ROOT_PARTUUID=$(lsblk -dno PARTUUID "$ROOT_PART_DEV")
+    if [[ -z "$ROOT_PARTUUID" ]]; then
+        log "ERROR: cannot resolve PARTUUID for $ROOT_PART_DEV"
+        exit 1
+    fi
+    ROOT_SPEC="root=PARTUUID=${ROOT_PARTUUID}"
+    DISK_HOST_DEV="$ROOT_PART_DEV"
+    info "Plaintext root: $ROOT_PART_DEV (PARTUUID=$ROOT_PARTUUID)"
+fi
 
 if [ -d "/boot/efi" ]; then
     BOOT_PATH="/boot/efi"
@@ -42,17 +75,17 @@ if [ -d "/boot/efi" ]; then
 else
     BOOT_PATH="/boot"
     IS_UEFI=false
-    TARGET_DISK=$(lsblk -no PKNAME "$ROOT_PART_DEV")
+    TARGET_DISK=$(lsblk -no PKNAME "$DISK_HOST_DEV")
 fi
 
 # Ensure TARGET_DISK has the /dev/ prefix
 [[ "$TARGET_DISK" != /* ]] && TARGET_DISK="/dev/$TARGET_DISK"
 
 info "Target Disk: $TARGET_DISK"
-info "Detected Root PARTUUID: $ROOT_PARTUUID"
+info "Root spec: $ROOT_SPEC"
 info "Boot Path: $BOOT_PATH (UEFI: $IS_UEFI)"
 
-KERNEL_CMDLINE="root=PARTUUID=$ROOT_PARTUUID rootflags=subvol=/@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0"
+KERNEL_CMDLINE="$ROOT_SPEC rootflags=subvol=/@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0"
 mkdir -p /etc/kernel
 printf '%s\n' "$KERNEL_CMDLINE" > /etc/kernel/cmdline
 info "Kernel command line written to /etc/kernel/cmdline"
@@ -98,7 +131,14 @@ CONF_DEST="$BOOT_PATH/limine.conf"
 
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."
-    sed "s/REPLACE_ME_UUID/$ROOT_PARTUUID/g" "$TEMPLATE" > "$CONF_DEST"
+    # `|` delimiter avoids clashes with the `/dev/mapper/...` path in the LUKS
+    # branch of ROOT_SPEC. Legacy template still using REPLACE_ME_UUID is
+    # accepted for backwards compatibility on older ISOs.
+    if grep -q 'REPLACE_ME_ROOT_SPEC' "$TEMPLATE"; then
+        sed "s|REPLACE_ME_ROOT_SPEC|$ROOT_SPEC|g" "$TEMPLATE" > "$CONF_DEST"
+    else
+        sed "s|REPLACE_ME_UUID|${ROOT_PARTUUID:-}|g" "$TEMPLATE" > "$CONF_DEST"
+    fi
     rm -f "$TEMPLATE"
     info "Config deployed to $CONF_DEST, template removed."
 elif [ -f "$CONF_DEST" ]; then
