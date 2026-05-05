@@ -1025,6 +1025,23 @@ SUDOCLEANEOF
 systemctl enable sudo-cleanup.service 2>/dev/null || true
 rm -f /var/lib/pacman/db.lck 2>/dev/null || true
 
+# Visual feedback ('*' per keystroke) at sudo prompts. Default sudo gives no
+# echo at all, which catches new users out — they can't tell whether the
+# keyboard is being read. Drop-in lives under sudoers.d so package upgrades
+# to /etc/sudoers can never clobber it; validated with visudo -cf so a syntax
+# error never lands on the installed system.
+info "Installing /etc/sudoers.d/pwfeedback (visual feedback at sudo prompts)..."
+{
+    pwf_tmp=$(mktemp)
+    printf 'Defaults pwfeedback\n' > "$pwf_tmp"
+    if visudo -cf "$pwf_tmp" >/dev/null 2>&1; then
+        install -m 0440 -o root -g root "$pwf_tmp" /etc/sudoers.d/pwfeedback
+    else
+        warn "pwfeedback drop-in failed visudo validation; not installing."
+    fi
+    rm -f "$pwf_tmp"
+}
+
 # ---------------------------------------------------------------------------
 # 6b. PACMAN KEYRING INITIALIZATION
 # ---------------------------------------------------------------------------
