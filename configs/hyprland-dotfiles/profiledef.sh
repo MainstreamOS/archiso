@@ -62,5 +62,6 @@ file_permissions=(
 
   # System config
   ["/etc/sudoers.d/g_wheel"]="0:0:440"
+  ["/etc/sudoers.d/liveuser"]="0:0:440"
   ["/etc/systemd/system/systemd-firstboot.service"]="0:0:644"
 )

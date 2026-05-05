@@ -1,0 +1,9 @@
+[Trigger]
+Type = Package
+Operation = Install
+Target = hyprland
+
+[Action]
+Description = Configure liveuser and fix hyprland session entry
+When = PostTransaction
+Exec = /bin/bash -c 'passwd -d liveuser; sed -i "s/Exec=Hyprland/Exec=start-hyprland/" /usr/share/wayland-sessions/hyprland.desktop'
