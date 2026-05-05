@@ -275,6 +275,15 @@ QPushButton#donateButton {
     icon-size:      18px 18px;
 }
 
+/* Keyboard page — "restore defaults" button next to the model dropdown.
+ * The default Calamares keyboard module bakes a light-grey restore.png
+ * into its Qt resource bundle; that icon disappears against the filled
+ * m3primary button surface, so swap in the dark M3 refresh glyph. */
+QPushButton#buttonRestore {
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/restore.svg);
+    icon-size:      18px 18px;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * LABELS
  * ──────────────────────────────────────────────────────────────────────────── */
