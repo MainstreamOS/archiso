@@ -757,6 +757,15 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             cp -a "$PLYMOUTH_SRC" "$PLYMOUTH_DST"
             find "$PLYMOUTH_DST" -type d -exec chmod 755 {} +
             find "$PLYMOUTH_DST" -type f -exec chmod 644 {} +
+            # cp -a preserves the iso-builder UID from the clone, which leaves
+            # status_shutdown.png / mainstream.script (and the rest of the
+            # theme dir) unowned by the invoking user — git can't stash or
+            # discard them afterward. The end-of-build chown only covers
+            # SKEL_DIR; this directory lives under usr/share, so hand it back
+            # explicitly to SUDO_USER here.
+            if [[ -n "${SUDO_USER:-}" ]]; then
+                chown -R "$SUDO_USER":"$SUDO_USER" "$PLYMOUTH_DST"
+            fi
             info "Mainstream Plymouth theme deployed to airootfs."
         else
             warn "Mainstream Plymouth theme missing from dotfiles repo — live splash will fall back."
