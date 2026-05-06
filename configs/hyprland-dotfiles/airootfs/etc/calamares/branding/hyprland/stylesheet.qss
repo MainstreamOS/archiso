@@ -425,7 +425,15 @@ QComboBox QAbstractItemView {
     background-color: #2b2a2a;                     /* m3surfaceContainerHigh — popup elevated surface */
     color:            #cbc5ca;                     /* m3onSurfaceVariant — onLayer3 in dots-hyprland */
     border:           none;                        /* shadow-only frame, no outline */
-    border-radius:    16px;                        /* Appearance.rounding.normal — outer popup window also masked to this radius */
+    /* Intentionally NO border-radius on the view itself.
+     * The outer popup window is already shaped to a 16-px rounded rect by
+     * ComboBoxPopupStyler::applyRoundedMask in CalamaresApplication.cpp;
+     * having the view *also* round itself caused the gap pixels between
+     * the view's rounded clip and its rectangular bounds to render at the
+     * default panel tint on Hyprland (the popup's input mask cuts the
+     * window but Qt still paints those pixels), which read as squared-off
+     * lighter tips at every corner. Letting the view paint corner-to-corner
+     * means the only rounded boundary is the window mask itself. */
     selection-background-color: #4d4b4d;           /* m3secondaryContainer — matches ::item:selected below */
     selection-color:  #ece6e9;                     /* m3onSecondaryContainer */
     padding:          8px;                         /* matches popup.padding */
