@@ -257,21 +257,28 @@ QPushButton#view-button-cancel {
     icon-size:      18px 18px;
 }
 
-/* Welcome page link buttons */
+/* Welcome page link buttons.
+ *
+ * These render as filled m3primary pills (background #cbc4cb, see the
+ * generic QPushButton rule above), so the icons need the m3onPrimary tone
+ * #322f34 to read clearly — same treatment as arrow_forward / arrow_back
+ * on the nav buttons. The light #cbc5ca Material glyphs (favorite.svg etc.)
+ * are kept for any future use on dark surfaces; we point at *-dark variants
+ * here. */
 QPushButton#supportButton {
-    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/help_outline.svg);
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/help_outline-dark.svg);
     icon-size:      18px 18px;
 }
 QPushButton#knownIssuesButton {
-    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/bug_report.svg);
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/bug_report-dark.svg);
     icon-size:      18px 18px;
 }
 QPushButton#releaseNotesButton {
-    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/article.svg);
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/article-dark.svg);
     icon-size:      18px 18px;
 }
 QPushButton#donateButton {
-    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/favorite.svg);
+    qproperty-icon: url(/etc/calamares/branding/hyprland/icons/favorite-dark.svg);
     icon-size:      18px 18px;
 }
 
