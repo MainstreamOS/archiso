@@ -31,6 +31,14 @@
 
 set -euo pipefail
 
+# Speed up package builds by using all available CPU cores
+export MAKEFLAGS="-j$(nproc)"
+
+# Speed up package compression using multi-threaded zstd
+export COMPRESSZST=(zstd -c -z -q -T0 -)
+
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
