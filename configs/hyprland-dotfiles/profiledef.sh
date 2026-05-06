@@ -28,11 +28,9 @@ file_permissions=(
   ["/usr/local/bin/install-limine"]="0:0:755"
   ["/usr/local/bin/post-install"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
-  ["/usr/local/bin/calamares-launch"]="0:0:755"
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
   ["/usr/local/bin/live-setup"]="0:0:755"
   ["/usr/local/bin/choose-mirror"]="0:0:755"
-  ["/usr/local/bin/sddm-bg-helper"]="0:0:755"
 
   # SDDM user Hyprland greeter config (sddm uid:gid = 963:963)
   ["/var/lib/sddm/.config/hypr"]="963:963:700"
