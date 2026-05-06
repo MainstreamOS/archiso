@@ -361,6 +361,16 @@ QComboBox {
     padding:          8px 16px;
     min-width:        120px;
     min-height:       24px;
+    /* Use the scrollbar-based popup instead of the default scroll-arrow popup.
+     * The default popup wraps the QListView in a QComboBoxPrivateContainer
+     * with QComboBoxPrivateScroller widgets at the top and bottom; those
+     * scroller widgets sit at the popup-frame corners, are painted by the
+     * platform style, and don't honor our rounded paint or window mask —
+     * which is what showed up as small black squares at the dropdown
+     * corners. With combobox-popup: 0 the popup becomes a plain QListView
+     * with a thin pill-style scrollbar (see the QScrollBar rules below),
+     * so the rounded #2b2a2a surface is the only thing drawn. */
+    combobox-popup:   0;
 }
 
 QComboBox:hover {
@@ -396,6 +406,10 @@ QComboBox::down-arrow {
  *     rect by ComboBoxPopupStyler in CalamaresApplication.cpp, so nothing
  *     is drawn outside the rounded shape — the dark installer surface no
  *     longer leaks through the corners.
+ *   • Uses the scrollbar-based popup (combobox-popup: 0 above), so long
+ *     dropdowns scroll via the M3 pill scrollbar styled below instead of
+ *     the platform's default scroll-arrow buttons (which left small black
+ *     squares at the popup corners).
  *   • 8px padding so items inset cleanly inside the rounded container.
  *   • 40px tall delegate rows with 2px gap between items (popup ListView
  *     `spacing: 2`).
