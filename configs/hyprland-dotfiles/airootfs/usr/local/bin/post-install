@@ -2070,6 +2070,102 @@ PYEOF
     fi
 fi
 
+# =============================================================================
+# firefox-mpris-hyprland
+# =============================================================================
+# Per-tab MPRIS bridge for Firefox/Zen/LibreWolf/etc. — gives the Hyprland
+# media-control panel full track info, position, and YouTube thumbnails for
+# any Firefox-based browser. Lightweight alternative to plasma-browser-
+# integration (which would drag in ~600MB of KDE deps).
+#
+# Strategy: clone repo into the target user's ~/Documents/GitHub. If `cargo`
+# is available in the chroot, build the host now and install it system-wide
+# (binary + native-messaging manifest for every Firefox fork detected) so
+# the user only has to load the WebExtension on first browser launch. If
+# cargo is missing, leave install.sh for the user to run after first boot.
+
+setup_firefox_mpris() {
+    if [[ -z "${MAIN_USER:-}" || -z "${MAIN_USER_HOME:-}" ]]; then
+        warn "firefox-mpris: MAIN_USER unset; skipping."
+        return 0
+    fi
+    info "firefox-mpris: configuring per-tab MPRIS bridge for Firefox-based browsers..."
+
+    local repo_url="https://github.com/MainstreamOS/firefox-mpris-hyprland"
+    local target_parent="${MAIN_USER_HOME}/Documents/GitHub"
+    local target_dir="${target_parent}/firefox-mpris-hyprland"
+
+    install -d -m 0755 -o "$MAIN_USER" -g "$MAIN_USER" \
+        "${MAIN_USER_HOME}/Documents" "$target_parent"
+
+    if [[ ! -d "$target_dir/.git" ]]; then
+        if ! command -v git >/dev/null 2>&1; then
+            warn "firefox-mpris: git not in chroot; skipping pre-clone."
+            return 0
+        fi
+        if ! sudo -u "$MAIN_USER" git clone --depth 1 "$repo_url" "$target_dir"; then
+            warn "firefox-mpris: clone failed (network?); user can clone manually after first boot."
+            return 0
+        fi
+        info "firefox-mpris: cloned to $target_dir"
+    else
+        info "firefox-mpris: reusing existing checkout at $target_dir"
+    fi
+
+    if ! command -v cargo >/dev/null 2>&1; then
+        info "firefox-mpris: rust toolchain not present in chroot — deferring build."
+        info "                User runs after first boot:"
+        info "                  sudo pacman -S rust && cd '$target_dir' && ./install.sh"
+        return 0
+    fi
+
+    info "firefox-mpris: building host (cargo build --release as $MAIN_USER)..."
+    if ! sudo -u "$MAIN_USER" bash -lc "cd '$target_dir/host' && cargo build --release"; then
+        warn "firefox-mpris: build failed; user can retry after first boot via $target_dir/install.sh"
+        return 0
+    fi
+
+    install -Dm0755 "$target_dir/host/target/release/firefox-mpris-host" \
+        /usr/bin/firefox-mpris-host
+
+    local manifest_src="$target_dir/packaging/firefox-mpris-host.json.in"
+    local manifest_name="io.github.mainstreamos.firefox_mpris_hyprland.json"
+
+    _firefox_mpris_write_manifest() {
+        local dest_dir="$1"
+        install -d -m 0755 "$dest_dir"
+        sed 's|@HOST_BINARY@|/usr/bin/firefox-mpris-host|g' "$manifest_src" > "$dest_dir/$manifest_name"
+        chmod 0644 "$dest_dir/$manifest_name"
+    }
+
+    _firefox_mpris_write_manifest /usr/lib/mozilla/native-messaging-hosts
+    info "firefox-mpris: installed system manifest at /usr/lib/mozilla/native-messaging-hosts/"
+
+    # Mirror to every other Firefox-fork system path that exists. Each fork
+    # reads native-messaging hosts from a different directory; writing here
+    # means the user gets working MPRIS even before the per-user install.sh
+    # runs. (zen-browser-bin AUR puts itself at /opt/zen-browser-bin/.)
+    local fork
+    for fork in /opt/zen-browser-bin/distribution \
+                /usr/lib/zen \
+                /usr/lib/librewolf \
+                /usr/lib/floorp \
+                /usr/lib/waterfox; do
+        if [[ -d "$fork" ]]; then
+            _firefox_mpris_write_manifest "$fork/native-messaging-hosts"
+            info "firefox-mpris: installed system manifest for $(basename "$fork")."
+        fi
+    done
+
+    info "firefox-mpris: system-wide setup complete."
+    info "                Final user step (one-time, per browser):"
+    info "                  about:debugging#/runtime/this-firefox"
+    info "                  → 'Load Temporary Add-on…'"
+    info "                  → $target_dir/extension/manifest.json"
+}
+
+setup_firefox_mpris
+
 cleanup_limine_boot_entries
 
 info "Post-install synchronization complete. System is ready for reboot."
