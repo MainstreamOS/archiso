@@ -988,7 +988,81 @@ else
 fi
 
 
+# ── Pre-build Hyprland plugins ─────────────────────────────────────────────
+# Build user-side Hyprland plugins from source on the build host and drop
+# the resulting .so files into /etc/skel/.local/share/hyprland/plugins/ so
+# fresh user accounts have a starter copy on first login.
+#
+# IMPORTANT: this is a *starter*, not the final artifact. Hyprland's plugin
+# ABI is pinned to the exact compositor version, and Arch can publish new
+# hyprland releases between this ISO build and the user's installation —
+# meaning the prebuilt may not load. The dots post-install script
+# (sdata/subcmd-install/3.files.sh:_ensure_hyprland_plugin) treats the
+# prebuilt as a fallback only: it always rebuilds the plugin against the
+# user's installed hyprland to guarantee ABI match, replacing the prebuilt
+# with the freshly-built .so on success. The starter only matters when
+# the rebuild itself fails (offline install, missing build deps), in which
+# case the pacman rebuild hook will retry on the next `pacman -Syu` that
+# touches hyprland.
+#
+# Build failures here are non-fatal — we warn and continue. The ISO still
+# ships, and the post-install will build from source on the user's system.
+
+info "Installing build deps for plugin prebuild..."
+pacman -S --noconfirm --needed hyprland 2>&1 | grep -v "is up to date" || true
+
+prebuild_hyprland_plugin() {
+    local name="$1"
+    local repo_url="$2"
+    local branch="$3"
+    local src_subdir="$4"
+    local so_filename="$5"
+
+    info "Pre-building $name plugin from $repo_url ($branch)..."
+
+    local work="/tmp/iso-plugin-$name"
+    rm -rf "$work"
+
+    if ! su "$BUILD_USER" -c "git clone --depth=1 --branch '$branch' '$repo_url' '$work'"; then
+        warn "$name: git clone failed — skipping prebuild (post-install will build from source)."
+        return 0
+    fi
+
+    local build_dir="$work"
+    if [[ -n "$src_subdir" ]]; then
+        build_dir="$work/$src_subdir"
+    fi
+
+    if ! su "$BUILD_USER" -c "cd '$build_dir' && make all -j$(nproc)"; then
+        warn "$name: make failed — skipping prebuild (post-install will build from source)."
+        rm -rf "$work"
+        return 0
+    fi
+
+    if [[ ! -f "$build_dir/$so_filename" ]]; then
+        warn "$name: build succeeded but $so_filename not found at $build_dir — skipping prebuild."
+        rm -rf "$work"
+        return 0
+    fi
+
+    local skel_plugins="$SKEL_DIR/.local/share/hyprland/plugins"
+    mkdir -p "$skel_plugins"
+    cp -f "$build_dir/$so_filename" "$skel_plugins/$so_filename"
+    chmod 755 "$skel_plugins/$so_filename"
+    success "$so_filename pre-built and deployed to skel ($skel_plugins/$so_filename)."
+
+    rm -rf "$work"
+}
+
+prebuild_hyprland_plugin "scrolloverview" \
+    "https://github.com/MainstreamOS/hyprland-scroll-overview" \
+    "mainstream" \
+    "" \
+    "scrolloverview.so"
+
+
 # Hand skel ownership back to the invoking user so Git can modify it later
+# (also catches any prebuilt .so files dropped above).
 if [[ -n "${SUDO_USER:-}" ]]; then
     chown -R "$SUDO_USER":"$SUDO_USER" "$SKEL_DIR"
 fi
