@@ -697,6 +697,34 @@ rm -f "$PKG_OUTPUT_DIR"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
 repo-add "$PKG_OUTPUT_DIR/mainstream.db.tar.gz" "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
 info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz"
 
+# ── Purge stale copies from host pacman cache ──────────────────────────────
+# mkarchiso's pacstrap (PHASE 2 below) uses the host's
+# /var/cache/pacman/pkg/ as its package cache. When a previous ISO
+# build deposited copies there and we just rebuilt the local repo
+# with new checksums (e.g. after --clean), pacstrap finds the stale
+# cached file, sees its checksum mismatch the freshly-regenerated
+# mainstream.db, and aborts with "invalid or corrupted package".
+# Without this purge, the only fix is `sudo pacman -Scc` between
+# every --clean run — punishing for an iterative build loop.
+#
+# We only remove files whose names match what's now in our local
+# repo, so unrelated cached packages (kernel, base-devel, etc.) stay
+# warm. Per-package `rm` calls already exist inside the local
+# PKGBUILD loop (line ~486), but those don't cover METAPKGS, AUR_DEPS,
+# or the cmake-built mainstream-microtex-git / mainstream-google-sans-flex —
+# this batch sweep covers everything in $PKG_OUTPUT_DIR uniformly.
+info "Purging stale copies of locally-built packages from host pacman cache..."
+_purged=0
+for _pkg in "$PKG_OUTPUT_DIR"/*.pkg.tar.zst; do
+    [[ -f "$_pkg" ]] || continue
+    _cached="/var/cache/pacman/pkg/$(basename "$_pkg")"
+    if [[ -f "$_cached" ]]; then
+        rm -f "$_cached"
+        (( _purged++ )) || true
+    fi
+done
+info "Purged ${_purged} stale package(s) from /var/cache/pacman/pkg/."
+
 # ── Deploy dotfiles to /etc/skel ───────────────────────────────────────────
 SKEL_DIR="$PROFILE_DIR/airootfs/etc/skel"
 DOTS_WORK="/tmp/iso-dots-deploy"
