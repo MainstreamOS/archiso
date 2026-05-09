@@ -320,6 +320,21 @@ if [[ "$CLEAN_BUILD" == true ]]; then
     info "Clean build — removing all existing pre-built packages..."
     rm -f "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
     info "Package output directory cleared."
+
+    # Also wipe the ISO output and mkarchiso work dirs so a --clean run
+    # starts from a true clean slate. Without this, leftover work/ state
+    # from a previous (possibly failed) run can interfere with the next
+    # mkarchiso pacstrap, and stale ISOs in out/ accumulate. Bakes in
+    # the manual `rm -rf out work` step that previously had to happen
+    # between --clean iterations.
+    if [[ -d "$OUT_DIR" ]]; then
+        info "Removing $OUT_DIR ..."
+        rm -rf "$OUT_DIR"
+    fi
+    if [[ -d "$WORK_DIR" ]]; then
+        info "Removing $WORK_DIR ..."
+        rm -rf "$WORK_DIR"
+    fi
 fi
 
 # Apply calamares-only clean if requested
