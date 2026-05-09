@@ -1060,6 +1060,12 @@ prebuild_hyprland_plugin "scrolloverview" \
     "" \
     "scrolloverview.so"
 
+prebuild_hyprland_plugin "hyprbars" \
+    "https://github.com/MainstreamOS/hyprland-plugins" \
+    "main" \
+    "hyprbars" \
+    "hyprbars.so"
+
 
 # Hand skel ownership back to the invoking user so Git can modify it later
 # (also catches any prebuilt .so files dropped above).
