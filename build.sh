@@ -814,6 +814,37 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             warn "Mainstream Plymouth theme missing from dotfiles repo — live splash will fall back."
         fi
 
+        # Deploy plugin rebuild.sh hooks from dots-hyprland sdata/ into the
+        # iso's airootfs. dots-hyprland/sdata/{plugin}/rebuild.sh is the
+        # single source of truth for both install paths:
+        #   - On the iso, pacman's PostTransaction hook
+        #     (95-{plugin}-rebuild.hook) invokes /usr/local/lib/{plugin}/rebuild.sh
+        #     during package install — that file is what we drop here.
+        #   - On a user's machine, install-dotfiles copies the same
+        #     sdata/{plugin}/rebuild.sh to /usr/local/lib/{plugin}/rebuild.sh.
+        # Pulling from a single sdata/ tree at iso build time means there's no
+        # second copy in this repo to keep in sync.
+        for _plugin in hyprbars scrolloverview; do
+            _rb_src="$DOTS_WORK/sdata/$_plugin/rebuild.sh"
+            _rb_dst="$PROFILE_DIR/airootfs/usr/local/lib/$_plugin/rebuild.sh"
+            if [[ -f "$_rb_src" ]]; then
+                mkdir -p "$(dirname "$_rb_dst")"
+                cp -f "$_rb_src" "$_rb_dst"
+                # Set 755 in the source tree too; profiledef.sh's
+                # file_permissions array re-applies it after mkarchiso stages
+                # into work/airootfs/, but having it right here keeps the
+                # source tree self-consistent.
+                chmod 755 "$_rb_dst"
+                if [[ -n "${SUDO_USER:-}" ]]; then
+                    chown "$SUDO_USER":"$SUDO_USER" "$_rb_dst"
+                fi
+                info "$_plugin rebuild.sh deployed to airootfs from sdata/."
+            else
+                warn "$_plugin rebuild.sh missing in dotfiles sdata/ ($_rb_src) — iso will ship without it; pacman's $_plugin rebuild hook will fail."
+            fi
+        done
+        unset _plugin _rb_src _rb_dst
+
         info "Dotfiles deployed to skel."
     else
         warn "dots/ directory not found in repo — skel dotfiles not deployed."

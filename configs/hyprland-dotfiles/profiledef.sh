@@ -85,6 +85,10 @@ file_permissions=(
   # Sleep hook
   ["/usr/lib/systemd/system-sleep/hyprland-dpms.sh"]="0:0:755"
 
+  # Plugin rebuild hooks (pacman PostTransaction calls these on hyprland install/upgrade)
+  ["/usr/local/lib/hyprbars/rebuild.sh"]="0:0:755"
+  ["/usr/local/lib/scrolloverview/rebuild.sh"]="0:0:755"
+
   # System config
   ["/etc/sudoers.d/g_wheel"]="0:0:440"
   ["/etc/sudoers.d/liveuser"]="0:0:440"
