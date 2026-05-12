@@ -1764,8 +1764,8 @@ if [[ -n "$MAIN_USER" ]]; then
             echo "---"
         } > "$_BUILD_LOG"
 
-        info "Cloning MainstreamOS/hyprland-plugins into $_SRC_DIR..."
-        if ! git -C "$_SRC_DIR" clone --depth=1 https://github.com/MainstreamOS/hyprland-plugins . \
+        info "Cloning MainstreamOS/hyprland-plugins (mainstream) into $_SRC_DIR..."
+        if ! git -C "$_SRC_DIR" clone --depth=1 --branch mainstream https://github.com/MainstreamOS/hyprland-plugins . \
                 >> "$_BUILD_LOG" 2>&1; then
             warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
             rm -rf "$_SRC_DIR"
