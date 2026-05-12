@@ -7,7 +7,6 @@ iso_publisher="Mainstream"
 iso_application="Mainstream Dotfiles Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m%d)"
 install_dir="arch"
-arch="x86_64"
 buildmodes=('iso')
 bootmodes=('bios.limine'
            'uefi.limine')
