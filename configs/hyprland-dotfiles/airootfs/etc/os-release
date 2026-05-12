@@ -1,0 +1,13 @@
+NAME="Mainstream OS"
+PRETTY_NAME="Mainstream OS"
+ID=arch
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;0;141;195"
+HOME_URL="https://mainstreamos.org/"
+DOCUMENTATION_URL="https://mainstreamos.org/docs"
+SUPPORT_URL="https://github.com/MainstreamOS/discussions"
+BUG_REPORT_URL="https://github.com/MainstreamOS/dots-hyprland/issues"
+PRIVACY_POLICY_URL="https://mainstreamos.org/privacy"
+DONATE_URL="https://mainstreamos.org/donate"
+LOGO=mainstream-logo
