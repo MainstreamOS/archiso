@@ -32,31 +32,46 @@ Rectangle {
     readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer
     readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant      — divider
 
-    // Step → Material Symbol ligature. Order follows settings.conf `show:` plus
-    // the auto-inserted ExecutionViewStep that runs between Summary and Finished.
-    readonly property var stepIcons: [
-        "waving_hand",            // Welcome
-        "globe",                  // Locale
-        "keyboard",               // Keyboard
-        "storage",                // Partitions
-        "contacts_product",       // Users
-        "deployed_code_update",   // Apps (netinstall)
-        "inactive_order",         // Summary
-        "install_desktop",        // Install (ExecutionViewStep)
-        "inventory"               // Finished
-    ]
-
-    // Optional QML-side label override — keyed by step index so Calamares'
-    // built-in module display string can be replaced without editing .qm files.
-    readonly property var stepLabelOverrides: ({
-        5: "Apps"                 // netinstall → "Package Selection" → "Apps"
+    // Step pretty-name → Material Symbol ligature.
+    //
+    // Keyed by the module's prettyName() (which is what the ViewManager
+    // model exposes as `display`) instead of position, so inserting or
+    // removing a step in settings.conf doesn't silently shift every
+    // icon down by one. Entries for both the raw netinstall pretty
+    // name ("Package selection") and our post-override label ("Apps")
+    // are kept so the lookup is robust either way.
+    readonly property var stepIcons: ({
+        "Welcome":           "waving_hand",
+        "Location":          "globe",                  // locale module's prettyName
+        "Keyboard":          "keyboard",
+        "Partitions":        "storage",
+        "Users":             "contacts_product",
+        "Get Started":       "rocket_launch",          // installmethod picker
+        "Apps":              "deployed_code_update",   // post-override label
+        "Package selection": "deployed_code_update",   // raw netinstall prettyName
+        "Summary":           "inactive_order",
+        "Install":           "install_desktop",        // ExecutionViewStep
+        "Set Up":            "install_desktop",        // setupMode variant
+        "Finish":            "inventory"
     })
 
-    // Insert a separator AFTER these indices. Groupings:
-    //   [0]      Welcome
-    //   [1..5]   Locale · Keyboard · Partitions · Users · Apps
-    //   [6..8]   Summary · Install · Finished
-    readonly property var separatorAfter: [0, 5]
+    // QML-side label override, keyed by Calamares' built-in display
+    // string. Keeps the netinstall section labeled "Apps" without
+    // touching .qm files. New entries can be added here for any
+    // module whose prettyName we want to rename in the sidebar.
+    readonly property var stepLabelOverrides: ({
+        "Package selection": "Apps"
+    })
+
+    // Insert a separator AFTER these steps (keyed by their post-override
+    // display label). Two visual groups:
+    //   "Welcome" alone at top,
+    //   then setup pages up through "Apps" / Install Method / etc.,
+    //   then Summary · Install · Finished.
+    readonly property var separatorAfter: ({
+        "Welcome": true,
+        "Apps":    true
+    })
 
     readonly property int currentStep: ViewManager.currentStepIndex
 
@@ -85,15 +100,21 @@ Rectangle {
                     SettingsNavButton {
                         Layout.fillWidth: true
                         stepIdx: index
-                        stepText: root.stepLabelOverrides[index] !== undefined
-                                  ? root.stepLabelOverrides[index]
+                        stepText: root.stepLabelOverrides[display] !== undefined
+                                  ? root.stepLabelOverrides[display]
                                   : display
                     }
 
-                    // Separator container — collapses to 0 when not in this group's tail.
+                    // Separator container — collapses to 0 when this step
+                    // is not the tail of a group. Keyed off post-override
+                    // label so reordering settings.conf can't desync it.
                     Item {
                         Layout.fillWidth: true
-                        visible: root.separatorAfter.indexOf(index) !== -1
+                        visible: root.separatorAfter[
+                            root.stepLabelOverrides[display] !== undefined
+                                ? root.stepLabelOverrides[display]
+                                : display
+                        ] === true
                         implicitHeight: visible ? 25 : 0   // 12 above + 1 line + 12 below
 
                         Rectangle {
@@ -152,7 +173,10 @@ Rectangle {
                     "opsz": 22
                 })
                 renderType: Text.NativeRendering
-                text:       root.stepIcons[navBtn.stepIdx] || "radio_button_unchecked"
+                // Name-keyed lookup so a sequence reorder doesn't desync
+                // icons. Falls back to a neutral circle for any module
+                // whose pretty name we haven't mapped yet.
+                text:       root.stepIcons[navBtn.stepText] || "radio_button_unchecked"
                 // Sidebar entries always render at full strength — current pill
                 // uses onSecondaryContainer, every other step uses onBackground.
                 color:      navBtn.isCurrent ? root.colOnSecCont : root.colOnSurface
