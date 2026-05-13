@@ -535,33 +535,60 @@ class PMYay(PackageManager):
         self.progress_fraction = (completed_packages * 1.0 / total_packages)
 
     def install(self, pkgs, from_local=False):
+        """
+        Install packages ONE AT A TIME so each install can update the
+        progress bar's status line with the current package name. A
+        batched ``yay -S pkg1 pkg2 ...`` call only emits the (N/M)
+        progress line during pacman's tail-end transaction phase, which
+        for AUR builds is preceded by a long silent ``==> Making
+        package: ...`` phase that leaves the user staring at an
+        unchanging "Install packages." string. Per-package iteration
+        means every yay invocation explicitly sets
+        ``custom_status_message = "Installing X"`` first, so the panel
+        below the progress bar tracks real progress.
+
+        Cost: ~1s of yay startup overhead per package. For typical
+        netinstall selections (~30-60 packages) this is well under the
+        time spent actually downloading + building, and it pays for
+        itself with the UI feedback.
+        """
         if not pkgs:
             return
         self.reset_progress()
 
         user = self._yay_user()
-        if user:
-            # Run yay as the non-root user inside the target chroot.
-            # su -s /bin/bash <user> -c "..." mirrors what post-install
-            # already does for yay-based installs.
-            pkg_str = " ".join(pkgs)
-            command = [
-                "su", "-s", "/bin/bash", user, "-c",
-                "yay -S --noconfirm --needed --noprogressbar " + pkg_str,
-            ]
-        else:
-            # No non-root user available yet — fall back to pacman.
-            # AUR-only packages will be skipped silently by pacman and
-            # can be installed post-boot.
+        if not user:
+            # Single warning for the whole batch, not per package.
             libcalamares.utils.warning(
                 "yay: no non-root user found; "
                 "falling back to pacman for: " + str(pkgs))
-            command = [
-                "pacman", "-S", "--noconfirm", "--needed",
-                "--noprogressbar",
-            ] + pkgs
 
-        libcalamares.utils.target_env_process_output(command, self.line_cb)
+        global custom_status_message
+        for idx, pkg in enumerate(pkgs):
+            # Surface the current package name under the progress bar.
+            # setprogress() is what triggers a UI refresh of the status
+            # message, so the order matters — set the message THEN call
+            # setprogress to push the update to the QML view.
+            custom_status_message = _("Installing %s") % pkg
+            progress = (completed_packages + idx) * 1.0 / total_packages
+            libcalamares.job.setprogress(progress)
+
+            if user:
+                # `--norebuild` + `--nokeepsrc` shave time off repeat
+                # installs (yay otherwise re-runs makepkg every call);
+                # `--noprogressbar` keeps pacman's spinner-bar out of
+                # the log without affecting the (N/M) install lines.
+                command = [
+                    "su", "-s", "/bin/bash", user, "-c",
+                    ("yay -S --noconfirm --needed --noprogressbar "
+                     "--norebuild --nokeepsrc -- ") + pkg,
+                ]
+            else:
+                command = [
+                    "pacman", "-S", "--noconfirm", "--needed",
+                    "--noprogressbar", "--", pkg,
+                ]
+            libcalamares.utils.target_env_process_output(command, self.line_cb)
 
     def remove(self, pkgs):
         if not pkgs:

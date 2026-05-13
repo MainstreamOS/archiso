@@ -5,3 +5,13 @@ type:       "job"
 name:       "packages"
 interface:  "python"
 script:     "main.py"
+
+# Weight the packages step heavily so the progress bar reflects the
+# wall-clock cost of installing netinstall selections. Upstream default
+# is 1 — same slice as a tiny step like networkcfg or fstab — which
+# means the bar zooms to ~85% before packages starts and then crawls
+# through the actual heavy lifting. 30 puts it on par with the squashfs
+# unpack (unpackfs ships weight 12) plus the dotfiles install phase
+# combined, so the bar advances steadily across the whole install
+# instead of stalling on the last quarter.
+weight:     30
