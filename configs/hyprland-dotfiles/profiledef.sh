@@ -70,6 +70,7 @@ file_permissions=(
   ["/etc/skel/.config/hypr/hyprland/shellOverrides"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland/shellOverrides/main.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/hyprland.lua"]="0:0:644"
+  ["/etc/skel/.config/hypr/monitors.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/workspaces.lua"]="0:0:644"
   ["/etc/skel/.config/quickshell"]="0:0:755"
   ["/etc/skel/.config/quickshell/ii"]="0:0:755"
