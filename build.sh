@@ -1135,8 +1135,8 @@ prebuild_hyprland_plugin "scrolloverview" \
     "scrolloverview.so"
 
 prebuild_hyprland_plugin "hyprbars" \
-    "https://github.com/MainstreamOS/hyprland-plugins" \
-    "main" \
+    "https://github.com/hyprwm/hyprland-plugins" \
+    "v0.55.0" \
     "hyprbars" \
     "hyprbars.so"
 
