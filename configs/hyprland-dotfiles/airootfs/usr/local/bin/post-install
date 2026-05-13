@@ -364,17 +364,17 @@ if [[ -n "$GPU_INFO" ]]; then
         printf '%s\n' "${existing# }" > /etc/kernel/cmdline
     }
     gpu_append_env() { echo "$1" >> /etc/environment; info "Set environment: $1"; }
-    # Write a single 'env = KEY,VALUE' line into the user's Hyprland custom env.conf
-    # Idempotent — skips if the key is already present.
+    # Write a single 'hl.env("KEY", "VALUE")' line into the user's Hyprland
+    # custom env.lua. Idempotent — skips if the key is already present.
     gpu_append_hypr_env() {
         local _key="$1" _val="$2"
-        local _env_conf="$MAIN_USER_HOME/.config/hypr/custom/env.conf"
-        if [[ ! -f "$_env_conf" ]]; then
-            warn "hypr env.conf not found at $_env_conf — skipping: $_key"
+        local _env_lua="$MAIN_USER_HOME/.config/hypr/custom/env.lua"
+        if [[ ! -f "$_env_lua" ]]; then
+            warn "hypr env.lua not found at $_env_lua — skipping: $_key"
             return
         fi
-        if ! grep -q "^env = ${_key}" "$_env_conf"; then
-            echo "env = ${_key},${_val}" >> "$_env_conf"
+        if ! grep -qE "hl\.env\(\"${_key}\"" "$_env_lua"; then
+            printf 'hl.env("%s", "%s")\n' "$_key" "$_val" >> "$_env_lua"
             info "Added hypr env: ${_key}=${_val}"
         else
             info "hypr env already set: ${_key} — skipping."
@@ -405,17 +405,18 @@ if [[ -n "$GPU_INFO" ]]; then
         fi
         local _changed=false
         # after_sleep_cmd: delay dpms on after system wake from suspend/hibernate
-        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch dpms on" "$_hypridle" \
-            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch dpms on" "$_hypridle"; then
-            sed -i '/after_sleep_cmd/s/hyprctl dispatch dpms on/sleep 2 \&\& hyprctl dispatch dpms on/' \
+        # Hypridle config uses Lua-form dispatcher: hl.dsp.dpms({action = "on"})
+        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle" \
+            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle"; then
+            sed -i '/after_sleep_cmd/s|hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|sleep 2 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|' \
                 "$_hypridle"
             _changed=true
             info "Added 2s delay before dpms on in after_sleep_cmd (NVIDIA resume fix)."
         fi
         # on-resume: delay dpms on when idle screen-blank is cleared by activity
-        if grep -qE "on-resume\s*=.*hyprctl dispatch dpms on" "$_hypridle" \
-            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch dpms on" "$_hypridle"; then
-            sed -i '/on-resume/s/hyprctl dispatch dpms on/sleep 1 \&\& hyprctl dispatch dpms on/' \
+        if grep -qE "on-resume\s*=.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle" \
+            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle"; then
+            sed -i '/on-resume/s|hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|sleep 1 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|' \
                 "$_hypridle"
             _changed=true
             info "Added 1s delay before dpms on in on-resume (NVIDIA resume fix)."
@@ -481,10 +482,10 @@ NVIDIAEOF
                 systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
             done
             systemctl enable nvidia-powerd.service 2>/dev/null || true
-            # Write NVIDIA Wayland env vars into the user's hypr custom env.conf
+            # Write NVIDIA Wayland env vars into the user's hypr custom env.lua
             if [[ -n "$MAIN_USER" ]]; then
-                printf '\n# NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                printf '\n-- NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
                 gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
@@ -510,10 +511,10 @@ NVIDIAEOF
                 systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
             done
             systemctl enable nvidia-powerd.service 2>/dev/null || true
-            # Write NVIDIA Wayland env vars into the user's hypr custom env.conf
+            # Write NVIDIA Wayland env vars into the user's hypr custom env.lua
             if [[ -n "$MAIN_USER" ]]; then
-                printf '\n# NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                printf '\n-- NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
                 gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
@@ -539,8 +540,8 @@ NVIDIAEOF
             done
             # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 470xx)
             if [[ -n "$MAIN_USER" ]]; then
-                printf '\n# NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                printf '\n-- NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
                 gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
@@ -565,8 +566,8 @@ NVIDIAEOF
             done
             # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 390xx)
             if [[ -n "$MAIN_USER" ]]; then
-                printf '\n# NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                printf '\n-- NVIDIA Wayland — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
                 gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
                 gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
                 gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
@@ -630,7 +631,7 @@ AMDEOF
         # NOTE: AMD env vars intentionally not set globally in /etc/environment
         # WLR_RENDERER, AMD_VULKAN_ICD, LIBVA_DRIVER_NAME can conflict with
         # Quickshell and Hyprland on modern RDNA hardware — defaults work correctly.
-        # Set per-app in ~/.config/hypr/hyprland/env.conf if needed.
+        # Set per-app in ~/.config/hypr/hyprland/env.lua if needed.
         info "AMD configured."
     }
 
@@ -648,7 +649,7 @@ AMDEOF
         if $IS_ARC; then
             info "Intel Arc — installing Arc drivers."
             gpu_add_modules xe
-            # LIBVA_DRIVER_NAME set in env.conf by dotfiles
+            # LIBVA_DRIVER_NAME set in env.lua by dotfiles
         elif $IS_OLD_INTEL; then
             info "Pre-Sandy Bridge Intel — installing xf86-video-intel."
             gpu_add_modules i915
@@ -656,7 +657,7 @@ AMDEOF
             info "Sandy Bridge+ Intel — installing i915/media-driver."
             gpu_add_modules i915
             if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
-            # LIBVA_DRIVER_NAME set in env.conf by dotfiles
+            # LIBVA_DRIVER_NAME set in env.lua by dotfiles
         fi
         info "Intel configured."
     }
@@ -666,10 +667,10 @@ AMDEOF
         info "Configuring PRIME hybrid GPU..."
         if $HAS_NVIDIA && $HAS_INTEL; then
             gpu_add_modules i915; gpu_append_cmdline "i915.modeset=1"
-            # PRIME env vars set in env.conf by dotfiles, not system-wide
+            # PRIME env vars set in env.lua by dotfiles, not system-wide
         elif $HAS_NVIDIA && $HAS_AMD; then
             gpu_add_modules amdgpu
-            # PRIME env vars set in env.conf by dotfiles, not system-wide
+            # PRIME env vars set in env.lua by dotfiles, not system-wide
         elif $HAS_AMD && $HAS_INTEL; then
             : # DRI_PRIME set per-app, not system-wide
         fi
@@ -685,8 +686,8 @@ AMDEOF
                 | head -1 | awk '{print $1}')
             if [[ -n "$NVIDIA_PCIADDR" ]]; then
                 local AQ_PATH="/dev/dri/by-path/pci-${NVIDIA_PCIADDR}-card"
-                printf '\n# PRIME: stable NVIDIA DRM device — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.conf" 2>/dev/null || true
+                printf '\n-- PRIME: stable NVIDIA DRM device — added by post-install\n' \
+                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
                 gpu_append_hypr_env "AQ_DRM_DEVICES" "$AQ_PATH"
             else
                 warn "Could not resolve NVIDIA PCI address — AQ_DRM_DEVICES not set."
@@ -1151,12 +1152,12 @@ if [[ -n "$MAIN_USER" ]]; then
     chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
 
     # Add hyprpolkitagent autostart if not already present in dotfiles
-    EXECS_CONF="$MAIN_USER_HOME/.config/hypr/custom/execs.conf"
-    if [[ -f "$EXECS_CONF" ]] && ! grep -q "hyprpolkitagent" "$EXECS_CONF"; then
+    EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+    if [[ -f "$EXECS_LUA" ]] && ! grep -q "hyprpolkitagent" "$EXECS_LUA"; then
         info "Adding hyprpolkitagent to Hyprland autostart..."
-        echo "exec-once = hyprpolkitagent" >> "$EXECS_CONF"
-    elif [[ ! -f "$EXECS_CONF" ]]; then
-        warn "Could not find $EXECS_CONF — hyprpolkitagent will not autostart."
+        echo 'hl.on("hyprland.start", function() hl.exec_cmd("hyprpolkitagent") end)' >> "$EXECS_LUA"
+    elif [[ ! -f "$EXECS_LUA" ]]; then
+        warn "Could not find $EXECS_LUA — hyprpolkitagent will not autostart."
     fi
 
     # ---------------------------------------------------------------------------
@@ -1185,17 +1186,17 @@ ExecStart=/usr/local/bin/dotfiles-first-login
 SERVICEEOF
         chown -R "$MAIN_USER:$MAIN_USER" "$SYSTEMD_USER_DIR"
 
-        EXECS_CONF="$MAIN_USER_HOME/.config/hypr/custom/execs.conf"
-        mkdir -p "$(dirname "$EXECS_CONF")"
-        touch "$EXECS_CONF"
+        EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+        mkdir -p "$(dirname "$EXECS_LUA")"
+        touch "$EXECS_LUA"
         sed -i \
             -e '\|dotfiles-first-login.service|d' \
             -e '\|/usr/local/bin/dotfiles-first-login|d' \
-            "$EXECS_CONF" 2>/dev/null || true
-        cat >> "$EXECS_CONF" << 'EXECSEOF'
-exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login
+            "$EXECS_LUA" 2>/dev/null || true
+        cat >> "$EXECS_LUA" << 'EXECSEOF'
+hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)
 EXECSEOF
-        chown "$MAIN_USER:$MAIN_USER" "$EXECS_CONF"
+        chown "$MAIN_USER:$MAIN_USER" "$EXECS_LUA"
 
         # Keep an XDG autostart entry as a harmless backup for sessions that do
         # run an autostart helper.
@@ -1715,9 +1716,9 @@ info "gamescope-init.service registered — will run on first boot after netinst
 #   2. Check that the required pkg-config deps are present in the chroot.
 #   3. Clone MainstreamOS/hyprland-plugins and compile hyprbars with `make`.
 #   4. Install hyprbars.so to $MAIN_USER_HOME/.local/share/hyprland/plugins/.
-#   5. Prepend a *commented-out* `plugin = ...` directive to custom/general.conf
-#      so the user can enable Title Bars via the settings toggle without any
-#      manual path lookup.
+#   5. Prepend a *commented-out* `hl.plugin.load(...)` directive to
+#      custom/general.lua so the user can enable Title Bars via the settings
+#      toggle without any manual path lookup.
 #   6. Fix ownership — everything under $MAIN_USER_HOME must belong to the user.
 # ---------------------------------------------------------------------------
 if [[ -n "$MAIN_USER" ]]; then
@@ -1725,7 +1726,7 @@ if [[ -n "$MAIN_USER" ]]; then
 
     _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
     _PLUGIN_PATH="$_PLUGIN_DATA_DIR/hyprbars.so"
-    _GENERAL_CONF="$MAIN_USER_HOME/.config/hypr/custom/general.conf"
+    _GENERAL_LUA="$MAIN_USER_HOME/.config/hypr/custom/general.lua"
     _BUILD_LOG="$_PLUGIN_DATA_DIR/hyprbars-build.log"
     _SRC_DIR="$(mktemp -d /tmp/hyprland-plugins-build.XXXXXX)"
 
@@ -1734,11 +1735,11 @@ if [[ -n "$MAIN_USER" ]]; then
     # so a reinstall always starts from a clean slate (mirrors 3_files.sh).
     rm -f /usr/local/bin/hyprland-plugins-setup
     rm -f /etc/sudoers.d/hyprpm
-    # Also clean the exec-once trigger from execs.conf if it slipped through.
-    _EXECS_CONF="$MAIN_USER_HOME/.config/hypr/custom/execs.conf"
-    if [[ -f "$_EXECS_CONF" ]] && grep -q 'hyprland-plugins-setup' "$_EXECS_CONF"; then
-        sed -i '/# Defer hyprpm to first login/d; /hyprland-plugins-setup/d' "$_EXECS_CONF"
-        info "Removed stale hyprland-plugins-setup exec-once entry from execs.conf."
+    # Also clean the exec-once trigger from execs.lua if it slipped through.
+    _EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+    if [[ -f "$_EXECS_LUA" ]] && grep -q 'hyprland-plugins-setup' "$_EXECS_LUA"; then
+        sed -i '/-- Defer hyprpm to first login/d; /hyprland-plugins-setup/d' "$_EXECS_LUA"
+        info "Removed stale hyprland-plugins-setup hl.on entry from execs.lua."
     fi
 
     # --- 2. Check build-time pkg-config deps ---
@@ -1783,27 +1784,28 @@ if [[ -n "$MAIN_USER" ]]; then
                 info "Installed hyprbars.so to $_PLUGIN_PATH"
                 rm -rf "$_SRC_DIR"
 
-                # --- 5. Prepend commented-out plugin directive to general.conf ---
+                # --- 5. Prepend commented-out plugin directive to general.lua ---
                 # Hyprland requires the .so to be loaded *before* its settings block
                 # is parsed, so the directive goes at the top of the file.
                 # It is left commented out — the Title Bars toggle enables it.
-                if [[ -f "$_GENERAL_CONF" ]]; then
-                    if ! grep -q 'plugin *= *.*hyprbars\.so' "$_GENERAL_CONF"; then
+                if [[ -f "$_GENERAL_LUA" ]]; then
+                    if ! grep -qE 'hl\.plugin\.load.*hyprbars\.so' "$_GENERAL_LUA"; then
                         _tmp=$(mktemp)
                         {
-                            echo "# hyprbars plugin — built from source at install time"
-                            echo "# plugin = ${_PLUGIN_PATH}"
+                            echo "-- hyprbars plugin — built from source at install time"
+                            echo "-- TitleBars.qml toggles the comment prefix on this exact line."
+                            echo "-- hl.plugin.load(\"${_PLUGIN_PATH}\")"
                             echo ""
-                            cat "$_GENERAL_CONF"
+                            cat "$_GENERAL_LUA"
                         } > "$_tmp"
-                        mv "$_tmp" "$_GENERAL_CONF"
-                        info "Prepended '# plugin = ${_PLUGIN_PATH}' to $_GENERAL_CONF (commented out — enable via Title Bars toggle)."
+                        mv "$_tmp" "$_GENERAL_LUA"
+                        info "Prepended commented hl.plugin.load(\"${_PLUGIN_PATH}\") to $_GENERAL_LUA (enable via Title Bars toggle)."
                     else
-                        info "$_GENERAL_CONF already references hyprbars — skipping directive."
+                        info "$_GENERAL_LUA already references hyprbars — skipping directive."
                     fi
                 else
-                    warn "$_GENERAL_CONF not found — add this line manually to a sourced hypr config:"
-                    warn "  plugin = ${_PLUGIN_PATH}"
+                    warn "$_GENERAL_LUA not found — add this line manually to a sourced hypr config:"
+                    warn "  hl.plugin.load(\"${_PLUGIN_PATH}\")"
                 fi
             fi
         fi
@@ -1812,8 +1814,8 @@ if [[ -n "$MAIN_USER" ]]; then
         # Everything written under $MAIN_USER_HOME must belong to the user,
         # not root (we are running in chroot as root).
         chown -R "$MAIN_USER:$MAIN_USER" "$_PLUGIN_DATA_DIR" 2>/dev/null || true
-        [[ -f "$_GENERAL_CONF" ]] && \
-            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_CONF" 2>/dev/null || true
+        [[ -f "$_GENERAL_LUA" ]] && \
+            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_LUA" 2>/dev/null || true
         info "Ownership of plugin directory set to $MAIN_USER."
     fi
 fi
@@ -1825,7 +1827,7 @@ fi
 # Same shape as the hyprbars block above: clone the MainstreamOS fork, build
 # scrolloverview.so with `make all`, drop it under
 # $MAIN_USER_HOME/.local/share/hyprland/plugins/, and prepend a `plugin = ...`
-# directive to the user's custom/general.conf. Difference vs hyprbars: this
+# directive to the user's custom/general.lua. Difference vs hyprbars: this
 # directive is left UNCOMMENTED — the bar's top-left hot corner dispatches
 # `scrolloverview:overview on`, so the plugin needs to be loaded by default
 # for that interaction to work. There is no equivalent "Title Bars" toggle.
@@ -1835,7 +1837,7 @@ if [[ -n "$MAIN_USER" ]]; then
 
     _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
     _PLUGIN_PATH="$_PLUGIN_DATA_DIR/scrolloverview.so"
-    _GENERAL_CONF="$MAIN_USER_HOME/.config/hypr/custom/general.conf"
+    _GENERAL_LUA="$MAIN_USER_HOME/.config/hypr/custom/general.lua"
     _BUILD_LOG="$_PLUGIN_DATA_DIR/scrolloverview-build.log"
     _SRC_DIR="$(mktemp -d /tmp/hyprland-scroll-overview-build.XXXXXX)"
 
@@ -1883,36 +1885,36 @@ if [[ -n "$MAIN_USER" ]]; then
                 info "Installed scrolloverview.so to $_PLUGIN_PATH"
                 rm -rf "$_SRC_DIR"
 
-                # --- 4. Prepend ACTIVE plugin directive to general.conf ---
+                # --- 4. Prepend ACTIVE plugin directive to general.lua ---
                 # Hyprland requires the .so to be loaded *before* its settings
                 # block is parsed, so the directive goes at the top of the
                 # file. Unlike hyprbars, this is uncommented because the bar's
                 # hot corner depends on the plugin being loaded by default.
-                if [[ -f "$_GENERAL_CONF" ]]; then
-                    if ! grep -q 'plugin *= *.*scrolloverview\.so' "$_GENERAL_CONF"; then
+                if [[ -f "$_GENERAL_LUA" ]]; then
+                    if ! grep -qE 'hl\.plugin\.load.*scrolloverview\.so' "$_GENERAL_LUA"; then
                         _tmp=$(mktemp)
                         {
-                            echo "# scrolloverview plugin — built from source at install time"
-                            echo "plugin = ${_PLUGIN_PATH}"
+                            echo "-- scrolloverview plugin — built from source at install time"
+                            echo "hl.plugin.load(\"${_PLUGIN_PATH}\")"
                             echo ""
-                            cat "$_GENERAL_CONF"
+                            cat "$_GENERAL_LUA"
                         } > "$_tmp"
-                        mv "$_tmp" "$_GENERAL_CONF"
-                        info "Prepended 'plugin = ${_PLUGIN_PATH}' to $_GENERAL_CONF"
+                        mv "$_tmp" "$_GENERAL_LUA"
+                        info "Prepended hl.plugin.load(\"${_PLUGIN_PATH}\") to $_GENERAL_LUA"
                     else
-                        info "$_GENERAL_CONF already references scrolloverview — skipping directive."
+                        info "$_GENERAL_LUA already references scrolloverview — skipping directive."
                     fi
                 else
-                    warn "$_GENERAL_CONF not found — add this line manually to a sourced hypr config:"
-                    warn "  plugin = ${_PLUGIN_PATH}"
+                    warn "$_GENERAL_LUA not found — add this line manually to a sourced hypr config:"
+                    warn "  hl.plugin.load(\"${_PLUGIN_PATH}\")"
                 fi
             fi
         fi
 
         # --- 5. Fix ownership ---
         chown -R "$MAIN_USER:$MAIN_USER" "$_PLUGIN_DATA_DIR" 2>/dev/null || true
-        [[ -f "$_GENERAL_CONF" ]] && \
-            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_CONF" 2>/dev/null || true
+        [[ -f "$_GENERAL_LUA" ]] && \
+            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_LUA" 2>/dev/null || true
         info "Ownership of plugin directory set to $MAIN_USER."
     fi
 fi

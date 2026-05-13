@@ -162,15 +162,15 @@ mkdir -p "$HOME/.config/hypr"
 cat > "$HOME/.config/hypr/hypridle.conf" << 'IDLE_EOF'
 # Live ISO: idle actions disabled so the session never locks or suspends.
 general {
-    lock_cmd = hyprctl dispatch global quickshell:lock & pidof qs quickshell hyprlock || hyprlock
+    lock_cmd = hyprctl dispatch 'hl.dsp.global("quickshell:lock")' & pidof qs quickshell hyprlock || hyprlock
     before_sleep_cmd = loginctl lock-session
-    after_sleep_cmd = hyprctl dispatch global quickshell:lockFocus
+    after_sleep_cmd = hyprctl dispatch 'hl.dsp.global("quickshell:lockFocus")'
     inhibit_sleep = 3
 }
 IDLE_EOF
 
 # Restart hypridle with the no-timeout config
-hyprctl dispatch exec hypridle 2>/dev/null || true
+hyprctl dispatch 'hl.dsp.exec_cmd("hypridle")' 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 6. Rebuild font cache and reload Hyprland config

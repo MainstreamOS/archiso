@@ -27,7 +27,7 @@ DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 AUTOSTART_FILE="$HOME/.config/autostart/dotfiles-first-login.desktop"
 SYSTEMD_SERVICE_FILE="$HOME/.config/systemd/user/dotfiles-first-login.service"
-HYPR_EXECS_FILE="$HOME/.config/hypr/custom/execs.conf"
+HYPR_EXECS_FILE="$HOME/.config/hypr/custom/execs.lua"
 LOG="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-first-login.log"
 mkdir -p "$(dirname "$LOG")"
 

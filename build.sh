@@ -764,20 +764,29 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
     if [[ -d "$DOTS_WORK/dots" ]]; then
         mkdir -p "$SKEL_DIR"
         cp -a "$DOTS_WORK/dots/." "$SKEL_DIR/"
-        EXECS_CONF="$SKEL_DIR/.config/hypr/custom/execs.conf"
-        if [[ -f "$EXECS_CONF" ]] && ! grep -q "calamares-autostart" "$EXECS_CONF"; then
-            info "Adding calamares-autostart to skel execs.conf..."
-            echo "exec-once = /usr/local/bin/calamares-autostart" >> "$EXECS_CONF"
+        # Hyprland 0.55 Lua config: each former `exec-once = ...` entry becomes a
+        # separate `hl.on("hyprland.start", function() hl.exec_cmd("...") end)`
+        # subscription. Multiple hl.on calls for the same event are additive, so
+        # appending is safe and idempotent (the grep guard prevents re-inserts).
+        EXECS_LUA="$SKEL_DIR/.config/hypr/custom/execs.lua"
+        if [[ -f "$EXECS_LUA" ]] && ! grep -q "calamares-autostart" "$EXECS_LUA"; then
+            info "Adding calamares-autostart to skel execs.lua..."
+            echo 'hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/calamares-autostart") end)' >> "$EXECS_LUA"
         fi
 
-        if [[ -f "$EXECS_CONF" ]] && ! grep -q "live-setup" "$EXECS_CONF"; then
-            info "Adding live-setup to skel execs.conf..."
-            echo "exec-once = /usr/local/bin/live-setup" >> "$EXECS_CONF"
+        if [[ -f "$EXECS_LUA" ]] && ! grep -q "live-setup" "$EXECS_LUA"; then
+            info "Adding live-setup to skel execs.lua..."
+            echo 'hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/live-setup") end)' >> "$EXECS_LUA"
         fi
 
-        if [[ -f "$EXECS_CONF" ]] && ! grep -q "dotfiles-first-login" "$EXECS_CONF"; then
-            info "Adding dotfiles-first-login to skel execs.conf..."
-            echo "exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login" >> "$EXECS_CONF"
+        if [[ -f "$EXECS_LUA" ]] && ! grep -q "dotfiles-first-login" "$EXECS_LUA"; then
+            info "Adding dotfiles-first-login to skel execs.lua..."
+            # Shell-operators (&&, ||) live inside the exec_cmd string — Hyprland
+            # spawns the command via /bin/sh -c, so they're interpreted by sh,
+            # not by Lua. Embedded double quotes are escaped for the outer shell
+            # (printf %q would also work but echo -e + backslash is the same shape
+            # used elsewhere in this script).
+            echo 'hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)' >> "$EXECS_LUA"
         fi
 
         SCRIPTS_DIR="$SKEL_DIR/.config/hypr/scripts"
