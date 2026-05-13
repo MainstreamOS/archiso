@@ -12,22 +12,70 @@ ContentPage {
     forceWidth: true
 
     // ── Decorations state ──────────────────────────────────────────────────────
-    readonly property string generalConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/general.conf`
-    readonly property string customGeneralConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/custom/general.conf`
+    // Targets the Lua-config tree introduced in Hyprland 0.55.
+    readonly property string generalConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/general.lua`
+    readonly property string customGeneralConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/custom/general.lua`
+    readonly property string customKeybindsConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/custom/keybinds.lua`
     property bool animationsEnabled: true
     property bool blurEnabled: true
     property bool shadowsEnabled: true
     property bool bordersEnabled: true
     property bool roundCornersEnabled: true
-    property bool titleBarsEnabled: false
+    // Mirrors whether scrolloverview is currently loaded into Hyprland.
+    // Source of truth is `hyprctl plugin list` (read by scrollOverviewStateReader),
+    // not the conf file — Hyprland only re-reads `plugin = ...` directives at
+    // startup, so the conf and the live state can diverge. The toggle keeps
+    // both in sync by calling `hyprctl plugin load/unload` AND editing the conf.
+    property bool scrollOverviewEnabled: false
+    // Layout values for the scroll-overview, also persisted in the
+    // scrolloverview block of custom/general.lua. Defaults match the
+    // plugin's compiled-in defaults.
+    property int scrollOverviewWorkspaceGap: 100     // pixels between workspace previews
+    property real scrollOverviewWorkspaceScale: 0.5  // 0.0–1.0 — overview shrink factor
     property int previousCornerStyle: Config.options.bar.cornerStyle
     property bool _decoReady: false
 
     function runPy(py, args) {
         Quickshell.execDetached(["python3", "-c", py, ...args])
     }
+
+    // Apply a single config value live. In Hyprland 0.55 Lua mode `hyprctl
+    // keyword` is hard-gated to Legacy ("keyword can't work with non-legacy
+    // parsers. Use eval."), so we go through `hyprctl eval` + `hl.config()`
+    // instead. The Lua config manager looks up keys in m_configValues under
+    // dot-form names (luaConfigValueName converts `:` → `.`), so we split the
+    // hyprlang colon-form on the FIRST colon and put everything after it
+    // inside a single bracket-string key — handles `general:border_size`
+    // (one segment after section) and `general:col.active_border` /
+    // `decoration:blur:enabled` (dots and extra colons in the leaf) uniformly.
+    //
+    // Value coercion to Lua literal:
+    //   "true"/"false"             → boolean
+    //   integer or float string     → numeric literal
+    //   everything else             → quoted string (backslashes + quotes escaped)
     function setHyprKeyword(keyword, value) {
-        Quickshell.execDetached(["hyprctl", "keyword", keyword, value])
+        const firstColon = keyword.indexOf(":");
+        if (firstColon < 0) {
+            console.warn("setHyprKeyword: keyword has no section:", keyword);
+            return;
+        }
+        const section = keyword.substring(0, firstColon);
+        // Remaining leaf may still contain `:` (e.g. "decoration:blur:enabled"
+        // → leaf "blur:enabled"); luaConfigValueName already converts `:`→`.`
+        // for stored keys, so we normalize the leaf the same way before
+        // bracket-string indexing.
+        const leaf = keyword.substring(firstColon + 1).replace(/:/g, ".");
+        let luaVal;
+        const v = String(value);
+        if (v === "true" || v === "false") {
+            luaVal = v;
+        } else if (/^-?\d+(?:\.\d+)?$/.test(v)) {
+            luaVal = v;
+        } else {
+            luaVal = `"${v.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+        }
+        const expr = `hl.config({ ${section} = { ["${leaf}"] = ${luaVal} } })`;
+        Quickshell.execDetached(["hyprctl", "eval", expr]);
     }
 
     // ── Lock timeout ─────────────────────────────────────────────────────────
@@ -40,7 +88,8 @@ ContentPage {
     Component.onCompleted: {
         lockTimeoutReader.running = true
         decoReader.running = true
-        titleBarReader.running = true
+        scrollOverviewConfReader.running = true
+        scrollOverviewStateReader.running = true
     }
 
     // When a theme apply finishes, the shared state file flips back to "idle"
@@ -52,19 +101,78 @@ ContentPage {
             if (Config.themeApplyInProgress) return
             decoReader.running = false
             decoReader.running = true
-            titleBarReader.running = false
-            titleBarReader.running = true
+            scrollOverviewConfReader.running = false
+            scrollOverviewConfReader.running = true
+            scrollOverviewStateReader.running = false
+            scrollOverviewStateReader.running = true
         }
     }
 
     Process {
-        id: titleBarReader
+        id: scrollOverviewConfReader
         command: ["cat", root.customGeneralConf]
         property string buf: ""
         onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => titleBarReader.buf += data + "\n" }
+        stdout: SplitParser { onRead: data => scrollOverviewConfReader.buf += data + "\n" }
         onExited: {
-            root.titleBarsEnabled = /^[ \t]*plugin[ \t]*=[ \t]*.*hyprbars\.so/m.test(titleBarReader.buf);
+            // Pull current scrolloverview values from the plugin config
+            // block. In Lua the block is `scrolloverview = { ... }` (with `=`
+            // before the table brace). Lazy [\s\S]*? skips nested blocks
+            // (e.g. `shadow = {}`). If a value isn't present we leave the
+            // default in place — the plugin uses the same defaults internally.
+            // (Title bars enabled-state is read by services/TitleBars.qml.)
+            let gapMatch = scrollOverviewConfReader.buf.match(/scrolloverview\s*=\s*\{[\s\S]*?\bworkspace_gap\s*=\s*(\d+)/);
+            if (gapMatch) root.scrollOverviewWorkspaceGap = parseInt(gapMatch[1]);
+            // scale is a float (e.g. 0.5) — accept optional decimal part
+            let scaleMatch = scrollOverviewConfReader.buf.match(/scrolloverview\s*=\s*\{[\s\S]*?\bscale\s*=\s*(\d+(?:\.\d+)?)/);
+            if (scaleMatch) root.scrollOverviewWorkspaceScale = parseFloat(scaleMatch[1]);
+        }
+    }
+
+    // Update one scrolloverview value. Live effect via setHyprKeyword which
+    // routes through `hyprctl eval` + hl.config (Lua-mode replacement for the
+    // Legacy-only `hyprctl keyword`). The plugin re-reads its config pointer
+    // on every overview construction, so the next open picks up the new
+    // value. Persistence via Python regex on custom/general.lua — replaces
+    // an existing line in the `scrolloverview = { ... }` table, or inserts
+    // one right after the opening brace if no line exists yet. Handles both
+    // integers and floats (regex `[\d.]+` matches `48`, `0.5`, `100.25`).
+    // Inserted lines get a trailing comma to stay valid Lua table syntax.
+    function setScrollOverviewKey(key, value) {
+        setHyprKeyword(`plugin:scrolloverview:${key}`, value.toString())
+        // Block-opener pattern requires `^[ \t]*scrolloverview = {` at line
+        // start (re.M flag) so a doc comment like
+        // `-- scrolloverview = { gesture_distance = ... }` can't shadow the
+        // real block. re.S keeps `[\s\S]*?` matching newlines inside the
+        // block so the key can be located across multiple lines.
+        let py =
+            "import re, sys\n" +
+            "key, val, conf = sys.argv[1], sys.argv[2], sys.argv[3]\n" +
+            "try:\n" +
+            "    text = open(conf).read()\n" +
+            "except FileNotFoundError:\n" +
+            "    sys.exit(0)\n" +
+            "pattern = r'(^[ \\t]*scrolloverview[ \\t]*=[ \\t]*\\{[\\s\\S]*?[ \\t]*)' + re.escape(key) + r'([ \\t]*=[ \\t]*)[\\d.]+'\n" +
+            "new_text, count = re.subn(pattern, r'\\1' + key + r'\\g<2>' + val, text, count=1, flags=re.M|re.S)\n" +
+            "if count == 0:\n" +
+            "    new_text = re.sub(r'(?m)^([ \\t]*)scrolloverview([ \\t]*=[ \\t]*\\{)', r'\\1scrolloverview\\2\\n            ' + key + ' = ' + val + ',', text, count=1)\n" +
+            "open(conf, 'w').write(new_text)\n";
+        runPy(py, [key, value.toString(), root.customGeneralConf])
+    }
+
+    // Live source of truth for whether scrolloverview is loaded into Hyprland.
+    // Plugins persist in custom/general.lua via `hl.plugin.load("...so")`,
+    // but Hyprland only re-reads that at startup, so checking the file alone
+    // can lie (e.g. directive removed but plugin still loaded from a previous
+    // session, or vice versa). hyprctl plugin list is canonical.
+    Process {
+        id: scrollOverviewStateReader
+        command: ["hyprctl", "plugin", "list"]
+        property string buf: ""
+        onRunningChanged: if (running) buf = ""
+        stdout: SplitParser { onRead: data => scrollOverviewStateReader.buf += data + "\n" }
+        onExited: {
+            root.scrollOverviewEnabled = /^Plugin\s+scrolloverview\b/m.test(scrollOverviewStateReader.buf);
         }
     }
 
@@ -76,13 +184,19 @@ ContentPage {
         stdout: SplitParser { onRead: data => decoReader.buf += data + "\n" }
         onExited: {
             let text = decoReader.buf;
-            let animMatch = text.match(/animations\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            // Lua format: `animations = { enabled = true, ... }`.
+            // Block-opener regexes use `(?m)^\s*KEY\s*=\s*\{` so a doc
+            // comment that happens to mention "animations = {" doesn't
+            // shadow the real block (Lua comments start with `--` which
+            // doesn't match `\s*`). Same anchor for blur, shadow, rounding.
+            let animMatch = text.match(/^\s*animations\s*=\s*\{[\s\S]*?enabled\s*=\s*(\w+)/m);
             if (animMatch) root.animationsEnabled = animMatch[1] === "true" || animMatch[1] === "1";
-            let blurMatch = text.match(/blur\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            let blurMatch = text.match(/^\s*blur\s*=\s*\{[\s\S]*?enabled\s*=\s*(\w+)/m);
             if (blurMatch) root.blurEnabled = blurMatch[1] === "true" || blurMatch[1] === "1";
-            let shadowMatch = text.match(/shadow\s*\{[\s\S]*?enabled\s*=\s*(\w+)/);
+            let shadowMatch = text.match(/^\s*shadow\s*=\s*\{[\s\S]*?enabled\s*=\s*(\w+)/m);
             if (shadowMatch) root.shadowsEnabled = shadowMatch[1] === "true" || shadowMatch[1] === "1";
-            let borderMatch = text.match(/^(\s*)(#\s*)?border_size\s*=/m);
+            // Lua comment marker is `--` instead of hyprlang's `#`
+            let borderMatch = text.match(/^(\s*)(--\s*)?border_size\s*=/m);
             root.bordersEnabled = borderMatch ? !borderMatch[2] : false;
             let roundMatch = text.match(/^\s*rounding\s*=\s*(\d+)/m);
             if (roundMatch) root.roundCornersEnabled = parseInt(roundMatch[1]) > 0;
@@ -92,18 +206,24 @@ ContentPage {
 
     function decoSetBlockEnabled(blockName, enabled) {
         let val = enabled ? "true" : "false";
+        // Block shape in Lua: `<blockName> = { ... enabled = ... }`. The `=`
+        // between block name and `{` is captured to allow whitespace variations.
+        // Block opener anchored at line start (re.M) so a doc comment that
+        // mentions `<block> = {` cannot shadow the real config block.
         let py =
             "import sys, re\n" +
             "block, val, conf = sys.argv[1], sys.argv[2], sys.argv[3]\n" +
             "text = open(conf).read()\n" +
-            "pattern = r'(' + re.escape(block) + r'\\s*' + chr(123) + r'[^' + chr(125) + r']*?)(enabled\\s*=\\s*)\\w+'\n" +
+            "pattern = r'(?ms)^(\\s*' + re.escape(block) + r'\\s*=\\s*' + chr(123) + r'[^' + chr(125) + r']*?)(enabled\\s*=\\s*)\\w+'\n" +
             "text = re.sub(pattern, r'\\1\\2' + val, text, count=1)\n" +
             "open(conf, 'w').write(text)\n";
         runPy(py, [blockName, val, root.generalConf])
     }
 
     function decoSetBordersEnabled(enabled) {
-        let fields = ["border_size", "col.active_border", "col.inactive_border", "resize_on_border"];
+        // Lua nested-table form: `col = { active_border = "...", inactive_border = "..." }`
+        // so the field names are bare inside `col`, no `col.` prefix.
+        let fields = ["border_size", "active_border", "inactive_border", "resize_on_border"];
         let py =
             "import sys, re\n" +
             "enable = sys.argv[1] == '1'\n" +
@@ -115,21 +235,21 @@ ContentPage {
             "    stripped = line.lstrip()\n" +
             "    for f in fields:\n" +
             "        if enable:\n" +
-            "            if stripped.startswith('# ' + f + ' ') or stripped.startswith('#' + f + ' ') or stripped.startswith('# ' + f + '=') or stripped.startswith('#' + f + '='):\n" +
+            "            if stripped.startswith('-- ' + f + ' ') or stripped.startswith('--' + f + ' ') or stripped.startswith('-- ' + f + '=') or stripped.startswith('--' + f + '='):\n" +
             "                indent = line[:len(line) - len(line.lstrip())]\n" +
-            "                line = indent + stripped.lstrip('# ')\n" +
+            "                line = indent + stripped.lstrip('- ')\n" +
             "                break\n" +
             "        else:\n" +
             "            if stripped.startswith(f + ' ') or stripped.startswith(f + '='):\n" +
             "                indent = line[:len(line) - len(line.lstrip())]\n" +
-            "                line = indent + '# ' + stripped\n" +
+            "                line = indent + '-- ' + stripped\n" +
             "                break\n" +
             "    if stripped.startswith('gaps_in'):\n" +
             "        indent = line[:len(line) - len(line.lstrip())]\n" +
-            "        line = indent + 'gaps_in = ' + ('4' if enable else '0') + '\\n'\n" +
+            "        line = indent + 'gaps_in = ' + ('4' if enable else '0') + ',\\n'\n" +
             "    elif stripped.startswith('gaps_out'):\n" +
             "        indent = line[:len(line) - len(line.lstrip())]\n" +
-            "        line = indent + 'gaps_out = ' + ('5' if enable else '0') + '\\n'\n" +
+            "        line = indent + 'gaps_out = ' + ('5' if enable else '0') + ',\\n'\n" +
             "    result.append(line)\n" +
             "open(conf, 'w').writelines(result)\n";
         runPy(py, [enabled ? "1" : "0", root.generalConf, fields.join(",")])
@@ -150,11 +270,14 @@ ContentPage {
 
     function decoSetRoundCornersEnabled(enabled) {
         let val = enabled ? "10" : "0";
+        // Multiline-anchored pattern (`(?m)^\s*rounding`) so a doc-comment
+        // like `-- rounding = 10` doesn't get rewritten in place of the
+        // real key inside the decoration table.
         let py =
             "import sys, re\n" +
             "val, conf = sys.argv[1], sys.argv[2]\n" +
             "text = open(conf).read()\n" +
-            "text = re.sub(r'(rounding\\s*=\\s*)\\d+', r'\\g<1>' + val, text, count=1)\n" +
+            "text = re.sub(r'(?m)^(\\s*rounding\\s*=\\s*)\\d+', r'\\g<1>' + val, text, count=1)\n" +
             "open(conf, 'w').write(text)\n";
         runPy(py, [val, root.generalConf])
         setHyprKeyword("decoration:rounding", val);
@@ -302,6 +425,15 @@ ContentPage {
         icon: "auto_awesome"
         title: Translation.tr("Decorations")
 
+        // animateChanges: root._decoReady on each ConfigSwitch below — the
+        // initial `checked` binding evaluates BEFORE decoReader has parsed
+        // general.lua (so it sits at the property's QML default, usually
+        // false). When the read completes, the property updates from
+        // false → true and the switch's Behavior animations would slide
+        // the thumb in. That looked like a re-entry animation every time
+        // the user reopened the settings menu. Gating Behavior on
+        // _decoReady means the post-read transition snaps into place, and
+        // only subsequent user-driven clicks animate normally.
         ConfigRow {
             uniform: true
             ConfigSwitch {
@@ -309,6 +441,7 @@ ContentPage {
                 buttonIcon: "animation"
                 text: Translation.tr("Animations")
                 checked: root.animationsEnabled
+                animateChanges: root._decoReady
                 onCheckedChanged: {
                     if (!root._decoReady) return;
                     root.animationsEnabled = checked;
@@ -324,6 +457,7 @@ ContentPage {
                 buttonIcon: "blur_on"
                 text: Translation.tr("Blur")
                 checked: root.blurEnabled
+                animateChanges: root._decoReady
                 onCheckedChanged: {
                     if (!root._decoReady) return;
                     root.blurEnabled = checked;
@@ -342,6 +476,7 @@ ContentPage {
                 buttonIcon: "ev_shadow"
                 text: Translation.tr("Shadows")
                 checked: root.shadowsEnabled
+                animateChanges: root._decoReady
                 onCheckedChanged: {
                     if (!root._decoReady) return;
                     root.shadowsEnabled = checked;
@@ -357,6 +492,7 @@ ContentPage {
                 buttonIcon: "border_style"
                 text: Translation.tr("Borders")
                 checked: root.bordersEnabled
+                animateChanges: root._decoReady
                 onCheckedChanged: {
                     if (!root._decoReady) return;
                     root.bordersEnabled = checked;
@@ -373,6 +509,7 @@ ContentPage {
                 buttonIcon: "rounded_corner"
                 text: Translation.tr("Rounded Corners")
                 checked: root.roundCornersEnabled
+                animateChanges: root._decoReady
                 onCheckedChanged: {
                     if (!root._decoReady) return;
                     root.roundCornersEnabled = checked;
@@ -382,34 +519,175 @@ ContentPage {
                     text: Translation.tr("Rounded corners on windows and the bar")
                 }
             }
+            // All file-edit + plugin load/unload mechanics live in the
+            // TitleBars service so this page and Settings → Layouts
+            // share one implementation.
+            //
+            // animateChanges: TitleBars.enabledLoaded — TitleBars reads
+            // the plugin state asynchronously (TitleBars.qml's readerProc
+            // runs `cat custom/general.lua`); gating on the read-completion
+            // flag matches the decoration-switches pattern above and
+            // prevents the slide-in animation on every menu reopen.
             ConfigSwitch {
                 buttonIcon: "title"
                 text: Translation.tr("Title Bars")
-                checked: root.titleBarsEnabled
+                checked: TitleBars.enabled
+                animateChanges: TitleBars.enabledLoaded
                 onCheckedChanged: {
                     if (!root._decoReady) return;
-                    root.titleBarsEnabled = checked;
-                    // Toggle by commenting/uncommenting the plugin = .../hyprbars.so line
-                    // in custom/general.conf. Hyprland loads the .so directly when the
-                    // directive is present and uncommented, so `hyprctl reload` is enough.
-                    let py =
-                        "import re, sys\n" +
-                        "enable = sys.argv[1] == '1'\n" +
-                        "conf = sys.argv[2]\n" +
-                        "text = open(conf).read()\n" +
-                        "if enable:\n" +
-                        "    text = re.sub(r'^([ \\t]*)#[ \\t]*(plugin[ \\t]*=[ \\t]*.*hyprbars\\.so)', r'\\1\\2', text, flags=re.M)\n" +
-                        "else:\n" +
-                        "    text = re.sub(r'^([ \\t]*)(plugin[ \\t]*=[ \\t]*.*hyprbars\\.so)', r'\\1# \\2', text, flags=re.M)\n" +
-                        "open(conf, 'w').write(text)\n";
-                    root.runPy(py, [checked ? "1" : "0", root.customGeneralConf])
-                    Quickshell.execDetached(["hyprctl", "reload"])
+                    TitleBars.setEnabled(checked);
                 }
                 StyledToolTip {
                     text: Translation.tr("Show title bars on windows")
                 }
             }
         }
+    }
+
+    // ── Left Hot Corner ──────────────────────────────────────────────────────
+    ContentSection {
+        icon: "ads_click"
+        title: Translation.tr("Left Hot Corner")
+
+        // Ripple Animation — top-level toggle for the corner ripple cascade.
+        // Applies to both the "Scrolling Overview" and "Default Overview"
+        // trigger paths (both fire the ripple before opening). Hidden only
+        // when trigger is "Off" since the corner is disabled entirely there.
+        // Visible regardless of whether the scroll-overview plugin is loaded
+        // so the toggle can be pre-configured.
+        ConfigSwitch {
+            Layout.fillWidth: true
+            visible: Config.options.bar.hotCorners.trigger !== "off"
+            buttonIcon: "blur_circular"
+            text: Translation.tr("Ripple Animation")
+            checked: Config.options.bar.hotCorners.animationEnabled
+            onCheckedChanged: {
+                if (checked === Config.options.bar.hotCorners.animationEnabled) return;
+                Config.options.bar.hotCorners.animationEnabled = checked;
+            }
+        }
+
+        // Master picker for what the top-left hot corner opens.
+        // "Scrolling Overview" runs the ripple-then-dispatch flow for the
+        // scroll-overview plugin; "Default Overview" toggles the built-in
+        // dots overview directly (no ripple — it has its own animation);
+        // "Off" disables the MouseArea so left-clicks fall through to the
+        // bar's left-side area like any normal part of the bar.
+        ConfigRow {
+            // Match the icon left-edge of sibling ConfigSwitch rows in
+            // this section. ConfigSwitch wraps its content in a
+            // RippleButton (Button), which adds Qt's default left
+            // padding (~6px) before the icon. A bare ConfigRow doesn't,
+            // so without these margins the trigger row's icon would
+            // sit flush against the left edge while the Ripple
+            // Animation icon directly above is offset by Button's
+            // leftPadding.
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            OptionalMaterialSymbol {
+                icon: "drag_click"
+                Layout.alignment: Qt.AlignVCenter
+            }
+            StyledText {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 6   // match ConfigSwitch's contentItem RowLayout spacing (10) minus ConfigRow's default (4)
+                text: Translation.tr("Trigger overview")
+                color: Appearance.colors.colOnSecondaryContainer
+            }
+            StyledComboBox {
+                id: hotCornerTriggerCombo
+                textRole: "displayName"
+                Layout.fillWidth: false
+                Layout.preferredWidth: 220
+                model: [
+                    { displayName: Translation.tr("Off"),                icon: "block",     value: "off" },
+                    { displayName: Translation.tr("Default Overview"),   icon: "grid_view", value: "default" },
+                    { displayName: Translation.tr("Scrolling Overview"), icon: "view_day",  value: "scrolloverview" },
+                ]
+                currentIndex: {
+                    const idx = model.findIndex(item => item.value === Config.options.bar.hotCorners.trigger);
+                    return idx !== -1 ? idx : 0; // default to "off"
+                }
+                onActivated: index => {
+                    Config.options.bar.hotCorners.trigger = model[index].value;
+                }
+            }
+        }
+
+        // Scrolling Overview — workspace gap and scale tuning. The previous
+        // master Enable switch here is gone: the hl.plugin.load directive
+        // ships active in dots/.config/hypr/custom/general.lua, the post-install
+        // builds + installs the .so on every install path, and the corner
+        // Trigger overview dropdown above already handles whether the
+        // plugin is the active hot-corner action. Whether to *use* the
+        // overview is up to the dropdown; once trigger == "scrolloverview"
+        // is selected, the plugin's tuning knobs below are exposed.
+        ContentSubsection {
+            visible: Config.options.bar.hotCorners.trigger === "scrolloverview"
+            title: Translation.tr("Scrolling Overview")
+
+        // Workspace gap and scale — only render once the plugin is
+        // actually loaded (driven by `hyprctl -i 0 plugin list` via
+        // scrollOverviewStateReader). Hides during the brief gap on
+        // first install before the .so loads, and stays hidden if the
+        // user has manually unloaded the plugin out-of-band.
+        ConfigRow {
+            visible: root.scrollOverviewEnabled
+            uniform: true
+            ConfigSpinBox {
+                Layout.fillWidth: true
+                icon: "space_bar"
+                text: Translation.tr("Workspace gap")
+                value: root.scrollOverviewWorkspaceGap
+                from: 0
+                to: 500
+                stepSize: 10
+                onValueChanged: {
+                    if (value === root.scrollOverviewWorkspaceGap) return;
+                    root.scrollOverviewWorkspaceGap = value;
+                    root.setScrollOverviewKey("workspace_gap", value);
+                }
+                MouseArea {
+                    id: workspaceGapHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    StyledToolTip {
+                        extraVisibleCondition: workspaceGapHover.containsMouse
+                        text: Translation.tr("Pixels between workspace previews in the overview. Default 100.")
+                    }
+                }
+            }
+            ConfigSpinBox {
+                Layout.fillWidth: true
+                icon: "aspect_ratio"
+                text: Translation.tr("Workspace scale")
+                suffix: "%"
+                value: Math.round(root.scrollOverviewWorkspaceScale * 100)
+                from: 10
+                to: 100
+                stepSize: 5
+                onValueChanged: {
+                    const newScale = value / 100;
+                    if (Math.abs(newScale - root.scrollOverviewWorkspaceScale) < 0.001) return;
+                    root.scrollOverviewWorkspaceScale = newScale;
+                    // Pass with 2-decimal precision; toFixed gives "0.50" / "1.00"
+                    root.setScrollOverviewKey("scale", newScale.toFixed(2));
+                }
+                MouseArea {
+                    id: workspaceScaleHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    StyledToolTip {
+                        extraVisibleCondition: workspaceScaleHover.containsMouse
+                        text: Translation.tr("How much each workspace preview shrinks in the overview. Lower = more workspaces fit on screen. Default 50%.")
+                    }
+                }
+            }
+        }
+        } // end of Scrolling Overview ContentSubsection
     }
 
     ContentSection {
@@ -702,21 +980,6 @@ ContentPage {
                         { displayName: Translation.tr("No"),         icon: "close",              value: 0 },
                         { displayName: Translation.tr("Yes"),        icon: "check",              value: 1 },
                         { displayName: Translation.tr("Local only"), icon: "sync_saved_locally", value: 2 }
-                    ]
-                }
-            }
-            ColumnLayout {
-                ContentSubsectionLabel {
-                    text: Translation.tr("Wallpaper Browser")
-                }
-                ConfigSelectionArray {
-                    currentValue: Config.options.policies.wallpaperBrowser
-                    onSelected: newValue => {
-                        Config.options.policies.wallpaperBrowser = newValue;
-                    }
-                    options: [
-                        { displayName: Translation.tr("No"),  icon: "close", value: 0 },
-                        { displayName: Translation.tr("Yes"), icon: "check", value: 1 }
                     ]
                 }
             }

@@ -8,6 +8,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import Quickshell.Services.Pipewire
 import Qt5Compat.GraphicalEffects
 
@@ -71,6 +72,12 @@ LazyLoader {
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
+        HyprlandFocusGrab {
+            active: root.shown
+            windows: [popupWindow]
+            onCleared: root.shown = false
+        }
+
         StyledRectangularShadow {
             target: popupBackground
         }
@@ -116,10 +123,24 @@ LazyLoader {
                     }
                     Item { Layout.fillWidth: true }
                     StyledText {
+                        id: volumePctText
+                        // Pin the width to whatever "100%" would render at
+                        // with this font, so the popup stops resizing every
+                        // time the volume changes a digit width (5% → 50%
+                        // → 100%). horizontalAlignment then keeps the text
+                        // right-justified inside that fixed slot.
+                        Layout.preferredWidth: pctMetrics.advanceWidth
+                        horizontalAlignment: Text.AlignRight
                         text: Math.round((Audio.sink?.audio.volume ?? 0) * 100) + "%"
                         font.pixelSize: Appearance.font.pixelSize.small
                         font.family: "monospace"
                         color: Appearance.colors.colSubtext
+
+                        TextMetrics {
+                            id: pctMetrics
+                            text: "100%"
+                            font: volumePctText.font
+                        }
                     }
                 }
 
@@ -250,24 +271,6 @@ LazyLoader {
                     }
                 }
 
-                // Done button
-                RowLayout {
-                    Layout.fillWidth: true
-                    Item { Layout.fillWidth: true }
-                    RippleButton {
-                        implicitWidth: doneText.implicitWidth + 32
-                        implicitHeight: 32
-                        buttonRadius: Appearance.rounding.small
-                        onClicked: root.shown = false
-                        contentItem: StyledText {
-                            id: doneText
-                            anchors.centerIn: parent
-                            text: Translation.tr("Done")
-                            font.pixelSize: Appearance.font.pixelSize.small
-                            color: Appearance.colors.colOnLayer1
-                        }
-                    }
-                }
             }
         }
     }

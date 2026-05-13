@@ -195,7 +195,7 @@ Variants {
                     const parsedContent = JSON.parse(output);
                     bgRoot.clockX = parsedContent.center_x * bgRoot.effectiveWallpaperScale;
                     bgRoot.clockY = parsedContent.center_y * bgRoot.effectiveWallpaperScale;
-                    bgRoot.dominantColor = parsedContent.dominant_color || Appearance.colors.colPrimary;
+                    bgRoot.dominantColor = parsedContent.dominant_color || Appearance.colors.colLayer0;
                 }
             }
         }
@@ -210,17 +210,36 @@ Variants {
                 visible: opacity > 0 && !blurLoader.active
                 opacity: (status === Image.Ready && !bgRoot.wallpaperIsVideo) ? 1 : 0
                 cache: false
-                smooth: false
+                // Bilinear filtering + mipmap chain. The wallpaper is
+                // continuously resampled by parallax animation and per-monitor
+                // scaling, so nearest-neighbor sampling (smooth: false) with
+                // no mip chain produced the visible "diminished quality" look
+                // even on 4K source images. mipmap costs ~33% extra VRAM on
+                // the wallpaper texture only, which is trivial on any current
+                // GPU and gives correct trilinear downscale during parallax.
+                smooth: true
+                mipmap: true
 
-                property int workspaceIndex: (bgRoot.monitor.activeWorkspace?.id ?? 1) - 1
+                property int effectiveWorkspaceId: GlobalStates.screenLocked ? 1 : (bgRoot.monitor.activeWorkspace?.id ?? 1)
+                property int workspaceIndex: effectiveWorkspaceId - 1
                 property real middleFraction: 0.5
                 property real fraction: {
-                    // 0 - start of the picture
+                    // middleFraction (0.5) - centered
                     // 1 - end of the picture
-                    if (bgRoot.totalWorkspaces <= 1) {
+                    // Cycle every `workspaceChunkSize` (the visible group size,
+                    // typically 10) so that ws 1, 1+N, 1+2N, ... all start
+                    // centered, then pan rightward across the remaining
+                    // (1 - middleFraction) range until the end of the chunk,
+                    // at which point the next chunk re-centers. We deliberately
+                    // anchor on chunkSize rather than totalWorkspaces because
+                    // totalWorkspaces grows with the highest used workspace id.
+                    let cycleSize = bgRoot.workspaceChunkSize;
+                    if (cycleSize <= 1) {
                         return middleFraction;
                     }
-                    return Math.max(0, Math.min(1, workspaceIndex / (bgRoot.totalWorkspaces - 1)));
+                    let cycleIdx = ((workspaceIndex % cycleSize) + cycleSize) % cycleSize;
+                    return Math.max(0, Math.min(1,
+                        middleFraction + (1 - middleFraction) * cycleIdx / (cycleSize - 1)));
                 }
 
                 property real usedFractionX: {
@@ -228,7 +247,7 @@ Variants {
                     if (Config.options.background.parallax.enableWorkspace && !bgRoot.verticalParallax) {
                         usedFraction = fraction;
                     }
-                    if (Config.options.background.parallax.enableSidebar) {
+                    if (!GlobalStates.screenLocked && Config.options.background.parallax.enableSidebar) {
                         let sidebarFraction = bgRoot.parallaxRation / bgRoot.workspaceChunkSize / 2;
                         usedFraction += (sidebarFraction * GlobalStates.sidebarRightOpen - sidebarFraction * GlobalStates.sidebarLeftOpen);
                     }
@@ -272,8 +291,13 @@ Variants {
                     }
                 }
                 sourceSize {
-                    width: bgRoot.scaledWallpaperWidth
-                    height: bgRoot.scaledWallpaperHeight
+                    // Decode at physical pixels on HiDPI displays. The Image's
+                    // width/height (logical px) and all parallax math stay
+                    // unchanged — only the pixel buffer gets denser, which
+                    // costs proportional VRAM but keeps detail when the GPU
+                    // resamples during pan.
+                    width: bgRoot.scaledWallpaperWidth * Math.max(1, bgRoot.monitor?.scale ?? 1)
+                    height: bgRoot.scaledWallpaperHeight * Math.max(1, bgRoot.monitor?.scale ?? 1)
                 }
                 width: bgRoot.scaledWallpaperWidth
                 height: bgRoot.scaledWallpaperHeight

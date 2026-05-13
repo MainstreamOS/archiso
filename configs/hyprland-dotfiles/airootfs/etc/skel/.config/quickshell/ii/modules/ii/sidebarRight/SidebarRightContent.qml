@@ -162,6 +162,25 @@ Item {
 
         onShownChanged: if (shown) toggleDialogLoader.active = true;
         active: shown
+
+        function reloadDialog() {
+            if (!active)
+                return;
+
+            active = false;
+            Qt.callLater(() => {
+                if (shown)
+                    active = true;
+            });
+        }
+
+        Connections {
+            target: Appearance
+            function onThemeRevisionChanged() {
+                toggleDialogLoader.reloadDialog();
+            }
+        }
+
         onActiveChanged: {
             if (active) {
                 item.show = true;
@@ -268,7 +287,7 @@ Item {
                 toggled: false
                 buttonIcon: "restart_alt"
                 onClicked: {
-                    Hyprland.dispatch("reload");
+                    Quickshell.execDetached(["hyprctl", "reload"])
                     Quickshell.reload(true);
                 }
                 StyledToolTip {

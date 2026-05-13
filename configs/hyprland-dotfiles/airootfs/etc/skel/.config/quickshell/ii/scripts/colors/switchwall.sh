@@ -97,6 +97,7 @@ post_process() {
     handle_kde_material_you_colors &
     "$SCRIPT_DIR/code/material-code-set-color.sh" &
     set_sddm_background "$wallpaper_path"
+    set_scrolloverview_wallpaper "$wallpaper_path"
 }
 
 CUSTOM_DIR="$XDG_CONFIG_HOME/hypr/custom"
@@ -151,6 +152,39 @@ set_thumbnail_path() {
     local path="$1"
     if [ -f "$SHELL_CONFIG_FILE" ]; then
         jq --arg path "$path" '.background.thumbnailPath = $path' "$SHELL_CONFIG_FILE" > "$SHELL_CONFIG_FILE.tmp" && mv "$SHELL_CONFIG_FILE.tmp" "$SHELL_CONFIG_FILE"
+    fi
+}
+
+# Rewrite the `wallpaper_path = ...` line that the scrolloverview plugin
+# (built from sdata/scrolloverview/) reads, then poke Hyprland to reload
+# its config. The plugin keys its texture cache off the configured path,
+# so on the next overview render it will rebuild both the sharp texture
+# and the CPU-pre-blurred copy from the new image. We only update when
+# the line already exists — the install script is responsible for first
+# insertion.
+set_scrolloverview_wallpaper() {
+    local path="$1"
+    local target="$XDG_CONFIG_HOME/hypr/custom/general.lua"
+    [[ -z "$path" || ! -f "$target" ]] && return
+
+    if grep -qE '^[[:space:]]*wallpaper_path[[:space:]]*=' "$target"; then
+        local tmpfile
+        tmpfile="$(mktemp)"
+        # Lua form: `wallpaper_path = "...",` (with quotes and trailing comma).
+        # Preserves leading indent so the value stays inside the parent table.
+        awk -v new="$path" '
+            /^[[:space:]]*wallpaper_path[[:space:]]*=/ {
+                match($0, /^[[:space:]]*/)
+                printf "%swallpaper_path = \"%s\",\n", substr($0, 1, RLENGTH), new
+                next
+            }
+            { print }
+        ' "$target" > "$tmpfile" && mv "$tmpfile" "$target"
+
+        # Push the new value into the running compositor (and thus the
+        # plugin's getDataStaticPtr-cached value). Run async so we don't
+        # block the rest of post_process.
+        hyprctl reload >/dev/null 2>&1 &
     fi
 }
 
@@ -326,8 +360,8 @@ switch() {
         deactivate
         return 1
     fi
-    "$SCRIPT_DIR"/applycolor.sh
     deactivate
+    "$SCRIPT_DIR"/applycolor.sh
 
     # Pass screen width, height, and wallpaper path to post_process
     max_width_desired="$(hyprctl monitors -j | jq '([.[].width] | min)' | xargs)"

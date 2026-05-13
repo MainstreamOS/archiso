@@ -34,7 +34,7 @@ Scope { // Scope
             running = true;
         }
         function doIt2(output) {
-            command = ["bash", "-c", "hyprctl dispatch movecursor 9999 9999"];
+            command = ["bash", "-c", "hyprctl dispatch 'hl.dsp.cursor.move({x=9999,y=9999})'"];
             hook = () => {
                 doIt3();
             }
@@ -42,7 +42,7 @@ Scope { // Scope
         }
         function doIt3(output) {
             root.pin = !root.pin;
-            command = ["bash", "-c", `sleep 0.01; hyprctl dispatch movecursor ${cursorX} ${cursorY}`];
+            command = ["bash", "-c", `sleep 0.01; hyprctl dispatch 'hl.dsp.cursor.move({x=${cursorX},y=${cursorY}})'`];
             hook = null
             running = true;
         }
@@ -88,20 +88,8 @@ Scope { // Scope
             id: panelWindow
             visible: GlobalStates.sidebarLeftOpen
             
-            property bool extend: {  
-                const aiEnabled = Config.options.policies.ai !== 0;  
-                const weebEnabled = Config.options.policies.weeb !== 0;  
-                const wallpaperEnabled = Config.options.policies.wallpaperBrowser !== 0;  
-                  
-                // Count enabled tabs  
-                let enabledCount = 0;  
-                if (aiEnabled) enabledCount++;  
-                if (weebEnabled) enabledCount++;  
-                if (wallpaperEnabled) enabledCount++;  
-                  
-                // Extend if all three are enabled  
-                return enabledCount === 3;  
-            }            property real sidebarWidth: panelWindow.extend ? Appearance.sizes.sidebarLeftWidthExtended : Appearance.sizes.sidebarWidth
+            property bool extend: false
+            property real sidebarWidth: panelWindow.extend ? Appearance.sizes.sidebarWidthExtended : Appearance.sizes.sidebarWidth
             property var contentParent: sidebarLeftBackground
 
             function hide() {

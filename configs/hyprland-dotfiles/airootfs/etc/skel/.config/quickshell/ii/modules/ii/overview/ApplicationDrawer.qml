@@ -19,12 +19,13 @@ Item {
     property real collapsedHeight: 400 // Better initial height
     property real availableHeight: 0
     property real availableWidth: 0
+
     property real expandedHeight: {
         // Use most of available height when expanded, but leave space for top bar
         if (availableHeight > 0) {
             // Use 85% of available height to ensure it doesn't overlap top bar
             // This leaves ~15% for the bar and some breathing room
-            return availableHeight * 0.85;
+            return Math.max(100, availableHeight * 0.85);
         }
         return 600;
     }
@@ -261,7 +262,10 @@ Item {
                 }
             }
 
-            // Search bar (only visible when expanded)
+            // Search bar (only visible when expanded). Hidden when an
+            // external search owner (Overview's top SearchWidget in
+            // scrolloverview-launcher mode) drives root.searchText —
+            // showing both fields would create a two-input clash.
             TextField {
                 id: searchField
                 Layout.fillWidth: true

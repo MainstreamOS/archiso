@@ -12,8 +12,32 @@ ContentPage {
     id: displayConfigPage
     forceWidth: true
 
+    // Emitted after the apply chain (writeProc → reloadProc) has finished —
+    // the parent settings.qml listens for this and recenters its window so
+    // the user doesn't have to drag it back to true centre after every
+    // scale change. Wayland's QScreen change signals aren't reliable here.
+    signal scaleApplied()
+
     property var monitors: []
     property var pendingChanges: ({})
+
+    // Revert-after-apply state. Wayland gives no recovery if the user
+    // applies a mode the panel can't drive (black screen, no TTY hint
+    // back to the settings window). Each Apply takes the file's pre-
+    // apply content as `revertSnapshot`, shows a banner with 15s
+    // countdown after the reload completes, and writes the snapshot
+    // back if the user doesn't click Keep. Closing settings or
+    // navigating to another page is treated as "didn't see / can't
+    // see" — Component.onDestruction triggers the revert too.
+    property string lastReadMonitorsConf: ""
+    property string revertSnapshot: ""
+    property bool revertPending: false
+    property int revertSecondsRemaining: 0
+    // Set true in applyAllChanges, consumed by reloadProc.onExited
+    // to know whether the reload it just observed was an Apply (banner)
+    // or a side-effect (no banner — e.g., the revertChanges() write,
+    // setDefaultMonitor's general.lua cursor-table rewrite).
+    property bool _showBannerAfterNextReload: false
 
     // Palette of colours for distinguishing monitors on the canvas
     readonly property var monitorColors: [
@@ -23,14 +47,17 @@ ContentPage {
         Appearance.m3colors.m3error,
     ]
 
-    property string monitorsConfPath: `${Quickshell.env("HOME")}/.config/hypr/monitors.conf`
-    property string hyprlandConfPath: `${Quickshell.env("HOME")}/.config/hypr/hyprland.conf`
+    // Targets the Lua-config tree introduced in Hyprland 0.55.
+    // monitors.lua holds per-monitor hl.monitor({...}) calls;
+    // hyprlandGeneralPath holds the cursor block (default_monitor).
+    property string monitorsConfPath: `${Quickshell.env("HOME")}/.config/hypr/monitors.lua`
+    property string hyprlandConfPath: `${Quickshell.env("HOME")}/.config/hypr/hyprland.lua`
+    property string hyprlandGeneralPath: `${Quickshell.env("HOME")}/.config/hypr/hyprland/general.lua`
     property string defaultMonitor: ""
     property var confBitdepth: ({})
     property var confVrr: ({})
     property var confPositionMode: ({})
     property var confColorMode: ({})
-    property var confIccProfile: ({})
     property var confMaxLuminance:    ({})
     property var confMaxAvgLuminance: ({})
     property var confMinLuminance:    ({})
@@ -43,8 +70,12 @@ ContentPage {
     // (either this session via the wizard, or previously — detected from confMaxLuminance)
     property var hdrCalibratedMonitors: ({})
 
+    // ICC profile state. iccProfileDir is the on-disk library; the import
+    // flow copies user-picked .icc/.icm files into this dir so paths in
+    // monitors.lua stay stable. iccProfiles is rescanned whenever a file
+    // is added or removed.
+    property var confIccProfile: ({})
     property string iccProfileDir: `${Quickshell.env("HOME")}/.icc-profiles`
-    // List of { name, path } objects — one per file in iccProfileDir
     property var iccProfiles: []
 
     // Workspace-to-monitor bindings
@@ -107,9 +138,12 @@ ContentPage {
         });
         displayConfigPage.monitors = sorted;
 
-        // Write cursor block to hyprland.conf
+        // Persist cursor.default_monitor into hyprland/general.lua's
+        // `cursor = { ... }` table. We update the existing key if present,
+        // otherwise insert it right after `cursor = {`. The rest of the
+        // cursor table (zoom_factor, hotspot_padding, etc.) stays intact.
         let escaped = monitorName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        let confPath = displayConfigPage.hyprlandConfPath.replace(/'/g, "\\'");
+        let confPath = displayConfigPage.hyprlandGeneralPath.replace(/'/g, "\\'");
         let py =
             "import re\n" +
             "path = '" + confPath + "'\n" +
@@ -118,9 +152,18 @@ ContentPage {
             "    content = open(path, 'r').read()\n" +
             "except FileNotFoundError:\n" +
             "    content = ''\n" +
-            "content = re.sub(r'\\ncursor\\s*\\{[^}]*\\}', '', content)\n" +
-            "content = content.rstrip('\\n') + '\\ncursor {\\n    default_monitor = ' + name + '\\n}\\n'\n" +
-            "open(path, 'w').write(content)\n";
+            "# Rewrite existing default_monitor key inside the cursor table.\n" +
+            "new_text, count = re.subn(\n" +
+            "    r'(cursor\\s*=\\s*\\{[^}]*?default_monitor\\s*=\\s*\")[^\"]*(\")',\n" +
+            "    r'\\g<1>' + name + r'\\g<2>',\n" +
+            "    content, count=1, flags=re.S)\n" +
+            "if count == 0:\n" +
+            "    # No existing key — insert right after `cursor = {`.\n" +
+            "    new_text = re.sub(\n" +
+            "        r'(cursor\\s*=\\s*\\{)',\n" +
+            "        r'\\1\\n        default_monitor = \"' + name + r'\",',\n" +
+            "        content, count=1)\n" +
+            "open(path, 'w').write(new_text)\n";
         writeHyprlandProc.command = ["python3", "-c", py];
         writeHyprlandProc.running = false;
         writeHyprlandProc.running = true;
@@ -224,8 +267,34 @@ for card in sorted(glob.glob('/sys/class/drm/card[0-9]')):
             except Exception:
                 ten_bit = False
 
-        # HDR: check EDID for CTA-861 HDR Static Metadata Data Block (tag 7, ext-tag 6)
+        # HDR + Colorimetry: walk the EDID's CTA-861 extension blocks
+        # once, picking out two extended-tag blocks we care about:
+        #
+        #   ext-tag 6: HDR Static Metadata Data Block (CTA-861-G § 7.5.13)
+        #     desired_max_luminance     = 50 * 2 ** (byte / 32)   cd/m²
+        #     desired_max_frame_avg     = 50 * 2 ** (byte / 32)   cd/m²
+        #     desired_min_luminance     = (max * (byte/255)**2) / 100
+        #     Layout: pos+1 ext_tag=6, pos+2 eotf, pos+3 SM, pos+4..6 lum
+        #
+        #   ext-tag 5: Colorimetry Data Block (CTA-861-G § 7.5.5)
+        #     pos+2 bits encode panel-supported colorspaces:
+        #       bit 0: xvYCC601    bit 4: opRGB (Adobe RGB)
+        #       bit 1: xvYCC709    bit 5: BT2020 cYCC
+        #       bit 2: sYCC601     bit 6: BT2020 YCC
+        #       bit 3: opYCC601    bit 7: BT2020 RGB
+        #     The flags drive the EDID-derived color-mode pill: panels
+        #     that don't advertise a wide gamut shouldn't be silently
+        #     mapped to one. DCI-P3 isn't in CTA-861's standard slots
+        #     (it lives in DisplayID extensions or vendor blocks); we
+        #     leave it false here and let the UI fall back to bit-depth-
+        #     based defaults for that one.
         hdr = False
+        hdr_max = None
+        hdr_avg = None
+        hdr_min = None
+        color_bt2020 = False
+        color_adobe  = False
+        color_dci_p3 = False
         try:
             edid = open(os.path.join(conn_dir, 'edid'), 'rb').read()
             for blk in range(1, len(edid) // 128):
@@ -241,11 +310,31 @@ for card in sorted(glob.glob('/sys/class/drm/card[0-9]')):
                         break
                     if t == 7 and ln >= 2 and b[pos+1] == 6:
                         hdr = True
+                        if ln >= 4:
+                            hdr_max = round(50 * (2 ** (b[pos+4] / 32.0)))
+                        if ln >= 5:
+                            hdr_avg = round(50 * (2 ** (b[pos+5] / 32.0)))
+                        if ln >= 6 and hdr_max is not None:
+                            hdr_min = round(hdr_max * ((b[pos+6] / 255.0) ** 2) / 100, 4)
+                    elif t == 7 and ln >= 2 and b[pos+1] == 5:
+                        f = b[pos+2]
+                        color_bt2020 = bool(f & 0xE0)   # bits 5/6/7
+                        color_adobe  = bool(f & 0x18)   # bits 3/4
                     pos += 1 + ln
         except Exception:
             pass
 
-        result[name] = {'vrr': vrr, 'tenBit': ten_bit, 'hdr': hdr}
+        result[name] = {
+            'vrr': vrr,
+            'tenBit': ten_bit,
+            'hdr': hdr,
+            'hdrMaxLuminance':    hdr_max,
+            'hdrMaxAvgLuminance': hdr_avg,
+            'hdrMinLuminance':    hdr_min,
+            'colorBT2020': color_bt2020,
+            'colorAdobe':  color_adobe,
+            'colorDciP3':  color_dci_p3,
+        }
 
 print(json.dumps(result))
 `]
@@ -272,11 +361,15 @@ print(json.dumps(result))
             onRead: data => readConfProc.output += data + "\n"
         }
         onExited: {
+            // Cache the raw file content so applyAllChanges can
+            // snapshot it for the revert-after-apply banner. Stored
+            // before any parsing so a revert restores the file byte-
+            // for-byte (preserving comments, ordering, etc.).
+            displayConfigPage.lastReadMonitorsConf = readConfProc.output;
             let bitdepthResult = {};
             let vrrResult = {};
             let positionModeResult = {};
             let colorModeResult = {};
-            let iccProfileResult = {};
             let maxLuminanceResult    = {};
             let maxAvgLuminanceResult = {};
             let minLuminanceResult    = {};
@@ -285,28 +378,33 @@ print(json.dumps(result))
             let sdrBrightnessResult   = {};
             let sdrSaturationResult   = {};
             let hdrModeResult = {};
+            let iccProfileResult = {};
             let wsAssignments = {};
             let hasAnyWsBinding = false;
 
-            // Parse monitorv2 { ... } blocks as well as legacy monitor= lines
+            // Lua format: each monitor is `hl.monitor({ output = "DP-1", ... })`
+            // and workspace bindings are `hl.workspace_rule({ workspace = "1", monitor = "DP-1" })`.
+            // HDR-mode metadata is persisted as a Lua comment `-- ii_hdr_mode:NAME = N`.
+            //
+            // Strip surrounding quotes/trailing-comma from a captured Lua value.
+            const stripLua = v => String(v).replace(/^\s*"/, "").replace(/"?,?\s*$/, "").trim();
             let currentBlock = null;
             readConfProc.output.split("\n").forEach(line => {
                 let trimmed = line.trim();
 
-                // ── monitorv2 block start ──────────────────────────────────
-                if (/^monitorv2\s*\{/.test(trimmed)) {
+                // ── hl.monitor({ block start ──────────────────────────────
+                if (/^hl\.monitor\s*\(\s*\{/.test(trimmed)) {
                     currentBlock = {};
                     return;
                 }
                 if (currentBlock !== null) {
-                    if (trimmed === "}") {
+                    if (/^\}\s*\)/.test(trimmed) || trimmed === "}") {
                         // End of block — commit parsed values
                         let name = currentBlock["output"];
                         if (name) {
                             if (currentBlock["bitdepth"])  bitdepthResult[name]    = parseInt(currentBlock["bitdepth"]);
                             if (currentBlock["vrr"])       vrrResult[name]         = parseInt(currentBlock["vrr"]);
                             if (currentBlock["cm"])        colorModeResult[name]   = currentBlock["cm"];
-                            if (currentBlock["icc"])       iccProfileResult[name]  = currentBlock["icc"];
                             if (currentBlock["max_luminance"])     maxLuminanceResult[name]    = parseFloat(currentBlock["max_luminance"]);
                             if (currentBlock["max_avg_luminance"]) maxAvgLuminanceResult[name] = parseFloat(currentBlock["max_avg_luminance"]);
                             if (currentBlock["min_luminance"])     minLuminanceResult[name]    = parseFloat(currentBlock["min_luminance"]);
@@ -314,35 +412,24 @@ print(json.dumps(result))
                             if (currentBlock["sdr_min_luminance"]) sdrMinLuminanceResult[name] = parseFloat(currentBlock["sdr_min_luminance"]);
                             if (currentBlock["sdrbrightness"])     sdrBrightnessResult[name]   = parseFloat(currentBlock["sdrbrightness"]);
                             if (currentBlock["sdrsaturation"])     sdrSaturationResult[name]   = parseFloat(currentBlock["sdrsaturation"]);
+                            if (currentBlock["icc"])               iccProfileResult[name]      = currentBlock["icc"];
                             let pos = currentBlock["position"] ?? "";
                             if (pos.startsWith("auto-center-")) positionModeResult[name] = pos;
                         }
                         currentBlock = null;
                     } else {
-                        let kv = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
-                        if (kv) currentBlock[kv[1]] = kv[2].trim();
+                        let kv = trimmed.match(/^(\w+)\s*=\s*(.+?),?\s*$/);
+                        if (kv) currentBlock[kv[1]] = stripLua(kv[2]);
                     }
                     return;
                 }
 
-                // ── Legacy monitor= lines (fallback) ──────────────────────
-                let mb = line.match(/^monitor=([^,]+),.+,bitdepth,(\d+)/);
-                if (mb) bitdepthResult[mb[1]] = parseInt(mb[2]);
-                let mv = line.match(/^monitor=([^,]+),.+,vrr,(\d+)/);
-                if (mv) vrrResult[mv[1]] = parseInt(mv[2]);
-                let mp = line.match(/^monitor=([^,]+),[^,]+,(auto-center-[^,]+),/);
-                if (mp) positionModeResult[mp[1]] = mp[2];
-                let mc = line.match(/^monitor=([^,]+),.+,cm,(\w+)/);
-                if (mc) colorModeResult[mc[1]] = mc[2];
-                let mi = line.match(/^monitor=([^,]+),.+,icc,([^,\n]+)/);
-                if (mi) iccProfileResult[mi[1]] = mi[2].trim();
-
-                // ── HDR mode metadata (persisted as comment) ─────────────
-                let mh = trimmed.match(/^#\s*ii_hdr_mode:(\S+)\s*=\s*(\d+)/);
+                // ── HDR mode metadata (persisted as a Lua comment) ────────
+                let mh = trimmed.match(/^--\s*ii_hdr_mode:(\S+)\s*=\s*(\d+)/);
                 if (mh) hdrModeResult[mh[1]] = parseInt(mh[2]);
 
-                // ── Workspace bindings (same in both syntaxes) ─────────────
-                let mw = line.match(/^workspace\s*=\s*(\d+)\s*,\s*monitor:(\S+)/);
+                // ── Workspace bindings — hl.workspace_rule({ workspace = "N", monitor = "DP-1" })
+                let mw = line.match(/hl\.workspace_rule\(\{\s*workspace\s*=\s*"(\d+)"\s*,\s*monitor\s*=\s*"([^"]+)"/);
                 if (mw) {
                     wsAssignments[parseInt(mw[1])] = mw[2];
                     hasAnyWsBinding = true;
@@ -353,7 +440,6 @@ print(json.dumps(result))
             displayConfigPage.confVrr            = vrrResult;
             displayConfigPage.confPositionMode   = positionModeResult;
             displayConfigPage.confColorMode      = colorModeResult;
-            displayConfigPage.confIccProfile     = iccProfileResult;
             displayConfigPage.confMaxLuminance    = maxLuminanceResult;
             displayConfigPage.confMaxAvgLuminance = maxAvgLuminanceResult;
             displayConfigPage.confMinLuminance    = minLuminanceResult;
@@ -362,6 +448,7 @@ print(json.dumps(result))
             displayConfigPage.confSdrBrightness   = sdrBrightnessResult;
             displayConfigPage.confSdrSaturation   = sdrSaturationResult;
             displayConfigPage.confHdrMode          = hdrModeResult;
+            displayConfigPage.confIccProfile       = iccProfileResult;
             // Any monitor that already has max_luminance in conf has been calibrated before
             let calibrated = Object.assign({}, displayConfigPage.hdrCalibratedMonitors);
             Object.keys(maxLuminanceResult).forEach(n => { calibrated[n] = true; });
@@ -402,71 +489,82 @@ print(json.dumps(result))
         let mode = `${m.width}x${m.height}@${m.refreshRate.toFixed(6)}`;
         let colorMode = m.colorMode ?? "srgb";
         let isHdr = colorMode === "hdr" || colorMode === "hdredid";
-        let hdrMode = m.hdrMode ?? 0;  // 0=none, 1=Always On, 2=Fullscreen Only
+        let hdrMode = m.hdrMode ?? 0;  // 0=none, 1=Fullscreen Only, 2=Always On
         // HDR forces 10-bit; otherwise use the stored bitdepth
         let bitdepth = (isHdr || hdrMode > 0) ? 10 : (m.bitdepth ?? 8);
 
         let lines = [];
-        // Persist HDR mode as a comment so it survives reloads
+        // Persist HDR mode as a Lua comment so it survives reloads.
         if (isHdr && hdrMode > 0)
-            lines.push(`# ii_hdr_mode:${name} = ${hdrMode}`);
-        lines.push(`monitorv2 {`);
-        lines.push(`    output = ${name}`);
+            lines.push(`-- ii_hdr_mode:${name} = ${hdrMode}`);
+        // Lua hl.monitor({...}) call. Strings get quoted, numbers and booleans bare.
+        lines.push(`hl.monitor({`);
+        lines.push(`    output = "${name}",`);
         if (!m.enabled) {
-            lines.push(`    disabled = true`);
+            lines.push(`    disabled = true,`);
         } else {
-            lines.push(`    mode = ${mode}`);
-            lines.push(`    position = ${pos}`);
-            lines.push(`    scale = ${scale}`);
-            lines.push(`    transform = ${m.transform}`);
-            if (bitdepth !== 8)          lines.push(`    bitdepth = ${bitdepth}`);
-            if ((m.vrr ?? 0) !== 0)      lines.push(`    vrr = ${m.vrr}`);
-            // "Fullscreen Only" (2): don't write cm=hdr — Hyprland's
+            lines.push(`    mode = "${mode}",`);
+            lines.push(`    position = "${pos}",`);
+            lines.push(`    scale = "${scale}",`);
+            lines.push(`    transform = ${m.transform},`);
+            if (bitdepth !== 8)          lines.push(`    bitdepth = ${bitdepth},`);
+            if ((m.vrr ?? 0) !== 0)      lines.push(`    vrr = ${m.vrr},`);
+            // "Fullscreen Only" (1, default): don't write cm=hdr — Hyprland's
             // render:cm_auto_hdr (default 1) handles fullscreen HDR switching.
-            // "Always On" (1): write cm=hdr/hdredid as usual.
-            if (isHdr && hdrMode === 2) {
+            // "Always On" (2): write cm=hdr/hdredid as usual.
+            if (isHdr && hdrMode === 1) {
                 // Skip cm = hdr so Hyprland only activates HDR for fullscreen apps
             } else if (colorMode !== "auto") {
-                lines.push(`    cm = ${colorMode}`);
+                lines.push(`    cm = "${colorMode}",`);
             }
+            // ICC profile (mutually exclusive with HDR — Hyprland's ICC
+            // pipeline replaces colorspace conversion).
+            let icc = m.iccProfile ?? "";
+            if (icc && !isHdr) lines.push(`    icc = "${icc}",`);
             if (isHdr) {
                 let d = displayConfigPage.hdrDefaults;
-                lines.push(`    sdrbrightness = ${(m.sdrBrightness   ?? d.sdrBrightness).toFixed(3)}`);
-                lines.push(`    sdrsaturation = ${(m.sdrSaturation   ?? d.sdrSaturation).toFixed(3)}`);
-                lines.push(`    sdr_min_luminance = ${(m.sdrMinLuminance ?? d.sdrMinLuminance).toFixed(4)}`);
-                lines.push(`    sdr_max_luminance = ${Math.round(m.sdrMaxLuminance ?? d.sdrMaxLuminance)}`);
-                // Only write luminance limits if the user explicitly calibrated them;
-                // otherwise let Hyprland infer them from the monitor's EDID.
-                let calibrated = displayConfigPage.hdrCalibratedMonitors[name] ?? false;
-                if (calibrated) {
-                    lines.push(`    min_luminance = ${(m.minLuminance    ?? d.minLuminance).toFixed(4)}`);
-                    lines.push(`    max_luminance = ${Math.round(m.maxLuminance    ?? d.maxLuminance)}`);
-                    lines.push(`    max_avg_luminance = ${Math.round(m.maxAvgLuminance ?? d.maxAvgLuminance)}`);
+                lines.push(`    sdrbrightness = ${(m.sdrBrightness   ?? d.sdrBrightness).toFixed(3)},`);
+                lines.push(`    sdrsaturation = ${(m.sdrSaturation   ?? d.sdrSaturation).toFixed(3)},`);
+                lines.push(`    sdr_min_luminance = ${(m.sdrMinLuminance ?? d.sdrMinLuminance).toFixed(4)},`);
+                lines.push(`    sdr_max_luminance = ${Math.round(m.sdrMaxLuminance ?? d.sdrMaxLuminance)},`);
+                if (colorMode === "hdr") {
+                    lines.push(`    min_luminance = ${(m.minLuminance    ?? d.minLuminance).toFixed(4)},`);
+                    lines.push(`    max_luminance = ${Math.round(m.maxLuminance    ?? d.maxLuminance)},`);
+                    lines.push(`    max_avg_luminance = ${Math.round(m.maxAvgLuminance ?? d.maxAvgLuminance)},`);
                 }
-                lines.push(`    sdr_eotf = srgb`);
+                lines.push(`    sdr_eotf = "srgb",`);
             }
-            let icc = m.iccProfile ?? "";
-            if (icc && !isHdr)           lines.push(`    icc = ${icc}`);
         }
-        lines.push(`}`);
+        lines.push(`})`);
         return lines.join("\n");
     }
 
-    function applyMonitorChanges(monitorName) {
-        let m = pendingChanges[monitorName];
-        if (!m) return;
-        // Build full monitors.conf content from all pending changes
+    // Writes the entire monitors.lua from current pendingChanges for
+    // every monitor at once. The page now exposes a single Apply
+    // button (rather than one per monitor) — this matches the
+    // function's actual behavior (it's always written every monitor
+    // every time anyway) and avoids the multi-screen flash users got
+    // when clicking Apply on each monitor in turn.
+    function applyAllChanges() {
+        if (monitors.length === 0) return;
+        // Snapshot the file's pre-apply content so the revert banner can
+        // restore it. lastReadMonitorsConf is updated whenever
+        // readConfProc finishes (page load + every successful apply
+        // chain), so it always reflects the most recent on-disk state.
+        revertSnapshot = lastReadMonitorsConf;
+        _showBannerAfterNextReload = true;
+        // Build full monitors.lua content from all pending changes
         let blocks = [];
         monitors.forEach(mon => {
             let p = pendingChanges[mon.name] ?? {};
             blocks.push(buildMonitorBlock(mon.name, p, mon));
         });
-        // Append workspace-monitor bindings if in custom mode
+        // Append workspace-monitor bindings if in custom mode (Lua syntax).
         if (wsBindingMode === "custom") {
             let wsLines = [];
             for (let ws = 1; ws <= 10; ws++) {
                 let assigned = workspaceAssignments[ws];
-                if (assigned) wsLines.push(`workspace = ${ws}, monitor:${assigned}`);
+                if (assigned) wsLines.push(`hl.workspace_rule({ workspace = "${ws}", monitor = "${assigned}" })`);
             }
             if (wsLines.length > 0) blocks.push(wsLines.join("\n"));
         }
@@ -483,6 +581,71 @@ print(json.dumps(result))
         writeProc.command = ["python3", "-c", py];
         writeProc.running = false;
         writeProc.running = true;
+    }
+
+    // User clicked "Keep" on the revert banner — accept the new config.
+    // The next applyAllChanges() call will snapshot the now-current
+    // file contents (lastReadMonitorsConf was already refreshed by the
+    // Apply chain's parseMonitorsConf), so subsequent reverts go to
+    // *this* state, not the older one.
+    function keepChanges() {
+        revertCountdownTimer.stop();
+        revertPending = false;
+        revertSecondsRemaining = 0;
+    }
+
+    // User clicked "Revert", the 15s timer expired, or the page is
+    // about to be destroyed. Writes the snapshot back through the
+    // existing writeProc → reloadProc chain. _showBannerAfterNextReload
+    // is already false at this point (cleared when the original Apply's
+    // banner came up), so this reload won't trigger a fresh banner.
+    function revertChanges() {
+        revertCountdownTimer.stop();
+        revertPending = false;
+        revertSecondsRemaining = 0;
+        if (revertSnapshot.length === 0) return;
+        let escaped = revertSnapshot
+            .replace(/\\/g, "\\\\")
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, "\\n");
+        let py =
+            "path = '" + displayConfigPage.monitorsConfPath + "'\n" +
+            "content = '" + escaped + "'\n" +
+            "open(path, 'w').write(content)\n";
+        writeProc.command = ["python3", "-c", py];
+        writeProc.running = false;
+        writeProc.running = true;
+    }
+
+    // Fires the revert via Quickshell.execDetached so it survives the
+    // page being destroyed (e.g. user navigates to another settings tab
+    // or closes the settings window without clicking Keep). Mirrors
+    // revertChanges() but doesn't need any QML state afterward — the
+    // page is going away.
+    function revertChangesDetached() {
+        if (revertSnapshot.length === 0) return;
+        let escaped = revertSnapshot
+            .replace(/\\/g, "\\\\")
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, "\\n");
+        let py =
+            "import subprocess\n" +
+            "path = '" + displayConfigPage.monitorsConfPath + "'\n" +
+            "content = '" + escaped + "'\n" +
+            "open(path, 'w').write(content)\n" +
+            "subprocess.run(['hyprctl', 'reload'])\n";
+        Quickshell.execDetached(["python3", "-c", py]);
+    }
+
+    Timer {
+        id: revertCountdownTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            displayConfigPage.revertSecondsRemaining--;
+            if (displayConfigPage.revertSecondsRemaining <= 0)
+                displayConfigPage.revertChanges();
+        }
     }
 
     function parseMode(modeStr) {
@@ -512,15 +675,22 @@ print(json.dumps(result))
                 bitdepth: confBitdepth[name] ?? 8,
                 vrr: confVrr[name] ?? 0,
                 positionMode: isDefault ? undefined : (confPositionMode[name] ?? "auto-center-right"),
-                // If hdrMode is "Fullscreen Only" (2), cm=hdr isn't in the config file,
+                // If hdrMode is "Fullscreen Only" (1), cm=hdr isn't in the config file,
                 // but the UI still needs to show HDR as the active color mode.
-                colorMode: (confHdrMode[name] === 2 && !confColorMode[name])
+                colorMode: (confHdrMode[name] === 1 && !confColorMode[name])
                     ? "hdr" : (confColorMode[name] ?? "auto"),
                 hdrMode: confHdrMode[name] ?? 0,
                 iccProfile: confIccProfile[name] ?? "",
-                maxLuminance:    confMaxLuminance[name]    ?? hdrDefaults.maxLuminance,
-                maxAvgLuminance: confMaxAvgLuminance[name] ?? hdrDefaults.maxAvgLuminance,
-                minLuminance:    confMinLuminance[name]    ?? hdrDefaults.minLuminance,
+                // HDR luminance fallback chain: existing user value
+                // from monitors.lua → manufacturer-suggested defaults
+                // from EDID (CTA-861 HDR Static Metadata block, parsed
+                // by capabilitiesProc) → hardcoded fallback. Means most
+                // HDR users won't need to run the calibration wizard
+                // at all to get sensible starting values; the wizard
+                // becomes "fine-tune" rather than "set up from scratch".
+                maxLuminance:    confMaxLuminance[name]    ?? monitorCapabilities[name]?.hdrMaxLuminance    ?? hdrDefaults.maxLuminance,
+                maxAvgLuminance: confMaxAvgLuminance[name] ?? monitorCapabilities[name]?.hdrMaxAvgLuminance ?? hdrDefaults.maxAvgLuminance,
+                minLuminance:    confMinLuminance[name]    ?? monitorCapabilities[name]?.hdrMinLuminance    ?? hdrDefaults.minLuminance,
                 sdrMaxLuminance: confSdrMaxLuminance[name] ?? hdrDefaults.sdrMaxLuminance,
                 sdrMinLuminance: confSdrMinLuminance[name] ?? hdrDefaults.sdrMinLuminance,
                 sdrBrightness:   confSdrBrightness[name]   ?? hdrDefaults.sdrBrightness,
@@ -628,7 +798,7 @@ print(json.dumps(result))
             try {
                 let parsed = JSON.parse(monitorProc.output.trim());
                 // Ensure a default monitor is always set.
-                // If hyprland.conf hasn't been read yet (race), or no cursor block exists,
+                // If general.lua hasn't been read yet (race), or no cursor block exists,
                 // fall back to whichever monitor is at 0x0, or the first monitor.
                 if (!displayConfigPage.defaultMonitor ||
                     !parsed.find(m => m.name === displayConfigPage.defaultMonitor)) {
@@ -655,7 +825,7 @@ print(json.dumps(result))
         }
     }
 
-    // Write monitors.conf then reload Hyprland
+    // Write monitors.lua then reload Hyprland
     Process {
         id: writeProc
         command: []
@@ -665,7 +835,7 @@ print(json.dumps(result))
         }
     }
 
-    // Write hyprland.conf cursor block (default_monitor)
+    // Write general.lua cursor table (default_monitor)
     Process {
         id: writeHyprlandProc
         command: []
@@ -675,10 +845,12 @@ print(json.dumps(result))
         }
     }
 
-    // Read hyprland.conf to get current default_monitor
+    // Read hyprland/general.lua to get the current cursor.default_monitor.
+    // In Lua the field is `default_monitor = "DP-1"` inside a `cursor = { ... }`
+    // table — so we capture between quotes and strip them.
     Process {
         id: readHyprlandConfProc
-        command: ["cat", displayConfigPage.hyprlandConfPath]
+        command: ["cat", displayConfigPage.hyprlandGeneralPath]
         property string output: ""
         stdout: SplitParser {
             onRead: data => readHyprlandConfProc.output += data + "\n"
@@ -687,9 +859,9 @@ print(json.dumps(result))
             let defaultMon = "";
             let inCursorBlock = false;
             readHyprlandConfProc.output.split("\n").forEach(line => {
-                if (/^\s*cursor\s*\{/.test(line)) inCursorBlock = true;
+                if (/^\s*cursor\s*=\s*\{/.test(line)) inCursorBlock = true;
                 if (inCursorBlock) {
-                    let m = line.match(/^\s*default_monitor\s*=\s*(.+?)\s*$/);
+                    let m = line.match(/^\s*default_monitor\s*=\s*"([^"]+)"/);
                     if (m) defaultMon = m[1];
                 }
                 if (/^\s*\}/.test(line)) inCursorBlock = false;
@@ -712,7 +884,7 @@ print(json.dumps(result))
 
     // ── ICC profile management ─────────────────────────────────────────────
 
-    // Ensure ~/.icc-profiles/ exists and scan it for profiles
+    // Ensure ~/.icc-profiles/ exists and scan it for profiles.
     Process {
         id: iccScanProc
         property string output: ""
@@ -729,8 +901,19 @@ print(json.dumps(result))
                 let p = line.trim();
                 if (!p) return;
                 let filename = p.split("/").pop();
-                let name = filename.replace(/\.[^.]+$/, "");
-                profiles.push({ name: name, path: p });
+                let stem = filename.replace(/\.[^.]+$/, "");
+                // Files imported via Settings are named `<monitor>__<original>.icc`
+                // so two monitors can each have their own profile.icc without
+                // collision. Split that prefix back off for display, but
+                // keep it on disk so the source-monitor info survives.
+                let importedFor = "";
+                let displayName = stem;
+                let sep = stem.indexOf("__");
+                if (sep > 0) {
+                    importedFor = stem.substring(0, sep);
+                    displayName = stem.substring(sep + 2);
+                }
+                profiles.push({ name: displayName, path: p, importedFor: importedFor });
             });
             displayConfigPage.iccProfiles = profiles;
             iccScanProc.output = "";
@@ -739,7 +922,7 @@ print(json.dumps(result))
 
     // Pick a new ICC file using a multi-method fallback chain:
     //   zenity → kdialog → yad → python3 tkinter
-    // This avoids the python3-gi / xdg-desktop-portal dependency that caused
+    // Avoids the python3-gi / xdg-desktop-portal dependency that caused
     // the original D-Bus implementation to silently fail on many setups.
     Process {
         id: iccPickerProc
@@ -748,36 +931,48 @@ print(json.dumps(result))
         command: ["python3", "-c", `
 import subprocess, sys, os
 
-def try_zenity():
-    r = subprocess.run(
+# Each runner only falls through on FileNotFoundError (the picker binary
+# isn't installed). Any other outcome — successful selection, user
+# cancel, internal error — is treated as "this picker handled the
+# request" and stops the chain. Without this, cancelling zenity would
+# spawn kdialog next, which is the wrong behaviour: a cancel is the
+# user's explicit "no", not a signal to try another tool.
+
+def run_zenity():
+    return subprocess.run(
         ['zenity', '--file-selection',
          '--title=Import ICC Profile',
          '--file-filter=ICC Profiles (*.icc *.icm) | *.icc *.icm'],
         capture_output=True, text=True, timeout=300)
-    if r.returncode == 0:
-        return r.stdout.strip() or None
-    return None
 
-def try_kdialog():
-    r = subprocess.run(
+def run_kdialog():
+    return subprocess.run(
         ['kdialog', '--getopenfilename',
          os.path.expanduser('~'), '*.icc *.icm|ICC Profiles'],
         capture_output=True, text=True, timeout=300)
-    if r.returncode == 0:
-        return r.stdout.strip() or None
-    return None
 
-def try_yad():
-    r = subprocess.run(
+def run_yad():
+    return subprocess.run(
         ['yad', '--file-selection', '--title=Import ICC Profile',
          '--file-filter=*.icc|ICC Profile', '--file-filter=*.icm|ICM Profile'],
         capture_output=True, text=True, timeout=300)
-    if r.returncode == 0:
-        p = r.stdout.strip().rstrip('|')
-        return p or None
-    return None
 
-def try_tkinter():
+for runner in [run_zenity, run_kdialog, run_yad]:
+    try:
+        r = runner()
+    except FileNotFoundError:
+        continue   # picker not installed — try the next one
+    except Exception:
+        sys.exit(0)  # any other error: don't keep prompting
+    # Picker ran. Emit selected path (if any) and stop the chain —
+    # an empty stdout means the user cancelled, which is fine.
+    out = r.stdout.strip().rstrip('|')   # yad sometimes appends '|'
+    if out:
+        print(out)
+    sys.exit(0)
+
+# Final fallback: tkinter (ships with stdlib, no external picker needed).
+try:
     import tkinter as tk
     from tkinter import filedialog
     root = tk.Tk()
@@ -787,16 +982,10 @@ def try_tkinter():
         title='Import ICC Profile',
         filetypes=[('ICC Profiles', '*.icc *.icm'), ('All Files', '*')])
     root.destroy()
-    return p or None
-
-for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
-    try:
-        path = fn()
-        if path:
-            print(path)
-            sys.exit(0)
-    except Exception:
-        pass
+    if p:
+        print(p)
+except Exception:
+    pass
 `]
         stdout: SplitParser {
             onRead: data => iccPickerProc.output += data
@@ -812,8 +1001,15 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
             iccPickerProc.targetMonitor = "";
             if (src !== "" && mon !== "") {
                 let filename = src.split("/").pop();
+                // Namespace by target monitor so two displays can each
+                // import a profile with the same source filename
+                // (e.g. both vendors ship `calibration.icc`) without one
+                // silently overwriting the other. Sanitise mon for the
+                // filesystem — Hyprland output names are already safe
+                // (DP-1, HDMI-A-1) but be defensive.
+                let safeMon = mon.replace(/[^A-Za-z0-9_-]/g, "_");
                 iccCopyProc.targetMonitor = mon;
-                iccCopyProc.destPath = `${displayConfigPage.iccProfileDir}/${filename}`;
+                iccCopyProc.destPath = `${displayConfigPage.iccProfileDir}/${safeMon}__${filename}`;
                 iccCopyProc.command = ["cp", "--", src, iccCopyProc.destPath];
                 iccCopyProc.running = false;
                 iccCopyProc.running = true;
@@ -821,7 +1017,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
         }
     }
 
-    // Copy the chosen file then rescan and auto-select it
+    // Copy the chosen file then rescan and auto-select it.
     Process {
         id: iccCopyProc
         property string targetMonitor: ""
@@ -833,13 +1029,12 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
             }
             iccCopyProc.targetMonitor = "";
             iccCopyProc.destPath = "";
-            // Rescan library
             iccScanProc.running = false;
             iccScanProc.running = true;
         }
     }
 
-    // Delete a profile file (called after user confirms)
+    // Delete a profile file (called after user confirms).
     Process {
         id: iccDeleteProc
         property string deletedPath: ""
@@ -863,7 +1058,28 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
     Process {
         id: reloadProc
         command: ["hyprctl", "reload"]
-        onExited: displayConfigPage.parseMonitorsConf()
+        onExited: {
+            displayConfigPage.parseMonitorsConf();
+            displayConfigPage.scaleApplied();
+            // If this reload was the tail of an Apply chain, raise the
+            // revert banner now that the new mode is on screen. The
+            // flag is consumed (cleared) here so unrelated reloads
+            // (revertChanges, setDefaultMonitor) don't trigger a
+            // banner.
+            if (displayConfigPage._showBannerAfterNextReload) {
+                displayConfigPage._showBannerAfterNextReload = false;
+                displayConfigPage.revertSecondsRemaining = 15;
+                displayConfigPage.revertPending = true;
+                revertCountdownTimer.start();
+                // Snap the Flickable back to the top so the banner is
+                // unmissable. ContentPage extends StyledFlickable, so
+                // contentY=0 puts row 0 of contentColumn at the visible
+                // top regardless of where the user had scrolled to (the
+                // bottom of the page when clicking a per-monitor Apply
+                // is the typical case).
+                displayConfigPage.contentY = 0;
+            }
+        }
     }
 
     Component.onCompleted: {
@@ -871,6 +1087,107 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
         readHyprlandConfProc.running = true;
         iccScanProc.running = true;
         parseMonitorsConf();
+    }
+
+    // If the page is destroyed (settings tab change, settings window
+    // close, full quickshell reload) while a revert is still pending,
+    // assume the user can't see / respond to the banner and revert.
+    // execDetached so the python+hyprctl chain finishes after our QML
+    // state is gone — a normal Process tied to this component would
+    // be killed mid-write.
+    Component.onDestruction: {
+        if (displayConfigPage.revertPending)
+            displayConfigPage.revertChangesDetached();
+    }
+
+    // ── Revert-after-apply banner ──────────────────────────────────────────
+    // Visible for 15s after each Apply. "Keep" clicks accept the new
+    // configuration; "Revert" or timeout (or page navigation, via
+    // Component.onDestruction above) restores monitors.lua from the
+    // pre-apply snapshot and reloads. Sits at the top of the page so a
+    // user who can't see clearly still sees the banner where it always
+    // appears in similar settings tools.
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? 60 : 0
+        visible: displayConfigPage.revertPending
+        color: Appearance.colors.colSecondaryContainer
+        radius: Appearance.rounding.normal
+
+        RowLayout {
+            anchors {
+                fill: parent
+                leftMargin: 16
+                rightMargin: 12
+                topMargin: 8
+                bottomMargin: 8
+            }
+            spacing: 12
+
+            MaterialSymbol {
+                text: "schedule"
+                iconSize: Appearance.font.pixelSize.larger
+                color: Appearance.colors.colOnSecondaryContainer
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: Translation.tr("Keep these display settings?")
+                    font.pixelSize: Appearance.font.pixelSize.normal
+                    font.weight: Font.Medium
+                    color: Appearance.colors.colOnSecondaryContainer
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: Translation.tr("Reverting in %1 s — leaving the page also reverts.").arg(displayConfigPage.revertSecondsRemaining)
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colOnSecondaryContainer
+                    opacity: 0.85
+                }
+            }
+
+            RippleButton {
+                Layout.alignment: Qt.AlignVCenter
+                implicitHeight: 32
+                implicitWidth: 88
+                buttonRadius: Appearance.rounding.full
+                colBackground: Appearance.m3colors.m3surfaceContainerHigh
+                colBackgroundHover: Appearance.colors.colLayer2Hover
+                colRipple: Appearance.colors.colLayer2Active
+                contentItem: StyledText {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: Translation.tr("Revert")
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colOnSecondaryContainer
+                }
+                onClicked: displayConfigPage.revertChanges()
+            }
+
+            RippleButton {
+                Layout.alignment: Qt.AlignVCenter
+                implicitHeight: 32
+                implicitWidth: 88
+                buttonRadius: Appearance.rounding.full
+                colBackground: Appearance.colors.colPrimary
+                colBackgroundHover: Qt.lighter(Appearance.colors.colPrimary, 1.1)
+                colRipple: Qt.lighter(Appearance.colors.colPrimary, 1.2)
+                contentItem: StyledText {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: Translation.tr("Keep")
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colOnPrimary
+                }
+                onClicked: displayConfigPage.keepChanges()
+            }
+        }
     }
 
     // ── Arrangement canvas ─────────────────────────────────────────────────
@@ -1012,10 +1329,33 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
     Repeater {
         model: displayConfigPage.monitors
 
-        delegate: ContentSection {
-            id: monitorSection
+        delegate: Loader {
+            id: monitorLoader
             required property var modelData
             required property int index
+            Layout.fillWidth: true
+            // Build the per-monitor section asynchronously on a worker
+            // thread so the page swap doesn't freeze while QML
+            // instantiates ~400 widgets per monitor (sub-Repeaters for
+            // modes / scales / rotations / VRR / 10-bit / position /
+            // colour modes / EDID / HDR / fine-tune sliders / workspace
+            // pills). The page itself stays sync so Flow-style layouts
+            // on sibling settings pages see their final width before
+            // first binding evaluation — that was the regression we
+            // hit when we tried Loader.asynchronous on the page-level
+            // pageLoader.
+            asynchronous: true
+
+            sourceComponent: ContentSection {
+            id: monitorSection
+            // Forward Repeater delegate properties from the wrapping
+            // Loader so the delegate body's many monitorSection.modelData
+            // / monitorSection.index reads keep resolving the same value.
+            // Plain `property` (not `required`) because Loader sets these
+            // via these bindings, which evaluate after construction;
+            // `required` would error before the binding resolves.
+            property var modelData: monitorLoader.modelData
+            property int index: monitorLoader.index
 
             property var mon: modelData
             property string monName: mon.name
@@ -1024,10 +1364,10 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
             property color monColor: displayConfigPage.monitorColors[index % displayConfigPage.monitorColors.length]
 
             // Support detection via capabilitiesProc, which:
-            //   - Reads HYPR_VRR_ALLOWED / HYPR_10BIT_ALLOWED from env.conf
+            //   - Reads HYPR_VRR_ALLOWED / HYPR_10BIT_ALLOWED from env.lua
             //     directly (post-install writes these for known-dangerous hardware)
             //   - Detects the DRM driver and per-connector sysfs capabilities
-            //   - Applies env.conf overrides on top of sysfs results
+            //   - Applies env.lua overrides on top of sysfs results
             // Defaults to true when no caps entry exists (hardware not known to
             // be dangerous) so working features are never incorrectly blocked.
             readonly property bool vrrSupported: {
@@ -1046,15 +1386,33 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 if (caps) return caps.hdr ?? false;
                 return false;
             }
+            // Always-on pill set: Auto, DCI P3, Adobe RGB, Apple RGB,
+            // and HDR (HDR only if the panel is HDR-capable). Anything
+            // else that capabilitiesProc flags as supported by the panel
+            // gets inserted just before HDR — currently that's BT2020,
+            // gated on the CTA-861 Colorimetry Data Block. A previously-
+            // saved mode that's not in the always-on set (e.g. cm = srgb
+            // from an older config) is also restored so the picker doesn't
+            // silently drop the user's current selection.
             readonly property var supportedColorModes: {
+                let caps = displayConfigPage.monitorCapabilities[monitorSection.monName];
+                let cur = monitorSection.pending.colorMode ?? "srgb";
                 let modes = [
-                    { key: "auto",   label: Translation.tr("Auto")      },
-                    { key: "srgb",   label: "sRGB"      },
-                    { key: "dcip3",  label: "DCI P3"    },
-                    { key: "adobe",  label: "Adobe RGB" },
-                    { key: "dp3",    label: "Apple RGB" },
-                    { key: "wide",   label: "BT2020"    },
+                    { key: "auto",  label: Translation.tr("Auto") },
+                    { key: "dcip3", label: "DCI P3" },
+                    { key: "adobe", label: "Adobe RGB" },
+                    { key: "dp3",   label: "Apple RGB" },
                 ];
+                // Caps-driven extras, inserted in the order they're listed
+                // here (immediately before any HDR pill we append below).
+                if (caps?.colorBT2020) modes.push({ key: "wide", label: "BT2020" });
+                // Restore a saved mode that's not in any of the lists above
+                // so the user's current pill stays selectable. Label is
+                // upper-cased so unknown / legacy mode names visually stand
+                // out from the curated pill set above.
+                let alreadyHave = modes.some(m => m.key === cur);
+                if (!alreadyHave && cur !== "hdr" && cur !== "hdredid")
+                    modes.push({ key: cur, label: cur.toUpperCase() });
                 if (monitorSection.hdrSupported)
                     modes.push({ key: "hdr", label: "HDR" });
                 return modes;
@@ -1210,46 +1568,57 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: modeBg }
                                 Rectangle { id: modeBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: Math.min(contentHeight, 300)
-                                clip: true
-                                spacing: 2
-                                model: modeRow.modeModel
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: {
-                                        let p = monitorSection.pending;
-                                        let m = monitorSection.mon;
-                                        return modelData.width === (p.width ?? m.width) &&
-                                               modelData.height === (p.height ?? m.height) &&
-                                               Math.abs(modelData.refreshRate - (p.refreshRate ?? m.refreshRate)) < 0.1;
-                                    }
-                                    color: modeDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: modeDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePendingBatch(monitorSection.monName, {
-                                                width: modelData.width,
-                                                height: modelData.height,
-                                                refreshRate: modelData.refreshRate,
-                                            });
-                                            modePopup.close();
+                            // ListView is wrapped in a Loader so the
+                            // delegate-Rectangle for each available
+                            // mode (often 30+ entries) only instantiates
+                            // when the popup actually opens — the page's
+                            // first-paint cost was dominated by these
+                            // never-visible delegates being built up
+                            // front. Same pattern repeats for the other
+                            // 7 popups in this file.
+                            contentItem: Loader {
+                                active: modePopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: Math.min(contentHeight, 300)
+                                    clip: true
+                                    spacing: 2
+                                    model: modeRow.modeModel
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: {
+                                            let p = monitorSection.pending;
+                                            let m = monitorSection.mon;
+                                            return modelData.width === (p.width ?? m.width) &&
+                                                   modelData.height === (p.height ?? m.height) &&
+                                                   Math.abs(modelData.refreshRate - (p.refreshRate ?? m.refreshRate)) < 0.1;
+                                        }
+                                        color: modeDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: modeDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePendingBatch(monitorSection.monName, {
+                                                    width: modelData.width,
+                                                    height: modelData.height,
+                                                    refreshRate: modelData.refreshRate,
+                                                });
+                                                modePopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1267,7 +1636,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
 
                         property bool popupOpen: scalePopup.visible
 
-                        property var scaleOptions: [
+                        readonly property var scaleOptions: [
                             { label: "100%", value: 1.0   },
                             { label: "125%", value: 1.25  },
                             { label: "150%", value: 1.5   },
@@ -1324,36 +1693,39 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: scaleBg }
                                 Rectangle { id: scaleBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: scaleRow.scaleOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: Math.abs((monitorSection.pending.scale ?? monitorSection.mon.scale) - modelData.value) < 0.001
-                                    color: scaleDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: scaleDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePending(monitorSection.monName, "scale", modelData.value);
-                                            scalePopup.close();
+                            contentItem: Loader {
+                                active: scalePopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: scaleRow.scaleOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: Math.abs((monitorSection.pending.scale ?? monitorSection.mon.scale) - modelData.value) < 0.001
+                                        color: scaleDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: scaleDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePending(monitorSection.monName, "scale", modelData.value);
+                                                scalePopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1371,7 +1743,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
 
                         property bool popupOpen: rotationPopup.visible
 
-                        property var rotationOptions: [
+                        readonly property var rotationOptions: [
                             { label: Translation.tr("Landscape"),          value: 0 },
                             { label: Translation.tr("Portrait"),           value: 1 },
                             { label: Translation.tr("Landscape (Flipped)"), value: 2 },
@@ -1432,36 +1804,39 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: rotBg }
                                 Rectangle { id: rotBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: rotationRow.rotationOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: (monitorSection.pending.transform ?? monitorSection.mon.transform) === modelData.value
-                                    color: rotDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: rotDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePending(monitorSection.monName, "transform", modelData.value);
-                                            rotationPopup.close();
+                            contentItem: Loader {
+                                active: rotationPopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: rotationRow.rotationOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: (monitorSection.pending.transform ?? monitorSection.mon.transform) === modelData.value
+                                        color: rotDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: rotDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePending(monitorSection.monName, "transform", modelData.value);
+                                                rotationPopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1480,7 +1855,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
 
                         property bool popupOpen: vrrPopup.visible
 
-                        property var vrrOptions: [
+                        readonly property var vrrOptions: [
                             { label: Translation.tr("Off"),              value: 0 },
                             { label: Translation.tr("Always On"),        value: 1 },
                             { label: Translation.tr("Fullscreen Only"),  value: 2 },
@@ -1546,36 +1921,39 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: vrrBg }
                                 Rectangle { id: vrrBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: vrrRow.vrrOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: (monitorSection.pending.vrr ?? 0) === modelData.value
-                                    color: vrrDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: vrrDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePending(monitorSection.monName, "vrr", modelData.value);
-                                            vrrPopup.close();
+                            contentItem: Loader {
+                                active: vrrPopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: vrrRow.vrrOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: (monitorSection.pending.vrr ?? 0) === modelData.value
+                                        color: vrrDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: vrrDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePending(monitorSection.monName, "vrr", modelData.value);
+                                                vrrPopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1586,6 +1964,15 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Appearance.m3colors.m3outlineVariant; opacity: 0.5 }
 
                     // ── Row: 10-bit ────────────────────────────────────────
+                    //
+                    // KNOWN ISSUE: with 10-bit ON, Hyprland 0.55.0 renegotiates
+                    // the DRM swapchain (XR24 ↔ XR30) on every layer-surface
+                    // composition change, producing a brief flicker on every
+                    // overview / app drawer / wallpaper selector open/close.
+                    // Upstream fix lives in commit dab9649 ("monitor: don't
+                    // modeset on reserved changes", #14397) — released after
+                    // 0.55.0. When updated past that commit, the flicker
+                    // should stop and this toggle becomes free of side effects.
                     Item {
                         id: tenBitRow
                         Layout.fillWidth: true
@@ -1595,7 +1982,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         property bool popupOpen: tenBitPopup.visible
                         property bool is10bit: (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10
 
-                        property var tenBitOptions: [
+                        readonly property var tenBitOptions: [
                             { label: Translation.tr("Off"), value: false },
                             { label: Translation.tr("On"),  value: true  },
                         ]
@@ -1656,38 +2043,41 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: tenBitBg }
                                 Rectangle { id: tenBitBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: tenBitRow.tenBitOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: tenBitRow.is10bit === modelData.value
-                                    color: tenBitDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: tenBitDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            let current10bit = (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10;
-                                            if (current10bit === modelData.value) { tenBitPopup.close(); return; }
-                                            displayConfigPage.updatePending(monitorSection.monName, "bitdepth", modelData.value ? 10 : 8);
-                                            tenBitPopup.close();
+                            contentItem: Loader {
+                                active: tenBitPopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: tenBitRow.tenBitOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: tenBitRow.is10bit === modelData.value
+                                        color: tenBitDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: tenBitDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                let current10bit = (displayConfigPage.pendingChanges[monitorSection.monName]?.bitdepth ?? 8) === 10;
+                                                if (current10bit === modelData.value) { tenBitPopup.close(); return; }
+                                                displayConfigPage.updatePending(monitorSection.monName, "bitdepth", modelData.value ? 10 : 8);
+                                                tenBitPopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1722,7 +2112,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
 
                         property bool popupOpen: positionPopup.visible
 
-                        property var positionOptions: [
+                        readonly property var positionOptions: [
                             { label: Translation.tr("To Right of Default Display"), value: "auto-center-right" },
                             { label: Translation.tr("To Left of Default Display"),  value: "auto-center-left"  },
                             { label: Translation.tr("Above Default Display"),       value: "auto-center-up"    },
@@ -1787,36 +2177,39 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: posBg }
                                 Rectangle { id: posBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: positionRow.positionOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: (monitorSection.pending.positionMode ?? "auto-center-right") === modelData.value
-                                    color: posDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: posDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePending(monitorSection.monName, "positionMode", modelData.value);
-                                            positionPopup.close();
+                            contentItem: Loader {
+                                active: positionPopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: positionRow.positionOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: (monitorSection.pending.positionMode ?? "auto-center-right") === modelData.value
+                                        color: posDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
+                                        }
+                                        MouseArea {
+                                            id: posDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePending(monitorSection.monName, "positionMode", modelData.value);
+                                                positionPopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -1827,6 +2220,9 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
             }
 
             // ── Color Management card ─────────────────────────────────────
+            // Dimmed and click-blocked when an ICC profile is active —
+            // Hyprland's ICC pipeline supersedes its colorspace conversion,
+            // so the cm/HDR/calibration controls below would be no-ops.
             Rectangle {
                 id: colorMgmtCard
                 Layout.fillWidth: true
@@ -1838,7 +2234,6 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 opacity: (monitorSection.pending.iccProfile ?? "") !== "" ? 0.38 : 1.0
                 Behavior on opacity { NumberAnimation { duration: 150 } }
 
-                // Block interaction when ICC profile is active
                 MouseArea {
                     anchors.fill: parent
                     enabled: (monitorSection.pending.iccProfile ?? "") !== ""
@@ -1861,6 +2256,17 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 text: "palette"
                                 iconSize: Appearance.font.pixelSize.normal
                                 color: Appearance.colors.colOnLayer2
+                                // Aggressive gap close: the Material Symbols
+                                // font's em-box leaves several pixels of
+                                // whitespace inside the icon's bounding box,
+                                // and tweaking RowLayout.spacing alone wasn't
+                                // enough to overcome it. Force the painted
+                                // width as the layout slot AND pull the next
+                                // item further left with a negative right
+                                // margin so the visible glyph ends up flush
+                                // against "Color Management".
+                                Layout.preferredWidth: paintedWidth
+                                Layout.rightMargin: -11
                             }
                             StyledText {
                                 text: Translation.tr("Color Management")
@@ -1880,6 +2286,8 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         RowLayout {
                             anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
                             spacing: 6
+
+                            Item { Layout.fillWidth: true }
 
                             Repeater {
                                 model: monitorSection.supportedColorModes
@@ -1901,7 +2309,10 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
 
                                     onClicked: {
                                         let updates = { colorMode: modelData.key };
-                                        // HDR forces 10-bit and defaults to "Always On" mode
+                                        // HDR forces 10-bit and defaults to "Fullscreen Only" mode —
+                                        // safer than Always On since it leaves the SDR desktop alone
+                                        // and only flips into HDR for fullscreen clients that ask
+                                        // for it (via render:cm_auto_hdr).
                                         if (modelData.key === "hdr" || modelData.key === "hdredid") {
                                             updates.bitdepth = 10;
                                             if (!(monitorSection.pending.hdrMode > 0))
@@ -1932,10 +2343,9 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                                 : Appearance.colors.colOnLayer1
                                         }
                                     }
+                                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                 }
                             }
-
-                            Item { Layout.fillWidth: true }
                         }
                     }
 
@@ -1955,18 +2365,20 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         visible: { let cm = monitorSection.pending.colorMode ?? "srgb"; return cm === "hdr" || cm === "hdredid"; }
 
                         property bool popupOpen: hdrModePopup.visible
-                        property var hdrModeOptions: [
-                            { label: Translation.tr("Always On"),      value: 1 },
-                            { label: Translation.tr("Fullscreen Only"), value: 2 },
+                        readonly property var hdrModeOptions: [
+                            { label: Translation.tr("Fullscreen Only"), value: 1 },
+                            { label: Translation.tr("Always On"),       value: 2 },
                         ]
                         property string hdrModeLabel: {
                             let v = monitorSection.pending.hdrMode || 1;
                             let opt = hdrModeOptions.find(o => o.value === v);
-                            return opt ? opt.label : Translation.tr("Always On");
+                            return opt ? opt.label : Translation.tr("Fullscreen Only");
                         }
 
                         Rectangle {
                             anchors.fill: parent
+                            bottomLeftRadius:  Appearance.rounding.normal
+                            bottomRightRadius: Appearance.rounding.normal
                             color: hdrModeArea.containsMouse ? Appearance.colors.colLayer3 : "transparent"
                             Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
                         }
@@ -2013,151 +2425,42 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 StyledRectangularShadow { target: hdrModeBg }
                                 Rectangle { id: hdrModeBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
                             }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: hdrModeRow.hdrModeOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: (monitorSection.pending.hdrMode || 1) === modelData.value
-                                    color: hdrModeDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: hdrModeDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePendingBatch(monitorSection.monName, {
-                                                hdrMode: modelData.value,
-                                                bitdepth: 10,  // force 10-bit for HDR
-                                            });
-                                            hdrModePopup.close();
+                            contentItem: Loader {
+                                active: hdrModePopup.visible
+                                sourceComponent: ListView {
+                                    implicitHeight: contentHeight
+                                    clip: true
+                                    spacing: 2
+                                    model: hdrModeRow.hdrModeOptions
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view.width
+                                        height: 36
+                                        radius: Appearance.rounding.small
+                                        property bool isCurrent: (monitorSection.pending.hdrMode || 1) === modelData.value
+                                        color: hdrModeDelegate.containsMouse
+                                            ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
+                                            : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
+                                        Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                                        StyledText {
+                                            anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
+                                            text: modelData.label
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── Use EDID dropdown ─────────────────────────────────
-                    Item {
-                        id: edidRow
-                        Layout.fillWidth: true
-                        implicitHeight: 44
-                        visible: {
-                            let cm = monitorSection.pending.colorMode ?? "srgb";
-                            return cm === "hdr" || cm === "hdredid";
-                        }
-
-                        property bool popupOpen: edidPopup.visible
-                        property var edidOptions: [
-                            { label: Translation.tr("No"),  value: "hdr" },
-                            { label: Translation.tr("Yes"), value: "hdredid" },
-                        ]
-                        property string edidLabel: {
-                            let cm = monitorSection.pending.colorMode ?? "srgb";
-                            return cm === "hdredid" ? Translation.tr("Yes") : Translation.tr("No");
-                        }
-
-                        property bool isFullscreenOnly: (monitorSection.pending.hdrMode || 1) === 2
-                        opacity: isFullscreenOnly ? 0.38 : 1.0
-                        Behavior on opacity { NumberAnimation { duration: 150 } }
-
-                        Rectangle {
-                            anchors.fill: parent
-                            bottomLeftRadius: Appearance.rounding.normal
-                            bottomRightRadius: Appearance.rounding.normal
-                            color: edidArea.containsMouse && !edidRow.isFullscreenOnly ? Appearance.colors.colLayer3 : "transparent"
-                            Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                        }
-
-                        RowLayout {
-                            anchors { fill: parent; leftMargin: 16; rightMargin: 12 }
-                            spacing: 8
-                            StyledText {
-                                text: Translation.tr("Use EDID")
-                                font.pixelSize: Appearance.font.pixelSize.normal
-                                color: Appearance.colors.colOnLayer2
-                            }
-                            Item { Layout.fillWidth: true }
-                            StyledText {
-                                text: edidRow.edidLabel
-                                font.pixelSize: Appearance.font.pixelSize.small
-                                color: Appearance.colors.colSubtext
-                            }
-                            MaterialSymbol {
-                                text: "keyboard_arrow_down"
-                                iconSize: Appearance.font.pixelSize.larger
-                                color: Appearance.colors.colSubtext
-                                rotation: edidRow.popupOpen ? 180 : 0
-                                Behavior on rotation { NumberAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                            }
-                        }
-
-                        MouseArea {
-                            id: edidArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: !edidRow.isFullscreenOnly
-                            cursorShape: edidRow.isFullscreenOnly ? Qt.ArrowCursor : Qt.PointingHandCursor
-                            onClicked: edidPopup.visible ? edidPopup.close() : edidPopup.open()
-                        }
-
-                        Popup {
-                            id: edidPopup
-                            y: edidRow.height + 4
-                            width: edidRow.width
-                            padding: 8
-                            enter: Transition { PropertyAnimation { properties: "opacity"; to: 1; duration: Appearance.animation.elementMoveFast.duration; easing.type: Easing.BezierSpline; easing.bezierCurve: Appearance.animation.elementMoveFast.bezierCurve } }
-                            exit:  Transition { PropertyAnimation { properties: "opacity"; to: 0; duration: Appearance.animation.elementMoveFast.duration; easing.type: Easing.BezierSpline; easing.bezierCurve: Appearance.animation.elementMoveFast.bezierCurve } }
-                            background: Item {
-                                StyledRectangularShadow { target: edidBg }
-                                Rectangle { id: edidBg; anchors.fill: parent; radius: Appearance.rounding.normal; color: Appearance.m3colors.m3surfaceContainerHigh }
-                            }
-                            contentItem: ListView {
-                                implicitHeight: contentHeight
-                                clip: true
-                                spacing: 2
-                                model: edidRow.edidOptions
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    width: ListView.view.width
-                                    height: 36
-                                    radius: Appearance.rounding.small
-                                    property bool isCurrent: (monitorSection.pending.colorMode ?? "srgb") === modelData.value
-                                    color: edidDelegate.containsMouse
-                                        ? (isCurrent ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover)
-                                        : (isCurrent ? Appearance.colors.colSecondaryContainer : "transparent")
-                                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                                    StyledText {
-                                        anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: 12 }
-                                        text: modelData.label
-                                        font.pixelSize: Appearance.font.pixelSize.normal
-                                        color: isCurrent ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer3
-                                    }
-                                    MouseArea {
-                                        id: edidDelegate
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            displayConfigPage.updatePending(monitorSection.monName, "colorMode", modelData.value);
-                                            edidPopup.close();
+                                        MouseArea {
+                                            id: hdrModeDelegate
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                displayConfigPage.updatePendingBatch(monitorSection.monName, {
+                                                    hdrMode: modelData.value,
+                                                    bitdepth: 10,  // force 10-bit for HDR
+                                                });
+                                                hdrModePopup.close();
+                                            }
                                         }
                                     }
                                 }
@@ -2168,7 +2471,67 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 }
             }
 
+            // ── Calibrate Monitor for HDR card ───────────────────────────
+            // First in the HDR-tuning sequence: visual test patterns
+            // catch panel behavior the EDID-seeded defaults can't (ABL,
+            // real perceived black floor, sustained-vs-peak luminance).
+            // Run this once, then use Fine Tune below for nudges.
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                color: Appearance.colors.colLayer2
+                radius: Appearance.rounding.normal
+                clip: true
+                implicitHeight: 52
+                visible: {
+                    let cm = monitorSection.pending.colorMode ?? "srgb";
+                    return cm === "hdr" || cm === "hdredid";
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Appearance.rounding.normal
+                    color: calibrateArea.containsMouse ? Appearance.colors.colLayer3 : "transparent"
+                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
+                }
+
+                RowLayout {
+                    anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
+                    spacing: 10
+
+                    MaterialSymbol {
+                        text: "tune"
+                        iconSize: Appearance.font.pixelSize.larger
+                        color: monitorSection.monColor
+                    }
+                    StyledText {
+                        text: Translation.tr("Calibrate Monitor for HDR")
+                        font.pixelSize: Appearance.font.pixelSize.normal
+                        color: Appearance.colors.colOnLayer2
+                        Layout.fillWidth: true
+                    }
+                    MaterialSymbol {
+                        text: "chevron_right"
+                        iconSize: Appearance.font.pixelSize.larger
+                        color: Appearance.colors.colSubtext
+                    }
+                }
+
+                MouseArea {
+                    id: calibrateArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        hdrCalLoader.active = false;
+                        hdrCalLoader.active = true;
+                    }
+                }
+            }
+
             // ── Fine Tune card (separate from Color Management) ──────────
+            // Second: numeric nudges to the values produced by Calibrate
+            // (or the EDID-seeded defaults if Calibrate hasn't been run).
             Rectangle {
                 id: fineTuneCard
                 Layout.fillWidth: true
@@ -2243,7 +2606,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         implicitHeight: visible ? 32 : 0
                         visible: fineTuneHeader.expanded && fineTuneHeader.visible
                         clip: true
-                        opacity: (monitorSection.pending.hdrMode || 1) === 2 ? 0.38 : 1.0
+                        opacity: (monitorSection.pending.hdrMode || 1) === 1 ? 0.38 : 1.0
                         Behavior on opacity { NumberAnimation { duration: 150 } }
                         Behavior on implicitHeight { NumberAnimation { duration: Appearance.animation.elementMoveFast.duration; easing.type: Easing.BezierSpline; easing.bezierCurve: Appearance.animation.elementMoveFast.bezierCurve } }
 
@@ -2277,8 +2640,8 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                             implicitHeight: visible ? 44 : 0
                             visible: fineTuneHeader.expanded && fineTuneHeader.visible
                             clip: true
-                            opacity: (monitorSection.pending.hdrMode || 1) === 2 ? 0.38 : 1.0
-                            enabled: (monitorSection.pending.hdrMode || 1) !== 2
+                            opacity: (monitorSection.pending.hdrMode || 1) === 1 ? 0.38 : 1.0
+                            enabled: (monitorSection.pending.hdrMode || 1) !== 1
                             Behavior on opacity { NumberAnimation { duration: 150 } }
                             Behavior on implicitHeight { NumberAnimation { duration: Appearance.animation.elementMoveFast.duration; easing.type: Easing.BezierSpline; easing.bezierCurve: Appearance.animation.elementMoveFast.bezierCurve } }
                             Rectangle {
@@ -2452,60 +2815,6 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 }
             }
 
-            // ── Calibrate Monitor for HDR card ───────────────────────────
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.topMargin: 8
-                color: Appearance.colors.colLayer2
-                radius: Appearance.rounding.normal
-                clip: true
-                implicitHeight: 52
-                visible: {
-                    let cm = monitorSection.pending.colorMode ?? "srgb";
-                    return cm === "hdr" || cm === "hdredid";
-                }
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: Appearance.rounding.normal
-                    color: calibrateArea.containsMouse ? Appearance.colors.colLayer3 : "transparent"
-                    Behavior on color { ColorAnimation { duration: Appearance.animation.elementMoveFast.duration } }
-                }
-
-                RowLayout {
-                    anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
-                    spacing: 10
-
-                    MaterialSymbol {
-                        text: "tune"
-                        iconSize: Appearance.font.pixelSize.larger
-                        color: monitorSection.monColor
-                    }
-                    StyledText {
-                        text: Translation.tr("Calibrate Monitor for HDR")
-                        font.pixelSize: Appearance.font.pixelSize.normal
-                        color: Appearance.colors.colOnLayer2
-                        Layout.fillWidth: true
-                    }
-                    MaterialSymbol {
-                        text: "chevron_right"
-                        iconSize: Appearance.font.pixelSize.larger
-                        color: Appearance.colors.colSubtext
-                    }
-                }
-
-                MouseArea {
-                    id: calibrateArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        hdrCalLoader.active = false;
-                        hdrCalLoader.active = true;
-                    }
-                }
-            }
-
             // ── HDR Calibration window loader ─────────────────────────────
             Loader {
                 id: hdrCalLoader
@@ -2514,7 +2823,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 onLoaded: {
                     let p = displayConfigPage.pendingChanges[monitorSection.monName] ?? {};
                     item.monitorName        = monitorSection.monName;
-                    item.fullscreenOnly     = (monitorSection.pending.hdrMode || 1) === 2;
+                    item.fullscreenOnly     = (monitorSection.pending.hdrMode || 1) === 1;
                     let d = displayConfigPage.hdrDefaults;
                     item.valMaxLuminance    = p.maxLuminance    ?? d.maxLuminance;
                     item.valMaxAvgLuminance = p.maxAvgLuminance ?? d.maxAvgLuminance;
@@ -2540,8 +2849,11 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         let cal = Object.assign({}, displayConfigPage.hdrCalibratedMonitors);
                         cal[monitorSection.monName] = true;
                         displayConfigPage.hdrCalibratedMonitors = cal;
-                        // Auto-apply: write to monitors.conf and reload Hyprland
-                        displayConfigPage.applyMonitorChanges(monitorSection.monName);
+                        // Auto-apply: write to monitors.lua and reload Hyprland.
+                        // applyAllChanges always serialises every monitor's
+                        // pendingChanges, so the just-calibrated values land
+                        // in the file alongside any other in-progress edits.
+                        displayConfigPage.applyAllChanges();
                         hdrCalLoader.active = false;
                     });
                     item.cancelled.connect(function() { hdrCalLoader.active = false; });
@@ -2549,8 +2861,13 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 }
             }
 
-            // ── ICC Profile card (disabled — to be re-enabled later) ─────
-            /* Rectangle {
+            // ── ICC Profile card ──────────────────────────────────────────
+            // Mutually exclusive with HDR / cm = anything — when a profile
+            // is active the Color Management card above dims and blocks
+            // input, since Hyprland's ICC LUT replaces colorspace work.
+            // Requires Hyprland ≥ 0.55 with USE_ICC=1 (older builds silently
+            // ignore the `icc =` directive).
+            Rectangle {
                 id: iccCard
                 Layout.fillWidth: true
                 Layout.topMargin: 8
@@ -2564,7 +2881,7 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                     anchors { left: parent.left; right: parent.right; top: parent.top }
                     spacing: 0
 
-                    // ── Header row with Add button ────────────────────────
+                    // ── Header row with Import button ─────────────────────
                     Item {
                         Layout.fillWidth: true
                         implicitHeight: 52
@@ -2592,23 +2909,23 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                 color: Appearance.colors.colOnLayer2
                             }
 
-                            // Tooltip badge — to the right of the text
-                            MouseArea {
-                                id: iccInfoArea
-                                implicitWidth: 22
-                                implicitHeight: 22
-                                hoverEnabled: true
-                                cursorShape: Qt.ArrowCursor
-
-                                MaterialSymbol {
+                            // Inline pill badge replacing the old hover-only
+                            // info tooltip — always visible so users can't
+                            // miss that activating an ICC profile takes
+                            // precedence over the cm/HDR controls above.
+                            Rectangle {
+                                implicitWidth: iccBadgeTxt.implicitWidth + 14
+                                implicitHeight: iccBadgeTxt.implicitHeight + 6
+                                radius: height / 2
+                                color: Appearance.colors.colLayer3
+                                border.width: 1
+                                border.color: Appearance.colors.colOutlineVariant
+                                StyledText {
+                                    id: iccBadgeTxt
                                     anchors.centerIn: parent
-                                    text: "info"
-                                    iconSize: Appearance.font.pixelSize.normal
+                                    text: Translation.tr("Overrides color management")
+                                    font.pixelSize: Appearance.font.pixelSize.smaller
                                     color: Appearance.colors.colSubtext
-                                }
-                                StyledToolTip {
-                                    visible: iccInfoArea.containsMouse
-                                    text: Translation.tr("An active ICC profile disables all other color management")
                                 }
                             }
 
@@ -2704,14 +3021,35 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                     }
                                 }
 
-                                // Profile name — clicking also toggles
-                                StyledText {
-                                    text: iccProfileRow.modelData.name
-                                    font.pixelSize: Appearance.font.pixelSize.normal
-                                    color: iccProfileRow.isActive
-                                        ? monitorSection.monColor
-                                        : Appearance.colors.colOnLayer2
+                                // Profile name + (optional) source-monitor tag.
+                                // Clicking anywhere in this column toggles
+                                // the radio.
+                                Item {
                                     Layout.fillWidth: true
+                                    implicitHeight: nameTxt.implicitHeight
+                                    RowLayout {
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 8
+                                        StyledText {
+                                            id: nameTxt
+                                            text: iccProfileRow.modelData.name
+                                            font.pixelSize: Appearance.font.pixelSize.normal
+                                            color: iccProfileRow.isActive
+                                                ? monitorSection.monColor
+                                                : Appearance.colors.colOnLayer2
+                                        }
+                                        // Tag showing which monitor this profile was
+                                        // imported for. Lets the user tell at a glance
+                                        // when the same display library lists profiles
+                                        // earmarked for different physical panels.
+                                        StyledText {
+                                            visible: (iccProfileRow.modelData.importedFor ?? "") !== ""
+                                            text: `· ${iccProfileRow.modelData.importedFor}`
+                                            font.pixelSize: Appearance.font.pixelSize.small
+                                            color: Appearance.colors.colSubtext
+                                        }
+                                    }
                                     MouseArea {
                                         anchors.fill: parent
                                         cursorShape: Qt.PointingHandCursor
@@ -2828,7 +3166,8 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                         }
                     }
                 }
-            } */
+            }
+
             ContentSubsection {
                 id: wsSubsection
                 visible: displayConfigPage.monitors.length > 1
@@ -2901,7 +3240,12 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                                     StyledText {
                                         id: customPillTxt
                                         anchors.centerIn: parent
-                                        text: Translation.tr("Enable")
+                                        // Reflects the active state: "Enabled" when custom-mode
+                                        // is on (pill is filled), "Enable" when it's off (pill
+                                        // is the click-to-activate affordance).
+                                        text: parent.parent.active
+                                            ? Translation.tr("Enabled")
+                                            : Translation.tr("Enable")
                                         font.pixelSize: Appearance.font.pixelSize.small
                                         color: parent.parent.active
                                             ? Appearance.colors.colOnPrimary
@@ -3025,32 +3369,349 @@ for fn in [try_zenity, try_kdialog, try_yad, try_tkinter]:
                 }
             }
 
-            // Apply button — standalone row, clearly separated from workspace assignment
-            Item { implicitHeight: 4 }
+            // Per-monitor Apply button removed — replaced by the
+            // single page-level "Apply" below the Repeater. The
+            // function always wrote every monitor anyway; the
+            // per-monitor click just caused N reloads for one
+            // logical change.
+        }
+        }   // close Loader wrapping the delegate (sourceComponent above)
+    }
 
+    // ── Apply changes ──────────────────────────────────────────────────────
+    // Single Apply for the whole page. applyAllChanges() loops every
+    // monitor's pendingChanges and writes one full monitors.lua, then
+    // reloads once — versus the old behavior of clicking Apply per
+    // monitor and triggering N reloads in sequence (each flashing the
+    // outputs).
+    RowLayout {
+        Layout.fillWidth: true
+
+        Item { Layout.fillWidth: true }
+
+        RippleButton {
+            implicitHeight: 36
+            implicitWidth: 160
+            buttonRadius: Appearance.rounding.full
+            colBackground: Appearance.colors.colPrimary
+            colBackgroundHover: Qt.lighter(Appearance.colors.colPrimary, 1.1)
+            colRipple: Qt.lighter(Appearance.colors.colPrimary, 1.2)
+
+            contentItem: StyledText {
+                anchors.centerIn: parent
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize: Appearance.font.pixelSize.normal
+                text: Translation.tr("Apply changes")
+                color: Appearance.colors.colOnPrimary
+            }
+
+            onClicked: displayConfigPage.applyAllChanges()
+        }
+    }
+
+    // ── Section divider ─────────────────────────────────────────────────────
+    // Material 3 full-bleed Divider (1dp at outline-variant) marking the
+    // hard break between the display-output settings above and the Night
+    // Light filter below — these are unrelated enough that the eye should
+    // register them as separate pages of intent rather than a continuous
+    // flow. Same divider treatment ThemesConfig uses between Themes and
+    // Day/Night Themes.
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.topMargin: 24
+        Layout.bottomMargin: 12
+        implicitHeight: 1
+        color: Appearance.m3colors.m3outlineVariant
+    }
+
+    // ── Night Light ────────────────────────────────────────────────────────
+    // Mirrors Windows' "Night Light" panel: an instant Enable toggle, a
+    // Schedule toggle, and (when scheduling is on) a pair of "Turn on" /
+    // "Turn off" times. Backed by the existing Hyprsunset service +
+    // Config.options.light.night JsonObject; the Hyprsunset service
+    // re-evaluates the schedule once a minute via a clock binding, so
+    // changes here take effect on the next minute boundary at the
+    // latest (or immediately when toggling Enable now).
+    ContentSection {
+        icon: "nightlight"
+        title: Translation.tr("Night Light")
+
+        StyledText {
+            Layout.fillWidth: true
+            text: Translation.tr("Reduce blue light by warming the screen — easier on your eyes in the evening or at night.")
+            font.pixelSize: Appearance.font.pixelSize.small
+            color: Appearance.colors.colSubtext
+            wrapMode: Text.WordWrap
+        }
+
+        // Single dropdown rolls the old "Enable now" toggle and the
+        // schedule mode picker into one control:
+        //   Disabled  → filter off, schedule off
+        //   Automatic → schedule on, sunrise/sunset window
+        //   Set hours → schedule on, user-defined from/to (pickers below)
+        //   Enabled   → filter on, schedule off (always-on override)
+        //
+        // currentIndex is derived from the existing backend state so
+        // configs from before this change still resolve cleanly.
+        ConfigRow {
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            OptionalMaterialSymbol {
+                icon: "schedule"
+                Layout.alignment: Qt.AlignVCenter
+            }
+            StyledText {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 6
+                text: Translation.tr("Schedule night light")
+                color: Appearance.colors.colOnSecondaryContainer
+            }
+            StyledComboBox {
+                Layout.preferredWidth: 180
+                Layout.fillWidth: false
+                model: [
+                    Translation.tr("Disabled"),
+                    Translation.tr("Automatic"),
+                    Translation.tr("Set hours"),
+                    Translation.tr("Enabled"),
+                ]
+                // Source of truth is Config.options.light.night.mode —
+                // a persistent string the user picked. The runtime
+                // automatic/scheduleMode/Hyprsunset state is derived FROM
+                // this, not the other way around, so the dropdown can't
+                // drift out of sync with the user's intent.
+                readonly property var modeIndex: ({
+                    "disabled": 0, "automatic": 1, "manual": 2, "enabled": 3
+                })
+                readonly property var indexMode: [
+                    "disabled", "automatic", "manual", "enabled"
+                ]
+                currentIndex: modeIndex[Config.options.light.night.mode] ?? 0
+                onActivated: index => Hyprsunset.applyNightLightMode(indexMode[index])
+            }
+        }
+
+        // Schedule details: revealed only when scheduleMode === "manual"
+        // ("Set hours"). Visibility flip is the "drop-down" reveal —
+        // the time-pickers slide in beneath the Schedule dropdown and
+        // back out when it switches to "Automatic".
+        //
+        // The pickers display 12-hour time with an AM/PM combo for
+        // familiarity, but Config.options.light.night.{from,to} stay
+        // stored as "HH:mm" 24-hour because the Hyprsunset service
+        // parses them with Number(...split(":")). The helpers below
+        // round-trip cleanly (incl. the awkward 12-AM = 00:00 and
+        // 12-PM = 12:00 cases).
+        ColumnLayout {
+            id: nightSchedule
+            Layout.fillWidth: true
+            Layout.leftMargin: 32
+            // Slight extra breathing room above so "Turn on" doesn't
+            // sit flush against the Schedule dropdown row — only
+            // applied when the pickers are actually visible (manual
+            // mode), otherwise the section just collapses.
+            Layout.topMargin: visible ? 8 : 0
+            spacing: 8
+            visible: Config.options.light.night.mode === "manual"
+
+            // "HH:mm" (24h) → { hour12 (1-12), minute (0-59), period ("AM"|"PM") }
+            function parse12(timeStr) {
+                const parts = (timeStr ?? "").split(":");
+                const h24 = parseInt(parts[0], 10);
+                const m   = parseInt(parts[1], 10);
+                if (isNaN(h24) || isNaN(m))
+                    return { hour12: 12, minute: 0, period: "AM" };
+                if (h24 === 0)        return { hour12: 12,      minute: m, period: "AM" };
+                if (h24 < 12)         return { hour12: h24,     minute: m, period: "AM" };
+                if (h24 === 12)       return { hour12: 12,      minute: m, period: "PM" };
+                return                       { hour12: h24 - 12, minute: m, period: "PM" };
+            }
+
+            // (hour12, minute, period) → "HH:mm" (24h, zero-padded)
+            function compose24(hour12, minute, period) {
+                let h24;
+                if (period === "AM") h24 = (hour12 === 12) ? 0  : hour12;
+                else                 h24 = (hour12 === 12) ? 12 : hour12 + 12;
+                return String(h24).padStart(2, "0") + ":" + String(minute).padStart(2, "0");
+            }
+
+            // Single-component setters — read current, swap one piece, recompose.
+            function withHour(timeStr, h12) {
+                const cur = parse12(timeStr);
+                return compose24(h12, cur.minute, cur.period);
+            }
+            function withMinute(timeStr, m) {
+                const cur = parse12(timeStr);
+                return compose24(cur.hour12, m, cur.period);
+            }
+            function withPeriod(timeStr, period) {
+                const cur = parse12(timeStr);
+                return compose24(cur.hour12, cur.minute, period);
+            }
+
+            // "Turn on" row — wired to Config.options.light.night.from.
+            // Each ConfigSpinBox / StyledComboBox writes back through one
+            // of the with*() helpers so the other components survive the
+            // round-trip. Equality guard avoids a same-value re-write
+            // bouncing the binding.
             RowLayout {
                 Layout.fillWidth: true
+                spacing: 8
+
+                StyledText {
+                    Layout.preferredWidth: 80
+                    Layout.alignment: Qt.AlignVCenter
+                    text: Translation.tr("Turn on")
+                    color: Appearance.colors.colOnLayer1
+                }
+
+                ConfigSpinBox {
+                    Layout.preferredWidth: 70
+                    from: 1
+                    to: 12
+                    value: nightSchedule.parse12(Config.options.light.night.from).hour12
+                    onValueChanged: {
+                        const next = nightSchedule.withHour(Config.options.light.night.from, value);
+                        if (next !== Config.options.light.night.from)
+                            Config.options.light.night.from = next;
+                    }
+                }
+
+                StyledText {
+                    Layout.alignment: Qt.AlignVCenter
+                    text: ":"
+                    color: Appearance.colors.colOnLayer1
+                }
+
+                ConfigSpinBox {
+                    Layout.preferredWidth: 70
+                    from: 0
+                    to: 59
+                    value: nightSchedule.parse12(Config.options.light.night.from).minute
+                    onValueChanged: {
+                        const next = nightSchedule.withMinute(Config.options.light.night.from, value);
+                        if (next !== Config.options.light.night.from)
+                            Config.options.light.night.from = next;
+                    }
+                }
+
+                StyledComboBox {
+                    Layout.preferredWidth: 80
+                    Layout.fillWidth: false
+                    model: ["AM", "PM"]
+                    currentIndex: nightSchedule.parse12(Config.options.light.night.from).period === "AM" ? 0 : 1
+                    onActivated: index => {
+                        const period = (index === 0) ? "AM" : "PM";
+                        const next = nightSchedule.withPeriod(Config.options.light.night.from, period);
+                        if (next !== Config.options.light.night.from)
+                            Config.options.light.night.from = next;
+                    }
+                }
 
                 Item { Layout.fillWidth: true }
+            }
 
-                RippleButton {
-                    implicitHeight: 30
-                    implicitWidth: 140
-                    buttonRadius: Appearance.rounding.full
-                    colBackground: monitorSection.monColor
-                    colBackgroundHover: Qt.lighter(monitorSection.monColor, 1.1)
-                    colRipple: Qt.lighter(monitorSection.monColor, 1.2)
+            // "Turn off" row — same pattern bound to .to.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
 
-                    contentItem: StyledText {
-                        anchors.centerIn: parent
-                        horizontalAlignment: Text.AlignHCenter
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        text: Translation.tr("Apply %1").arg(monitorSection.monName)
-                        color: Appearance.colors.colOnPrimary
-                    }
-
-                    onClicked: displayConfigPage.applyMonitorChanges(monitorSection.monName)
+                StyledText {
+                    Layout.preferredWidth: 80
+                    Layout.alignment: Qt.AlignVCenter
+                    text: Translation.tr("Turn off")
+                    color: Appearance.colors.colOnLayer1
                 }
+
+                ConfigSpinBox {
+                    Layout.preferredWidth: 70
+                    from: 1
+                    to: 12
+                    value: nightSchedule.parse12(Config.options.light.night.to).hour12
+                    onValueChanged: {
+                        const next = nightSchedule.withHour(Config.options.light.night.to, value);
+                        if (next !== Config.options.light.night.to)
+                            Config.options.light.night.to = next;
+                    }
+                }
+
+                StyledText {
+                    Layout.alignment: Qt.AlignVCenter
+                    text: ":"
+                    color: Appearance.colors.colOnLayer1
+                }
+
+                ConfigSpinBox {
+                    Layout.preferredWidth: 70
+                    from: 0
+                    to: 59
+                    value: nightSchedule.parse12(Config.options.light.night.to).minute
+                    onValueChanged: {
+                        const next = nightSchedule.withMinute(Config.options.light.night.to, value);
+                        if (next !== Config.options.light.night.to)
+                            Config.options.light.night.to = next;
+                    }
+                }
+
+                StyledComboBox {
+                    Layout.preferredWidth: 80
+                    Layout.fillWidth: false
+                    model: ["AM", "PM"]
+                    currentIndex: nightSchedule.parse12(Config.options.light.night.to).period === "AM" ? 0 : 1
+                    onActivated: index => {
+                        const period = (index === 0) ? "AM" : "PM";
+                        const next = nightSchedule.withPeriod(Config.options.light.night.to, period);
+                        if (next !== Config.options.light.night.to)
+                            Config.options.light.night.to = next;
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+        }
+
+        // Intensity (colour temperature) — sits below the schedule
+        // section (incl. the conditional Turn on/off pickers) so it
+        // reads as a separate axis: the schedule controls *when* the
+        // filter fires, this controls *how warm* it gets when it
+        // does. Range 6500K (no warming) → 1200K (deepest amber);
+        // stop indicators at 5000K (mid-warmth default) and the
+        // lower bound. Hyprsunset.onColorTemperatureChanged dispatches
+        // `hyprctl hyprsunset temperature` live whenever the filter
+        // is currently active, so dragging here updates the screen
+        // tint immediately if night light is on; otherwise it just
+        // persists in Config and applies on the next on-cycle.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            spacing: 10
+
+            MaterialSymbol {
+                text: "wb_sunny"
+                iconSize: Appearance.font.pixelSize.larger
+                color: Appearance.colors.colOnSecondaryContainer
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            StyledText {
+                Layout.preferredWidth: 120
+                Layout.alignment: Qt.AlignVCenter
+                text: Translation.tr("Intensity")
+                color: Appearance.colors.colOnSecondaryContainer
+            }
+
+            StyledSlider {
+                Layout.fillWidth: true
+                configuration: StyledSlider.Configuration.XS
+                from: 6500
+                to: 1200
+                stopIndicatorValues: [5000, 1200]
+                value: Config.options.light.night.colorTemperature
+                onMoved: Config.options.light.night.colorTemperature = value
+                usePercentTooltip: false
+                tooltipContent: `${Math.round(value)}K`
             }
         }
     }

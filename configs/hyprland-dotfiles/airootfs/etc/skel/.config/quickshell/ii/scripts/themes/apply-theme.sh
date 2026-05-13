@@ -87,13 +87,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── 2. Stage merged config.json with wallpaperPath rewritten ────────────────
+# ── 2. Stage merged config.json with wallpaperPath rewritten + user meta-state preserved ─
+# Some Config fields are user-level preferences that happen to live in the same
+# config.json themes snapshot, but conceptually outlive any one theme. If we
+# blindly overwrote them with whatever was current when the theme was saved,
+# we'd see weird carry-over: the user picks a Day/Night theme, saves a
+# different theme later, and when they re-apply that other theme their
+# Day/Night selection silently rolls back to whatever was active at save time.
+# Read these from the live config BEFORE overwriting and re-inject after.
 TMP=$(mktemp --tmpdir="$(dirname "$SHELL_CONFIG")" config.json.XXXXXX)
-if [ -n "$WP_ABS" ]; then
-    jq --arg p "$WP_ABS" '.background.wallpaperPath = $p' "$THEME_DIR/config.json" > "$TMP" \
-        || { rm -f "$TMP"; rollback "failed to stage config.json"; }
-else
+PRESERVE_THEME_SCHED=""
+PRESERVE_LIGHT_NIGHT=""
+if [ -f "$SHELL_CONFIG" ]; then
+    PRESERVE_THEME_SCHED=$(jq -c '.appearance.themeSchedule // empty' "$SHELL_CONFIG" 2>/dev/null || true)
+    # Preserve the entire light.night object — schedule, automatic flag,
+    # mode, colour temperature, etc. are user preferences that should NOT
+    # be reset by theme switching. The matching strip on the save side
+    # also drops .light.night from new theme snapshots; this preserve
+    # path is what protects older snapshots that still carry those keys.
+    PRESERVE_LIGHT_NIGHT=$(jq -c '.light.night // empty' "$SHELL_CONFIG" 2>/dev/null || true)
+fi
+JQ_FILTER='.'
+JQ_ARGS=()
+[ -n "$WP_ABS" ]                  && { JQ_FILTER+=' | .background.wallpaperPath = $p';            JQ_ARGS+=(--arg p "$WP_ABS"); }
+[ -n "$PRESERVE_THEME_SCHED" ]    && { JQ_FILTER+=' | .appearance.themeSchedule = $sched';        JQ_ARGS+=(--argjson sched "$PRESERVE_THEME_SCHED"); }
+[ -n "$PRESERVE_LIGHT_NIGHT" ]    && { JQ_FILTER+=' | .light.night = $night';                     JQ_ARGS+=(--argjson night "$PRESERVE_LIGHT_NIGHT"); }
+if [ "$JQ_FILTER" = '.' ]; then
     cp -f "$THEME_DIR/config.json" "$TMP" || { rm -f "$TMP"; rollback "failed to copy config.json"; }
+else
+    jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$THEME_DIR/config.json" > "$TMP" \
+        || { rm -f "$TMP"; rollback "failed to stage config.json"; }
 fi
 mv -f "$TMP" "$SHELL_CONFIG"
 
@@ -123,8 +146,9 @@ jq -e '(.primary // "") | length > 0' "$COLORS_JSON" >/dev/null 2>&1 \
 # Themes saved before this feature existed won't have decorations.json, so
 # this is optional — missing file leaves the live decoration config alone.
 DECO_JSON="$THEME_DIR/decorations.json"
-GENERAL_CONF="$XDG_CONFIG_HOME/hypr/hyprland/general.conf"
-CUSTOM_CONF="$XDG_CONFIG_HOME/hypr/custom/general.conf"
+# Targets the Lua-config tree introduced in Hyprland 0.55.
+GENERAL_CONF="$XDG_CONFIG_HOME/hypr/hyprland/general.lua"
+CUSTOM_CONF="$XDG_CONFIG_HOME/hypr/custom/general.lua"
 if [ -f "$DECO_JSON" ]; then
     python3 - "$DECO_JSON" "$GENERAL_CONF" "$CUSTOM_CONF" <<'PY' || dlog "decoration restore failed"
 import json, re, sys
@@ -135,12 +159,17 @@ except Exception:
     sys.exit(0)
 
 def set_block_enabled(text, block, enabled):
+    # Lua: `<block> = { ... enabled = ... }` — the `=` between block name
+    # and `{` distinguishes Lua from hyprlang. Block-opener anchored at
+    # line start (re.M) so a doc comment that mentions `animations = {`
+    # or similar doesn't shadow the real block.
     val = "true" if enabled else "false"
-    pat = r'(' + re.escape(block) + r'\s*\{[^}]*?)(enabled\s*=\s*)\w+'
-    return re.sub(pat, r'\1\2' + val, text, count=1, flags=re.S)
+    pat = r'(^[ \t]*' + re.escape(block) + r'\s*=\s*\{[^}]*?)(enabled\s*=\s*)\w+'
+    return re.sub(pat, r'\1\2' + val, text, count=1, flags=re.S|re.M)
 
 def set_borders(text, enabled):
-    fields = ["border_size", "col.active_border", "col.inactive_border", "resize_on_border"]
+    # In Lua the col entries are bare keys inside `col = { ... }`, no dot prefix.
+    fields = ["border_size", "active_border", "inactive_border", "resize_on_border"]
     out = []
     for line in text.splitlines(keepends=True):
         stripped = line.lstrip()
@@ -148,27 +177,30 @@ def set_borders(text, enabled):
         matched = False
         for f in fields:
             if enabled:
-                if stripped.startswith('# ' + f + ' ') or stripped.startswith('#' + f + ' ') \
-                   or stripped.startswith('# ' + f + '=') or stripped.startswith('#' + f + '='):
-                    line = indent + stripped.lstrip('# ')
+                if stripped.startswith('-- ' + f + ' ') or stripped.startswith('--' + f + ' ') \
+                   or stripped.startswith('-- ' + f + '=') or stripped.startswith('--' + f + '='):
+                    line = indent + stripped.lstrip('- ')
                     matched = True
                     break
             else:
                 if stripped.startswith(f + ' ') or stripped.startswith(f + '='):
-                    line = indent + '# ' + stripped
+                    line = indent + '-- ' + stripped
                     matched = True
                     break
         if not matched:
             if stripped.startswith('gaps_in'):
-                line = indent + 'gaps_in = ' + ('4' if enabled else '0') + '\n'
+                line = indent + 'gaps_in = ' + ('4' if enabled else '0') + ',\n'
             elif stripped.startswith('gaps_out'):
-                line = indent + 'gaps_out = ' + ('5' if enabled else '0') + '\n'
+                line = indent + 'gaps_out = ' + ('5' if enabled else '0') + ',\n'
         out.append(line)
     return ''.join(out)
 
 def set_rounding(text, enabled):
     val = "10" if enabled else "0"
-    return re.sub(r'(rounding\s*=\s*)\d+', r'\g<1>' + val, text, count=1)
+    # `rounding = N` works for both hyprlang and Lua syntax; trailing
+    # comma untouched. Line-anchored (re.M + ^\s*) so a doc comment like
+    # `-- rounding = 10` doesn't get rewritten instead of the real key.
+    return re.sub(r'(?m)^(\s*rounding\s*=\s*)\d+', r'\g<1>' + val, text, count=1)
 
 try:
     text = open(general).read()
@@ -183,10 +215,11 @@ except FileNotFoundError: pass
 if "titleBars" in flags:
     try:
         text = open(custom).read()
+        # Lua-form hyprbars directive: hl.plugin.load("...hyprbars.so")
         if flags["titleBars"]:
-            text = re.sub(r'^([ \t]*)#[ \t]*(plugin[ \t]*=[ \t]*.*hyprbars\.so)', r'\1\2', text, flags=re.M)
+            text = re.sub(r'^([ \t]*)--\s*(hl\.plugin\.load\([^)]*hyprbars\.so[^)]*\))', r'\1\2', text, flags=re.M)
         else:
-            text = re.sub(r'^([ \t]*)(plugin[ \t]*=[ \t]*.*hyprbars\.so)', r'\1# \2', text, flags=re.M)
+            text = re.sub(r'^([ \t]*)(?!--)(hl\.plugin\.load\([^)]*hyprbars\.so[^)]*\))', r'\1-- \2', text, flags=re.M)
         open(custom, "w").write(text)
     except FileNotFoundError: pass
 PY
@@ -210,8 +243,27 @@ try:
     flags = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
-def kw(k, v):
-    subprocess.run(["hyprctl", "keyword", k, str(v)], capture_output=True)
+# `hyprctl keyword` is Legacy-only in 0.55 ("can't work with non-legacy
+# parsers. Use eval."). Route through `hyprctl eval` + hl.config() so
+# every theme apply still takes effect live. Section/leaf split on the
+# first `:`; bracket-string keys handle leafs that have their own dots
+# (e.g. blur:enabled → ["blur.enabled"]).
+def kw(keyword, value):
+    first_colon = keyword.find(":")
+    section = keyword[:first_colon]
+    leaf = keyword[first_colon+1:].replace(":", ".")
+    # Pick Lua literal: keep true/false/numbers bare, quote strings.
+    s = str(value)
+    if s in ("true", "false"):
+        lua_val = s
+    else:
+        try:
+            float(s)
+            lua_val = s
+        except ValueError:
+            lua_val = '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    expr = 'hl.config({ ' + section + ' = { ["' + leaf + '"] = ' + lua_val + ' } })'
+    subprocess.run(["hyprctl", "eval", expr], capture_output=True)
 if "animations"   in flags: kw("animations:enabled",          "true"  if flags["animations"]   else "false")
 if "blur"         in flags: kw("decoration:blur:enabled",     "true"  if flags["blur"]         else "false")
 if "shadow"       in flags: kw("decoration:shadow:enabled",   "true"  if flags["shadow"]       else "false")

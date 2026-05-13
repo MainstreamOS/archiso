@@ -14,6 +14,7 @@ Singleton {
     property QtObject font
     property QtObject sizes
     property string syntaxHighlightingTheme
+    property int themeRevision: 0
 
     // Transparency. The quadratic functions were derived from analysis of hand-picked transparency values.
     ColorQuantizer {
@@ -57,6 +58,7 @@ Singleton {
         property color m3shadow: "#000000"
         property color m3scrim: "#000000"
         property color m3surfaceTint: "#cbc4cb"
+        property color m3sourceColor: "#cbc4cb"
         property color m3primary: "#cbc4cb"
         property color m3onPrimary: "#322f34"
         property color m3primaryContainer: "#2d2a2f"
@@ -405,7 +407,6 @@ Singleton {
         property real searchWidth: 360
         property real sidebarWidth: 460
         property real sidebarWidthExtended: 750
-        property real sidebarLeftWidthExtended: 560  
         property real baseVerticalBarWidth: 46
         property real verticalBarWidth: Config.options.bar.cornerStyle === 1 ? 
             (baseVerticalBarWidth + root.sizes.hyprlandGapsOut * 2) : baseVerticalBarWidth

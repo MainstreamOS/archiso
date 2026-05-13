@@ -11,6 +11,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 import Quickshell
+import Quickshell.Io
 import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
@@ -62,12 +63,26 @@ ApplicationWindow {
         {
             name: Translation.tr("Display"),
             icon: "monitor",
-            component: "modules/settings/DisplayConfig.qml"
+            component: "modules/settings/DisplayConfig.qml",
+            // The Display page is by far the heaviest entry in this settings
+            // app — multiple monitors × per-monitor sections × ~400 widgets
+            // each. Synchronous load froze the page-swap animation while
+            // every monitor section materialised. Loader.asynchronous offloads
+            // the page's QML compilation + initial binding pass to a worker
+            // thread so the swap stays smooth. Only this page is opted-in;
+            // other pages stay sync because their layouts don't tolerate
+            // having a 0-width parent during the brief async-loading window.
+            asynchronous: true
         },
         {
             name: Translation.tr("Layouts"),
             icon: "view_quilt",
             component: "modules/settings/LayoutsConfig.qml"
+        },
+        {
+            name: Translation.tr("Keybinds"),
+            icon: "keyboard",
+            component: "modules/settings/KeybindsConfig.qml"
         },
         {
             name: Translation.tr("Mouse"),
@@ -121,9 +136,92 @@ ApplicationWindow {
     onClosing: Qt.quit()
     title: Translation.tr("Mainstream Settings")
 
+    // Re-center on the active screen after a monitor scale apply.
+    //
+    // Why hyprctl instead of Screen.*: on Hyprland/Wayland the QScreen
+    // attached properties don't reliably notify when the compositor changes
+    // a per-monitor scale at runtime, so reading Screen.width/height after a
+    // reload returns the *previous* logical size. That made a 167%→100%
+    // change land the window at the old (smaller) centre — visibly up-left
+    // of the new true centre — and a 167%→200% change overshoot down-right.
+    //
+    // hyprctl monitors -j is the source of truth: pixel `width`/`height`
+    // plus `scale` give the logical compositor size (width/scale), and
+    // `x`/`y` give the monitor origin in the multi-monitor virtual desktop.
+    function recenter() {
+        recenterProc.running = false;
+        recenterProc.running = true;
+    }
+
+    Process {
+        id: recenterProc
+        command: ["hyprctl", "monitors", "-j"]
+        stdout: SplitParser {
+            splitMarker: ""
+            onRead: data => {
+                try {
+                    let mons = JSON.parse(data);
+                    if (!mons || mons.length === 0) return;
+                    let mon = mons.find(m => m.focused) || mons[0];
+                    let scale = mon.scale || 1.0;
+                    // Hyprland's transform values 1, 3, 5, 7 are 90°/270°
+                    // rotations — swap width/height in those cases so the
+                    // logical orientation matches the visible one.
+                    let rot = (mon.transform || 0) % 2 === 1;
+                    let pxW = rot ? mon.height : mon.width;
+                    let pxH = rot ? mon.width  : mon.height;
+                    let logicalW = pxW / scale;
+                    let logicalH = pxH / scale;
+                    let tx = Math.round(mon.x + (logicalW - root.width)  / 2);
+                    let ty = Math.round(mon.y + (logicalH - root.height) / 2);
+                    // Wayland xdg-shell does not allow clients to set their
+                    // own x/y after creation — assigning root.x/root.y is a
+                    // no-op on Hyprland. Ask the compositor to move us via
+                    // a hyprctl dispatch keyed on our (translated) title.
+                    let titleRegex = (root.title || "")
+                        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                    if (!titleRegex) return;
+                    recenterMoveProc.command = [
+                        "hyprctl", "dispatch", "movewindowpixel",
+                        `exact ${tx} ${ty},title:^${titleRegex}$`
+                    ];
+                    recenterMoveProc.running = false;
+                    recenterMoveProc.running = true;
+                } catch (e) {}
+            }
+        }
+    }
+
+    Process { id: recenterMoveProc; command: [] }
+
+    // Debounce — give hyprctl reload a beat to land before we query so we
+    // don't read the pre-apply geometry.
+    Timer {
+        id: recenterTimer
+        interval: 220
+        repeat: false
+        onTriggered: root.recenter()
+    }
+
+    Screen.onWidthChanged:  recenterTimer.restart()
+    Screen.onHeightChanged: recenterTimer.restart()
+    onWidthChanged:  recenterTimer.restart()
+    onHeightChanged: recenterTimer.restart()
+
+    // The Loader below swaps in DisplayConfig.qml when the user opens the
+    // Display page. DisplayConfig emits scaleApplied() after its reloadProc
+    // exits, which is the only deterministic "apply has fully landed"
+    // signal — Screen.* changes are unreliable on Wayland scale apply.
+    Connections {
+        target: pageLoader.item
+        ignoreUnknownSignals: true
+        function onScaleApplied() { recenterTimer.restart() }
+    }
+
     Component.onCompleted: {
         MaterialThemeLoader.reapplyTheme()
         Config.readWriteDelay = 0 // Settings app always only sets one var at a time so delay isn't needed
+        recenterTimer.restart()
     }
 
     minimumWidth: 750
@@ -256,9 +354,9 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 3: Display, Layouts, Mouse, Power (Indices 7, 8, 9, 10)
+                    // Group 3: Display, Layouts, Keybinds, Mouse, Power (Indices 7, 8, 9, 10, 11)
                     Repeater {
-                        model: root.pages.slice(7, 11)
+                        model: root.pages.slice(7, 12)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
@@ -273,14 +371,14 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 4: Accounts, Services, Update, Recovery (Indices 11, 12, 13, 14)
+                    // Group 4: Accounts, Services, Update, Recovery (Indices 12, 13, 14, 15)
                     Repeater {
-                        model: root.pages.slice(11, 15)
+                        model: root.pages.slice(12, 16)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
-                            toggled: root.currentPage === (index + 11)
-                            onPressed: root.currentPage = (index + 11)
+                            toggled: root.currentPage === (index + 12)
+                            onPressed: root.currentPage = (index + 12)
                             buttonIcon: modelData.icon
                             buttonText: modelData.name
                         }
@@ -290,14 +388,14 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; opacity: 0.3; Layout.margins: 12
                                 color: Appearance.m3colors.m3outlineVariant }
 
-                    // Group 5: About (Index 15)
+                    // Group 5: About (Index 16)
                     Repeater {
-                        model: root.pages.slice(15)
+                        model: root.pages.slice(16)
                         SettingsNavButton {
                             required property var index
                             required property var modelData
-                            toggled: root.currentPage === (index + 15)
-                            onPressed: root.currentPage = (index + 15)
+                            toggled: root.currentPage === (index + 16)
+                            onPressed: root.currentPage = (index + 16)
                             buttonIcon: modelData.icon
                             buttonText: modelData.name
                         }
@@ -318,6 +416,29 @@ ApplicationWindow {
 
                     active: Config.ready
                     source: Config.ready ? root.pages[root.currentPage].component : ""
+                    // Per-page opt-in (see the page entries above) — currently
+                    // only DisplayConfig flips this on. Async loads avoid the
+                    // page-swap stutter on heavy pages but break layouts that
+                    // assume the Loader's content is sized synchronously, so
+                    // we don't apply it as a blanket setting.
+                    asynchronous: Config.ready
+                        && (root.pages[root.currentPage]?.asynchronous ?? false)
+
+                    function reloadCurrentPage() {
+                        if (!Config.ready)
+                            return;
+
+                        const currentSource = root.pages[root.currentPage].component;
+                        source = "";
+                        source = currentSource;
+                    }
+
+                    Connections {
+                        target: Appearance
+                        function onThemeRevisionChanged() {
+                            pageLoader.reloadCurrentPage();
+                        }
+                    }
 
                     Connections {
                         target: root

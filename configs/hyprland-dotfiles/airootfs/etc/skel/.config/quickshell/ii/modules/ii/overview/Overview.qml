@@ -101,7 +101,7 @@ Scope {
                     if (!overviewScope.dontAutoCancelSearch) {
                         searchWidget.cancelSearch();
                     }
-                    // Reset drawer state on open
+                    // Reset drawer state on open.
                     appDrawer.expanded = false;
                     appDrawer.searchText = "";
                     appDrawer.folderPopupVisible = false;
@@ -263,8 +263,12 @@ Scope {
             contentHeight: columnLayout.implicitHeight
             clip: true
             visible: true
-            interactive: !contentFade.appDragging
-            boundsBehavior: Flickable.DragAndOvershootBounds
+            // Disable scrolling when workspacesOnly mode is active —
+            // there's nothing below the workspace previews in that view,
+            // so allowing the flickable to scroll just lets the user
+            // shove the workspaces off-screen with no way to recover.
+            interactive: !contentFade.appDragging && !GlobalStates.overviewWorkspacesOnly
+            boundsBehavior: GlobalStates.overviewWorkspacesOnly ? Flickable.StopAtBounds : Flickable.DragAndOvershootBounds
 
             onContentYChanged: {
                 // Drag-overshoot past the top while expanded → collapse.
@@ -275,7 +279,7 @@ Scope {
                     Qt.callLater(() => { flickable.contentY = 0; });
                 }
             }
-            
+
             ColumnLayout {
                 id: columnLayout
                 width: flickable.width
@@ -305,12 +309,12 @@ Scope {
                     }
                 }
                     
-                // Spacer to prevent drawer from overlapping top bar when expanded
+                // Spacer to prevent drawer from overlapping top bar when expanded.
                 Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: appDrawer.expanded ? 10 : 0
                     visible: appDrawer.expanded
-                    
+
                     Behavior on Layout.preferredHeight {
                         NumberAnimation {
                             duration: Appearance.animation.elementResize.duration
@@ -324,9 +328,13 @@ Scope {
                     id: searchWidget
                     anchors.horizontalCenter: parent.horizontalCenter
                     Layout.alignment: Qt.AlignHCenter
-                    visible: !appDrawer.expanded
-                    Layout.maximumHeight: appDrawer.expanded ? 0 : implicitHeight
-                    opacity: appDrawer.expanded ? 0 : 1
+                    // Hidden when the app drawer is expanded (it takes over).
+                    // Also hidden when overview was opened in workspaces-only
+                    // mode by the hot corner so the user gets a clean
+                    // workspace switcher with no chrome.
+                    visible: !appDrawer.expanded && !GlobalStates.overviewWorkspacesOnly
+                    Layout.maximumHeight: (appDrawer.expanded || GlobalStates.overviewWorkspacesOnly) ? 0 : implicitHeight
+                    opacity: (appDrawer.expanded || GlobalStates.overviewWorkspacesOnly) ? 0 : 1
                     Behavior on opacity {
                         NumberAnimation {
                             duration: Appearance.animation.elementMoveFast.duration
@@ -382,11 +390,14 @@ Scope {
                     Layout.preferredWidth: appDrawer.expanded
                         ? columnLayout.cachedOverviewWidth
                         : Math.min(1200, flickable.width - 40)
-                    visible: (panelWindow.searchingText == "")
-                    // But hide it when searching and not expanded (search results take priority)
-                    opacity: (panelWindow.searchingText != "" && !appDrawer.expanded) ? 0 : 1
-                    Layout.maximumHeight: (panelWindow.searchingText != "" && !appDrawer.expanded) ? 0 : implicitHeight
-                        
+                    // Hidden when:
+                    //  - the user is searching (search results take priority), OR
+                    //  - overview was opened in workspaces-only mode by the
+                    //    hot corner (no chrome — workspace previews only)
+                    visible: panelWindow.searchingText == "" && !GlobalStates.overviewWorkspacesOnly
+                    opacity: ((panelWindow.searchingText != "" && !appDrawer.expanded) || GlobalStates.overviewWorkspacesOnly) ? 0 : 1
+                    Layout.maximumHeight: ((panelWindow.searchingText != "" && !appDrawer.expanded) || GlobalStates.overviewWorkspacesOnly) ? 0 : implicitHeight
+
                     Behavior on opacity {
                         NumberAnimation {
                             duration: Appearance.animation.elementMoveFast.duration
@@ -401,7 +412,7 @@ Scope {
                             easing.bezierCurve: Appearance.animation.elementResize.bezierCurve
                         }
                     }
-                    
+
                     availableHeight: flickable.height
                     availableWidth: appDrawer.expanded
                         ? columnLayout.cachedOverviewWidth
@@ -433,8 +444,39 @@ Scope {
             propagateComposedEvents: true
 
             onWheel: function(event) {
+                // Workspaces-only mode (corner-triggered): swallow wheel
+                // events entirely. There's nothing to scroll into (the
+                // app drawer chrome is hidden and the flickable below has
+                // interactive=false), so passing them through would just
+                // let the user shove the workspace previews off-screen
+                // via the expand-drawer path below.
+                if (GlobalStates.overviewWorkspacesOnly) {
+                    event.accepted = true;
+                    return;
+                }
+
                 const scrollingDown = event.angleDelta.y < 0;
                 const scrollingUp   = event.angleDelta.y > 0;
+
+                // Searching: route wheel events into the search result list
+                // (SearchWidget.appResults) instead of the outer flickable.
+                // Without this branch, the fallback at the bottom of this
+                // handler scrolls `flickable.contentY`, which moves the whole
+                // overview slightly and never scrolls the actual results.
+                if (panelWindow.searchingText !== "" && !appDrawer.expanded
+                        && searchWidget.appResults && searchWidget.appResults.visible) {
+                    const list         = searchWidget.appResults;
+                    const threshold    = flickable.mouseScrollDeltaThreshold;
+                    const delta        = event.angleDelta.y / threshold;
+                    const scrollFactor = Math.abs(event.angleDelta.y) >= threshold
+                                         ? flickable.mouseScrollFactor
+                                         : flickable.touchpadScrollFactor;
+                    const maxY    = Math.max(0, list.contentHeight - list.height);
+                    const targetY = Math.max(0, Math.min(list.contentY - delta * scrollFactor, maxY));
+                    list.contentY = targetY;
+                    event.accepted = true;
+                    return;
+                }
 
                 // Collapsed: route wheel events through the grid first.
                 // Scroll down → scroll grid, or expand once at the bottom.

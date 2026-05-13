@@ -127,7 +127,6 @@ Singleton {
             property JsonObject policies: JsonObject {
                 property int ai: 0 // 0: No | 1: Yes | 2: Local
                 property int weeb: 0 // 0: No | 1: Open | 2: Closet
-                property int wallpaperBrowser: 1 // 0: No | 1: Yes  
             }
 
             property JsonObject ai: JsonObject {
@@ -175,12 +174,27 @@ Singleton {
                         property real harmony: 0.6
                         property real harmonizeThreshold: 100
                         property real termFgBoost: 0.35
-                        property bool forceDarkMode: false
+                        property bool forceDarkMode: true
                     }
                 }
                 property JsonObject palette: JsonObject {
-                    property string type: "scheme-neutral" // Allowed: auto, scheme-content, scheme-expressive, scheme-fidelity, scheme-fruit-salad, scheme-monochrome, scheme-neutral, scheme-rainbow, scheme-tonal-spot
+                    property string type: "auto" // Allowed: auto, scheme-content, scheme-expressive, scheme-fidelity, scheme-fruit-salad, scheme-monochrome, scheme-neutral, scheme-rainbow, scheme-tonal-spot
                     property string accentColor: ""
+                }
+                // Day/Night Themes scheduler: ThemeManager auto-applies daySlug
+                // or nightSlug depending on `mode` and the current time. When
+                // mode is "nightlight" it follows Hyprsunset.shouldBeOn (so
+                // theme changes line up with the Night Light filter); when
+                // "manual" it uses dayFrom / nightFrom as the day-window
+                // boundaries (HH:mm 24-hour, parsed by ThemeManager). "off"
+                // disables auto-apply entirely. Default daySlug/nightSlug
+                // are empty until the user picks them in Settings → Themes.
+                property JsonObject themeSchedule: JsonObject {
+                    property string mode: "off"   // "off" | "nightlight" | "manual"
+                    property string daySlug: ""
+                    property string nightSlug: ""
+                    property string dayFrom: "06:00"
+                    property string nightFrom: "20:00"
                 }
             }
 
@@ -281,6 +295,30 @@ Singleton {
                 property bool bottom: false // Instead of top
                 property int cornerStyle: 1 // 0: Hug | 1: Float | 2: Plain rectangle
                 property bool floatStyleShadow: true // Show shadow behind bar when cornerStyle == 1 (Float)
+                // Hot-corner-related settings. Currently only the
+                // top-left trigger uses this.
+                property JsonObject hotCorners: JsonObject {
+                    // What the top-left hot corner opens. Recognized values:
+                    //   "scrolloverview" — the niri-style scrolling overview
+                    //                      plugin (default; only fires the
+                    //                      ripple cascade for this option,
+                    //                      and only when the plugin is
+                    //                      actually loaded)
+                    //   "default"        — the built-in dots overview
+                    //                      (workspaces + app drawer + search,
+                    //                      driven by GlobalStates.overviewOpen)
+                    //   "off"            — the corner is disabled entirely;
+                    //                      left-clicks fall through to the
+                    //                      bar's left-side area
+                    property string trigger: "off"
+                    // Whether the ripple animation plays at all (only
+                    // relevant when trigger == "scrolloverview"). When
+                    // false the hot-corner cascade is suppressed and
+                    // Bar.qml's pre-overview delay collapses to 0ms, so
+                    // the corner-trigger dispatches the overview
+                    // immediately.
+                    property bool animationEnabled: true
+                }
                 property bool borderless: false // true for no grouping of items
                 property string topLeftIcon: "spark" // Options: "distro" or any icon name in ~/.config/quickshell/ii/assets/icons
                 property bool showBackground: true
@@ -468,7 +506,32 @@ Singleton {
 
             property JsonObject light: JsonObject {
                 property JsonObject night: JsonObject {
+                    // `mode` is the unified dropdown's source of truth —
+                    // one of "disabled" / "automatic" / "manual" / "enabled".
+                    // We persist it explicitly rather than deriving the
+                    // dropdown state from runtime fields like
+                    // Hyprsunset.temperatureActive, because that runtime
+                    // value flips with the schedule and clock and can't
+                    // distinguish "user set Disabled" from "user set
+                    // Enabled but filter happens to be off right now".
+                    // The action handlers in DisplayConfig and the right-
+                    // sidebar NightLightDialog write `mode` and ALSO
+                    // propagate to `automatic` / `scheduleMode` /
+                    // Hyprsunset.toggleTemperature so the runtime
+                    // behaviour matches.
+                    //
+                    // Default "disabled" — fresh installs land on index 0
+                    // of the dropdown without the user having to opt out
+                    // of anything.
+                    property string mode: "disabled"
+                    // Remembers the most recent non-disabled mode the user
+                    // picked, so the right-sidebar Night Light toggle
+                    // button can restore that state when toggled back on
+                    // from "disabled" instead of always landing in the
+                    // same default. Updated by Hyprsunset.applyNightLightMode.
+                    property string lastActiveMode: "automatic"
                     property bool automatic: false
+                    property string scheduleMode: "manual"
                     property string from: "19:00" // Format: "HH:mm", 24-hour time
                     property string to: "06:30"   // Format: "HH:mm", 24-hour time
                     property int colorTemperature: 5000
@@ -675,10 +738,6 @@ Singleton {
                         property string username: "[unset]"
                     }
                 }
-                property JsonObject unsplash: JsonObject {  
-                    property int limit: 20  
-                }
-
                 property JsonObject cornerOpen: JsonObject {
                     property bool enable: true
                     property bool bottom: false
@@ -796,10 +855,6 @@ Singleton {
                     property bool force2CharDayOfWeek: true
                 }
             }
-            property JsonObject unsplash: JsonObject {  
-                property string apiKey: ""  
-            }    
-
         }
     }
 }
