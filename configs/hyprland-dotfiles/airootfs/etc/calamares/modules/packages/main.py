@@ -761,6 +761,21 @@ def run():
             total_packages += len(subst_locale(packagelist))
 
     if not total_packages:
+        # Loud no-op warning. Hit this when the user picked Default Apps
+        # (or any preselect-group install method) but `packageOperations`
+        # ended up empty in GlobalStorage — usually means
+        # NetInstallViewStep's auto-skip path didn't reach
+        # finalizeGlobalStorage with selections applied. Worth a clear
+        # log line because the progress bar still races to 100% and the
+        # user has no other signal that the install list disappeared.
+        choice = libcalamares.globalstorage.value("installmethod_choice") or "<unset>"
+        preselect = libcalamares.globalstorage.value("installmethod_preselect_group") or "<unset>"
+        has_pko = libcalamares.globalstorage.contains("packageOperations")
+        libcalamares.utils.warning(
+            "packages: nothing to do — total_packages == 0. "
+            "installmethod_choice=%r preselect_group=%r "
+            "globalstorage_has_packageOperations=%s inline_operations=%d"
+            % (choice, preselect, has_pko, len(libcalamares.job.configuration.get("operations", []))))
         return None
 
     for entry in operations:
