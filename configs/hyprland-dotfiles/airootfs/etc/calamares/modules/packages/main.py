@@ -574,14 +574,21 @@ class PMYay(PackageManager):
             libcalamares.job.setprogress(progress)
 
             if user:
-                # `--norebuild` + `--nokeepsrc` shave time off repeat
-                # installs (yay otherwise re-runs makepkg every call);
-                # `--noprogressbar` keeps pacman's spinner-bar out of
-                # the log without affecting the (N/M) install lines.
+                # `--norebuild` skips rebuilding already-cached AUR
+                # packages, useful for repeat installs. `--noprogressbar`
+                # keeps pacman's spinner out of the log without
+                # affecting yay's (N/M) install lines.
+                #
+                # IMPORTANT: do not add `--nokeepsrc` here — it's NOT a
+                # valid yay option (the only related flag is the
+                # opt-in `--keepsrc`, and the default is already to
+                # clean up src/ and pkg/ after build). A previous
+                # revision included it and every install instantly
+                # failed with `invalid option 'nokeepsrc'`.
                 command = [
                     "su", "-s", "/bin/bash", user, "-c",
                     ("yay -S --noconfirm --needed --noprogressbar "
-                     "--norebuild --nokeepsrc -- ") + pkg,
+                     "--norebuild -- ") + pkg,
                 ]
             else:
                 command = [
