@@ -44,6 +44,40 @@ _make_limine_iso_config() {
         "${profile}/limine-iso.conf" > "${isofs_dir}/limine.conf"
 }
 
+# Copy CPU microcode images alongside the kernel + initramfs that
+# mkarchiso's _make_boot_on_iso9660 already placed in
+# ${isofs_dir}/${install_dir}/boot/${arch}/. The Limine boot entries
+# reference both intel-ucode.img and amd-ucode.img as initrd lines —
+# the CPU loads whichever matches its vendor and ignores the other —
+# so both files must be present on the ISO regardless of build host
+# vendor. mkarchiso doesn't copy microcode by default; each bootmode
+# is responsible for installing the files it references. Without
+# this, Limine panics at "Failed to open module with path
+# 'boot():///arch/boot/x86_64/intel-ucode.img'" on every entry.
+#
+# Source path: this mkarchiso version doesn't expose ${airootfs_dir}
+# as a variable in the bootmode function context (the older
+# convention used ${pacstrap_dir}, newer versions ${airootfs_dir}).
+# Use the always-stable concatenation ${work_dir}/${arch}/airootfs
+# instead — that's what mkarchiso pacstraps into and what
+# _make_boot_on_iso9660 reads its kernel+initramfs from, regardless
+# of mkarchiso version.
+#
+# Guarded against double-copy if both bios.limine and uefi.limine
+# are active — the second call is a no-op when the destination
+# already has the files.
+_install_limine_microcode() {
+    local _boot_dir="${isofs_dir}/${install_dir}/boot/${arch}"
+    local _src_dir="${work_dir}/${arch}/airootfs/boot"
+    [[ -d "${_boot_dir}" ]] || return
+    local _uc
+    for _uc in intel-ucode.img amd-ucode.img; do
+        if [[ -e "${_src_dir}/${_uc}" && ! -e "${_boot_dir}/${_uc}" ]]; then
+            install -m 0644 -- "${_src_dir}/${_uc}" "${_boot_dir}/${_uc}"
+        fi
+    done
+}
+
 # =============================================================================
 # bios.limine
 # =============================================================================
@@ -74,6 +108,7 @@ _make_bootmode_bios.limine() {
     # Limine BIOS system binary (needed by limine bios-install for USB hybrid)
     install -m 0644 -- "${LIMINE_DIR:-/usr/share/limine}/limine-bios.sys" "${isofs_dir}/limine-bios.sys"
     _make_limine_iso_config
+    _install_limine_microcode
     _msg_info "Done! Limine set up for BIOS booting."
 }
 
@@ -132,6 +167,7 @@ _make_bootmode_uefi.limine() {
     install -m 0644 -- "${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI" "${isofs_dir}/EFI/BOOT/BOOTX64.EFI"
 
     _make_limine_iso_config
+    _install_limine_microcode
     _msg_info "Done! Limine set up for UEFI booting."
 }
 
