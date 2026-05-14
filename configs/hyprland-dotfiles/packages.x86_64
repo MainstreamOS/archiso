@@ -87,10 +87,32 @@ xorg-xwayland
 # ==============================================================================
 # GPU & display
 # ==============================================================================
+# Kitchen-sink strategy: ship every common GPU driver in the live ISO so
+# boot succeeds on AMD / Intel / NVIDIA hardware out of the box, then
+# /usr/local/bin/cleanup-unused-drivers (a Calamares shellprocess that
+# runs after install-gpu-drivers) removes the drivers that don't match
+# the detected GPU vendor. Adds ~600 MB to the ISO; trades download size
+# for "it just booted" on every machine.
+#
+# linux-headers is required for DKMS (nvidia-open-dkms below, also any
+# Realtek Wi-Fi DKMS added later). Pruned post-install if no DKMS
+# packages survive the cleanup pass.
+linux-headers
 mesa
 vulkan-radeon
 vulkan-intel
 intel-media-driver
+xf86-video-amdgpu
+
+# NVIDIA — open kernel modules (Turing+ / RTX 20 series and newer). For
+# older GPUs (Maxwell / Pascal) install-gpu-drivers replaces this with
+# the proprietary nvidia-dkms at install time. Boot entry 3
+# (nvidia-drm.modeset=1) forces loading of these modules at live boot
+# so users can verify NVIDIA detection before committing to install.
+nvidia-open-dkms
+nvidia-utils
+egl-wayland
+libva-nvidia-driver
 
 # ==============================================================================
 # Display manager

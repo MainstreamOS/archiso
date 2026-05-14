@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cleanup-unused-drivers
+# Calamares shellprocess — runs inside the installed system chroot AFTER
+# install-gpu-drivers and BEFORE desktopcleanup.
+#
+# "Kitchen-sink airootfs + post-install prune" pattern: the live ISO ships
+# every common GPU driver, microcode for both CPU vendors, and a pile of
+# arch-install / calamares / live-only tools so the ISO boots reliably on
+# every machine. After unpackfs copies the live filesystem to the target,
+# this script detects the actual hardware and REMOVES what doesn't apply:
+#
+#   - Wrong GPU driver stacks (e.g. NVIDIA on an AMD-only machine)
+#   - Wrong CPU microcode (intel-ucode on AMD, amd-ucode on Intel)
+#   - Live-only tooling (arch-install-scripts, archinstall, syslinux,
+#     mkinitcpio-archiso, calamares, memtest86+, edk2-shell, etc.)
+#   - DKMS prereqs (linux-headers) ONLY if no surviving DKMS packages
+#     need them
+#
+# Detection mirrors install-gpu-drivers / post-install — PCI vendor IDs,
+# unambiguous and not subject to lspci name string variations.
+# =============================================================================
+
+set -uo pipefail
+
+log()  { echo "[cleanup-unused-drivers] $*"; }
+info() { log "INFO:  $*"; }
+warn() { log "WARN:  $*"; }
+
+remove_pkgs() {
+    local pkgs=("$@")
+    [[ ${#pkgs[@]} -eq 0 ]] && return 0
+    info "Removing: ${pkgs[*]}"
+    # -Rns: cascade unused deps + remove config files. --noconfirm for
+    # automation. Failures (package not present) are non-fatal — the
+    # live ISO may ship slightly different subsets between builds.
+    pacman -Rns --noconfirm "${pkgs[@]}" 2>&1 | sed 's/^/[cleanup] /' || true
+}
+
+# ── GPU detection ────────────────────────────────────────────────────────────
+GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
+if [[ -n "$GPU_INFO" ]]; then
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
+    info "Detected GPUs: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD Intel=$HAS_INTEL"
+else
+    warn "No GPU detected via lspci — skipping GPU driver prune."
+fi
+
+# ── CPU detection ────────────────────────────────────────────────────────────
+CPU_VENDOR=$(awk -F: '/vendor_id/ {gsub(/ /,"",$2); print $2; exit}' /proc/cpuinfo)
+info "CPU vendor: $CPU_VENDOR"
+
+# ── Live-only tooling ────────────────────────────────────────────────────────
+# These are needed during install but useless on the target. Removing them
+# saves ~250 MB of disk and a pile of pacman update churn the user would
+# otherwise hit on every -Syu.
+#
+# NOT included here even though they look live-only:
+#   - linux-headers: handled separately below (DKMS dependency tracking)
+#   - dosfstools: needed if user creates FAT partitions post-install
+#   - testdisk, os-prober, nano, openssh, less, man-db, terminus-font:
+#     genuinely useful on the installed system
+LIVEONLY=(
+    arch-install-scripts
+    archinstall
+    mkinitcpio-archiso
+    mkinitcpio-nfs-utils
+    syslinux
+    mtools
+    squashfs-tools
+    nbd
+    memtest86+
+    memtest86+-efi
+    livecd-sounds
+    edk2-shell
+    reflector
+    pv
+    calamares-mainstream
+    ckbcomp
+    hwinfo
+    kcrash
+    kpmcore
+    b43-fwcutter
+)
+
+# Calamares: only present on the live ISO, but if a user re-runs Calamares
+# from inside their installed system somehow we don't want to nuke it.
+# Same defensive shape as the GPU branches — never abort the install on
+# a package that wasn't there.
+remove_pkgs "${LIVEONLY[@]}"
+
+# ── GPU driver prune ─────────────────────────────────────────────────────────
+NVIDIA_PKGS=(
+    nvidia-open-dkms
+    nvidia-dkms
+    nvidia
+    nvidia-open
+    nvidia-utils
+    lib32-nvidia-utils
+    egl-wayland
+    libva-nvidia-driver
+    opencl-nvidia
+)
+AMD_PKGS=(
+    xf86-video-amdgpu
+    vulkan-radeon
+    lib32-vulkan-radeon
+    libva-mesa-driver
+)
+INTEL_PKGS=(
+    vulkan-intel
+    lib32-vulkan-intel
+    intel-media-driver
+    intel-compute-runtime
+)
+
+if ! $HAS_NVIDIA; then
+    info "No NVIDIA GPU — removing NVIDIA driver stack."
+    remove_pkgs "${NVIDIA_PKGS[@]}"
+fi
+if ! $HAS_AMD; then
+    info "No AMD GPU — removing AMD driver stack."
+    remove_pkgs "${AMD_PKGS[@]}"
+fi
+if ! $HAS_INTEL; then
+    info "No Intel GPU — removing Intel driver stack."
+    remove_pkgs "${INTEL_PKGS[@]}"
+fi
+# mesa is shared across AMD / Intel / nouveau and the rest of the desktop
+# stack depends on it — never remove. broadcom-wl is DKMS; if no Broadcom
+# wireless detected, prune it.
+if ! lspci -nn 2>/dev/null | grep -q "\[14e4:"; then
+    info "No Broadcom hardware — removing broadcom-wl."
+    remove_pkgs broadcom-wl
+fi
+
+# ── CPU microcode prune ──────────────────────────────────────────────────────
+# The bootloader entries reference both microcode initrds; the CPU
+# applies the matching one and ignores the other. Removing the wrong one
+# costs nothing — boot still finds and applies the right one. ~10 MB saved.
+case "$CPU_VENDOR" in
+    GenuineIntel) info "Intel CPU — removing amd-ucode."; remove_pkgs amd-ucode ;;
+    AuthenticAMD) info "AMD CPU — removing intel-ucode.";  remove_pkgs intel-ucode ;;
+    *) warn "Unknown CPU vendor — keeping both microcode packages." ;;
+esac
+
+# ── linux-headers prune ──────────────────────────────────────────────────────
+# Was needed during ISO build for nvidia-open-dkms compilation. After the
+# above prune, headers are only needed if a DKMS package survived. Keep
+# headers if ANY DKMS package is still installed; otherwise drop them.
+if pacman -Qq 2>/dev/null | grep -q -- "-dkms$"; then
+    info "Surviving DKMS packages — keeping linux-headers."
+else
+    info "No DKMS packages remain — removing linux-headers."
+    remove_pkgs linux-headers
+fi
+
+# ── Final pass: regenerate initramfs without removed modules ─────────────────
+# install-gpu-drivers writes /etc/mkinitcpio.conf with the right MODULES
+# list for the detected GPU. After prune, regenerate the actual initrd
+# images so they don't keep loading drivers whose .ko files just went
+# away. Failure is non-fatal — the user gets a working install either
+# way, just with slightly slower boot if old modules linger.
+info "Regenerating initramfs..."
+if ! mkinitcpio -P 2>&1 | sed 's/^/[mkinitcpio] /'; then
+    warn "mkinitcpio -P returned non-zero — boot will still work but"
+    warn "the new image may not reflect the removed driver list."
+fi
+
+# ── Live-only loose files (not pacman-owned) ─────────────────────────────────
+# Shipped via airootfs/etc/ but useless on the installed system. pacman
+# -Rns can't touch these (no owning package); rm them by hand.
+LOOSE_FILES=(
+    /etc/profile.d/calamares-hidpi.sh
+    # /etc/sudoers.d/builduser is dropped by install-yay at the end of
+    # its run, but if that script aborted mid-flight the file might
+    # still be here. Removing again is safe.
+    /etc/sudoers.d/builduser
+)
+for f in "${LOOSE_FILES[@]}"; do
+    if [[ -e "$f" ]]; then
+        info "Removing live-only file: $f"
+        rm -f "$f" || warn "Could not remove $f"
+    fi
+done
+
+info "Cleanup done."
+exit 0
