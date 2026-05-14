@@ -35,6 +35,7 @@ file_permissions=(
   ["/var/lib/sddm/.config/hypr"]="963:963:700"
   ["/var/lib/sddm/.config/hypr/hyprland.conf"]="963:963:600"
   ["/usr/local/bin/cleanup-desktop-entries"]="0:0:755"
+  ["/usr/local/bin/cleanup-unused-drivers"]="0:0:755"
   ["/usr/local/bin/power-key-helper"]="0:0:755"
   # Calamares autostart (XDG autostart — read by dex/autostart managers)
   ["/etc/xdg/autostart/calamares.desktop"]="0:0:644"
