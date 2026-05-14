@@ -310,7 +310,7 @@ Singleton {
                     //   "off"            — the corner is disabled entirely;
                     //                      left-clicks fall through to the
                     //                      bar's left-side area
-                    property string trigger: "off"
+                    property string trigger: "scrolloverview"
                     // Whether the ripple animation plays at all (only
                     // relevant when trigger == "scrolloverview"). When
                     // false the hot-corner cascade is suppressed and
@@ -431,6 +431,32 @@ Singleton {
                 property int full: 101
                 property bool automaticSuspend: true
                 property int suspend: 3
+                // What the bar indicator's hover popup reveals. Time is on by
+                // default; power draw and health are opt-in (power-user info).
+                property JsonObject popup: JsonObject {
+                    property bool showTime: true
+                    property bool showPower: false
+                    property bool showHealth: false
+                }
+                // Test mode: force the battery indicator visible with synthetic
+                // values, regardless of whether a real laptop battery exists.
+                // Lets desktop users preview/customise the bar widget + popup.
+                property bool testMode: false
+                property int testPercentage: 50            // 0–100
+                property bool testCharging: false
+                property int testTimeMinutes: 90           // drives time-to-full (charging) / time-to-empty (discharging)
+                property real testPowerWatts: 12.5         // drives energy rate (Charging: / Discharging: W row)
+                property real testHealthPercentage: 92.0   // drives the Health row
+            }
+
+            // Userspace shim for window-state restore. xdg-session-management-v1
+            // exists in wayland-protocols/staging as of 2026 but Hyprland 0.55
+            // has no compositor-side implementation yet, so this drives a
+            // hyprctl-based relauncher (scripts/session/snapshot.sh +
+            // restore.sh). On by default — relaunches the windows that were
+            // open at logout on next login.
+            property JsonObject session: JsonObject {
+                property bool restoreEnabled: true
             }
 
             property JsonObject calendar: JsonObject {
@@ -479,7 +505,7 @@ Singleton {
                     // Keep this in sync with the Default Apps preselect in
                     // netinstall.conf so the dock has launchers for the apps a fresh
                     // install actually ships.
-                    "com.google.Chrome", "org.gnome.Nautilus", "org.gnome.TextEditor", "mpv", "com.spotify.Client", "kitty", "org.gnome.Software",]
+                    "com.google.Chrome", "org.gnome.Nautilus", "org.gnome.TextEditor", "mpv", "com.spotify.Client", "settings", "kitty", "org.gnome.Software",]
                 property list<string> ignoredAppRegexes: []
                 property JsonObject contextMenuVolume: JsonObject {
                     property bool enable: true
@@ -577,6 +603,10 @@ Singleton {
 
             property JsonObject notifications: JsonObject {
                 property int timeout: 7000
+                property JsonObject monitor: JsonObject {
+                    property bool enable: false
+                    property string name: "" // Name of the monitor to show notifications on, like "eDP-1". Find out with 'hyprctl monitors' command
+                }
             }
 
             property JsonObject osd: JsonObject {
@@ -668,6 +698,14 @@ Singleton {
                 property bool orderRightLeft: false
                 property bool orderBottomUp: false
                 property bool centerIcons: true
+                // Keep the wlr-layer-shell surface mapped while the overview
+                // is closed. Default ON makes opens instant even on a busy
+                // compositor (e.g. running a game at 4K@144Hz). Turn OFF to
+                // free the Overlay-layer surface and restore direct scanout
+                // for exclusive-fullscreen games, at the cost of a ~1s wait
+                // the first time the overview is opened while the
+                // compositor is busy.
+                property bool keepSurfaceAlive: true
             }
 
             property JsonObject regionSelector: JsonObject {
@@ -726,6 +764,15 @@ Singleton {
                 property JsonObject imageSearch: JsonObject {
                     property string imageSearchEngineBaseUrl: "https://lens.google.com/uploadbyurl?url="
                     property bool useCircleSelection: false
+                }
+                // File + folder search backed by `fd`. Walks ~/ live (no DB
+                // rebuild), passes the query as argv (no shell injection),
+                // hardcoded excludes for the obvious noise dirs. Streams
+                // results into the launcher with XDG MIME icons resolved
+                // against the user's active icon theme.
+                property JsonObject fileSearch: JsonObject {
+                    property bool enable: true
+                    property int maxResults: 30
                 }
             }
 

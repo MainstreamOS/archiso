@@ -34,7 +34,7 @@ hl.bind("SUPER + f12", hl.dsp.global("quickshell:overlayToggle"), {description =
 hl.bind("CTRL + ALT + Delete", hl.dsp.global("quickshell:sessionToggle"), {description = "Toggle session menu"} )
 hl.bind("SUPER + H", hl.dsp.global("quickshell:barToggle"), {description = "Toggle bar"} )
 hl.bind("CTRL + ALT + Delete", hl.dsp.exec_cmd(qsIsAlive.." || pkill wlogout || wlogout -p layer-shell") )
-hl.bind("SHIFT + SUPER + ALT + Slash", hl.dsp.exec_cmd("qs -p $HOME/.config/quickshell/$qsConfig/welcome.qml") )
+hl.bind("SHIFT + SUPER + ALT + Slash", hl.dsp.exec_cmd("qs -p $HOME/.config/quickshell/$qsConfig/welcome-tutorial.qml") )
 
 hl.bind("XF86MonBrightnessUp", hl.dsp.exec_cmd(qsIpcCall.." brightness increment || brightnessctl s 5%+"), {locked = true, repeating = true} )
 hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd(qsIpcCall.." brightness decrement || brightnessctl s 5%-"), {locked = true, repeating = true} )
@@ -51,6 +51,9 @@ hl.bind("SUPER + ALT + M", hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_SOURCE@ togg
 hl.bind("SUPER + W", hl.dsp.global("quickshell:wallpaperSelectorToggle"), {description = "Toggle wallpaper selector"} )
 hl.bind("SUPER + ALT + W", hl.dsp.global("quickshell:wallpaperSelectorRandom"), {description = "Select random wallpaper"} )
 hl.bind("SUPER + W", hl.dsp.exec_cmd(qsIsAlive.." || "..qsScripts.."/colors/switchwall.sh") )
+-- Light/dark toggle — added by upstream merge (CTRL+SUPER+SHIFT+D powertoys-style).
+-- Wired to a GlobalShortcut in MaterialThemeLoader.qml; same name keeps that intact.
+hl.bind("CTRL + SUPER + SHIFT + D", hl.dsp.global("quickshell:toggleLightDark"), {description = "Toggle light/dark mode"} )
 hl.bind("CTRL + SUPER + R", hl.dsp.exec_cmd("killall ydotool qs quickshell; qs -c $qsConfig &"), {description = "Restart widgets"} )
 hl.bind("CTRL + SUPER + P", hl.dsp.global("quickshell:panelFamilyCycle"), {description = "Cycle panel family"} )
 

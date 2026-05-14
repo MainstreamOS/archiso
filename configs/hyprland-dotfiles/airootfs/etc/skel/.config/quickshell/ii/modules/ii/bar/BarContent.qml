@@ -136,6 +136,7 @@ Item { // Bar content region
             id: middleCenterGroup
             anchors.verticalCenter: parent.verticalCenter
             padding: workspacesWidget.widgetPadding
+            glowing: workspacesWidget.dragOver
 
             Workspaces {
                 id: workspacesWidget
@@ -327,8 +328,6 @@ Item { // Bar content region
                 }
             }
 
-            TimersTray {}
-
             // Volume control icon
             Loader {
                 id: volumeIconLoader
@@ -376,14 +375,14 @@ Item { // Bar content region
                 }
             }
 
-            TimersTray {}
-
             SysTray {
                 visible: root.useShortenedForm === 0
                 Layout.fillWidth: false
                 Layout.fillHeight: true
                 invertSide: Config?.options.bar.bottom
             }
+
+            TimersTray {}
 
             Item {
                 Layout.fillWidth: true

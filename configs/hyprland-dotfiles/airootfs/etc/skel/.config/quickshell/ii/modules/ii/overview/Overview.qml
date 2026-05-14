@@ -7,8 +7,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
-import Quickshell.Widgets
 import Quickshell.Io
+import Quickshell.Widgets
 import Quickshell.Wayland
 import Quickshell.Hyprland
 
@@ -39,6 +39,61 @@ Scope {
     //    committed, so real dismiss events (clicking outside) work normally.
     property bool ignoreDismiss: false
 
+    // Fallback for D-Bus-activated / splash-then-real apps whose real
+    // window bypasses the exec_cmd workspace rule. Each drop registers
+    // a class hint for 5s; openwindow events that match a hint get
+    // silently moved to the target workspace.
+    property var _pendingSpawns: ({})
+
+    function _addSpawnWatch(hint, ws) {
+        if (!hint || ws <= 0) return
+        const key = String(hint).toLowerCase().replace(/^.*\//, "")
+        if (!key) return
+        const updated = _pendingSpawns
+        updated[key] = { targetWs: ws, expiresAt: Date.now() + 5000 }
+        _pendingSpawns = updated
+        _spawnWatchExpire.restart()
+    }
+
+    Timer {
+        id: _spawnWatchExpire
+        interval: 1000
+        repeat: true
+        running: Object.keys(overviewScope._pendingSpawns).length > 0
+        onTriggered: {
+            const now = Date.now()
+            const updated = overviewScope._pendingSpawns
+            let dirty = false
+            for (const k in updated) {
+                if (updated[k].expiresAt < now) { delete updated[k]; dirty = true }
+            }
+            if (dirty) overviewScope._pendingSpawns = updated
+        }
+    }
+
+    Connections {
+        target: Hyprland
+        function onRawEvent(event) {
+            if (event.name !== "openwindow") return
+            if (Object.keys(overviewScope._pendingSpawns).length === 0) return
+            // event.data: ADDR,WORKSPACE_NAME,CLASS,TITLE
+            const parts = String(event.data).split(",")
+            if (parts.length < 3) return
+            const addr = parts[0]
+            const klass = parts[2].toLowerCase()
+            const wsNum = parseInt(parts[1], 10)
+            for (const watched in overviewScope._pendingSpawns) {
+                if (klass.indexOf(watched) === -1 && watched.indexOf(klass) === -1) continue
+                const target = overviewScope._pendingSpawns[watched].targetWs
+                if (wsNum === target) continue
+                Hyprland.dispatch(
+                    `hl.dsp.window.move({ workspace = ${target}, follow = false, window = "address:0x${addr}" })`
+                )
+                // Don't delete — multi-window apps may open more within 5s.
+            }
+        }
+    }
+
     // Phase 2: re-arm the grab while the guard is still active.
     Timer {
         id: rearmTimer
@@ -64,12 +119,50 @@ Scope {
         property string searchingText: ""
         readonly property HyprlandMonitor monitor: Hyprland.monitorFor(panelWindow.screen)
         property bool monitorIsFocused: (Hyprland.focusedMonitor?.id == monitor?.id)
-        // Stay visible during fade-out; hideTimer cuts visibility after animation
-        visible: GlobalStates.overviewOpen || contentFade.opacity > 0
+
+        // ── Surface lifecycle ────────────────────────────────────────────
+        // When Config.options.overview.keepSurfaceAlive is true (default),
+        // the wlr-layer-shell surface is permanently allocated. This makes
+        // every overview-open instant, even when Hyprland is busy
+        // compositing a game at 4K@144Hz on another workspace (otherwise
+        // the configure roundtrip takes 1-1.5s and pegs qs's main thread).
+        //
+        // Users who want direct scanout for exclusive-fullscreen games can
+        // turn the option off — surface becomes visible only while open,
+        // which restores scanout but reintroduces the open-stall whenever
+        // the compositor is busy.
+        //
+        // When the surface is alive but the overview is closed,
+        // contentFade.opacity=0 hides the contents visually and an empty
+        // mask Region routes all pointer input through to apps below.
+        visible: (Config.options.overview.keepSurfaceAlive ?? true)
+            || GlobalStates.overviewOpen
+            || contentFade.opacity > 0
+
+        // Empty Region while closed = full click-through (input passes
+        // through to apps below). When open we drop the mask so the
+        // overview can receive clicks normally.
+        mask: (GlobalStates.overviewOpen || contentFade.opacity > 0)
+            ? null
+            : passthroughRegion
+        Region { id: passthroughRegion }
 
         WlrLayershell.namespace: "quickshell:overview"
-        WlrLayershell.layer: WlrLayer.Top
-        WlrLayershell.keyboardFocus: GlobalStates.overviewOpen ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+        // Use Overlay layer (not Top) so the surface stays visible during
+        // exclusive/borderless fullscreen apps. Hyprland forces alpha=0 on
+        // any layer surface below Overlay when a monitor is in fullscreen
+        // mode (see Hyprland src/desktop/view/LayerSurface.cpp:335). With
+        // the always-alive surface fix, our overview can't rely on "newly
+        // mapped above fullscreen" semantics, so we need Overlay layer.
+        WlrLayershell.layer: WlrLayer.Overlay
+        // Keep keyboardFocus mode constant (OnDemand always). Toggling it
+        // between None ↔ OnDemand on every open caused the focus grab to
+        // dismiss spuriously, closing the overview ~400-1200ms after open.
+        // With OnDemand permanently set, the empty mask still prevents the
+        // panel from accidentally catching focus while closed because clicks
+        // pass through to apps below — the panel can only receive focus
+        // when the overview is open and the user clicks inside it.
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
         color: "transparent"
 
         // Full-screen so the dim overlay covers app windows behind the overview.
@@ -216,32 +309,33 @@ Scope {
                     : -1
                 if (ws <= 0 || !app) return
 
-                // Focus the target workspace, then exec each command.
-                // Lua "..." escaping: \\ first, then " — order matters so
-                // the freshly-added \" isn't re-escaped.
-                Hyprland.dispatch(`hl.dsp.focus({workspace = ${ws}})`)
-
-                function dispatchExec(parts) {
+                // exec_cmd's two-arg form carries the workspace rule
+                // on the spawned env; _addSpawnWatch is the fallback
+                // for D-Bus / splash flows that bypass the rule.
+                // Lua escape order: \\ first, then " — otherwise the
+                // newly-added \" gets re-escaped.
+                function dispatchExec(parts, hint) {
                     if (!parts || parts.length === 0) return
                     const cmd = parts.map(p => p.includes(" ") ? `"${p}"` : p).join(" ")
                     const lua = cmd
                         .replace(/\\/g, "\\\\")
                         .replace(/"/g, '\\"')
-                    Hyprland.dispatch(`hl.dsp.exec_cmd("${lua}")`)
+                    Hyprland.dispatch(`hl.dsp.exec_cmd("${lua}", { workspace = "${ws} silent" })`)
+                    overviewScope._addSpawnWatch(hint || parts[0], ws)
                 }
 
                 if (app._isFolder === true) {
-                    // Folder drop → spawn every contained app on the
-                    // (now-focused) target workspace.
                     const ids = app.appIds || []
                     for (let i = 0; i < ids.length; i++) {
                         const entry = AppSearch.guessDesktopEntry(ids[i])
-                        dispatchExec(entry ? entry.command : null)
+                        const hint = entry?.startupClass || entry?.id || ids[i]
+                        dispatchExec(entry ? entry.command : null, hint)
                     }
                     return
                 }
 
-                dispatchExec(app.command)
+                const hint = app.startupClass || app.id || (app.command ? app.command[0] : null)
+                dispatchExec(app.command, hint)
             }
 
             function onAppDragCancelled() {

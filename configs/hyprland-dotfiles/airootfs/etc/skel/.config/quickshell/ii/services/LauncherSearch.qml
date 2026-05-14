@@ -1,5 +1,6 @@
 pragma Singleton
 
+import qs
 import qs.modules.common
 import qs.modules.common.models
 import qs.modules.common.functions
@@ -21,6 +22,14 @@ Singleton {
         } else {
             root.query = prefix + root.query;
         }
+    }
+
+    // Forward the query to the file-search singleton. FileSearch.search()
+    // self-gates on Config.options.search.fileSearch.enable and on minimum
+    // query length, so this is a no-op when the feature is off or the
+    // query is too short.
+    onQueryChanged: {
+        FileSearch.search(StringUtils.cleanPrefix(root.query, Config.options.search.prefix.app));
     }
 
     // https://specifications.freedesktop.org/menu/latest/category-registry.html
@@ -165,6 +174,47 @@ Singleton {
         }
     }
 
+    // File + folder search results, mapped from the FileSearch singleton
+    // into the launcher's resultComp shape. Empty when the feature is
+    // disabled or no file matches exist for the current query.
+    //
+    // IconType.System pairs with XDG icon names (image-x-generic,
+    // text-x-script, application-pdf, …) so the launcher resolves each
+    // via Quickshell.iconPath against the user's active icon theme —
+    // matches the iconography Nautilus/Dolphin/Files would show.
+    property list<var> fileResults: {
+        if (!Config.options.search.fileSearch.enable) return [];
+        if (!FileSearch.results || FileSearch.results.length === 0) return [];
+
+        return FileSearch.results.map(r => {
+            const trimmed = FileUtils.trimFileProtocol(r.path);
+            const isDir = r.isDir;
+            const displayName = isDir ? FileUtils.folderNameForPath(trimmed) : FileUtils.fileNameForPath(trimmed);
+            const parentDir = FileUtils.parentDirectory(trimmed);
+            return resultComp.createObject(null, {
+                rawValue: trimmed,
+                name: displayName || trimmed,
+                verb: Translation.tr("Open"),
+                type: isDir ? Translation.tr("Folder") : Translation.tr("File"),
+                iconName: r.iconName,
+                iconType: LauncherSearchResult.IconType.System,
+                execute: () => {
+                    GlobalStates.overviewOpen = false;
+                    Qt.openUrlExternally(`file://${trimmed}`);
+                },
+                actions: [resultComp.createObject(null, {
+                    name: Translation.tr("Open Parent folder"),
+                    iconName: "folder_open",
+                    iconType: LauncherSearchResult.IconType.Material,
+                    execute: () => {
+                        GlobalStates.overviewOpen = false;
+                        if (parentDir) Qt.openUrlExternally(`file://${parentDir}`);
+                    }
+                })]
+            });
+        });
+    }
+
     property list<var> results: {
         // Search results are handled here
         ////////////////// Skip? //////////////////
@@ -234,9 +284,19 @@ Singleton {
                         // app the user was on when they hit Super+. .
                         const top = ToplevelManager.activeToplevel;
                         const addr = top && top.HyprlandToplevel ? `0x${top.HyprlandToplevel.address}` : "";
-                        const focusCmd = addr ? `hyprctl dispatch focuswindow address:${addr} >/dev/null; ` : "";
-                        Quickshell.execDetached(["bash", "-c",
-                            `${focusCmd}sleep ${Cliphist.pasteDelay} && wtype -- '${StringUtils.shellSingleQuoteEscape(emoji)}'`]);
+                        const emojiArg = StringUtils.shellSingleQuoteEscape(emoji);
+                        // Poll activewindow until focus actually lands on the
+                        // captured toplevel — a fixed sleep was racy under load.
+                        // Ceiling is 25 × 20ms = 500ms; we wtype anyway after.
+                        const cmd = addr
+                            ? `hyprctl dispatch focuswindow address:${addr} >/dev/null 2>&1; `
+                              + `for _ in $(seq 1 25); do `
+                              + `[ "$(hyprctl activewindow -j 2>/dev/null | jq -r .address 2>/dev/null)" = "${addr}" ] && break; `
+                              + `sleep 0.02; `
+                              + `done; `
+                              + `wtype -- '${emojiArg}'`
+                            : `sleep ${Cliphist.pasteDelay} && wtype -- '${emojiArg}'`;
+                        Quickshell.execDetached(["bash", "-c", cmd]);
                     }
                 });
             }
@@ -370,6 +430,11 @@ Singleton {
 
         //////////////// Apps //////////////////
         result = result.concat(appResultObjects);
+
+        //////////////// Files /////////////////
+        // After apps. Files only appear once the query length crosses
+        // FileSearch.shouldSearch's threshold (currently 2 chars).
+        result = result.concat(fileResults);
 
         ////////// Launcher actions ////////////
         result = result.concat(launcherActionObjects);

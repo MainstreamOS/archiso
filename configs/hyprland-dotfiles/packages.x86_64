@@ -65,6 +65,8 @@ pv
 networkmanager
 wpa_supplicant
 wireless-regdb
+avahi
+nss-mdns
 
 # ==============================================================================
 # Bluetooth
@@ -192,6 +194,10 @@ lvm2
 parted
 e2fsprogs
 udisks2
+cifs-utils
+nfs-utils
+exfatprogs
+xfsprogs
 
 # ==============================================================================
 # Snapshots (Btrfs snapper + limine integration)

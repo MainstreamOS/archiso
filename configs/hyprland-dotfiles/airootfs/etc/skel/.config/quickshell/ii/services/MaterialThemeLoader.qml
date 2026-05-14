@@ -5,6 +5,7 @@ import qs.modules.common
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 
 /**
  * Automatically reloads generated material colors.
@@ -73,11 +74,47 @@ Singleton {
         onLoadFailed: root.resetFilePathNextTime();
     }
 
+    // Re-entrancy guard: upstream's execDetached double-fires on rapid
+    // presses and races applycolor.sh. Drop presses while a run is in
+    // flight; refresh the theme on exit. Matches QuickConfig.qml's path.
+    Process {
+        id: toggleLightDarkProc
+        onExited: root.reapplyTheme()
+    }
+
+    function toggleLightDark() {
+        if (toggleLightDarkProc.running) return;
+        const currentlyDark = Appearance.m3colors.darkmode;
+        toggleLightDarkProc.command = [
+            Directories.wallpaperSwitchScriptPath,
+            "--mode", currentlyDark ? "light" : "dark",
+            "--noswitch",
+        ];
+        toggleLightDarkProc.running = true;
+    }
+
+    GlobalShortcut {
+        name: "toggleLightDark"
+        description: "Toggles between dark theme and light theme"
+
+        onPressed: {
+            root.toggleLightDark();
+        }
+    }
+
     IpcHandler {
         target: "theme"
 
+        // Fork-side: reapply theme on demand (used by external triggers
+        // that need to refresh after a colors regen).
         function reload(): void {
             root.reapplyTheme()
+        }
+
+        // Upstream addition: hooked up to CTRL+SUPER+SHIFT+D via the
+        // GlobalShortcut above. Also callable over IPC for symmetry.
+        function toggleLightDark(): void {
+            root.toggleLightDark();
         }
     }
 }
