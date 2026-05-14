@@ -501,14 +501,20 @@ class PMYay(PackageManager):
         self.in_package_changes = False
         self.progress_fraction = 0.0
 
+        # Pipe yay output to the Calamares log, but DON'T let it
+        # overwrite custom_status_message — the per-package iteration
+        # in install() already sets "Installing PKG" as a clean,
+        # stable label, and we don't want it being replaced (even
+        # momentarily) by yay's transitional state lines like:
+        #   ":: Synchronizing package databases..."
+        #   ":: Resolving dependencies..."
+        #   "warning: foo is up to date — reinstalling"
+        #   "==> WARNING: A package has already been built ..."
+        # Some of those start with `warning:` and would look alarming
+        # under the progress bar even when the install is fine. The
+        # log panel (when expanded) still shows everything verbatim;
+        # only the prominent status label stays clean.
         def line_cb(line):
-            if line.startswith(":: "):
-                self.in_package_changes = "package" in line or "hooks" in line
-            else:
-                if self.in_package_changes and line.endswith("...\n"):
-                    global custom_status_message
-                    custom_status_message = "yay: " + line.strip()
-                    libcalamares.job.setprogress(self.progress_fraction)
             libcalamares.utils.debug(line)
 
         self.line_cb = line_cb
