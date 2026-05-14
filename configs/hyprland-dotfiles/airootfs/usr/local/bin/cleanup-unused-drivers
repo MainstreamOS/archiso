@@ -174,7 +174,6 @@ fi
 # Shipped via airootfs/etc/ but useless on the installed system. pacman
 # -Rns can't touch these (no owning package); rm them by hand.
 LOOSE_FILES=(
-    /etc/profile.d/calamares-hidpi.sh
     # /etc/sudoers.d/builduser is dropped by install-yay at the end of
     # its run, but if that script aborted mid-flight the file might
     # still be here. Removing again is safe.
