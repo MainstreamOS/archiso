@@ -572,6 +572,43 @@ class PMYay(PackageManager):
         self.in_package_changes = False
         self.progress_fraction = (completed_packages * 1.0 / total_packages)
 
+    def install_package(self, packagedata, from_local=False):
+        """
+        Override the base class's install_package() so the dict shape
+        carries through to install() intact. Upstream strips out the
+        `display` key (and anything else not in {pre-script, package,
+        post-script}) by passing only `packagedata["package"]` to
+        install(); we want install() to see the whole dict so the
+        per-package status message can use the friendly display label.
+        """
+        if isinstance(packagedata, str):
+            self.install([packagedata], from_local=from_local)
+        else:
+            pre = packagedata.get("pre-script", "")
+            post = packagedata.get("post-script", "")
+            if pre:
+                self.run(pre)
+            self.install([packagedata], from_local=from_local)
+            if post:
+                self.run(post)
+
+    @staticmethod
+    def _unpack(pkg):
+        """Resolve (install_name, display_label) for either format.
+
+        netinstall packages with a `display:` field arrive here as a
+        dict {package: "com.spotify.Client", display: "Spotify",
+        [pre-script, post-script]}. Plain entries (no display, no
+        scripts) arrive as a bare string.
+        """
+        if isinstance(pkg, dict):
+            name = pkg.get("package", "")
+            display = pkg.get("display") or name
+        else:
+            name = pkg
+            display = pkg
+        return name, display
+
     def install(self, pkgs, from_local=False):
         """
         Install packages ONE AT A TIME so each install can update the
@@ -603,11 +640,12 @@ class PMYay(PackageManager):
 
         global custom_status_message
         for idx, pkg in enumerate(pkgs):
+            pkg_name, pkg_display = self._unpack(pkg)
             # Surface the current package name under the progress bar.
             # setprogress() is what triggers a UI refresh of the status
             # message, so the order matters — set the message THEN call
             # setprogress to push the update to the QML view.
-            custom_status_message = _("Installing %s") % pkg
+            custom_status_message = _("Installing %s") % pkg_display
             progress = (completed_packages + idx) * 1.0 / total_packages
             libcalamares.job.setprogress(progress)
 
@@ -616,7 +654,7 @@ class PMYay(PackageManager):
             # mixes both freely; package names like com.spotify.Client
             # go to Flathub, names like gnome-disk-utility / mpv /
             # davinci-resolve go to the Arch/AUR path.
-            if self._is_flatpak_ref(pkg):
+            if self._is_flatpak_ref(pkg_name):
                 self._ensure_flathub_remote()
                 # --system installs to /var/lib/flatpak so every user on
                 # the target has the app. --noninteractive accepts
@@ -625,7 +663,7 @@ class PMYay(PackageManager):
                 command = [
                     "flatpak", "install", "--system",
                     "--noninteractive", "--assumeyes",
-                    "flathub", pkg,
+                    "flathub", pkg_name,
                 ]
             elif user:
                 # `--norebuild` skips rebuilding already-cached AUR
@@ -642,12 +680,12 @@ class PMYay(PackageManager):
                 command = [
                     "su", "-s", "/bin/bash", user, "-c",
                     ("yay -S --noconfirm --needed --noprogressbar "
-                     "--norebuild -- ") + pkg,
+                     "--norebuild -- ") + pkg_name,
                 ]
             else:
                 command = [
                     "pacman", "-S", "--noconfirm", "--needed",
-                    "--noprogressbar", "--", pkg,
+                    "--noprogressbar", "--", pkg_name,
                 ]
             libcalamares.utils.target_env_process_output(command, self.line_cb)
 
