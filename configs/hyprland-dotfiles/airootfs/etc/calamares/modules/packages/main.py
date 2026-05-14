@@ -19,6 +19,7 @@
 #
 
 import abc
+import os
 from string import Template
 import subprocess
 
@@ -534,18 +535,68 @@ class PMYay(PackageManager):
         """
         return "." in name
 
+    def _flatpak_run(self, args, output_cb=None):
+        """Run a flatpak command from the LIVE env, with FLATPAK_SYSTEM_DIR
+        pointed at the install target.
+
+        We cannot chroot into the target for this — bwrap (used internally
+        by flatpak to sandbox apply_extra scripts that Chrome / Spotify
+        ship) can't create a user namespace inside a chroot, so any
+        extra-data ref fails with:
+
+            bwrap: No permissions to create a new namespace
+            apply_extra script failed, exit status 256
+
+        Running flatpak directly from the live env keeps bwrap operating
+        on the host kernel where namespace cloning works. The
+        FLATPAK_SYSTEM_DIR env var redirects flatpak's system data dir
+        (default /var/lib/flatpak) into the target's filesystem, so the
+        install persists on the installed system exactly as if it had
+        been run in-chroot.
+
+        (Note: `flatpak --sysroot` does NOT exist — the only ways to
+        retarget the system dir are FLATPAK_SYSTEM_DIR or the named
+        `--installation=NAME` mechanism with a /etc/flatpak/installations.d
+        config file. The env var is the lighter touch.)
+
+        Requires the live ISO to ship the `flatpak` package — added to
+        packages.x86_64 alongside the calamares-mainstream block.
+        """
+        rootmount = libcalamares.globalstorage.value("rootMountPoint") or "/"
+        env = os.environ.copy()
+        env["FLATPAK_SYSTEM_DIR"] = rootmount.rstrip("/") + "/var/lib/flatpak"
+        cmd = ["flatpak"] + list(args)
+        # Stream output line-by-line through output_cb so the Calamares
+        # log mirrors what target_env_process_output used to give us.
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=env)
+        captured = []
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                captured.append(line)
+                if output_cb is not None:
+                    output_cb(line)
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode, cmd, output="".join(captured))
+
     def _ensure_flathub_remote(self):
-        """Add the Flathub remote system-wide if it's missing. Runs inside
-        the target chroot. `--if-not-exists` is idempotent, and we cache
-        the result on self so we don't fork+exec on every Flatpak install
-        in a long netinstall selection.
+        """Add the Flathub remote system-wide if it's missing. Runs from
+        the live env via _flatpak_run so --sysroot redirects the remote
+        config into the target's /var/lib/flatpak.
+
+        `--if-not-exists` is idempotent; we still cache on self so we
+        don't fork+exec on every Flatpak install in a long selection.
         """
         if self.flathub_added:
             return
         try:
-            libcalamares.utils.target_env_process_output(
-                ["flatpak", "remote-add", "--if-not-exists", "--system",
-                 "flathub", "https://flathub.org/repo/flathub.flatpakrepo"])
+            self._flatpak_run(
+                ["remote-add", "--if-not-exists", "--system",
+                 "flathub", "https://flathub.org/repo/flathub.flatpakrepo"],
+                self.line_cb)
         except subprocess.CalledProcessError as e:
             libcalamares.utils.warning(
                 "flatpak remote-add for flathub failed (continuing): " + str(e))
@@ -656,16 +707,23 @@ class PMYay(PackageManager):
             # davinci-resolve go to the Arch/AUR path.
             if self._is_flatpak_ref(pkg_name):
                 self._ensure_flathub_remote()
-                # --system installs to /var/lib/flatpak so every user on
-                # the target has the app. --noninteractive accepts
-                # licenses + remote-trust prompts. --assumeyes covers the
-                # "install dependencies?" prompt.
-                command = [
-                    "flatpak", "install", "--system",
-                    "--noninteractive", "--assumeyes",
-                    "flathub", pkg_name,
-                ]
-            elif user:
+                # `_flatpak_run` runs flatpak on the LIVE env with
+                # FLATPAK_SYSTEM_DIR pointed at the target's
+                # /var/lib/flatpak. This is necessary because the same
+                # call inside target_env_call would chroot, and bwrap
+                # (used internally for the apply_extra sandbox in
+                # extra-data refs like Chrome / Spotify) can't unshare
+                # CLONE_NEWUSER inside a chroot. State still lands in
+                # the target's /var/lib/flatpak via the env-var
+                # redirect, so the installed system has the apps
+                # available as if the install had run in-chroot.
+                self._flatpak_run(
+                    ["install", "--system",
+                     "--noninteractive", "--assumeyes",
+                     "flathub", pkg_name],
+                    self.line_cb)
+                continue
+            if user:
                 # `--norebuild` skips rebuilding already-cached AUR
                 # packages, useful for repeat installs. `--noprogressbar`
                 # keeps pacman's spinner out of the log without
