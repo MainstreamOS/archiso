@@ -104,15 +104,16 @@ vulkan-intel
 intel-media-driver
 xf86-video-amdgpu
 
-# NVIDIA — open kernel modules (Turing+ / RTX 20 series and newer). For
-# older GPUs (Maxwell / Pascal) install-gpu-drivers replaces this with
-# the proprietary nvidia-dkms at install time. Boot entry 3
-# (nvidia-drm.modeset=1) forces loading of these modules at live boot
-# so users can verify NVIDIA detection before committing to install.
-nvidia-open-dkms
-nvidia-utils
-egl-wayland
-libva-nvidia-driver
+# NVIDIA drivers are NOT shipped in the live airootfs — install-gpu-drivers
+# picks the right one at install time (nvidia-open for Turing+, nvidia-580xx-
+# dkms for Maxwell–Volta, etc.) based on detected hardware. The live session
+# falls back to nouveau on NVIDIA cards, which is fine for the installer UI.
+#
+# Why not pre-ship: nvidia-open-dkms's modinfo references ~107 MB of GSP
+# firmware, which the kms initramfs hook auto-bundles. That ballooned
+# initramfs-linux.img to 242 MB and Limine couldn't fit the boot bundle
+# into a contiguous high-memory region on some UEFI memory maps ("High
+# memory allocator: out of memory" panic on ~every other cold boot).
 
 # ==============================================================================
 # Display manager
