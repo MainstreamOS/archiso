@@ -500,6 +500,12 @@ class PMYay(PackageManager):
     def __init__(self):
         self.in_package_changes = False
         self.progress_fraction = 0.0
+        # Lazy flathub-remote setup: the first time install() encounters a
+        # Flatpak ref in the package list, _ensure_flathub_remote() runs
+        # `flatpak remote-add --if-not-exists flathub ...` once and flips
+        # this flag. Idempotent on rerun (the remote-add is itself
+        # idempotent, this just saves a fork per package).
+        self.flathub_added = False
 
         # Pipe yay output to the Calamares log, but DON'T let it
         # overwrite custom_status_message — the per-package iteration
@@ -518,6 +524,32 @@ class PMYay(PackageManager):
             libcalamares.utils.debug(line)
 
         self.line_cb = line_cb
+
+    @staticmethod
+    def _is_flatpak_ref(name):
+        """A Flatpak ref is a reverse-DNS triple like com.spotify.Client or
+        org.gnome.TextEditor. Native Arch / AUR package names don't contain
+        dots — the dot is a reliable single-character discriminator without
+        needing a registry of known refs.
+        """
+        return "." in name
+
+    def _ensure_flathub_remote(self):
+        """Add the Flathub remote system-wide if it's missing. Runs inside
+        the target chroot. `--if-not-exists` is idempotent, and we cache
+        the result on self so we don't fork+exec on every Flatpak install
+        in a long netinstall selection.
+        """
+        if self.flathub_added:
+            return
+        try:
+            libcalamares.utils.target_env_process_output(
+                ["flatpak", "remote-add", "--if-not-exists", "--system",
+                 "flathub", "https://flathub.org/repo/flathub.flatpakrepo"])
+        except subprocess.CalledProcessError as e:
+            libcalamares.utils.warning(
+                "flatpak remote-add for flathub failed (continuing): " + str(e))
+        self.flathub_added = True
 
     def _yay_user(self):
         """
@@ -579,7 +611,23 @@ class PMYay(PackageManager):
             progress = (completed_packages + idx) * 1.0 / total_packages
             libcalamares.job.setprogress(progress)
 
-            if user:
+            # Auto-route: Flatpak refs (containing dots) → flatpak,
+            # everything else → yay (or pacman fallback). The netinstall
+            # mixes both freely; package names like com.spotify.Client
+            # go to Flathub, names like gnome-disk-utility / mpv /
+            # davinci-resolve go to the Arch/AUR path.
+            if self._is_flatpak_ref(pkg):
+                self._ensure_flathub_remote()
+                # --system installs to /var/lib/flatpak so every user on
+                # the target has the app. --noninteractive accepts
+                # licenses + remote-trust prompts. --assumeyes covers the
+                # "install dependencies?" prompt.
+                command = [
+                    "flatpak", "install", "--system",
+                    "--noninteractive", "--assumeyes",
+                    "flathub", pkg,
+                ]
+            elif user:
                 # `--norebuild` skips rebuilding already-cached AUR
                 # packages, useful for repeat installs. `--noprogressbar`
                 # keeps pacman's spinner out of the log without
