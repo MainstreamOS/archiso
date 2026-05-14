@@ -9,6 +9,13 @@ script:     "main.py"
 # Weight calibrated against measured wall-clock: ~2 min for the yay
 # install of the Default Apps selection on fast hardware + fast
 # internet. Settings.conf uses a 1 weight unit ≈ 6 seconds scale
-# (minutes × 10) — 20 keeps this step's slice in proportion with the
-# other 2-minute steps (unpackfs, dotfiles, postinstall).
-weight:     20
+# (minutes × 10).
+#
+# Sized to 30 (~3 min worth) rather than the bare measured 20 to
+# leave headroom for users who picked Custom and selected a lot of
+# extra netinstall packages — those installs can easily push the
+# step past 3-4 min, and overshooting on a fast-internet install
+# (bar parks at the end while the rest of the install finishes) is
+# a better failure mode than underestimating (bar races ahead, then
+# stalls while packages chews through downloads).
+weight:     30
