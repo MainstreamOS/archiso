@@ -91,9 +91,9 @@ xorg-xwayland
 # ==============================================================================
 # Kitchen-sink strategy: ship every common GPU driver in the live ISO so
 # boot succeeds on AMD / Intel / NVIDIA hardware out of the box, then
-# /usr/local/bin/cleanup-unused-drivers (a Calamares shellprocess that
-# runs after install-gpu-drivers) removes the drivers that don't match
-# the detected GPU vendor. Adds ~600 MB to the ISO; trades download size
+# /usr/local/bin/finalize-install (a Calamares shellprocess that runs
+# after install-gpu-drivers) removes the drivers that don't match the
+# detected GPU vendor. Adds ~600 MB to the ISO; trades download size
 # for "it just booted" on every machine.
 #
 # linux-headers is required for DKMS (nvidia-open-dkms below, also any

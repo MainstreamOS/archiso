@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# cleanup-unused-drivers
+# finalize-install
 # Calamares shellprocess — runs inside the installed system chroot AFTER
 # install-gpu-drivers and BEFORE desktopcleanup.
 #
@@ -8,7 +8,9 @@
 # every common GPU driver, microcode for both CPU vendors, and a pile of
 # arch-install / calamares / live-only tools so the ISO boots reliably on
 # every machine. After unpackfs copies the live filesystem to the target,
-# this script detects the actual hardware and REMOVES what doesn't apply:
+# this script detects the actual hardware and REMOVES what doesn't apply,
+# then sweeps the live-only files and directories that aren't owned by
+# any package:
 #
 #   - Wrong GPU driver stacks (e.g. NVIDIA on an AMD-only machine)
 #   - Wrong CPU microcode (intel-ucode on AMD, amd-ucode on Intel)
@@ -16,6 +18,8 @@
 #     mkinitcpio-archiso, calamares, memtest86+, edk2-shell, etc.)
 #   - DKMS prereqs (linux-headers) ONLY if no surviving DKMS packages
 #     need them
+#   - Live-only sudoers drop-ins (g_wheel NOPASSWD, liveuser) and the
+#     /home/liveuser directory Calamares' removeuser leaves behind
 #
 # Detection mirrors install-gpu-drivers / post-install — PCI vendor IDs,
 # unambiguous and not subject to lspci name string variations.
@@ -23,7 +27,7 @@
 
 set -uo pipefail
 
-log()  { echo "[cleanup-unused-drivers] $*"; }
+log()  { echo "[finalize-install] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 
@@ -178,11 +182,40 @@ LOOSE_FILES=(
     # its run, but if that script aborted mid-flight the file might
     # still be here. Removing again is safe.
     /etc/sudoers.d/builduser
+    # /etc/sudoers.d/g_wheel grants %wheel passwordless sudo for the
+    # live ISO so the liveuser can run the installer. Carrying it
+    # forward to the installed system would silently give every
+    # wheel-group user NOPASSWD sudo, which is a hard "no" for a
+    # general-audience desktop. Calamares' users module will generate
+    # a proper wheel sudoers entry that DOES prompt for a password
+    # (sudoersGroup: wheel in users.conf).
+    /etc/sudoers.d/g_wheel
+    # /etc/sudoers.d/liveuser grants the liveuser passwordless sudo.
+    # The liveuser account itself is removed by calamares' removeuser
+    # module, but the sudoers file isn't owned by any package so it
+    # lingers on disk pointing at a non-existent user.
+    /etc/sudoers.d/liveuser
 )
 for f in "${LOOSE_FILES[@]}"; do
     if [[ -e "$f" ]]; then
         info "Removing live-only file: $f"
         rm -f "$f" || warn "Could not remove $f"
+    fi
+done
+
+# ── Live-only directories ───────────────────────────────────────────────────
+LOOSE_DIRS=(
+    # /home/liveuser is the home directory for the live ISO's
+    # liveuser account. Calamares' removeuser module deletes the
+    # account from /etc/passwd but invokes `userdel` without `-r`,
+    # so the home directory itself stays on disk pointing at a
+    # non-existent user. Sweep it.
+    /home/liveuser
+)
+for d in "${LOOSE_DIRS[@]}"; do
+    if [[ -d "$d" ]]; then
+        info "Removing live-only directory: $d"
+        rm -rf "$d" || warn "Could not remove $d"
     fi
 done
 
