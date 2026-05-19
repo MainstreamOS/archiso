@@ -61,7 +61,7 @@ refresh_limine_uki_entry() {
     cat >> "$tmpfile" << 'LIMINEUKI'
 
 /Mainstream OS\\
-    //Linux
+    //linux
         protocol: efi
         path: boot():///EFI/Linux/mainstream_linux.efi
     //Snapshots
