@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3810 1785" width="3810" height="1785" role="img" aria-label="Install Mainstream">
+  <defs>
+    <linearGradient id="streamGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0e9bb6"></stop>
+      <stop offset="100%" stop-color="#1f80c8"></stop>
+    </linearGradient>
+    <linearGradient id="ribbonStream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1a8bdf"></stop>
+      <stop offset="50%" stop-color="#008bb2"></stop>
+      <stop offset="100%" stop-color="#1a8bdf"></stop>
+    </linearGradient>
+    <radialGradient id="glowR" cx="0.78" cy="1.05" r="0.72">
+      <stop offset="0%" stop-color="#188cbe" stop-opacity="0.30"></stop>
+      <stop offset="55%" stop-color="#188cbe" stop-opacity="0.08"></stop>
+      <stop offset="100%" stop-color="#188cbe" stop-opacity="0"></stop>
+    </radialGradient>
+    <radialGradient id="glowL" cx="0.18" cy="-0.10" r="0.55">
+      <stop offset="0%" stop-color="#0e9bb6" stop-opacity="0.18"></stop>
+      <stop offset="100%" stop-color="#0e9bb6" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="cardClip">
+      <rect width="3810" height="1785" rx="56"></rect>
+    </clipPath>
+  </defs>
+
+  
+  <g clip-path="url(#cardClip)">
+    <svg x="0" y="0" width="3810" height="1785" viewBox="0 0 3840 2160" preserveAspectRatio="xMidYMid slice">
+      <rect width="3840" height="2160" fill="#191a1f"></rect>
+      <g stroke="url(#ribbonStream)" fill="none" stroke-linecap="round">
+        <path d="M -200 1800 C 1200 2000, 2000 200, 4200 1000" stroke-width="300" opacity="0.08"></path>
+        <path d="M -200 1700 C 1200 1800, 2000 300, 4200 1050" stroke-width="200" opacity="0.15"></path>
+        <path d="M -200 1600 C 1200 1600, 2000 400, 4200 1100" stroke-width="120" opacity="0.30"></path>
+        <path d="M -200 1500 C 1200 1400, 2000 500, 4200 1150" stroke-width="60" opacity="0.50"></path>
+        <path d="M -200 1400 C 1200 1200, 2000 600, 4200 1200" stroke-width="30" opacity="0.80"></path>
+        <path d="M -200 1300 C 1200 1000, 2000 700, 4200 1250" stroke-width="10" opacity="1.00"></path>
+        <path d="M -200 1300 C 1200 1000, 2000 700, 4200 1250" stroke="#c9ccd4" stroke-width="3" opacity="0.7"></path>
+      </g>
+    </svg>
+
+    
+    <rect width="3810" height="1785" fill="url(#glowR)"></rect>
+    <rect width="3810" height="1785" fill="url(#glowL)"></rect>
+    
+    <rect width="3810" height="1785" fill="#0b0d12" opacity="0.22"></rect>
+  </g>
+
+  
+  <rect x="1" y="1" width="3808" height="1783" rx="55" fill="none" stroke="rgba(240,240,245,0.10)" stroke-width="2"></rect>
+
+  
+  <g transform="translate(280 540)">
+    
+    <rect width="700" height="700" rx="156" fill="#1a1c22"></rect>
+    <rect x="2" y="2" width="696" height="696" rx="154" fill="none" stroke="rgba(240,240,245,0.10)" stroke-width="2"></rect>
+    
+    <g transform="translate(70 210) scale(2.333)">
+      <path d="M14 100 L14 20 L40 20 L70 72 L100 20 L126 20 L126 100 L108 100 L108 48 L84 92 L56 92 L32 48 L32 100 Z" fill="#c9ccd4"></path>
+      <g fill="none" stroke="url(#streamGrad)" stroke-width="14" stroke-linecap="round">
+        <path d="M152 38 C 168 22, 210 22, 224 36"></path>
+        <path d="M222 54 C 206 70, 168 50, 152 66"></path>
+        <path d="M150 82 C 164 98, 206 98, 224 82"></path>
+      </g>
+    </g>
+  </g>
+
+  
+  <g transform="translate(1090 0)">
+    
+    <g transform="translate(0 650)">
+      <rect width="180" height="6" fill="#9397a0"></rect>
+      <text x="216" y="20" font-family="JetBrains Mono, ui-monospace, monospace" font-size="58" letter-spacing="14" fill="#9397a0" font-weight="500">
+        LET&#39;S BEGIN
+      </text>
+    </g>
+
+    
+    <text x="0" y="940" font-family="DM Sans, system-ui, sans-serif" font-size="316" font-weight="500" letter-spacing="-13" fill="#ece9e3">Install</text>
+
+    
+    <text x="0" y="1124" font-family="DM Sans, system-ui, sans-serif" font-size="172" font-weight="500" letter-spacing="-6" fill="url(#streamGrad)">Mainstream</text>
+
+    
+    <text x="6" y="1198" font-family="DM Sans, system-ui, sans-serif" font-size="56" font-weight="400" letter-spacing="-0.6" fill="#9397a0">A few quiet steps. Then your computer feels like home.</text>
+  </g>
+
+  
+  <g transform="translate(3290 240)" opacity="0.92">
+    <g fill="none" stroke="url(#streamGrad)" stroke-linecap="round">
+      <path d="M 0 36 C 116 -36, 396 -36, 480 24" stroke-width="24"></path>
+      <path d="M 480 132 C 396 240, 116 132, 0 204" stroke-width="24"></path>
+      <path d="M 0 288 C 116 372, 396 372, 480 288" stroke-width="24"></path>
+    </g>
+  </g>
+</svg>

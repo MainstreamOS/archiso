@@ -1,40 +1,37 @@
 /* =============================================================================
- * show.qml — Mainstream Dotfiles Installer Slideshow
+ * show.qml — Mainstream OS installer slideshow.
  *
- * Displayed during the exec (installation) phase.
- * Styled to match the illogical-impulse (ii) dark M3 theme.
- * Uses slideshowAPI: 2 (async load, onActivate / onLeave lifecycle).
+ * Each slide is a self-contained 3696x2016 PNG (1.833:1 — exactly 3× the
+ * 1232x672 slideshow pane Calamares allocates inside our 1500x800 branded
+ * window; see render-slides.sh for the full geometry breakdown) rendered
+ * from the SVG masters in ./sources/. The PNGs bake in their own titles,
+ * body copy, tickers, and brand-mark composition (Stream gradient,
+ * Abyss/Night palette, DM Sans / Google Sans Flex, JetBrains Mono). The
+ * QML side just rotates them — no overlay text, no per-slide layout.
+ * To edit a slide:
+ *   1. Edit the SVG in ./sources/.
+ *   2. Run ./sources/render-slides.sh to re-export the PNG.
+ *
+ * slideshowAPI: 2 — onActivate / onLeave fire from Calamares.
  * =========================================================================== */
 
 import QtQuick 2.15
-import QtQuick.Layouts 1.15
 import calamares.slideshow 1.0
 
 Presentation {
     id: presentation
 
-    // ── M3 dark palette (mirrored from Appearance.qml live snapshot) ──────
-    readonly property color colBg:           "#141313"   // m3background
-    readonly property color colSurface:      "#141313"   // m3surface
-    readonly property color colSurfaceHigh:  "#2b2a2a"   // m3surfaceContainerHigh
-    readonly property color colOnSurface:    "#e6e1e1"   // m3onSurface
-    readonly property color colOnSurfaceVar: "#cbc5ca"   // m3onSurfaceVariant
-    readonly property color colPrimary:      "#cbc4cb"   // m3primary
-    readonly property color colSecCont:      "#4d4b4d"   // m3secondaryContainer
-    readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer
-    readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant
+    readonly property color colBg: "#0B0D12"
 
-    // ── Background fill ───────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
         color:        presentation.colBg
         z:            -100
     }
 
-    // ── Slideshow lifecycle (API v2) ─────────────────────────────────────────
     Timer {
         id: slideTimer
-        interval: 7000
+        interval: 9000
         repeat:   true
         running:  false
         onTriggered: presentation.goToNextSlide()
@@ -43,210 +40,79 @@ Presentation {
     function onActivate() { slideTimer.running = true  }
     function onLeave()    { slideTimer.running = false }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 1 — Welcome
-    // ════════════════════════════════════════════════════════════════════════
+    // ──────────────────────────────────────────────────────────────────────
+    // Slide.qml in the Calamares QML library positions every Slide as a
+    // "content area" with 20% top margin, 10% bottom, and 5% left/right
+    // (see src/qml/calamares-qt6/slideshow/Slide.qml lines 89–93). Our
+    // PNGs are designed to fill the *entire* slideshow pane, so we override
+    // x/y/width/height in each Slide to defeat those defaults — otherwise
+    // the Image (which anchors to the Slide, not the Presentation) renders
+    // into only the middle 70% × 90% of the pane and leaves black bars.
+    // ──────────────────────────────────────────────────────────────────────
+
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            // Full-bleed welcome image
-            Image {
-                anchors.fill: parent
-                source:       "welcome.png"
-                fillMode:     Image.PreserveAspectCrop
-                opacity:      0.85
-                smooth:       true
-                mipmap:       true
-            }
-
-            // Subtle dark vignette over bottom third so caption is readable
-            Rectangle {
-                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                height: parent.height * 0.35
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 1.0; color: "#cc141313"   }
-                }
-            }
-
-            // Caption
-            ColumnLayout {
-                anchors {
-                    horizontalCenter: parent.horizontalCenter
-                    bottom: parent.bottom
-                    bottomMargin: 28
-                }
-                spacing: 6
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text:             "Installing Mainstream"
-                    font.pixelSize:   22
-                    font.weight:      Font.Medium
-                    color:            presentation.colOnSurface
-                    renderType:       Text.NativeRendering
-                }
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text:             "Hyprland · Mainstream OS · Material Design 3"
-                    font.pixelSize:   13
-                    color:            presentation.colOnSurfaceVar
-                    renderType:       Text.NativeRendering
-                }
-            }
+            source:       "slide_welcome.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 2 — Desktop overview
-    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            Image {
-                anchors.fill: parent
-                source:       "slide_desktop.png"
-                fillMode:     Image.PreserveAspectFit
-                smooth:       true
-                mipmap:       true
-            }
+            source:       "slide_themes.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 3 — App launcher
-    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            Image {
-                anchors.fill: parent
-                source:       "slide_launcher.png"
-                fillMode:     Image.PreserveAspectFit
-                smooth:       true
-                mipmap:       true
-            }
+            source:       "slide_layouts.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 4 — Status bar tour
-    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            Image {
-                anchors.fill: parent
-                source:       "slide_bar.png"
-                fillMode:     Image.PreserveAspectFit
-                smooth:       true
-                mipmap:       true
-            }
+            source:       "slide_keybinds.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 5 — Essential shortcuts
-    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            Image {
-                anchors.fill: parent
-                source:       "slide_tips.png"
-                fillMode:     Image.PreserveAspectFit
-                smooth:       true
-                mipmap:       true
-            }
+            source:       "slide_maintenance.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SLIDE 6 — After installation
-    // ════════════════════════════════════════════════════════════════════════
     Slide {
-        Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height
+        Image {
             anchors.fill: parent
-            color: presentation.colBg
-
-            ColumnLayout {
-                anchors.centerIn: parent
-                spacing:          24
-                width:            Math.min(parent.width * 0.72, 560)
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text:             "Almost there!"
-                    font.pixelSize:   22
-                    font.weight:      Font.Medium
-                    color:            presentation.colOnSurface
-                    renderType:       Text.NativeRendering
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight:   afterCol.implicitHeight + 32
-                    color:            presentation.colSurface
-                    radius:           17
-
-                    ColumnLayout {
-                        id: afterCol
-                        anchors { fill: parent; margins: 16 }
-                        spacing: 14
-
-                        Repeater {
-                            model: [
-                                { icon: "download",         text: "AUR packages complete on first boot — internet required"  },
-                                { icon: "settings_suggest", text: "SDDM, NetworkManager, PipeWire and cups pre-configured"   },
-                                { icon: "palette",          text: "Colors adapt to your wallpaper via matugen"               },
-                                { icon: "open_in_new",      text: "github.com/MainstreamOS/dots-hyprland"                    }
-                            ]
-
-                            delegate: RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 12
-
-                                Text {
-                                    font.family:       "Material Symbols Rounded"
-                                    font.pixelSize:    18
-                                    font.variableAxes: ({ "FILL": 1, "opsz": 18 })
-                                    text:              modelData.icon
-                                    color:             presentation.colPrimary
-                                    renderType:        Text.NativeRendering
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text:             modelData.text
-                                    font.pixelSize:   14
-                                    color:            presentation.colOnSurfaceVar
-                                    wrapMode:         Text.WordWrap
-                                    renderType:       Text.NativeRendering
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Text {
-                    Layout.alignment:    Qt.AlignHCenter
-                    text:                "Your system will be ready shortly — enjoy Mainstream!"
-                    font.pixelSize:      13
-                    color:               presentation.colPrimary
-                    horizontalAlignment: Text.AlignHCenter
-                    renderType:          Text.NativeRendering
-                }
-            }
+            source:       "slide_almost_there.png"
+            fillMode:     Image.PreserveAspectCrop
+            smooth:       true
+            mipmap:       true
         }
     }
 }

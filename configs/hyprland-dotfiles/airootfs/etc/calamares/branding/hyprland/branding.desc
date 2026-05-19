@@ -2,8 +2,15 @@
 componentName: hyprland
 
 ### WINDOW CONFIGURATION
-windowExpanding:    normal
-windowSize:         1100px,620px
+# noexpand here is enforced by our CalamaresWindow.cpp fork: when not
+# expanding, the main window is locked via setFixedSize() rather than the
+# stock resize() hint. setFixedSize sets WM_NORMAL_HINTS minSize == maxSize,
+# which tiling compositors (Hyprland) interpret as non-resizable and float
+# automatically — no per-WM window rule needed. windowSize must match the
+# pane geometry the slideshow PNGs and stylesheet padding were designed
+# against (1500x800 → 1232x672 = 1.833:1 slideshow pane).
+windowExpanding:    noexpand
+windowSize:         1500px,800px
 windowPlacement:    center
 
 ### PANELS — vertical M3 nav rail on the left, widget Back/Next/Cancel

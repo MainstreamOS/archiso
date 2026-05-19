@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1920 899.5276" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#18A0BE"/>
+      <stop offset="1" stop-color="#2196C5"/>
+    </linearGradient>
+    <clipPath id="shotClip3">
+      <rect x="840" y="120" width="1000" height="685" rx="18"/>
+    </clipPath>
+    <filter id="shotShadow3" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="20"/>
+      <feOffset dy="10"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0"/>
+      <feComposite in="SourceGraphic" in2="SourceGraphic" operator="over"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="899.5276" fill="#0B0D12"/>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
+    <text x="60" y="40">03 / 06  ·  LAYOUTS</text>
+    <text x="1870" y="40" text-anchor="end">SETTINGS  →  LAYOUTS</text>
+    <text x="60" y="880">— or a different layout per workspace</text>
+    <text x="1870" y="880" text-anchor="end">DWINDLE  ·  MASTER  ·  SCROLL  ·  MONOCLE  ·  FLOAT</text>
+  </g>
+
+  <g transform="translate(140 170)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">03 — LAYOUTS</text>
+    <text y="92" font-size="84" font-weight="500" letter-spacing="-3" fill="#ECE9E3">Six ways to</text>
+    <text y="172" font-size="84" font-weight="500" letter-spacing="-3" fill="url(#stream)">flow.</text>
+
+    <text y="250" font-size="20" fill="#C9CCD4" letter-spacing="-0.3">Tile, scroll, master-stack, monocle, or float —</text>
+    <text y="278" font-size="20" fill="#C9CCD4" letter-spacing="-0.3">whichever fits how you actually work.</text>
+
+    <g transform="translate(0 340)" font-size="17">
+      <g>
+        <rect width="110" height="32" rx="16" fill="#191A1F" stroke="url(#stream)" stroke-width="1.5"/>
+        <text x="55" y="21" fill="#ECE9E3" text-anchor="middle" letter-spacing="-0.2" font-size="13">Default</text>
+        <text x="130" y="21" fill="#C9CCD4" letter-spacing="-0.3">Dwindle — each window splits the last in half</text>
+      </g>
+      <g transform="translate(0 60)">
+        <text x="0" y="20" fill="#9397A0" letter-spacing="-0.3">Per-workspace mode lets you mix and match —</text>
+        <text x="0" y="48" fill="#9397A0" letter-spacing="-0.3">Master on Desk 1, Scrolling on Desk 2, Float on Desk 3.</text>
+      </g>
+    </g>
+  </g>
+
+  <g filter="url(#shotShadow3)">
+    <rect x="840" y="120" width="1000" height="685" rx="18" fill="#191A1F"/>
+  </g>
+  <image xlink:href="LayoutsConfig.png" x="840" y="120" width="1000" height="685" preserveAspectRatio="xMidYMid meet" clip-path="url(#shotClip3)"/>
+  <rect x="840" y="120" width="1000" height="685" rx="18" fill="none" stroke="#2A2B32" stroke-width="1.5"/>
+</svg>

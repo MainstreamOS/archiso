@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1920 899.5276" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#18A0BE"/>
+      <stop offset="1" stop-color="#2196C5"/>
+    </linearGradient>
+    <clipPath id="shotClipUpdate">
+      <rect x="700" y="130" width="580" height="397" rx="16"/>
+    </clipPath>
+    <clipPath id="shotClipRecovery">
+      <rect x="1300" y="130" width="580" height="397" rx="16"/>
+    </clipPath>
+    <filter id="shotShadow5" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="18"/>
+      <feOffset dy="8"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0"/>
+      <feComposite in="SourceGraphic" in2="SourceGraphic" operator="over"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="899.5276" fill="#0B0D12"/>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
+    <text x="60" y="40">05 / 06  ·  MAINTENANCE</text>
+    <text x="1870" y="40" text-anchor="end">UPDATE  +  RECOVERY  ·  ONE SAFETY NET</text>
+    <text x="60" y="880">— a snapshot before every update, automatically</text>
+    <text x="1870" y="880" text-anchor="end">REBOOT  →  SNAPSHOTS  →  YOU'RE BACK</text>
+  </g>
+
+  <g transform="translate(140 170)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">05 — MAINTENANCE</text>
+    <text y="86" font-size="76" font-weight="500" letter-spacing="-2.5" fill="#ECE9E3">Updates with</text>
+    <text y="156" font-size="76" font-weight="500" letter-spacing="-2.5" fill="#ECE9E3">a</text>
+    <text x="60" y="156" font-size="76" font-weight="500" letter-spacing="-2.5" fill="url(#stream)">safety net.</text>
+
+    <text y="230" font-size="19" fill="#C9CCD4" letter-spacing="-0.3">Every update snapshots your system</text>
+    <text y="256" font-size="19" fill="#C9CCD4" letter-spacing="-0.3">first. If anything breaks, your boot</text>
+    <text y="282" font-size="19" fill="#C9CCD4" letter-spacing="-0.3">screen has the rewind built right in.</text>
+
+    <g transform="translate(0 336)" font-size="15" fill="#9397A0">
+      <g>
+        <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M7 11 L10 14 L16 8" stroke="url(#stream)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="34" y="15" fill="#C9CCD4">Auto-snapshot before every update</text>
+      </g>
+      <g transform="translate(0 38)">
+        <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M7 11 L10 14 L16 8" stroke="url(#stream)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="34" y="15" fill="#C9CCD4">Roll back from your boot menu</text>
+      </g>
+      <g transform="translate(0 76)">
+        <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M7 11 L10 14 L16 8" stroke="url(#stream)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="34" y="15" fill="#C9CCD4">topgrade handles pacman, AUR, Flatpak</text>
+      </g>
+      <g transform="translate(0 114)">
+        <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M7 11 L10 14 L16 8" stroke="url(#stream)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="34" y="15" fill="#C9CCD4">Auto-rebuild Quickshell on Qt ABI breaks</text>
+      </g>
+    </g>
+  </g>
+
+  <text x="990" y="80" font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2.5" text-anchor="middle">UPDATE</text>
+  <g filter="url(#shotShadow5)">
+    <rect x="700" y="130" width="580" height="397" rx="16" fill="#191A1F"/>
+  </g>
+  <image xlink:href="UpdateConfig.png" x="700" y="130" width="580" height="397" preserveAspectRatio="xMidYMid meet" clip-path="url(#shotClipUpdate)"/>
+  <rect x="700" y="130" width="580" height="397" rx="16" fill="none" stroke="#2A2B32" stroke-width="1.5"/>
+
+  <text x="1590" y="80" font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#18A0BE" letter-spacing="2.5" text-anchor="middle">RECOVERY</text>
+  <g filter="url(#shotShadow5)">
+    <rect x="1300" y="130" width="580" height="397" rx="16" fill="#191A1F"/>
+  </g>
+  <image xlink:href="RecoveryConfig.png" x="1300" y="130" width="580" height="397" preserveAspectRatio="xMidYMid meet" clip-path="url(#shotClipRecovery)"/>
+  <rect x="1300" y="130" width="580" height="397" rx="16" fill="none" stroke="url(#stream)" stroke-width="1.5"/>
+
+  <g transform="translate(700 640)" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+    <rect width="1180" height="180" rx="18" fill="#191A1F" stroke="#2A2B32"/>
+    <g transform="translate(36 36)">
+      <text font-family="JetBrains Mono, monospace" font-size="11" fill="#9397A0" letter-spacing="2">HOW THE TWO PAGES TALK</text>
+      <text y="34" font-size="17" fill="#ECE9E3" letter-spacing="-0.2">Update saves a snapshot, runs topgrade across every package source you have,</text>
+      <text y="62" font-size="17" fill="#ECE9E3" letter-spacing="-0.2">and writes the result to the log. Recovery picks up where Update left off —</text>
+      <text y="90" font-size="17" fill="#ECE9E3" letter-spacing="-0.2">walks you through rolling back from Limine, then makes the rollback permanent.</text>
+      <text y="124" font-size="14" fill="#9397A0" letter-spacing="-0.2">Open both from Settings, in the same place you'll find Themes, Layouts, and Keybinds.</text>
+    </g>
+  </g>
+</svg>

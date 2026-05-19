@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1920 899.5276" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#18A0BE"/>
+      <stop offset="1" stop-color="#2196C5"/>
+    </linearGradient>
+    <clipPath id="shotClip4">
+      <rect x="840" y="120" width="1000" height="685" rx="18"/>
+    </clipPath>
+    <filter id="shotShadow4" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="20"/>
+      <feOffset dy="10"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0"/>
+      <feComposite in="SourceGraphic" in2="SourceGraphic" operator="over"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="899.5276" fill="#0B0D12"/>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
+    <text x="60" y="40">04 / 06  ·  KEYBINDS</text>
+    <text x="1870" y="40" text-anchor="end">SETTINGS  →  KEYBINDS</text>
+    <text x="60" y="880">— your custom file is untouched by updates</text>
+    <text x="1870" y="880" text-anchor="end">SEARCH  ·  ADD  ·  EDIT  ·  OVERRIDE</text>
+  </g>
+
+  <g transform="translate(140 170)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">04 — KEYBINDS</text>
+    <text y="92" font-size="84" font-weight="500" letter-spacing="-3" fill="#ECE9E3">Every shortcut,</text>
+    <text y="172" font-size="84" font-weight="500" letter-spacing="-3" fill="url(#stream)">your way.</text>
+
+    <text y="250" font-size="20" fill="#C9CCD4" letter-spacing="-0.3">Filter through them, add your own, rebind the defaults.</text>
+    <text y="278" font-size="20" fill="#C9CCD4" letter-spacing="-0.3">Your custom file lives alongside ours, never overwritten.</text>
+
+    <g transform="translate(0 332)" font-size="17" fill="#9397A0">
+      <g>
+        <circle cx="13" cy="13" r="13" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M8 13 L12 17 L19 9" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="40" y="19" fill="#C9CCD4">Search across every binding by key or by command</text>
+      </g>
+      <g transform="translate(0 46)">
+        <circle cx="13" cy="13" r="13" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M8 13 L12 17 L19 9" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="40" y="19" fill="#C9CCD4">Add new keybinds without touching any config file</text>
+      </g>
+      <g transform="translate(0 92)">
+        <circle cx="13" cy="13" r="13" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M8 13 L12 17 L19 9" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="40" y="19" fill="#C9CCD4">Override a default by editing it in place</text>
+      </g>
+      <g transform="translate(0 138)">
+        <circle cx="13" cy="13" r="13" fill="#191A1F" stroke="#2A2B32"/>
+        <path d="M8 13 L12 17 L19 9" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="40" y="19" fill="#C9CCD4">Tag bindings as hidden to keep the cheatsheet clean</text>
+      </g>
+    </g>
+  </g>
+
+  <g filter="url(#shotShadow4)">
+    <rect x="840" y="120" width="1000" height="685" rx="18" fill="#191A1F"/>
+  </g>
+  <image xlink:href="KeybindsConfig.png" x="840" y="120" width="1000" height="685" preserveAspectRatio="xMidYMid meet" clip-path="url(#shotClip4)"/>
+  <rect x="840" y="120" width="1000" height="685" rx="18" fill="none" stroke="#2A2B32" stroke-width="1.5"/>
+</svg>

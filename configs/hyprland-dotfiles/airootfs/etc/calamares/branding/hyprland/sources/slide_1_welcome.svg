@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 899.5276" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#18A0BE"/>
+      <stop offset="1" stop-color="#2196C5"/>
+    </linearGradient>
+    <radialGradient id="bg-glow" cx="0.85" cy="1.1" r="0.55">
+      <stop offset="0" stop-color="#18A0BE" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#0B0D12" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bg-glow-2" cx="0.1" cy="-0.05" r="0.5">
+      <stop offset="0" stop-color="#2196C5" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#0B0D12" stop-opacity="0"/>
+    </radialGradient>
+    <symbol id="ms-mark" viewBox="0 0 240 120">
+      <path d="M14 100 L14 20 L40 20 L70 72 L100 20 L126 20 L126 100 L108 100 L108 48 L84 92 L56 92 L32 48 L32 100 Z" fill="#ECE9E3"/>
+      <g fill="none" stroke-linecap="round" stroke-width="14">
+        <path d="M152 38 C 168 22, 210 22, 224 36" stroke="url(#stream)"/>
+        <path d="M222 54 C 206 70, 168 50, 152 66" stroke="url(#stream)"/>
+        <path d="M150 82 C 164 98, 206 98, 224 82" stroke="url(#stream)"/>
+      </g>
+    </symbol>
+  </defs>
+
+  <rect width="1920" height="899.5276" fill="#0B0D12"/>
+  <rect width="1920" height="899.5276" fill="url(#bg-glow)"/>
+  <rect width="1920" height="899.5276" fill="url(#bg-glow-2)"/>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
+    <text x="60" y="40">01 / 06  ·  INSTALLING</text>
+    <text x="1870" y="40" text-anchor="end">MAINSTREAM OS  ·  ROLLING</text>
+    <text x="60" y="880">— hold steady</text>
+    <text x="1870" y="880" text-anchor="end">◐  mainstream.os</text>
+  </g>
+
+  <g transform="translate(140 220)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">SETTING UP YOUR SYSTEM</text>
+    <text y="120" font-size="148" font-weight="500" letter-spacing="-6" fill="#ECE9E3">Mainstream is</text>
+    <text y="252" font-size="148" font-weight="500" letter-spacing="-6" fill="url(#stream)">installing.</text>
+    <text y="332" font-size="26" fill="#C9CCD4" letter-spacing="-0.5">Arch under the hood. Hyprland on the surface.</text>
+    <text y="372" font-size="26" fill="#9397A0" letter-spacing="-0.5">The kind of care that makes Linux feel at home.</text>
+  </g>
+
+  <use href="#ms-mark" x="1320" y="260" width="500" height="250"/>
+
+  <g transform="translate(140 820)" font-family="JetBrains Mono, ui-monospace, monospace" font-size="12" fill="#9397A0" letter-spacing="2">
+    <rect x="0" y="0" width="6" height="6" rx="3" fill="#18A0BE"/>
+    <text x="18" y="9">FOR EVERY HOME</text>
+    <rect x="220" y="0" width="6" height="6" rx="3" fill="#2196C5"/>
+    <text x="238" y="9">DEEPLY FEATURED</text>
+    <rect x="460" y="0" width="6" height="6" rx="3" fill="#9397A0"/>
+    <text x="478" y="9">GENUINELY FRIENDLY</text>
+  </g>
+</svg>

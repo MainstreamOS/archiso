@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 899.5276" font-family="Google Sans Flex, DM Sans, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#18A0BE"/>
+      <stop offset="1" stop-color="#2196C5"/>
+    </linearGradient>
+    <radialGradient id="bg-glow" cx="0.85" cy="-0.1" r="0.6">
+      <stop offset="0" stop-color="#18A0BE" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#0B0D12" stop-opacity="0"/>
+    </radialGradient>
+    <symbol id="ms-mark" viewBox="0 0 240 120">
+      <path d="M14 100 L14 20 L40 20 L70 72 L100 20 L126 20 L126 100 L108 100 L108 48 L84 92 L56 92 L32 48 L32 100 Z" fill="#ECE9E3"/>
+      <g fill="none" stroke-linecap="round" stroke-width="14">
+        <path d="M152 38 C 168 22, 210 22, 224 36" stroke="url(#stream)"/>
+        <path d="M222 54 C 206 70, 168 50, 152 66" stroke="url(#stream)"/>
+        <path d="M150 82 C 164 98, 206 98, 224 82" stroke="url(#stream)"/>
+      </g>
+    </symbol>
+  </defs>
+
+  <rect width="1920" height="899.5276" fill="#0B0D12"/>
+  <rect width="1920" height="899.5276" fill="url(#bg-glow)"/>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
+    <text x="60" y="40">06 / 06  ·  ALMOST THERE</text>
+    <text x="1870" y="40" text-anchor="end">A FEW MORE MINUTES</text>
+    <text x="60" y="880">— grab a coffee, we're handling it</text>
+    <text x="1870" y="880" text-anchor="end">WAIT FOR THE PROGRESS BAR</text>
+  </g>
+
+  <g transform="translate(140 160)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">06 — HANG TIGHT</text>
+    <text y="92" font-size="92" font-weight="500" letter-spacing="-3" fill="#ECE9E3">Almost there.</text>
+    <text y="156" font-size="24" fill="#9397A0" letter-spacing="-0.3">Here's everything Calamares is running for you, in order.</text>
+  </g>
+
+  <use href="#ms-mark" x="1540" y="180" width="280" height="140" opacity="0.85"/>
+
+  <g transform="translate(140 360)">
+    <line x1="22" y1="14" x2="22" y2="398" stroke="url(#stream)" stroke-width="2" opacity="0.35"/>
+
+    <g>
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Setting up your drive</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">Partitions written and mounted.</text>
+    </g>
+
+    <g transform="translate(0 64)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Copying system files to your disk</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">Live ISO contents unpacked onto your new root.</text>
+    </g>
+
+    <g transform="translate(0 128)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Locale, your account, networking</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">Machine-id, fstab, locale, keyboard, users, display manager, network, clock.</text>
+    </g>
+
+    <g transform="translate(0 192)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Installing yay, dotfiles, and Limine</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">AUR helper, your home tree, and the snapshot-aware bootloader.</text>
+    </g>
+
+    <g transform="translate(0 256)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Detecting your GPU and installing drivers</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">PCI vendor sniffed, the right stack picked, others queued for prune.</text>
+    </g>
+
+    <g transform="translate(0 320)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Final packages and cleanup</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">Netinstall selection, unused-driver prune, live-only tooling swept.</text>
+    </g>
+
+    <g transform="translate(0 384)">
+      <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
+      <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Enabling services and unmounting</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">systemd targets turned on, partitions cleanly released. Ready to reboot.</text>
+    </g>
+  </g>
+</svg>
