@@ -433,16 +433,57 @@ if [[ -n "$GPU_INFO" ]]; then
     # because the limine.conf template already uses PARTUUID for root=, keeping
     # the config uniform.  PARTUUID is also stable across mkswap reformats.
     #
+    # Scoping note: we look for the swap partition ON THE SAME DISK as the
+    # install target's root, not just any swap visible to blkid. On
+    # multi-drive systems with swap on more than one disk, the previous
+    # `blkid -t TYPE=swap | head -1` approach picked the first by scan order
+    # (NVMe before SATA), which could be a totally unrelated drive — the
+    # kernel would then wait ~30s at boot for a swap partition that wasn't
+    # part of this install.
+    #
     # Idempotent: skips injection if resume= is already present in limine.conf
-    # or if no swap partition is found (e.g. swap-file-only or no-swap setups).
+    # or /etc/kernel/cmdline, or if no swap partition exists on the install
+    # disk (e.g. swap-file-only or no-swap setups).
     inject_swap_resume() {
-        local SWAP_PARTUUID=""
-        SWAP_PARTUUID=$(blkid -t TYPE=swap -o export 2>/dev/null \
-            | grep '^PARTUUID=' | head -1 | cut -d= -f2)
-        if [[ -z "$SWAP_PARTUUID" ]]; then
-            info "No swap partition found — skipping resume= cmdline injection."
+        local ROOT_DEV ROOT_DISK SWAP_PARTUUID=""
+
+        # Find the install partition. For LUKS-on-root, findmnt returns the
+        # mapper device — walk back to the underlying partition so the
+        # disk lookup downstream works on the real GPT entry.
+        ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
+        if [[ -z "$ROOT_DEV" ]]; then
+            warn "Cannot determine root device — skipping resume= injection."
             return
         fi
+        if [[ "$ROOT_DEV" == /dev/mapper/* ]]; then
+            ROOT_DEV=$(cryptsetup status "$(basename "$ROOT_DEV")" 2>/dev/null \
+                | awk '/^[[:space:]]*device:/ {print $2; exit}')
+            if [[ -z "$ROOT_DEV" ]]; then
+                warn "Cannot resolve LUKS backing device — skipping resume= injection."
+                return
+            fi
+        fi
+
+        # Find the disk that hosts the root partition. lsblk PKNAME walks
+        # up the block-device tree one level (partition → disk).
+        ROOT_DISK=$(lsblk -no PKNAME "$ROOT_DEV" 2>/dev/null)
+        if [[ -z "$ROOT_DISK" ]]; then
+            warn "Cannot determine host disk for $ROOT_DEV — skipping resume= injection."
+            return
+        fi
+        ROOT_DISK="/dev/$ROOT_DISK"
+
+        # Pick the first swap partition that lives on the install disk.
+        # `-nlpo NAME,FSTYPE,PARTUUID` gives `<dev> <fstype> <partuuid>` per
+        # line (list format, full paths, no header) so awk can filter by
+        # column 2 directly.
+        SWAP_PARTUUID=$(lsblk -nlpo NAME,FSTYPE,PARTUUID "$ROOT_DISK" 2>/dev/null \
+            | awk '$2 == "swap" {print $3; exit}')
+        if [[ -z "$SWAP_PARTUUID" ]]; then
+            info "No swap partition on $ROOT_DISK — skipping resume= cmdline injection."
+            return
+        fi
+
         local LIMINE_CONF=""
         [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
         [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
@@ -452,7 +493,7 @@ if [[ -n "$GPU_INFO" ]]; then
             return
         fi
         gpu_append_cmdline "resume=PARTUUID=$SWAP_PARTUUID"
-        info "Hibernation resume= set to swap PARTUUID=$SWAP_PARTUUID."
+        info "Hibernation resume= set to swap PARTUUID=$SWAP_PARTUUID on $ROOT_DISK."
     }
 
     # Sync db before installing
