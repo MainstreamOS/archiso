@@ -303,11 +303,6 @@ if [[ -n "$GPU_INFO" ]]; then
     HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false; IS_HYBRID=false
     IS_OLD_NVIDIA=false; IS_OLD_AMD=false; IS_ARC=false; IS_OLD_INTEL=false
 
-    # Set to true by DKMS-based NVIDIA generations (580xx, 470xx, 390xx).
-    # When true, mkinitcpio -P is skipped in chroot and deferred to a
-    # firstboot systemd service that runs after DKMS has finished building.
-    DEFER_MKINITCPIO=false
-
     # Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
     # 10de=NVIDIA  1002=AMD/ATI  8086=Intel
     lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
@@ -564,7 +559,6 @@ NVIDIAEOF
             fi
             info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) configured (nvidia-580xx-dkms)."
             [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-            DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 4032 ]]; then
             # Kepler — 470xx installed by install-gpu-drivers if successful
@@ -590,7 +584,6 @@ NVIDIAEOF
             fi
             info "NVIDIA Kepler configured."
             [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-            DEFER_MKINITCPIO=true
 
         elif [[ $PCI_DEC -ge 1728 ]]; then
             # Fermi — 390xx installed by install-gpu-drivers if successful
@@ -616,7 +609,6 @@ NVIDIAEOF
             fi
             info "NVIDIA Fermi configured."
             [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-            DEFER_MKINITCPIO=true
 
         else
             # Pre-Fermi — nouveau (no config changes needed, kms hook stays)
@@ -805,108 +797,47 @@ fi
 # The trailing slash keeps kernel sub-entries nested under "Mainstream OS".
 write_limine_defaults
 # ---------------------------------------------------------------------------
-# MKINITCPIO — immediate or deferred depending on GPU driver type
+# MKINITCPIO — build the target initramfs in-chroot for every GPU path
 # ---------------------------------------------------------------------------
-# DKMS drivers (580xx, 470xx, 390xx) cannot build kernel modules in a
-# Calamares chroot because the running host kernel differs from the installed
-# one.  Running mkinitcpio -P with missing modules produces no image at all,
-# leaving the stale archiso initramfs on the EFI partition → kernel panic.
+# Used to need a first-boot deferral here for the legacy NVIDIA DKMS
+# generations (580xx / 470xx / 390xx): DKMS post-install runs `dkms install`
+# without -k, picks up the chroot host's `uname -r` (which is the build
+# machine's kernel, not the target's), fails to find that kernel's headers,
+# and leaves /lib/modules/<target>/extra/ empty. Then mkinitcpio -P built
+# an initramfs missing nvidia.ko, the user booted to a kernel panic, and
+# we worked around it with a firstboot systemd unit that rebuilt the
+# initramfs after DKMS had a real running kernel to compile against —
+# followed by an auto-reboot prompt the user had to accept on first login.
 #
-# For those generations we skip mkinitcpio -P entirely here and install a
-# oneshot firstboot service that runs on the first real boot, by which time
-# DKMS has completed and all modules exist on disk.  The service then
-# triggers an automatic reboot so the user boots into the fully built
-# initramfs on the second boot — transparent, no manual intervention needed.
-#
-# Turing+ uses nvidia-open which is a real package (not DKMS) — modules exist
-# immediately, so mkinitcpio -P runs normally in chroot.
-
-if $DEFER_MKINITCPIO; then
-    info "DKMS NVIDIA driver detected — deferring mkinitcpio -P to first boot."
-
-    cat > /etc/systemd/system/mkinitcpio-firstboot.service << 'MKINITEOF'
-[Unit]
-Description=Rebuild initramfs after DKMS modules are ready (first boot only)
-After=dkms.service systemd-modules-load.service local-fs.target
-Wants=dkms.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-# Rebuild initramfs with all modules now present on disk
-ExecStart=/usr/bin/mkinitcpio -P
-# Refresh Limine UKIs and boot entries on the EFI partition
-ExecStartPost=/bin/bash -c '\
-    if command -v limine-mkinitcpio &>/dev/null; then \
-        limine-mkinitcpio 2>/dev/null || true; \
-    fi; \
-    efi_root=""; \
-    [ -d /boot/efi ] && efi_root="/boot/efi"; \
-    [ -z "$efi_root" ] && [ -d /efi ] && efi_root="/efi"; \
-    if [ -n "$efi_root" ]; then \
-        mkdir -p "$efi_root/EFI/Linux"; \
-        if [ ! -f "$efi_root/EFI/Linux/mainstream_linux.efi" ]; then \
-            cp -f /boot/vmlinuz-linux "$efi_root/vmlinuz-linux" || true; \
-            cp -f /boot/initramfs-linux.img "$efi_root/initramfs-linux.img" || true; \
-        fi; \
-        /usr/local/bin/post-install --refresh-uki-only 2>/dev/null || true; \
-    fi'
-# Disable ourselves — one-shot job done
-ExecStartPost=/usr/bin/systemctl disable mkinitcpio-firstboot.service
-
-[Install]
-WantedBy=multi-user.target
-MKINITEOF
-
-    systemctl enable mkinitcpio-firstboot.service 2>/dev/null || true
-    info "mkinitcpio-firstboot.service installed and enabled."
-
-    # Deploy an autostart .desktop entry so the user gets a reboot notification
-    # on their first login after the initramfs rebuild completes.
-    # The script sends the notification then removes the autostart entry so it
-    # never fires again.
-    if [[ -n "$MAIN_USER" ]]; then
-        mkdir -p "$MAIN_USER_HOME/.config/autostart"
-        cat > "$MAIN_USER_HOME/.config/autostart/mkinitcpio-reboot-notify.desktop" << 'NOTIFYEOF'
-[Desktop Entry]
-Type=Application
-Name=Initramfs Rebuild Notification
-Comment=Notify user to reboot after DKMS initramfs rebuild
-Exec=/bin/bash -c 'sleep 5 && notify-send --urgency=critical --icon=system-reboot "Reboot Required" "Your GPU drivers were set up in the background. Please reboot to finish the installation and apply all changes." && rm -f ~/.config/autostart/mkinitcpio-reboot-notify.desktop'
-X-GNOME-Autostart-enabled=true
-NoDisplay=true
-NOTIFYEOF
-        chown "$MAIN_USER:$MAIN_USER" \
-            "$MAIN_USER_HOME/.config/autostart/mkinitcpio-reboot-notify.desktop"
-        info "Reboot notification autostart deployed for $MAIN_USER."
+# install-gpu-drivers now pre-builds the DKMS source packages into the
+# airootfs (build.sh's AUR_DEPS section), pacman -U's them at chroot time,
+# and calls `dkms install -k <target_kernel>` so modules land in
+# /lib/modules/<target>/extra/ during the install. With modules present,
+# mkinitcpio -P succeeds in chroot for every GPU generation — no deferral,
+# no firstboot unit, no auto-reboot.
+info "Regenerating initramfs..."
+if ! mkinitcpio -P; then
+    warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
+    if [ -f /boot/initramfs-linux.img ]; then
+        info "Initramfs images exist — continuing despite hook warning."
+    else
+        warn "Initramfs images missing — mkinitcpio truly failed."
+        exit 1
     fi
+fi
 
-else
-    # Turing+ (nvidia-open) or non-NVIDIA: modules exist now, safe to build.
-    info "Regenerating initramfs..."
-    if ! mkinitcpio -P; then
-        warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
-        if [ -f /boot/initramfs-linux.img ]; then
-            info "Initramfs images exist — continuing despite hook warning."
-        else
-            warn "Initramfs images missing — mkinitcpio truly failed."
-            exit 1
-        fi
-    fi
+if command -v limine-mkinitcpio &>/dev/null; then
+    info "Updating Limine boot entries via limine-mkinitcpio..."
+    limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+fi
+refresh_limine_uki_entry
 
-    if command -v limine-mkinitcpio &>/dev/null; then
-        info "Updating Limine boot entries via limine-mkinitcpio..."
-        limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
-    fi
-    refresh_limine_uki_entry
-
-    # Clean up plain kernel/initramfs from ESP root now that UKI is in place.
-    # These were copied by install-limine as a bootstrap fallback; the UKI
-    # supersedes them and limine-mkinitcpio will only generate entries for
-    # files it finds, so removing them prevents the stale non-UKI menu entry.
-    if [ -d "/boot/efi" ] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
-        rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
-    fi
+# Clean up plain kernel/initramfs from ESP root now that UKI is in place.
+# These were copied by install-limine as a bootstrap fallback; the UKI
+# supersedes them and limine-mkinitcpio will only generate entries for
+# files it finds, so removing them prevents the stale non-UKI menu entry.
+if [ -d "/boot/efi" ] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
 fi
 
 # ---------------------------------------------------------------------------

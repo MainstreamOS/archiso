@@ -250,6 +250,32 @@ AUR_DEPS=(
     "ttf-twemoji"
     "cpptrace"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
+
+    # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
+    # Arch's mainline `nvidia` package follows the current driver (590+
+    # at time of writing) which drops Maxwell-Pascal-Volta support; the
+    # current `nvidia-open` covers Turing+ only. Older cards need the AUR
+    # legacy DKMS variants. Pre-building them here (against the build
+    # host's kernel headers — DKMS still rebuilds per-kernel at install
+    # time) lets install-gpu-drivers do a plain `pacman -U` from
+    # /usr/local/share/pkgs/ instead of yay-fetching-and-compiling from
+    # AUR inside the install chroot, which is unreliable (network +
+    # build-environment fragility inside Calamares' chroot).
+    #
+    # Trade-off: each generation's source tarball is ~600 MB during
+    # build; the resulting .pkg.tar.zst is ~50-100 MB and lives in the
+    # airootfs whether the install target needs it or not. Worth it to
+    # eliminate the chroot AUR build + the first-boot mkinitcpio retry
+    # pattern those failures used to require.
+    "nvidia-580xx-dkms"
+    "nvidia-580xx-utils"
+    "lib32-nvidia-580xx-utils"
+    "nvidia-580xx-settings"
+    "nvidia-470xx-dkms"
+    "nvidia-470xx-utils"
+    "lib32-nvidia-470xx-utils"
+    "nvidia-390xx-dkms"
+    "nvidia-390xx-utils"
 )
 
 # Prebuilt packages to download instead of building from source.

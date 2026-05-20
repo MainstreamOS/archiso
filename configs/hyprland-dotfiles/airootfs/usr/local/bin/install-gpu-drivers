@@ -39,12 +39,91 @@ MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
     | grep -vE '(liveuser|builduser|nobody|root)' | head -1)
 
 install_pkgs() { info "Installing: $*"; pacman -S --noconfirm --needed "$@" 2>&1 || warn "Some packages failed: $*"; }
-get_aur_pkg() {
-    local pkg="$1"
-    if command -v yay &>/dev/null && [[ -n "$MAIN_USER" ]]; then
-        su -s /bin/bash "$MAIN_USER" -c "yay -S --noconfirm --needed $pkg" && return 0
+
+# Local pre-built AUR packages staged into the airootfs at build time
+# (build.sh's AUR_DEPS section). install-gpu-drivers consumes them via
+# pacman -U so we never have to run yay-fetch-and-compile from inside the
+# Calamares chroot, which was failure-prone (network in chroot, kernel
+# version mismatch for DKMS, build-environment fragility).
+LOCAL_PKGS_DIR="/usr/local/share/pkgs"
+
+# Find the matching local pkg file(s) by glob. The version in the filename
+# varies per build, so we glob for the family name and let pacman -U pick
+# up whatever's there.
+find_local_pkgs() {
+    local pat
+    local matches=()
+    for pat in "$@"; do
+        # Skip -debug- variants — they're makepkg artifacts we don't want.
+        local f
+        for f in "$LOCAL_PKGS_DIR"/${pat}-[0-9]*.pkg.tar.zst; do
+            [[ -f "$f" ]] || continue
+            [[ "$f" == *-debug-* ]] && continue
+            matches+=("$f")
+        done
+    done
+    printf '%s\n' "${matches[@]}"
+}
+
+# Install local pre-built packages by family name (e.g. nvidia-580xx-dkms).
+# Falls back to a warning if the .pkg.tar.zst is missing from the airootfs.
+install_local_pkgs() {
+    local found
+    mapfile -t found < <(find_local_pkgs "$@")
+    if [[ ${#found[@]} -eq 0 ]]; then
+        warn "No local pkgs found for: $*"
+        return 1
     fi
-    warn "Could not install AUR package: $pkg"; return 1
+    info "Installing local pkgs: ${found[*]##*/}"
+    pacman -U --noconfirm --needed "${found[@]}" 2>&1 \
+        || { warn "pacman -U failed for: $*"; return 1; }
+    return 0
+}
+
+# Force a DKMS module to (re)build against the TARGET system's kernel
+# rather than the build host's kernel that's running inside the chroot.
+# Without -k, dkms install picks $(uname -r) which is the chroot host's
+# kernel; that's what made the old `get_aur_pkg ... || warn` flow leave
+# unbuilt modules and forced the post-install first-boot mkinitcpio
+# deferral. With -k pointing at the freshly-unpacked target kernel,
+# modules land in /lib/modules/<target>/extra/ at chroot time and
+# mkinitcpio -P succeeds immediately.
+target_dkms_install() {
+    local module="$1"
+    local version="$2"
+
+    # /lib/modules/<ver>/ exists for each kernel installed on the target.
+    # On a normal install there's exactly one (linux). If multiple, pick
+    # the newest by sort -V.
+    local target_kernel
+    target_kernel=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+    if [[ -z "$target_kernel" ]]; then
+        warn "Could not detect target kernel in /lib/modules — DKMS will use \$(uname -r)."
+        target_kernel=""
+    else
+        info "DKMS building $module/$version against target kernel: $target_kernel"
+    fi
+
+    if [[ -n "$target_kernel" ]]; then
+        dkms install -m "$module" -v "$version" -k "$target_kernel" 2>&1 \
+            || warn "dkms install -m $module -v $version -k $target_kernel returned non-zero."
+    else
+        dkms install -m "$module" -v "$version" 2>&1 \
+            || warn "dkms install -m $module -v $version returned non-zero."
+    fi
+}
+
+# Discover the version string from a pre-built DKMS .pkg.tar.zst filename.
+# Example: nvidia-580xx-dkms-580.95.05-1-x86_64.pkg.tar.zst → 580.95.05
+# That's the value /usr/src/<module>-<version>/ expects.
+detect_dkms_version() {
+    local family="$1"
+    local f v
+    f=$(find_local_pkgs "$family" | head -1)
+    [[ -z "$f" ]] && return 1
+    v=$(basename "$f" | sed -E "s/^${family}-([^-]+)-[0-9]+-[^-]+\.pkg\.tar\.zst\$/\1/")
+    [[ -z "$v" || "$v" == "$(basename "$f")" ]] && return 1
+    printf '%s\n' "$v"
 }
 
 pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
@@ -104,20 +183,41 @@ if $HAS_NVIDIA; then
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
     elif [[ $PCI_DEC -ge 4928 ]]; then
-        # 0x1340-0x1E03 = Maxwell through Volta (GTX 900, GTX 1000, Titan V)
-        # Dropped from mainline nvidia — requires nvidia-580xx-dkms from AUR
-        install_pkgs linux-headers dkms
-        get_aur_pkg "nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libva-nvidia-driver libva-utils" \
-            || warn "nvidia-580xx-dkms AUR install failed."
+        # 0x1340-0x1E03 = Maxwell through Pascal-Volta (GTX 900, GTX 1000, Titan V)
+        # Dropped from mainline nvidia (590+) — uses nvidia-580xx-dkms (last LTS).
+        # Pre-built into /usr/local/share/pkgs/ by build.sh; we pacman -U here
+        # and force DKMS to compile against the TARGET kernel (not the chroot
+        # host's). No more first-boot mkinitcpio deferral needed.
+        install_pkgs linux-headers dkms libva-utils
+        install_pkgs libva-nvidia-driver 2>/dev/null || true
+        if install_local_pkgs nvidia-580xx-dkms nvidia-580xx-utils \
+                              lib32-nvidia-580xx-utils nvidia-580xx-settings; then
+            ver=$(detect_dkms_version nvidia-580xx-dkms || echo "")
+            [[ -n "$ver" ]] && target_dkms_install nvidia-580xx "$ver"
+        fi
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
-        info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
+        info "NVIDIA Maxwell-Pascal-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
     elif [[ $PCI_DEC -ge 4032 ]]; then
-        install_pkgs linux-headers dkms
-        get_aur_pkg "nvidia-470xx-dkms libva-nvidia-driver libva-utils" || warn "nvidia-470xx-dkms failed."
+        # 0x0FC0-0x133F = Kepler (GTX 600/700, GT 710)
+        install_pkgs linux-headers dkms libva-utils
+        install_pkgs libva-nvidia-driver 2>/dev/null || true
+        if install_local_pkgs nvidia-470xx-dkms nvidia-470xx-utils \
+                              lib32-nvidia-470xx-utils; then
+            ver=$(detect_dkms_version nvidia-470xx-dkms || echo "")
+            [[ -n "$ver" ]] && target_dkms_install nvidia-470xx "$ver"
+        fi
+        install_pkgs linux-firmware-nvidia 2>/dev/null || true
+        info "NVIDIA Kepler (GTX 600/700) — installed nvidia-470xx-dkms."
     elif [[ $PCI_DEC -ge 1728 ]]; then
+        # 0x06C0-0x0FBF = Fermi (GTX 400/500, GT 6xx OEM)
         install_pkgs linux-headers dkms
-        get_aur_pkg nvidia-390xx-dkms || warn "nvidia-390xx-dkms failed."
+        if install_local_pkgs nvidia-390xx-dkms nvidia-390xx-utils; then
+            ver=$(detect_dkms_version nvidia-390xx-dkms || echo "")
+            [[ -n "$ver" ]] && target_dkms_install nvidia-390xx "$ver"
+        fi
+        info "NVIDIA Fermi (GTX 400/500) — installed nvidia-390xx-dkms."
     else
+        # Pre-Fermi (Tesla / older) — nouveau is the only realistic option
         install_pkgs xf86-video-nouveau mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver
     fi
 
