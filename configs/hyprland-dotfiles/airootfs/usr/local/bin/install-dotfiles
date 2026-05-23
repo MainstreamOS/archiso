@@ -236,6 +236,33 @@ for pkg in "${REQUIRED_EXTRAS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 11.5 AUDIO SERVICES
+# ---------------------------------------------------------------------------
+# The mainstream-audio package (installed in section 8 above) ships three
+# files that fix the two most common audio failure modes on a fresh install:
+#   * /etc/wireplumber/wireplumber.conf.d/51-disable-hdmi-default.conf
+#     — lowers HDMI/DP sink priority so WirePlumber's default-picker chooses
+#       motherboard analog over a discrete GPU's HDA when both are present.
+#   * /usr/lib/systemd/system/mainstream-audio-firstboot.service
+#   * /usr/lib/mainstream/audio-firstboot
+#     — first-boot oneshot that unmutes Master/Speaker/Headphone, disables
+#       flaky Auto-Mute on Realtek codecs, runs `alsactl init` for UCM
+#       defaults, persists the result via `alsactl store`.
+#
+# See sdata/dist-arch/mainstream-audio/ in dots-hyprland for the sources.
+# All three files exist on disk by this point. What's left here is the
+# systemd-enable step — Arch packages don't auto-enable services on install.
+#
+# alsa-restore / alsa-state are auto-enabled by alsa-utils' systemd preset;
+# the explicit enable is a cheap safety net against preset changes and is
+# harmless if already on (|| true).
+info "Enabling audio services..."
+systemctl enable mainstream-audio-firstboot.service 2>/dev/null \
+    || warn "Failed to enable mainstream-audio-firstboot.service"
+systemctl enable alsa-restore.service 2>/dev/null || true
+systemctl enable alsa-state.service   2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # 12. SUMMARY
 # ---------------------------------------------------------------------------
 TOTAL=${#METAPKGS[@]}

@@ -183,6 +183,7 @@ pipewire
 pipewire-alsa
 pipewire-jack
 gst-plugin-pipewire
+alsa-utils
 
 # ==============================================================================
 # Filesystem tools
