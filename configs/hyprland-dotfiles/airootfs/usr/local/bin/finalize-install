@@ -219,5 +219,29 @@ for d in "${LOOSE_DIRS[@]}"; do
     fi
 done
 
+# ── Passwordless-sudo cleanup ───────────────────────────────────────────────
+# /etc/sudoers.d/g_wheel is shipped in the airootfs with
+# `%wheel ALL=(ALL:ALL) NOPASSWD: ALL` so the live ISO's installer
+# (Calamares and its post-install scripts, including the packages
+# module that drives yay-based netinstall) can run sudo without
+# prompting on a TTY-less install. By the time finalize-install runs,
+# all those passwordless-sudo consumers have completed. Replace
+# g_wheel with the standard password-requiring %wheel rule
+# synchronously — no first-boot oneshot, no deferred dependency.
+if [[ -f /etc/sudoers.d/g_wheel ]]; then
+    info "Replacing passwordless g_wheel with standard wheel sudoers rule..."
+    {
+        wheel_tmp=$(mktemp)
+        printf '%%wheel ALL=(ALL:ALL) ALL\n' > "$wheel_tmp"
+        if visudo -cf "$wheel_tmp" >/dev/null 2>&1; then
+            install -m 0440 -o root -g root "$wheel_tmp" /etc/sudoers.d/wheel
+            rm -f /etc/sudoers.d/g_wheel
+        else
+            warn "Generated wheel sudoers file failed visudo validation; leaving g_wheel in place."
+        fi
+        rm -f "$wheel_tmp"
+    }
+fi
+
 info "Cleanup done."
 exit 0
