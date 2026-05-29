@@ -26,13 +26,6 @@
   <rect width="1920" height="899.5276" fill="url(#bg-glow)"/>
   <rect width="1920" height="899.5276" fill="url(#bg-glow-2)"/>
 
-  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
-    <text x="60" y="40">01 / 06  ·  INSTALLING</text>
-    <text x="1870" y="40" text-anchor="end">MAINSTREAM OS  ·  ROLLING</text>
-    <text x="60" y="880">— hold steady</text>
-    <text x="1870" y="880" text-anchor="end">◐  mainstream.os</text>
-  </g>
-
   <g transform="translate(140 220)">
     <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">SETTING UP YOUR SYSTEM</text>
     <text y="120" font-size="148" font-weight="500" letter-spacing="-6" fill="#ECE9E3">Mainstream is</text>

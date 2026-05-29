@@ -17,13 +17,6 @@
 
   <rect width="1920" height="899.5276" fill="#0B0D12"/>
 
-  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="13" fill="#9397A0" letter-spacing="2">
-    <text x="60" y="40">02 / 06  ·  THEMES</text>
-    <text x="1870" y="40" text-anchor="end">SETTINGS  →  THEMES</text>
-    <text x="60" y="880">— one tap captures the whole look</text>
-    <text x="1870" y="880" text-anchor="end">DAY  /  NIGHT  SCHEDULER</text>
-  </g>
-
   <g transform="translate(140 170)">
     <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="14" fill="#9397A0" letter-spacing="2.5">02 — THEMES</text>
     <text y="92" font-size="84" font-weight="500" letter-spacing="-3" fill="#ECE9E3">Save the whole</text>

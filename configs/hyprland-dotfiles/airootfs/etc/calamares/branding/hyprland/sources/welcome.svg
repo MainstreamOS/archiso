@@ -69,19 +69,16 @@
     
     <g transform="translate(0 650)">
       <rect width="180" height="6" fill="#9397a0"></rect>
-      <text x="216" y="20" font-family="JetBrains Mono, ui-monospace, monospace" font-size="58" letter-spacing="14" fill="#9397a0" font-weight="500">
-        LET&#39;S BEGIN
-      </text>
+      <text x="216" y="20" font-family="JetBrains Mono, ui-monospace, monospace" font-size="58" letter-spacing="14" fill="#9397a0" font-weight="500">LET&#39;S BEGIN</text>
     </g>
 
-    
     <text x="0" y="940" font-family="DM Sans, system-ui, sans-serif" font-size="316" font-weight="500" letter-spacing="-13" fill="#ece9e3">Install</text>
 
     
     <text x="0" y="1124" font-family="DM Sans, system-ui, sans-serif" font-size="172" font-weight="500" letter-spacing="-6" fill="url(#streamGrad)">Mainstream</text>
 
     
-    <text x="6" y="1198" font-family="DM Sans, system-ui, sans-serif" font-size="56" font-weight="400" letter-spacing="-0.6" fill="#9397a0">A few quiet steps. Then your computer feels like home.</text>
+    <text x="6" y="1198" font-family="DM Sans, system-ui, sans-serif" font-size="56" font-weight="400" letter-spacing="-0.6" fill="#9397a0">A few quick steps to get your system set up and ready to go.</text>
   </g>
 
   
