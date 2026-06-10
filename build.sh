@@ -48,6 +48,30 @@ warn()    { log "WARN:  $*"; }
 die()     { log "FATAL: $*"; exit 1; }
 success() { log "OK:    $*"; }
 
+# Build the [mainstream] local repo DB from <repo_dir>, EXCLUDING GPU driver
+# packages. The nvidia / opencl-nvidia / lib32-nvidia / libxnvctrl packages
+# still ship as plain files in the airootfs — install-gpu-drivers pacman -U's
+# them by PCI match at install time — but they must NOT appear in the repo DB:
+# otherwise mkarchiso's pacstrap auto-selects one to satisfy the generic
+# opengl-driver / vulkan-driver / nvidia-utils provide pulled in by the
+# hyprland/aquamarine stack (and [mainstream] is first in pacman.conf), baking
+# an nvidia driver into AMD/Intel-only ISOs.
+add_mainstream_db() {
+    local repo_dir="$1"
+    # repo-add only ADDS — start from a clean DB so any previously-indexed
+    # (and now-excluded) GPU driver entries are dropped, not carried forward.
+    rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
+          "$repo_dir"/mainstream.files{,.tar.gz,.tar.gz.old}
+    local pkgs=()
+    mapfile -t pkgs < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' \
+        ! -name '*nvidia*' ! -name 'libxnvctrl*' | sort)
+    if (( ${#pkgs[@]} == 0 )); then
+        warn "No installable (non-GPU-driver) packages in $repo_dir — mainstream repo DB not created."
+        return 0
+    fi
+    repo-add "$repo_dir/mainstream.db.tar.gz" "${pkgs[@]}"
+}
+
 # Scan a local pacman repo directory for corrupted / zero-length .pkg.tar.zst
 # files, remove them, and regenerate the repo database so that subsequent
 # pacman / mkarchiso runs don't trip over bad checksums.
@@ -96,7 +120,7 @@ sanitize_local_repo() {
               "$repo_dir"/illogical-impulse.files{,.tar.gz,.tar.gz.old}
         # Only call repo-add if at least one package still exists
         if compgen -G "$repo_dir/*.pkg.tar.zst" > /dev/null 2>&1; then
-            repo-add "$repo_dir/mainstream.db.tar.gz" "$repo_dir"/*.pkg.tar.zst
+            add_mainstream_db "$repo_dir"
             success "Repo database regenerated."
         else
             warn "No packages remain in $repo_dir after sanitization — repo DB not created."
@@ -758,8 +782,8 @@ info "Generating local pacman repo database..."
 # pacman doesn't see two repos pointing at the same dir.
 rm -f "$PKG_OUTPUT_DIR"/illogical-impulse.db{,.tar.gz,.tar.gz.old} \
       "$PKG_OUTPUT_DIR"/illogical-impulse.files{,.tar.gz,.tar.gz.old}
-repo-add "$PKG_OUTPUT_DIR/mainstream.db.tar.gz" "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
-info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz"
+add_mainstream_db "$PKG_OUTPUT_DIR"
+info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz (GPU driver packages excluded — files-only for install-gpu-drivers)."
 
 # ── Purge stale copies from host pacman cache ──────────────────────────────
 # mkarchiso's pacstrap (PHASE 2 below) uses the host's
