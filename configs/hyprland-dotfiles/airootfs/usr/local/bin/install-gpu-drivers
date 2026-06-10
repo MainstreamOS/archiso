@@ -18,6 +18,13 @@ set -uo pipefail
 log()  { echo "[install-gpu-drivers] $*"; }
 info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
+err()  { log "ERROR: $*" >&2; }
+
+# Track GPU-driver install failures so a broken driver surfaces as a loud,
+# unmissable error at the end (and a breadcrumb the desktop can read on
+# first boot) instead of the old silent warn+exit-0 soft-pass.
+GPU_FAILURES=()
+note_failure() { GPU_FAILURES+=("$1"); err "$1"; }
 
 GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
 if [[ -z "$GPU_INFO" ]]; then
@@ -106,10 +113,10 @@ target_dkms_install() {
 
     if [[ -n "$target_kernel" ]]; then
         dkms install -m "$module" -v "$version" -k "$target_kernel" 2>&1 \
-            || warn "dkms install -m $module -v $version -k $target_kernel returned non-zero."
+            || note_failure "DKMS build failed: $module/$version for kernel $target_kernel — GPU kernel module is MISSING."
     else
         dkms install -m "$module" -v "$version" 2>&1 \
-            || warn "dkms install -m $module -v $version returned non-zero."
+            || note_failure "DKMS build failed: $module/$version — GPU kernel module is MISSING."
     fi
 }
 
@@ -121,7 +128,11 @@ detect_dkms_version() {
     local f v
     f=$(find_local_pkgs "$family" | head -1)
     [[ -z "$f" ]] && return 1
-    v=$(basename "$f" | sed -E "s/^${family}-([^-]+)-[0-9]+-[^-]+\.pkg\.tar\.zst\$/\1/")
+    # pkgrel may be multi-token (e.g. nvidia-470xx-dkms pkgrel "8.02"), so the
+    # release segment is [0-9][^-]* (starts with a digit, no further hyphen),
+    # not [0-9]+ — the latter silently failed to match 470xx and skipped its
+    # DKMS build, shipping Kepler userspace-only with no kernel module.
+    v=$(basename "$f" | sed -E "s/^${family}-([^-]+)-[0-9][^-]*-[^-]+\.pkg\.tar\.zst\$/\1/")
     [[ -z "$v" || "$v" == "$(basename "$f")" ]] && return 1
     printf '%s\n' "$v"
 }
@@ -193,7 +204,16 @@ if $HAS_NVIDIA; then
         if install_local_pkgs nvidia-580xx-dkms nvidia-580xx-utils \
                               lib32-nvidia-580xx-utils nvidia-580xx-settings; then
             ver=$(detect_dkms_version nvidia-580xx-dkms || echo "")
-            [[ -n "$ver" ]] && target_dkms_install nvidia-580xx "$ver"
+            if [[ -n "$ver" ]]; then
+                # DKMS module name is "nvidia" for ALL nvidia-*xx-dkms
+                # generations (PACKAGE_NAME in dkms.conf; source dir is
+                # /usr/src/nvidia-<ver>). The family name is NOT a module.
+                target_dkms_install nvidia "$ver"
+            else
+                note_failure "nvidia-580xx-dkms: could not parse version from staged package — DKMS module NOT built."
+            fi
+        else
+            note_failure "nvidia-580xx-dkms: local driver packages missing/failed — Maxwell/Pascal/Volta GPU has no kernel driver."
         fi
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Maxwell-Pascal-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
@@ -204,7 +224,13 @@ if $HAS_NVIDIA; then
         if install_local_pkgs nvidia-470xx-dkms nvidia-470xx-utils \
                               lib32-nvidia-470xx-utils; then
             ver=$(detect_dkms_version nvidia-470xx-dkms || echo "")
-            [[ -n "$ver" ]] && target_dkms_install nvidia-470xx "$ver"
+            if [[ -n "$ver" ]]; then
+                target_dkms_install nvidia "$ver"
+            else
+                note_failure "nvidia-470xx-dkms: could not parse version from staged package — DKMS module NOT built."
+            fi
+        else
+            note_failure "nvidia-470xx-dkms: local driver packages missing/failed — Kepler GPU has no kernel driver."
         fi
         install_pkgs linux-firmware-nvidia 2>/dev/null || true
         info "NVIDIA Kepler (GTX 600/700) — installed nvidia-470xx-dkms."
@@ -213,7 +239,13 @@ if $HAS_NVIDIA; then
         install_pkgs linux-headers dkms
         if install_local_pkgs nvidia-390xx-dkms nvidia-390xx-utils; then
             ver=$(detect_dkms_version nvidia-390xx-dkms || echo "")
-            [[ -n "$ver" ]] && target_dkms_install nvidia-390xx "$ver"
+            if [[ -n "$ver" ]]; then
+                target_dkms_install nvidia "$ver"
+            else
+                note_failure "nvidia-390xx-dkms: could not parse version from staged package — DKMS module NOT built."
+            fi
+        else
+            note_failure "nvidia-390xx-dkms: local driver packages missing/failed — Fermi GPU has no kernel driver."
         fi
         info "NVIDIA Fermi (GTX 400/500) — installed nvidia-390xx-dkms."
     else
@@ -232,3 +264,19 @@ fi
 
 info "GPU driver package installation complete."
 info "Configuration (mkinitcpio, modprobe, env, cmdline) handled by post-install section 4c."
+
+# Surface any driver-install failure loudly. The install still completes (a
+# missing GPU driver is recoverable post-boot, unlike a half-installed system),
+# but the failure is impossible to miss in the Calamares log and is left as a
+# breadcrumb at /var/lib/mainstream/gpu-install-failed.log for first-boot UX.
+if [[ ${#GPU_FAILURES[@]} -gt 0 ]]; then
+    err "==================================================================="
+    err "  GPU DRIVER INSTALL: ${#GPU_FAILURES[@]} FAILURE(S) — acceleration may not work:"
+    for _f in "${GPU_FAILURES[@]}"; do err "    - $_f"; done
+    err "==================================================================="
+    mkdir -p /var/lib/mainstream 2>/dev/null || true
+    { printf 'install-gpu-drivers failures (%s):\n' "$(date -Is 2>/dev/null || echo unknown)"
+      printf '  - %s\n' "${GPU_FAILURES[@]}"
+    } > /var/lib/mainstream/gpu-install-failed.log 2>/dev/null || true
+fi
+exit 0

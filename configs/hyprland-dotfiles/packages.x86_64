@@ -89,16 +89,16 @@ xorg-xwayland
 # ==============================================================================
 # GPU & display
 # ==============================================================================
-# Kitchen-sink strategy: ship every common GPU driver in the live ISO so
-# boot succeeds on AMD / Intel / NVIDIA hardware out of the box, then
-# /usr/local/bin/finalize-install (a Calamares shellprocess that runs
-# after install-gpu-drivers) removes the drivers that don't match the
-# detected GPU vendor. Adds ~600 MB to the ISO; trades download size
-# for "it just booted" on every machine.
+# GPU drivers are installed on the TARGET at install time by
+# /usr/local/bin/install-gpu-drivers (Calamares shellprocess), which picks
+# the right stack for the detected hardware — the live ISO no longer ships
+# a kitchen-sink of every vendor's driver. What's listed here is only what
+# the live session itself needs to bring up a display on common hardware
+# (mesa + open Vulkan/VA-API for AMD/Intel, xf86-video-amdgpu); NVIDIA falls
+# back to nouveau for the installer UI (see the note below).
 #
-# linux-headers is required for DKMS (nvidia-open-dkms below, also any
-# Realtek Wi-Fi DKMS added later). Pruned post-install if no DKMS
-# packages survive the cleanup pass.
+# linux-headers ships so install-gpu-drivers can build the legacy NVIDIA
+# DKMS modules against the target kernel at install time.
 linux-headers
 mesa
 vulkan-radeon
