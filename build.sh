@@ -267,14 +267,20 @@ AUR_DEPS=(
     # airootfs whether the install target needs it or not. Worth it to
     # eliminate the chroot AUR build + the first-boot mkinitcpio retry
     # pattern those failures used to require.
-    "nvidia-580xx-dkms"
+    #
+    # NOTE: the -dkms kernel-module packages are NOT standalone AUR repos —
+    # each is a split package of its sibling -utils base (AUR PackageBase
+    # nvidia-{580,470,390}xx-utils). `git clone nvidia-470xx-dkms.git` returns
+    # an empty repo, so they must NOT be listed here (doing so just logs a
+    # "Could not obtain PKGBUILD … build failed" warning and ships no driver).
+    # They are emitted automatically when the -utils base builds and collected
+    # by the copy-every-sibling logic in the build loop below; install-gpu-drivers
+    # then pacman -U's nvidia-*-dkms by name out of /usr/local/share/pkgs/.
     "nvidia-580xx-utils"
     "lib32-nvidia-580xx-utils"
     "nvidia-580xx-settings"
-    "nvidia-470xx-dkms"
     "nvidia-470xx-utils"
     "lib32-nvidia-470xx-utils"
-    "nvidia-390xx-dkms"
     "nvidia-390xx-utils"
 )
 
@@ -573,8 +579,20 @@ if [[ ! -f "PKGBUILD" ]]; then
     exit 1
 fi
 
+# Pre-install build + runtime deps via yay so AUR-only dependencies resolve.
+# makepkg -s only queries pacman repos, and the build host has neither the
+# AUR nor the local [mainstream] repo in /etc/pacman.conf — so a package
+# whose dependency is itself an AUR package (e.g. nvidia-580xx-dkms depends
+# on its nvidia-580xx-utils sibling) fails with "target not found". yay
+# resolves AUR deps; we then build with --nodeps. Same pattern the
+# meta-package build script uses above.
+DEPS=$(bash -c 'source PKGBUILD 2>/dev/null; echo "${depends[@]:-} ${makedepends[@]:-}"' 2>/dev/null || true)
+if [[ -n "$DEPS" ]]; then
+    yay -S --noconfirm --needed --asdeps $DEPS 2>&1 || true
+fi
+
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
-    makepkg -sf --noconfirm --needed --skippgpcheck 2>&1
+    makepkg -f --noconfirm --needed --nodeps --skippgpcheck 2>&1
 rm -rf "$WORK"
 AURSCRIPT
 chmod 755 "$AUR_SCRIPT"
@@ -590,13 +608,18 @@ for entry in "${AUR_DEPS[@]}"; do
     fi
 
     info "Building AUR dep: $pkgname..."
-    rm -f "$TEMP_OUTPUT/${pkgname}"-*.pkg.tar.zst 2>/dev/null || true
+    # Clear the shared PKGDEST first so we collect *every* package this build
+    # emits, not just the one named like the entry. AUR bases such as
+    # nvidia-470xx-utils are split packages — a single makepkg run produces
+    # nvidia-470xx-utils, nvidia-470xx-dkms and opencl-nvidia-470xx. The -dkms
+    # kernel module has no separate AUR repo, so grabbing only the entry-named
+    # artifact silently dropped it (the ISO shipped userspace with no driver).
+    rm -f "$TEMP_OUTPUT"/*.pkg.tar.zst 2>/dev/null || true
     if su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
-        built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
-        if [[ -n "$built" ]]; then
-            cp "$built" "$PKG_OUTPUT_DIR/"
-            rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
-            success "$pkgname built successfully."
+        mapfile -t built < <(find "$TEMP_OUTPUT" -name "*.pkg.tar.zst" ! -name "*-debug-*")
+        if [[ ${#built[@]} -gt 0 ]]; then
+            cp "${built[@]}" "$PKG_OUTPUT_DIR/"
+            success "$pkgname built successfully (${#built[@]} pkg(s): $(basename -a "${built[@]}" | tr '\n' ' '))."
         else
             warn "$pkgname — no output file found, skipping."
         fi
