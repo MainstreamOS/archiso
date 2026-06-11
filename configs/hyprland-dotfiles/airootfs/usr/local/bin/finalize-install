@@ -183,6 +183,12 @@ LOOSE_FILES=(
     # module, but the sudoers file isn't owned by any package so it
     # lingers on disk pointing at a non-existent user.
     /etc/sudoers.d/liveuser
+    # Storage=volatile keeps the live ISO from writing journals to the
+    # squashfs overlay, but on an installed system it means every boot's
+    # logs vanish at shutdown — undebuggable. Remove it; journald's
+    # default Storage=auto persists once /var/log/journal exists (created
+    # below).
+    /etc/systemd/journald.conf.d/volatile-storage.conf
 )
 for f in "${LOOSE_FILES[@]}"; do
     if [[ -e "$f" ]]; then
@@ -190,6 +196,15 @@ for f in "${LOOSE_FILES[@]}"; do
         rm -f "$f" || warn "Could not remove $f"
     fi
 done
+
+# With the volatile drop-in gone, journald's Storage=auto persists logs
+# when /var/log/journal exists. Create it so installed systems keep boot
+# journals (debugging boot/session issues is impossible without them).
+if [[ ! -d /var/log/journal ]]; then
+    info "Enabling persistent journald storage."
+    mkdir -p /var/log/journal
+    systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+fi
 
 # ── Live-only directories ───────────────────────────────────────────────────
 LOOSE_DIRS=(
