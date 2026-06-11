@@ -44,9 +44,6 @@ lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVI
 lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
 lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
 
-MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
-    | grep -vE '(liveuser|builduser|nobody|root)' | head -1)
-
 # Install repo packages for a GPU stack. Filter the target list FIRST:
 # pacman -S aborts the entire transaction on one unknown target, which is how
 # the stale mesa-vdpau/libva-mesa-driver names (merged into mesa upstream)
@@ -55,45 +52,28 @@ MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
 #  - in the sync repos        -> install
 #  - installed but not in any repo -> already satisfied, skip (feeding it to
 #    pacman -S would error "target not found" and abort the whole set)
-#  - nowhere                  -> dead/renamed name
-# install_pkgs flags dead names and failures loudly (these are the required
-# driver stacks); install_pkgs_opt is the warn-only variant for best-effort
-# extras like firmware splits and VA-API helpers.
-_filter_pkgs() {
-    local p
-    AVAIL=(); DEAD=()
+#  - nowhere                  -> dead/renamed name, reported via $1
+# install_pkgs reports problems loudly via note_failure (required driver
+# stacks); install_pkgs_opt warns only (best-effort firmware/VA-API extras).
+_install_pkgs_impl() {
+    local report="$1"; shift
+    local p avail=()
     for p in "$@"; do
         if pacman -Si "$p" >/dev/null 2>&1; then
-            AVAIL+=("$p")
+            avail+=("$p")
         elif pacman -Qq "$p" >/dev/null 2>&1; then
             info "$p already installed (not in sync repos) — skipping."
         else
-            DEAD+=("$p")
+            "$report" "package '$p' not found in repos (renamed/merged upstream?) — skipped."
         fi
     done
+    [[ ${#avail[@]} -eq 0 ]] && return 0
+    info "Installing: ${avail[*]}"
+    pacman -S --noconfirm --needed "${avail[@]}" 2>&1 \
+        || "$report" "pacman -S failed for: ${avail[*]}"
 }
-install_pkgs() {
-    local p
-    _filter_pkgs "$@"
-    for p in "${DEAD[@]}"; do
-        note_failure "package '$p' not found in repos (renamed/merged upstream?) — skipped."
-    done
-    [[ ${#AVAIL[@]} -eq 0 ]] && return 0
-    info "Installing: ${AVAIL[*]}"
-    pacman -S --noconfirm --needed "${AVAIL[@]}" 2>&1 \
-        || note_failure "pacman -S failed for: ${AVAIL[*]}"
-}
-install_pkgs_opt() {
-    local p
-    _filter_pkgs "$@"
-    for p in "${DEAD[@]}"; do
-        warn "optional package '$p' not found in repos — skipped."
-    done
-    [[ ${#AVAIL[@]} -eq 0 ]] && return 0
-    info "Installing (optional): ${AVAIL[*]}"
-    pacman -S --noconfirm --needed "${AVAIL[@]}" 2>&1 \
-        || warn "optional install failed: ${AVAIL[*]}"
-}
+install_pkgs()     { _install_pkgs_impl note_failure "$@"; }
+install_pkgs_opt() { _install_pkgs_impl warn "$@"; }
 
 # Local pre-built AUR packages staged into the airootfs at build time
 # (build.sh's AUR_DEPS section). install-gpu-drivers consumes them via
