@@ -41,6 +41,7 @@ file_permissions=(
   ["/usr/local/bin/mainstream-update-helper"]="0:0:755"
   ["/usr/local/bin/updatems"]="0:0:755"
   ["/usr/local/bin/updatems-system"]="0:0:755"
+  ["/usr/local/bin/limine-restore-auto"]="0:0:755"
   ["/usr/share/polkit-1/actions/org.mainstreamos.disk-mounter.policy"]="0:0:644"
   # Calamares autostart (XDG autostart — read by dex/autostart managers)
   ["/etc/xdg/autostart/calamares.desktop"]="0:0:644"
