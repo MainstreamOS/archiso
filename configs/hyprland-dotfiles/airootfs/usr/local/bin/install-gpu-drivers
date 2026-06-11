@@ -28,12 +28,14 @@ note_failure() { GPU_FAILURES+=("$1"); err "$1"; }
 
 GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
 if [[ -z "$GPU_INFO" ]]; then
-    warn "No GPU detected — skipping package installation."
-    exit 0
+    # Don't exit: the vulkan-provider catch-all at the bottom must still run,
+    # or a later --noconfirm install needing (lib32-)vulkan-driver (Steam)
+    # auto-resolves to lib32-nvidia-utils even on GPU-less VMs/headless.
+    warn "No GPU detected — vendor branches will be skipped."
+else
+    info "Detected GPU(s):"
+    echo "$GPU_INFO" | while read -r line; do info "  $line"; done
 fi
-
-info "Detected GPU(s):"
-echo "$GPU_INFO" | while read -r line; do info "  $line"; done
 
 HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
 # Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
@@ -45,7 +47,53 @@ lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INT
 MAIN_USER=$(getent passwd | awk -F: '$3>=1000 && $3<=1001 {print $1}' \
     | grep -vE '(liveuser|builduser|nobody|root)' | head -1)
 
-install_pkgs() { info "Installing: $*"; pacman -S --noconfirm --needed "$@" 2>&1 || warn "Some packages failed: $*"; }
+# Install repo packages for a GPU stack. Filter the target list FIRST:
+# pacman -S aborts the entire transaction on one unknown target, which is how
+# the stale mesa-vdpau/libva-mesa-driver names (merged into mesa upstream)
+# silently skipped lib32-vulkan-radeon — and Steam's --noconfirm provider
+# resolution then pulled lib32-nvidia-utils onto AMD-only installs.
+#  - in the sync repos        -> install
+#  - installed but not in any repo -> already satisfied, skip (feeding it to
+#    pacman -S would error "target not found" and abort the whole set)
+#  - nowhere                  -> dead/renamed name
+# install_pkgs flags dead names and failures loudly (these are the required
+# driver stacks); install_pkgs_opt is the warn-only variant for best-effort
+# extras like firmware splits and VA-API helpers.
+_filter_pkgs() {
+    local p
+    AVAIL=(); DEAD=()
+    for p in "$@"; do
+        if pacman -Si "$p" >/dev/null 2>&1; then
+            AVAIL+=("$p")
+        elif pacman -Qq "$p" >/dev/null 2>&1; then
+            info "$p already installed (not in sync repos) — skipping."
+        else
+            DEAD+=("$p")
+        fi
+    done
+}
+install_pkgs() {
+    local p
+    _filter_pkgs "$@"
+    for p in "${DEAD[@]}"; do
+        note_failure "package '$p' not found in repos (renamed/merged upstream?) — skipped."
+    done
+    [[ ${#AVAIL[@]} -eq 0 ]] && return 0
+    info "Installing: ${AVAIL[*]}"
+    pacman -S --noconfirm --needed "${AVAIL[@]}" 2>&1 \
+        || note_failure "pacman -S failed for: ${AVAIL[*]}"
+}
+install_pkgs_opt() {
+    local p
+    _filter_pkgs "$@"
+    for p in "${DEAD[@]}"; do
+        warn "optional package '$p' not found in repos — skipped."
+    done
+    [[ ${#AVAIL[@]} -eq 0 ]] && return 0
+    info "Installing (optional): ${AVAIL[*]}"
+    pacman -S --noconfirm --needed "${AVAIL[@]}" 2>&1 \
+        || warn "optional install failed: ${AVAIL[*]}"
+}
 
 # Local pre-built AUR packages staged into the airootfs at build time
 # (build.sh's AUR_DEPS section). install-gpu-drivers consumes them via
@@ -69,7 +117,11 @@ find_local_pkgs() {
             matches+=("$f")
         done
     done
-    printf '%s\n' "${matches[@]}"
+    # Print nothing on zero matches — an unconditional printf emits one empty
+    # line, which mapfile turns into found=("") and pacman -U "" runs instead
+    # of the intended "No local pkgs found" warning.
+    [[ ${#matches[@]} -gt 0 ]] && printf '%s\n' "${matches[@]}"
+    return 0
 }
 
 # Install local pre-built packages by family name (e.g. nvidia-580xx-dkms).
@@ -143,7 +195,7 @@ if $HAS_INTEL; then
     INTEL_DEV=$(lspci 2>/dev/null | grep -iE "Intel.*(Graphics|UHD|HD|Iris|Arc)" | head -1)
     if echo "$INTEL_DEV" | grep -iqE "Arc|Xe|A[3-7][0-9]{2}"; then
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
-        install_pkgs linux-firmware-intel 2>/dev/null || true
+        install_pkgs_opt linux-firmware-intel
     else
         INTEL_ID=$(lspci -nn 2>/dev/null | grep -iE "Intel.*Graphics" \
                    | grep -oE '8086:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || echo "ffff")
@@ -152,7 +204,7 @@ if $HAS_INTEL; then
             install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
         else
             install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
-            install_pkgs linux-firmware-intel 2>/dev/null || true
+            install_pkgs_opt linux-firmware-intel
         fi
     fi
     info "Intel packages installed."
@@ -172,10 +224,11 @@ if $HAS_AMD; then
     if $IS_OLD_AMD; then
         install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
     else
-        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon \
-                     libva-mesa-driver lib32-libva-mesa-driver mesa-vdpau lib32-mesa-vdpau xf86-video-amdgpu
+        # VA-API/VDPAU are part of mesa itself now — the old libva-mesa-driver /
+        # mesa-vdpau split packages no longer exist.
+        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon xf86-video-amdgpu
     fi
-    install_pkgs linux-firmware-amdgpu 2>/dev/null || true
+    install_pkgs_opt linux-firmware-amdgpu
     info "AMD packages installed."
 fi
 
@@ -191,7 +244,7 @@ if $HAS_NVIDIA; then
         # nvidia-open is the official NVIDIA open source kernel module (SM 7.5+)
         # Same userspace as proprietary — full Wayland/Hyprland support
         install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver libva-utils
-        install_pkgs linux-firmware-nvidia 2>/dev/null || true
+        install_pkgs_opt linux-firmware-nvidia
         info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
     elif [[ $PCI_DEC -ge 4928 ]]; then
         # 0x1340-0x1E03 = Maxwell through Pascal-Volta (GTX 900, GTX 1000, Titan V)
@@ -200,7 +253,7 @@ if $HAS_NVIDIA; then
         # and force DKMS to compile against the TARGET kernel (not the chroot
         # host's). No more first-boot mkinitcpio deferral needed.
         install_pkgs linux-headers dkms libva-utils
-        install_pkgs libva-nvidia-driver 2>/dev/null || true
+        install_pkgs_opt libva-nvidia-driver
         if install_local_pkgs nvidia-580xx-dkms nvidia-580xx-utils \
                               lib32-nvidia-580xx-utils nvidia-580xx-settings; then
             ver=$(detect_dkms_version nvidia-580xx-dkms || echo "")
@@ -215,12 +268,12 @@ if $HAS_NVIDIA; then
         else
             note_failure "nvidia-580xx-dkms: local driver packages missing/failed — Maxwell/Pascal/Volta GPU has no kernel driver."
         fi
-        install_pkgs linux-firmware-nvidia 2>/dev/null || true
+        install_pkgs_opt linux-firmware-nvidia
         info "NVIDIA Maxwell-Pascal-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
     elif [[ $PCI_DEC -ge 4032 ]]; then
         # 0x0FC0-0x133F = Kepler (GTX 600/700, GT 710)
         install_pkgs linux-headers dkms libva-utils
-        install_pkgs libva-nvidia-driver 2>/dev/null || true
+        install_pkgs_opt libva-nvidia-driver
         if install_local_pkgs nvidia-470xx-dkms nvidia-470xx-utils \
                               lib32-nvidia-470xx-utils; then
             ver=$(detect_dkms_version nvidia-470xx-dkms || echo "")
@@ -232,7 +285,7 @@ if $HAS_NVIDIA; then
         else
             note_failure "nvidia-470xx-dkms: local driver packages missing/failed — Kepler GPU has no kernel driver."
         fi
-        install_pkgs linux-firmware-nvidia 2>/dev/null || true
+        install_pkgs_opt linux-firmware-nvidia
         info "NVIDIA Kepler (GTX 600/700) — installed nvidia-470xx-dkms."
     elif [[ $PCI_DEC -ge 1728 ]]; then
         # 0x06C0-0x0FBF = Fermi (GTX 400/500, GT 6xx OEM)
@@ -250,7 +303,7 @@ if $HAS_NVIDIA; then
         info "NVIDIA Fermi (GTX 400/500) — installed nvidia-390xx-dkms."
     else
         # Pre-Fermi (Tesla / older) — nouveau is the only realistic option
-        install_pkgs xf86-video-nouveau mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver
+        install_pkgs xf86-video-nouveau mesa lib32-mesa
     fi
 
     # PRIME package if hybrid
@@ -260,6 +313,21 @@ if $HAS_NVIDIA; then
     [[ $GPU_COUNT -gt 0 ]] && install_pkgs nvidia-prime || true
 
     info "NVIDIA packages installed."
+fi
+
+# ── Vulkan-provider catch-all ────────────────────────────────────────────────
+# Guarantee SOME vulkan-driver / lib32-vulkan-driver provider is installed.
+# The vendor branches cover common hardware, but on anything they skip
+# (pre-Fermi nouveau, VM GPUs like virtio/VMware/VBox, headless, future IDs)
+# a later --noconfirm transaction that needs the provide — Steam depends on
+# lib32-vulkan-driver — lets pacman auto-pick the alphabetically-first
+# provider: lib32-nvidia-utils. Installing mesa's software fallback
+# (lavapipe) closes that hole; on covered hardware these are no-ops.
+if ! pacman -T vulkan-driver >/dev/null 2>&1; then
+    install_pkgs vulkan-swrast
+fi
+if ! pacman -T lib32-vulkan-driver >/dev/null 2>&1; then
+    install_pkgs lib32-vulkan-swrast
 fi
 
 info "GPU driver package installation complete."

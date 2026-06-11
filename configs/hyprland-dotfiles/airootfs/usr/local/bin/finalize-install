@@ -4,12 +4,15 @@
 # Calamares shellprocess — runs inside the installed system chroot AFTER
 # install-gpu-drivers and BEFORE desktopcleanup.
 #
-# Post-install cleanup pass. GPU drivers are NO LONGER shipped on the live
-# ISO — install-gpu-drivers installs the right stack on the TARGET at install
-# time — so the old "kitchen-sink driver prune" is gone. What remains here:
+# Post-install cleanup pass. GPU drivers are no longer shipped on the live
+# ISO — install-gpu-drivers installs the right stack on the TARGET — but
+# generic provides can still leak the wrong vendor in (see the wrong-vendor
+# prune below). What runs here:
 #
 #   - Live-only tooling (arch-install-scripts, archinstall, syslinux,
 #     mkinitcpio-archiso, calamares, memtest86+, edk2-shell, etc.)
+#   - Wrong-vendor GPU driver prune (defense in depth against --noconfirm
+#     provider auto-selection, e.g. Steam pulling lib32-nvidia-utils)
 #   - Wrong CPU microcode (intel-ucode on AMD, amd-ucode on Intel) — the
 #     ISO ships both; keep only the one the detected CPU uses
 #   - Live-only sudoers drop-ins (g_wheel NOPASSWD, liveuser) and the
@@ -25,13 +28,30 @@ info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 
 remove_pkgs() {
-    local pkgs=("$@")
-    [[ ${#pkgs[@]} -eq 0 ]] && return 0
-    info "Removing: ${pkgs[*]}"
+    # Filter to packages that are actually installed first: pacman -Rns is
+    # all-or-nothing, so one absent name ("target not found") would abort the
+    # whole removal and silently prune NOTHING.
+    local installed=() p
+    for p in "$@"; do
+        pacman -Qq "$p" >/dev/null 2>&1 && installed+=("$p")
+    done
+    [[ ${#installed[@]} -eq 0 ]] && return 0
+    info "Removing: ${installed[*]}"
     # -Rns: cascade unused deps + remove config files. --noconfirm for
-    # automation. Failures (package not present) are non-fatal — the
-    # live ISO may ship slightly different subsets between builds.
-    pacman -Rns --noconfirm "${pkgs[@]}" 2>&1 | sed 's/^/[cleanup] /' || true
+    # automation. -Rns is also all-or-nothing on dependency refusals: if ONE
+    # target is still required by something, the whole batch is vetoed. Fall
+    # back to per-package removal so a single refusal can't shield the rest.
+    # A package that still can't be removed is kept — better a stray package
+    # than a broken install.
+    if ! pacman -Rns --noconfirm "${installed[@]}" 2>&1 | sed 's/^/[cleanup] /'; then
+        warn "Batch removal refused — retrying per package."
+        for p in "${installed[@]}"; do
+            pacman -Qq "$p" >/dev/null 2>&1 || continue
+            pacman -Rns --noconfirm "$p" 2>&1 | sed 's/^/[cleanup] /' \
+                || warn "Could not remove $p (still required by something) — keeping it."
+        done
+    fi
+    return 0
 }
 
 # ── CPU detection ────────────────────────────────────────────────────────────
@@ -74,6 +94,63 @@ LIVEONLY=(
 # from inside their installed system somehow we don't want to nuke it.
 # Defensive shape — never abort the install on a package that wasn't there.
 remove_pkgs "${LIVEONLY[@]}"
+
+# ── Wrong-vendor GPU driver prune (defense in depth) ─────────────────────────
+# install-gpu-drivers installs the right stack for the detected hardware, but
+# generic provides can still leak the wrong vendor in: with --noconfirm,
+# pacman resolves an unsatisfied lib32-vulkan-driver / opengl-driver dep to
+# the alphabetically-first provider — e.g. Steam pulling lib32-nvidia-utils
+# (→ nvidia-utils, egl-*) onto an AMD-only machine. By the time we run, the
+# correct vendor's providers are installed, so removing the wrong vendor's
+# packages cannot break dependencies — and -Rns refuses (|| true) rather than
+# breaks if something genuinely still needs one. mesa / lib32-mesa are shared
+# by every vendor path and are never touched. Firmware (linux-firmware-*) is
+# left alone: the linux-firmware meta-package depends on all vendor splits.
+GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
+if [[ -n "$GPU_INFO" ]]; then
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
+    info "Detected GPUs: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD Intel=$HAS_INTEL"
+
+    # egl-wayland/egl-gbm/egl-x11/egl-wayland2 are intentionally NOT listed:
+    # they're dependencies of nvidia-utils, so -Rns cascades them away — and
+    # listing them explicitly would let any future outside dependent (mutter
+    # depends on egl-wayland) veto the batch.
+    NVIDIA_PKGS=(
+        nvidia nvidia-open nvidia-dkms nvidia-open-dkms
+        nvidia-utils lib32-nvidia-utils nvidia-settings nvidia-prime
+        libva-nvidia-driver opencl-nvidia lib32-opencl-nvidia
+        nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils
+        nvidia-580xx-settings opencl-nvidia-580xx libxnvctrl-580xx
+        nvidia-470xx-dkms nvidia-470xx-utils lib32-nvidia-470xx-utils
+        opencl-nvidia-470xx
+        nvidia-390xx-dkms nvidia-390xx-utils opencl-nvidia-390xx
+    )
+    AMD_PKGS=(
+        vulkan-radeon lib32-vulkan-radeon xf86-video-amdgpu xf86-video-ati
+    )
+    INTEL_PKGS=(
+        vulkan-intel lib32-vulkan-intel intel-media-driver
+        intel-compute-runtime libva-intel-driver xf86-video-intel
+    )
+
+    if ! $HAS_NVIDIA; then
+        info "No NVIDIA GPU — removing NVIDIA driver stack."
+        remove_pkgs "${NVIDIA_PKGS[@]}"
+    fi
+    if ! $HAS_AMD; then
+        info "No AMD GPU — removing AMD driver stack."
+        remove_pkgs "${AMD_PKGS[@]}"
+    fi
+    if ! $HAS_INTEL; then
+        info "No Intel GPU — removing Intel driver stack."
+        remove_pkgs "${INTEL_PKGS[@]}"
+    fi
+else
+    warn "No GPU detected via lspci — skipping wrong-vendor driver prune."
+fi
 
 # ── CPU microcode prune ──────────────────────────────────────────────────────
 # The bootloader entries reference both microcode initrds; the CPU
