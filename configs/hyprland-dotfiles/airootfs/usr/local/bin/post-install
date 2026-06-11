@@ -1002,8 +1002,13 @@ info "Scheduling pacman keyring initialization for first boot..."
 cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
 [Unit]
 Description=Initialize pacman keyring on first boot
-After=network-online.target time-sync.target
-Wants=network-online.target
+# gpg signature validity needs a synced clock, but ONLY this unit should
+# wait for NTP — systemd-time-wait-sync must never be enabled boot-wide
+# (it gated timers/multi-user/graphical on an NTP round-trip at EVERY
+# boot, freezing first login for 10-30+ seconds). Wanting it here runs
+# the wait only when the keyring actually initializes (first boot).
+After=network-online.target systemd-time-wait-sync.service
+Wants=network-online.target systemd-time-wait-sync.service
 # Run if the keyring is missing OR empty (e.g. left over from a tmpfs mount).
 # The ExecCondition check handles both cases; ConditionPathExists alone is
 # not enough because an empty pubring.gpg can exist from a failed init.
