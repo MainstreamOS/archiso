@@ -836,7 +836,27 @@ chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$DOTS_WORK'"; then
     if [[ -d "$DOTS_WORK/dots" ]]; then
         mkdir -p "$SKEL_DIR"
-        cp -a "$DOTS_WORK/dots/." "$SKEL_DIR/"
+        # Mirror dots into the skel WITH deletions, so files removed from the
+        # dotfiles repo don't live on in the skel and every fresh install
+        # (the old cp -a copy-over shipped deleted QML/scripts for weeks).
+        # Excluded paths are skel content that does not come from dots/:
+        #  - build-deposited artifacts added by later phases of this script
+        #    (python venv, prebuilt hyprland plugins, uv sdata, init-qs.sh)
+        #  - deliberate ISO-only extras (.bash_profile, gtk settings.ini
+        #    defaults, first_run marker, auto-drive-mount icon)
+        # rsync does not delete excluded destination paths, so these survive
+        # builds without being re-created each time.
+        rsync -a --delete \
+            --exclude='/.bash_profile' \
+            --exclude='/.config/gtk-3.0/settings.ini' \
+            --exclude='/.config/gtk-4.0/settings.ini' \
+            --exclude='/.config/hypr/scripts/' \
+            --exclude='/.local/share/hyprland/plugins/' \
+            --exclude='/.local/share/icons/hicolor/scalable/apps/auto-drive-mount.svg' \
+            --exclude='/.local/share/quickshell/sdata/uv/' \
+            --exclude='/.local/state/quickshell/.venv/' \
+            --exclude='/.local/state/quickshell/user/first_run.txt' \
+            "$DOTS_WORK/dots/" "$SKEL_DIR/"
         # Hyprland 0.55 Lua config: each former `exec-once = ...` entry becomes a
         # separate `hl.on("hyprland.start", function() hl.exec_cmd("...") end)`
         # subscription. Multiple hl.on calls for the same event are additive, so
