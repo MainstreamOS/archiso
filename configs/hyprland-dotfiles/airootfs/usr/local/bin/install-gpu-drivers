@@ -234,8 +234,13 @@ if $HAS_NVIDIA; then
         # host's). No more first-boot mkinitcpio deferral needed.
         install_pkgs linux-headers dkms libva-utils
         install_pkgs_opt libva-nvidia-driver
+        # libxnvctrl-580xx MUST ride the same -U: nvidia-580xx-settings
+        # depends on it, it only exists as a staged file (the repo DB
+        # deliberately excludes GPU packages), and one unresolvable dep
+        # aborts the entire pacman -U transaction.
         if install_local_pkgs nvidia-580xx-dkms nvidia-580xx-utils \
-                              lib32-nvidia-580xx-utils nvidia-580xx-settings; then
+                              lib32-nvidia-580xx-utils nvidia-580xx-settings \
+                              libxnvctrl-580xx; then
             ver=$(detect_dkms_version nvidia-580xx-dkms || echo "")
             if [[ -n "$ver" ]]; then
                 # DKMS module name is "nvidia" for ALL nvidia-*xx-dkms
