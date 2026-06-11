@@ -134,7 +134,7 @@ hyprshot
 xdg-desktop-portal
 xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
-# xdg-desktop-portal-kde removed — KDE portal not needed
+xdg-desktop-portal-xapp
 xdg-utils
 layer-shell-qt
 kdialog
