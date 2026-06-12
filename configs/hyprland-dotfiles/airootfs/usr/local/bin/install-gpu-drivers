@@ -195,7 +195,13 @@ if $HAS_AMD; then
              | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
     AMD_DEC=$((16#${AMD_ID:-ffff}))
     IS_OLD_AMD=false
-    [[ $AMD_DEC -lt 26112 ]] && IS_OLD_AMD=true || true
+    # Low device ID = old only holds for DISCRETE cards. APU iGPUs (Kaveri
+    # through Raven/Picasso/Renoir/Cezanne/Phoenix, 0x1300-0x16ff = 4864-5887)
+    # are numerically low but all modern GCN+ — without the exemption every
+    # AMD APU classifies as old and picks up the pre-GCN xf86-video-ati DDX.
+    if [[ $AMD_DEC -lt 26112 ]] && ! [[ $AMD_DEC -ge 4864 && $AMD_DEC -le 5887 ]]; then
+        IS_OLD_AMD=true
+    fi
     AMD_NAME=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | grep -i "AMD\|ATI\|Radeon" | head -1)
     echo "$AMD_NAME" | grep -iqE "\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b" \
         && IS_OLD_AMD=true || true
