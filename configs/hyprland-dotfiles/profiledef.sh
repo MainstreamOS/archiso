@@ -21,7 +21,6 @@ file_permissions=(
 
   # Install scripts
   ["/usr/local/bin/pre-install"]="0:0:755"
-  ["/usr/local/bin/install-yay"]="0:0:755"
   ["/usr/local/bin/install-dotfiles"]="0:0:755"
   ["/usr/local/bin/install-gpu-drivers"]="0:0:755"
   ["/usr/local/bin/install-limine"]="0:0:755"

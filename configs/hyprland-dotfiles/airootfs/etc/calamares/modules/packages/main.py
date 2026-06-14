@@ -14,8 +14,10 @@
 #   Calamares is Free Software: see the License-Identifier above.
 #
 # --- Mainstream OS additions ---
-#   PMYay: AUR-capable backend using yay.
-#   Inserted after PMXbps, before PMYum (alphabetical by backend name).
+#   PMPacmanFlatpak: hybrid backend that installs native packages with
+#   pacman (official repos only — no AUR helper) and auto-routes Flatpak
+#   refs to flatpak. The AUR is deliberately not used at install time.
+#   Inserted after PMPacman, before PMPamac (alphabetical by backend name).
 #
 
 import abc
@@ -479,24 +481,24 @@ class PMXbps(PackageManager):
         self.run_xbps(["xbps", "-Suy"])
 
 
-class PMYay(PackageManager):
+class PMPacmanFlatpak(PackageManager):
     """
-    AUR-capable package manager backend using yay.
+    Hybrid backend: native packages via pacman (official repos only),
+    Flatpak refs via flatpak. No AUR helper is involved.
 
-    yay handles both official Arch repos and the AUR in a single command,
-    making it suitable for installing optional packages that users selected
-    in the netinstall step (including AUR entries like brave-bin, spotify, etc.).
+    The netinstall list mixes native Arch package names (gnome-disk-utility,
+    mpv, steam) with Flatpak refs (com.spotify.Client, org.gnome.TextEditor).
+    install() routes each entry by name shape:
+      - dotted reverse-DNS name → flatpak (installed from the live env so
+        bwrap can unshare a user namespace; see _flatpak_run)
+      - everything else → pacman -S in the target chroot, official repos
+        only. The AUR is intentionally not a supported install source.
 
-    Key constraints:
-    - yay refuses to run as root; install() runs it as the primary user
-      that Calamares created (read from GlobalStorage "username", with a
-      uid-1000 fallback).
-    - remove() and update_db() use pacman directly — removal does not need
-      AUR logic, and pacman -Sy is sufficient for DB sync.
-    - Each package in try_install() is attempted individually so one bad
-      AUR package does not block the rest of the optional install list.
+    remove()/update_db()/update_system() use pacman directly. Each package
+    in try_install() is attempted individually so one failure does not block
+    the rest of the optional install list.
     """
-    backend = "yay"
+    backend = "pacmanflatpak"
 
     def __init__(self):
         self.in_package_changes = False
@@ -508,19 +510,14 @@ class PMYay(PackageManager):
         # idempotent, this just saves a fork per package).
         self.flathub_added = False
 
-        # Pipe yay output to the Calamares log, but DON'T let it
-        # overwrite custom_status_message — the per-package iteration
-        # in install() already sets "Installing PKG" as a clean,
-        # stable label, and we don't want it being replaced (even
-        # momentarily) by yay's transitional state lines like:
-        #   ":: Synchronizing package databases..."
-        #   ":: Resolving dependencies..."
-        #   "warning: foo is up to date — reinstalling"
-        #   "==> WARNING: A package has already been built ..."
-        # Some of those start with `warning:` and would look alarming
-        # under the progress bar even when the install is fine. The
-        # log panel (when expanded) still shows everything verbatim;
-        # only the prominent status label stays clean.
+        # Pipe pacman/flatpak output to the Calamares log, but DON'T let it
+        # overwrite custom_status_message — the per-package iteration in
+        # install() already sets "Installing PKG" as a clean, stable label,
+        # and we don't want it replaced (even momentarily) by transitional
+        # lines like ":: Synchronizing package databases..." or pacman's
+        # "warning: foo is up to date -- reinstalling", which would look
+        # alarming under the progress bar even when the install is fine.
+        # The log panel (when expanded) still shows everything verbatim.
         def line_cb(line):
             libcalamares.utils.debug(line)
 
@@ -529,9 +526,9 @@ class PMYay(PackageManager):
     @staticmethod
     def _is_flatpak_ref(name):
         """A Flatpak ref is a reverse-DNS triple like com.spotify.Client or
-        org.gnome.TextEditor. Native Arch / AUR package names don't contain
-        dots — the dot is a reliable single-character discriminator without
-        needing a registry of known refs.
+        org.gnome.TextEditor. Native Arch package names don't contain dots —
+        the dot is a reliable single-character discriminator without needing
+        a registry of known refs.
         """
         return "." in name
 
@@ -602,23 +599,6 @@ class PMYay(PackageManager):
                 "flatpak remote-add for flathub failed (continuing): " + str(e))
         self.flathub_added = True
 
-    def _yay_user(self):
-        """
-        Return the non-root username yay must run under.
-
-        Prefers GlobalStorage "username" (set by the users module before
-        the packages module executes). Falls back to the first uid-1000
-        account in the target passwd database.
-        """
-        username = libcalamares.globalstorage.value("username") or ""
-        if not username:
-            try:
-                import pwd
-                username = pwd.getpwuid(1000).pw_name
-            except (KeyError, ImportError):
-                pass
-        return username
-
     def reset_progress(self):
         self.in_package_changes = False
         self.progress_fraction = (completed_packages * 1.0 / total_packages)
@@ -663,31 +643,21 @@ class PMYay(PackageManager):
     def install(self, pkgs, from_local=False):
         """
         Install packages ONE AT A TIME so each install can update the
-        progress bar's status line with the current package name. A
-        batched ``yay -S pkg1 pkg2 ...`` call only emits the (N/M)
-        progress line during pacman's tail-end transaction phase, which
-        for AUR builds is preceded by a long silent ``==> Making
-        package: ...`` phase that leaves the user staring at an
-        unchanging "Install packages." string. Per-package iteration
-        means every yay invocation explicitly sets
+        progress bar's status line with the current package name, and so
+        one failing entry (a Flatpak ref that vanished from Flathub, say)
+        does not abort the whole curated selection. Every iteration sets
         ``custom_status_message = "Installing X"`` first, so the panel
-        below the progress bar tracks real progress.
+        below the progress bar tracks real progress instead of sitting on
+        a stale "Install packages." string.
 
-        Cost: ~1s of yay startup overhead per package. For typical
-        netinstall selections (~30-60 packages) this is well under the
-        time spent actually downloading + building, and it pays for
-        itself with the UI feedback.
+        Cost: pacman startup + a separate transaction per native package.
+        For repo packages that's cheap relative to the download, and the
+        per-package UI feedback pays for it. ``--needed`` makes the
+        separate transactions idempotent and dedup-safe.
         """
         if not pkgs:
             return
         self.reset_progress()
-
-        user = self._yay_user()
-        if not user:
-            # Single warning for the whole batch, not per package.
-            libcalamares.utils.warning(
-                "yay: no non-root user found; "
-                "falling back to pacman for: " + str(pkgs))
 
         global custom_status_message
         for idx, pkg in enumerate(pkgs):
@@ -700,11 +670,22 @@ class PMYay(PackageManager):
             progress = (completed_packages + idx) * 1.0 / total_packages
             libcalamares.job.setprogress(progress)
 
+            # localInstall: pkg_name is a local .pkg.tar.zst path, which
+            # contains dots and would otherwise be misrouted to flatpak by
+            # the ref check below. Local files are always pacman -U. Checked
+            # first so the from_local contract holds.
+            if from_local:
+                command = [
+                    "pacman", "-U", "--noconfirm", "--needed",
+                    "--noprogressbar", "--", pkg_name,
+                ]
+                libcalamares.utils.target_env_process_output(command, self.line_cb)
+                continue
+
             # Auto-route: Flatpak refs (containing dots) → flatpak,
-            # everything else → yay (or pacman fallback). The netinstall
-            # mixes both freely; package names like com.spotify.Client
-            # go to Flathub, names like gnome-disk-utility / mpv /
-            # davinci-resolve go to the Arch/AUR path.
+            # everything else → pacman. The netinstall mixes both freely;
+            # com.spotify.Client goes to Flathub, gnome-disk-utility / mpv
+            # / steam go to the official Arch repos.
             if self._is_flatpak_ref(pkg_name):
                 self._ensure_flathub_remote()
                 # `_flatpak_run` runs flatpak on the LIVE env with
@@ -723,36 +704,23 @@ class PMYay(PackageManager):
                      "flathub", pkg_name],
                     self.line_cb)
                 continue
-            if user:
-                # `--norebuild` skips rebuilding already-cached AUR
-                # packages, useful for repeat installs. `--noprogressbar`
-                # keeps pacman's spinner out of the log without
-                # affecting yay's (N/M) install lines.
-                #
-                # IMPORTANT: do not add `--nokeepsrc` here — it's NOT a
-                # valid yay option (the only related flag is the
-                # opt-in `--keepsrc`, and the default is already to
-                # clean up src/ and pkg/ after build). A previous
-                # revision included it and every install instantly
-                # failed with `invalid option 'nokeepsrc'`.
-                command = [
-                    "su", "-s", "/bin/bash", user, "-c",
-                    ("yay -S --noconfirm --needed --noprogressbar "
-                     "--norebuild -- ") + pkg_name,
-                ]
-            else:
-                command = [
-                    "pacman", "-S", "--noconfirm", "--needed",
-                    "--noprogressbar", "--", pkg_name,
-                ]
+            # Native package → pacman -S in the target chroot as root, from
+            # the official repos only. No AUR helper: the netinstall list is
+            # curated so every native entry resolves from the repos, and the
+            # AUR is not a trusted install source.
+            command = [
+                "pacman", "-S", "--noconfirm", "--needed",
+                "--noprogressbar", "--", pkg_name,
+            ]
             libcalamares.utils.target_env_process_output(command, self.line_cb)
 
     def remove(self, pkgs):
         if not pkgs:
             return
         self.reset_progress()
-        # Installed AUR packages are identical to repo packages from
-        # pacman's perspective — -Rs handles removal cleanly.
+        # Flatpak-installed apps aren't pacman-owned, but the netinstall
+        # only ever installs (never removes) Flatpak refs, so -Rs on the
+        # native names is all this path needs.
         check_target_env_call(["pacman", "-Rs", "--noconfirm"] + pkgs)
 
     def update_db(self):

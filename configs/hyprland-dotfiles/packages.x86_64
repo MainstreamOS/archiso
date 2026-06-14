@@ -247,10 +247,10 @@ kpmcore
 qt6-declarative
 yaml-cpp
 kcoreaddons
-# flatpak on the LIVE side so PMYay can run `flatpak --sysroot=<target>
-# install ...` from the live env — bwrap in the live kernel context has
-# the namespace permissions that the same call lacks inside the target
-# chroot, so apply_extra refs (Chrome, Spotify) install cleanly.
+# flatpak on the LIVE side so the pacmanflatpak backend can run
+# `flatpak ... install` from the live env — bwrap in the live kernel
+# context has the namespace permissions that the same call lacks inside
+# the target chroot, so apply_extra refs (Chrome, Spotify) install cleanly.
 flatpak
 
 # ==============================================================================

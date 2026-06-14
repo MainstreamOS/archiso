@@ -56,8 +56,8 @@
     <g transform="translate(0 192)">
       <circle cx="22" cy="14" r="14" fill="#0B0D12" stroke="url(#stream)" stroke-width="2"/>
       <path d="M15 14 L19 18 L29 8" stroke="url(#stream)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Installing yay, dotfiles, and Limine</text>
-      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">AUR helper, your home tree, and the snapshot-aware bootloader.</text>
+      <text x="60" y="14" font-size="22" font-weight="500" fill="#ECE9E3" letter-spacing="-0.3">Installing dotfiles and Limine</text>
+      <text x="60" y="40" font-size="14" fill="#9397A0" letter-spacing="-0.2">Your home tree and the snapshot-aware bootloader.</text>
     </g>
 
     <g transform="translate(0 256)">

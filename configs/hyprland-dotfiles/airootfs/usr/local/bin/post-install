@@ -778,20 +778,23 @@ fi
 # ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
 # ---------------------------------------------------------------------------
-# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks archiso
-# build chroot) and can't be in packages.conf install section (no db sync
-# available).  We install them here via yay which handles AUR + db sync.
+# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks the
+# archiso build chroot). snapper/snap-pac are in the official repos and the
+# two limine packages are pre-built into the [mainstream] file repo
+# (file:///usr/local/share/pkgs, on the target's pacman.conf), so pacman -S
+# resolves all four — no AUR helper needed.
 #
 # IMPORTANT: limine-mkinitcpio-hook must be installed BEFORE mkinitcpio -P
 # so the hook can manage kernel/initramfs placement on the EFI partition and
 # generate proper //linux sub-entries in limine.conf.
-if command -v yay &>/dev/null; then
-    info "Installing snapper and limine integration packages..."
-    su -s /bin/bash "$MAIN_USER" -c \
-        "yay -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync" \
-        2>/dev/null || \
-        pacman -S --noconfirm --needed snapper snap-pac 2>/dev/null || true
-fi
+info "Installing snapper and limine integration packages..."
+# -Sy first so the [mainstream] file-repo db is in the sync dir even if an
+# earlier step didn't refresh it. Fall back to the two official packages so
+# a [mainstream] hiccup can't block the install outright.
+pacman -Sy --noconfirm 2>/dev/null || true
+pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync 2>&1 \
+    || pacman -S --noconfirm --needed snapper snap-pac 2>&1 \
+    || true
 
 # Configure Limine's entry generator before mkinitcpio/limine-mkinitcpio runs.
 # The trailing slash keeps kernel sub-entries nested under "Mainstream OS".
@@ -959,12 +962,11 @@ fi
 rm -f /etc/sudoers.d/builduser 2>/dev/null || true
 
 # g_wheel grants %wheel passwordless sudo for the duration of the
-# Calamares install. It survives this script because the netinstall
-# packages module (Job 34, runs after postinstall) uses yay, which
-# calls sudo pacman internally. The actual cleanup — replacing g_wheel
-# with the standard password-required wheel rule — happens
-# synchronously at the end of finalize-install, which Calamares runs
-# AFTER the packages module. See finalize-install for the cleanup
+# Calamares install. The netinstall packages module no longer needs it
+# (it runs pacman directly as root in the chroot — the yay-as-user path
+# that called sudo pacman internally is gone), but the cleanup still
+# happens synchronously at the end of finalize-install, which Calamares
+# runs after the packages module. See finalize-install for the cleanup
 # block. Stale pacman lock can still appear if a previous step
 # crashed; clear it defensively here.
 rm -f /var/lib/pacman/db.lck 2>/dev/null || true

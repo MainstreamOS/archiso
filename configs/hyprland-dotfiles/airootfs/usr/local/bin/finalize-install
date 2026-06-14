@@ -166,9 +166,10 @@ esac
 # Shipped via airootfs/etc/ but useless on the installed system. pacman
 # -Rns can't touch these (no owning package); rm them by hand.
 LOOSE_FILES=(
-    # /etc/sudoers.d/builduser is dropped by install-yay at the end of
-    # its run, but if that script aborted mid-flight the file might
-    # still be here. Removing again is safe.
+    # /etc/sudoers.d/builduser is a build-time artifact (the ISO build's
+    # AUR-prebuild step creates a builduser); post-install purges it too.
+    # Sweep here as well in case it survived onto the target. Removing a
+    # file that isn't there is a no-op.
     /etc/sudoers.d/builduser
     # /etc/sudoers.d/g_wheel grants %wheel passwordless sudo for the
     # live ISO so the liveuser can run the installer. Carrying it
@@ -225,8 +226,7 @@ done
 # ── Passwordless-sudo cleanup ───────────────────────────────────────────────
 # /etc/sudoers.d/g_wheel is shipped in the airootfs with
 # `%wheel ALL=(ALL:ALL) NOPASSWD: ALL` so the live ISO's installer
-# (Calamares and its post-install scripts, including the packages
-# module that drives yay-based netinstall) can run sudo without
+# (Calamares and its post-install scripts) can run sudo without
 # prompting on a TTY-less install. By the time finalize-install runs,
 # all those passwordless-sudo consumers have completed. Replace
 # g_wheel with the standard password-requiring %wheel rule

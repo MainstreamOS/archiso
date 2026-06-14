@@ -6,10 +6,10 @@ name:       "packages"
 interface:  "python"
 script:     "main.py"
 
-# Weight calibrated against measured wall-clock: ~2 min for the yay
-# install of the Default Apps selection on fast hardware + fast
-# internet. Settings.conf uses a 1 weight unit ≈ 6 seconds scale
-# (minutes × 10).
+# Weight calibrated against measured wall-clock: ~2 min for the
+# pacman + flatpak install of the Default Apps selection on fast
+# hardware + fast internet. Settings.conf uses a 1 weight unit ≈ 6
+# seconds scale (minutes × 10).
 #
 # Sized to 30 (~3 min worth) rather than the bare measured 20 to
 # leave headroom for users who picked Custom and selected a lot of

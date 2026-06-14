@@ -44,7 +44,7 @@
       <g transform="translate(0 76)">
         <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>
         <path d="M7 11 L10 14 L16 8" stroke="url(#stream)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-        <text x="34" y="15" fill="#C9CCD4">topgrade handles pacman, AUR, Flatpak</text>
+        <text x="34" y="15" fill="#C9CCD4">One updater for pacman, Flatpak, and more</text>
       </g>
       <g transform="translate(0 114)">
         <circle cx="11" cy="11" r="11" fill="#191A1F" stroke="#2A2B32"/>

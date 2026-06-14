@@ -230,13 +230,13 @@ for pkg in "${REQUIRED_EXTRAS[@]}"; do
             FAILED_PKGS+=("$pkg")
         fi
     else
-        # AUR package — install with yay
-        if sudo -u "$NEW_USER" yay -S --noconfirm --needed "$pkg" 2>&1; then
-            info "$pkg installed successfully."
-        else
-            warn "Failed to install $pkg"
-            FAILED_PKGS+=("$pkg")
-        fi
+        # Not in any configured repo (official or [mainstream]). The
+        # installer uses pacman only — no AUR helper — so a package not
+        # packaged for the repos can't be installed here. REQUIRED_EXTRAS
+        # is curated to be all-official, so this is a guard, not an
+        # expected branch; record it and continue.
+        warn "$pkg is not in any configured repo and the installer does not use the AUR — skipping."
+        FAILED_PKGS+=("$pkg")
     fi
 done
 
