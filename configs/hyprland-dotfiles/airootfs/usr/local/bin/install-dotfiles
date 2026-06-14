@@ -207,6 +207,11 @@ REQUIRED_EXTRAS=(
     "satty"
     "fastfetch"
     "ksshaskpass"
+    # Per-tab MPRIS bridge for Firefox/Zen (from the [mainstream] repo). The
+    # media-control panel needs it for track info, position, artwork, and a
+    # working seek bar; it also ships the browser policies that auto-install
+    # the WebExtension. Replaces plasma-browser-integration (no KDE deps).
+    "firefox-mpris-hyprland"
 )
 
 info "Installing ${#REQUIRED_EXTRAS[@]} required extras..."

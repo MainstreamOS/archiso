@@ -569,6 +569,11 @@ build_local_pkg() {
 
 info "Building local PKGBUILDs..."
 build_local_pkg "calamares-mainstream"
+# firefox-mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
+# plasma-browser-integration replacement). Builds the Rust host + bundles the
+# WebExtension .xpi and the browser auto-install policies. git-sourced PKGBUILD,
+# so it tracks the published repo.
+build_local_pkg "firefox-mpris-hyprland"
 
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."
