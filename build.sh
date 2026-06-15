@@ -261,7 +261,7 @@ AUR_DEPS=(
     # the netinstall installs it with plain `pacman -S` instead of a Flatpak
     # ref. A sandboxed Flatpak browser can't read /etc/<browser>/policies/ or
     # reach the native-messaging host, which silently breaks the
-    # firefox-mpris-hyprland auto-install; the native build works out of the box.
+    # mpris-hyprland auto-install; the native build works out of the box.
     # (Firefox and Chromium are in the official repos, so they need no prebuild.)
     "zen-browser-bin"
     "ckbcomp"
@@ -576,11 +576,11 @@ build_local_pkg() {
 
 info "Building local PKGBUILDs..."
 build_local_pkg "calamares-mainstream"
-# firefox-mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
+# mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
 # plasma-browser-integration replacement). Builds the Rust host + bundles the
 # WebExtension .xpi and the browser auto-install policies. git-sourced PKGBUILD,
 # so it tracks the published repo.
-build_local_pkg "firefox-mpris-hyprland"
+build_local_pkg "mpris-hyprland"
 
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."

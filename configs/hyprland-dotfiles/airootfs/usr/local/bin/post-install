@@ -2016,7 +2016,7 @@ PYEOF
 fi
 
 # =============================================================================
-# firefox-mpris-hyprland
+# mpris-hyprland
 # =============================================================================
 # Per-tab MPRIS bridge for Firefox/Zen/LibreWolf/etc. — gives the Hyprland
 # media-control panel full track info, position, and YouTube thumbnails for
@@ -2029,62 +2029,62 @@ fi
 # the user only has to load the WebExtension on first browser launch. If
 # cargo is missing, leave install.sh for the user to run after first boot.
 
-setup_firefox_mpris() {
+setup_mpris_hyprland() {
     if [[ -z "${MAIN_USER:-}" || -z "${MAIN_USER_HOME:-}" ]]; then
-        warn "firefox-mpris: MAIN_USER unset; skipping."
+        warn "mpris-hyprland: MAIN_USER unset; skipping."
         return 0
     fi
-    info "firefox-mpris: configuring per-tab MPRIS bridge for Firefox-based browsers..."
+    info "mpris-hyprland: configuring per-tab MPRIS bridge for Firefox-based browsers..."
 
-    local repo_url="https://github.com/MainstreamOS/firefox-mpris-hyprland"
+    local repo_url="https://github.com/MainstreamOS/mpris-hyprland"
     local target_parent="${MAIN_USER_HOME}/Documents/GitHub"
-    local target_dir="${target_parent}/firefox-mpris-hyprland"
+    local target_dir="${target_parent}/mpris-hyprland"
 
     install -d -m 0755 -o "$MAIN_USER" -g "$MAIN_USER" \
         "${MAIN_USER_HOME}/Documents" "$target_parent"
 
     if [[ ! -d "$target_dir/.git" ]]; then
         if ! command -v git >/dev/null 2>&1; then
-            warn "firefox-mpris: git not in chroot; skipping pre-clone."
+            warn "mpris-hyprland: git not in chroot; skipping pre-clone."
             return 0
         fi
         if ! sudo -u "$MAIN_USER" git clone --depth 1 "$repo_url" "$target_dir"; then
-            warn "firefox-mpris: clone failed (network?); user can clone manually after first boot."
+            warn "mpris-hyprland: clone failed (network?); user can clone manually after first boot."
             return 0
         fi
-        info "firefox-mpris: cloned to $target_dir"
+        info "mpris-hyprland: cloned to $target_dir"
     else
-        info "firefox-mpris: reusing existing checkout at $target_dir"
+        info "mpris-hyprland: reusing existing checkout at $target_dir"
     fi
 
     if ! command -v cargo >/dev/null 2>&1; then
-        info "firefox-mpris: rust toolchain not present in chroot — deferring build."
+        info "mpris-hyprland: rust toolchain not present in chroot — deferring build."
         info "                User runs after first boot:"
         info "                  sudo pacman -S rust && cd '$target_dir' && ./install.sh"
         return 0
     fi
 
-    info "firefox-mpris: building host (cargo build --release as $MAIN_USER)..."
+    info "mpris-hyprland: building host (cargo build --release as $MAIN_USER)..."
     if ! sudo -u "$MAIN_USER" bash -lc "cd '$target_dir/host' && cargo build --release"; then
-        warn "firefox-mpris: build failed; user can retry after first boot via $target_dir/install.sh"
+        warn "mpris-hyprland: build failed; user can retry after first boot via $target_dir/install.sh"
         return 0
     fi
 
-    install -Dm0755 "$target_dir/host/target/release/firefox-mpris-host" \
-        /usr/bin/firefox-mpris-host
+    install -Dm0755 "$target_dir/host/target/release/mpris-hyprland-host" \
+        /usr/bin/mpris-hyprland-host
 
-    local manifest_src="$target_dir/packaging/firefox-mpris-host.json.in"
+    local manifest_src="$target_dir/packaging/firefox-host.json.in"
     local manifest_name="io.github.mainstreamos.firefox_mpris_hyprland.json"
 
-    _firefox_mpris_write_manifest() {
+    _mpris_hyprland_write_manifest() {
         local dest_dir="$1"
         install -d -m 0755 "$dest_dir"
-        sed 's|@HOST_BINARY@|/usr/bin/firefox-mpris-host|g' "$manifest_src" > "$dest_dir/$manifest_name"
+        sed 's|@HOST_BINARY@|/usr/bin/mpris-hyprland-host|g' "$manifest_src" > "$dest_dir/$manifest_name"
         chmod 0644 "$dest_dir/$manifest_name"
     }
 
-    _firefox_mpris_write_manifest /usr/lib/mozilla/native-messaging-hosts
-    info "firefox-mpris: installed system manifest at /usr/lib/mozilla/native-messaging-hosts/"
+    _mpris_hyprland_write_manifest /usr/lib/mozilla/native-messaging-hosts
+    info "mpris-hyprland: installed system manifest at /usr/lib/mozilla/native-messaging-hosts/"
 
     # Mirror to every other Firefox-fork system path that exists. Each fork
     # reads native-messaging hosts from a different directory; writing here
@@ -2097,19 +2097,19 @@ setup_firefox_mpris() {
                 /usr/lib/floorp \
                 /usr/lib/waterfox; do
         if [[ -d "$fork" ]]; then
-            _firefox_mpris_write_manifest "$fork/native-messaging-hosts"
-            info "firefox-mpris: installed system manifest for $(basename "$fork")."
+            _mpris_hyprland_write_manifest "$fork/native-messaging-hosts"
+            info "mpris-hyprland: installed system manifest for $(basename "$fork")."
         fi
     done
 
-    info "firefox-mpris: system-wide setup complete."
+    info "mpris-hyprland: system-wide setup complete."
     info "                Final user step (one-time, per browser):"
     info "                  about:debugging#/runtime/this-firefox"
     info "                  → 'Load Temporary Add-on…'"
     info "                  → $target_dir/extension/manifest.json"
 }
 
-setup_firefox_mpris
+setup_mpris_hyprland
 
 cleanup_limine_boot_entries
 
