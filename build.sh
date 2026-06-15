@@ -282,6 +282,15 @@ AUR_DEPS=(
     "cpptrace"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
 
+    # Default apps that were AUR-only and got dropped from netinstall when the
+    # installer moved off yay. Prebuilt here so a plain `pacman -S` from
+    # [mainstream] restores them on every fresh install — Nautilus right-click
+    # extensions and mpv UI scripts (all FOSS, deps resolve from extra).
+    "nautilus-copy-path"
+    "nautilus-admin-gtk4"
+    "mpv-modernz"
+    "mpv-thumbfast-git"
+
     # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
     # Arch's mainline `nvidia` package follows the current driver (590+
     # at time of writing) which drops Maxwell-Pascal-Volta support; the
