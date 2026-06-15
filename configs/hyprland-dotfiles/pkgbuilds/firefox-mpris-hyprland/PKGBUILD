@@ -40,10 +40,19 @@ package() {
         | install -Dm0644 /dev/stdin \
             "$pkgdir/usr/lib/mozilla/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
 
-    # ── WebExtension, packaged as an installable .xpi ───────────────────────
-    ( cd extension && zip -qr "$srcdir/firefox-mpris-hyprland.xpi" . -x '*.DS_Store' )
-    install -Dm0644 "$srcdir/firefox-mpris-hyprland.xpi" \
-        "$pkgdir/usr/share/$pkgname/firefox-mpris-hyprland.xpi"
+    # ── WebExtension .xpi ───────────────────────────────────────────────────
+    # Prefer a maintainer-signed build (dist/, produced by scripts/sign.sh via
+    # AMO) so the policy auto-installs it on vanilla Firefox too. Without it,
+    # ship an unsigned zip — which auto-installs only on Zen and other unbranded
+    # forks (Firefox rejects unsigned, even via policy).
+    if [[ -f dist/firefox-mpris-hyprland.xpi ]]; then
+        install -Dm0644 dist/firefox-mpris-hyprland.xpi \
+            "$pkgdir/usr/share/$pkgname/firefox-mpris-hyprland.xpi"
+    else
+        ( cd extension && zip -qr "$srcdir/firefox-mpris-hyprland.xpi" . -x '*.DS_Store' )
+        install -Dm0644 "$srcdir/firefox-mpris-hyprland.xpi" \
+            "$pkgdir/usr/share/$pkgname/firefox-mpris-hyprland.xpi"
+    fi
 
     # ── browser policies to auto-install the extension (unsigned) ───────────
     # Enterprise policy force-installs the .xpi from the local path above. Zen
