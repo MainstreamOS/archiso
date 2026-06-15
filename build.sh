@@ -257,6 +257,13 @@ METAPKGS=(
 # METAPKGS BUILD_SCRIPT (--nodeps) doesn't provide.
 
 AUR_DEPS=(
+    # Native Zen (default Firefox-fork browser), prebuilt into [mainstream] so
+    # the netinstall installs it with plain `pacman -S` instead of a Flatpak
+    # ref. A sandboxed Flatpak browser can't read /etc/<browser>/policies/ or
+    # reach the native-messaging host, which silently breaks the
+    # firefox-mpris-hyprland auto-install; the native build works out of the box.
+    # (Firefox and Chromium are in the official repos, so they need no prebuild.)
+    "zen-browser-bin"
     "ckbcomp"
     "ttf-google-sans"
     "limine-mkinitcpio-hook"
