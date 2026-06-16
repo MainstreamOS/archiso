@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# First-boot pacman keyring init + [mainstream] repo switch.
+# Run once by pacman-keyring-init.service (scheduled in post-install).
+#
+# pacman-key --init is unreliable in the Calamares chroot (no gpg-agent,
+# limited entropy), so the real init happens here on first boot with a synced
+# clock and a running gpg-agent. After the keyring is rebuilt, trust the
+# [mainstream] signing key and repoint the repo from the baked-in local file
+# copy (the offline install source) to the signed GitHub-hosted repo, so the
+# prebuilt packages get updates via pacman -Syu.
+set -euo pipefail
+
+# Rebuild the keyring (chroot init is unreliable; -e makes a failure here fail
+# the unit so it retries on the next boot).
+rm -rf /etc/pacman.d/gnupg
+pacman-key --init
+pacman-key --populate archlinux
+pacman-key --updatedb
+
+key=/usr/local/share/mainstream.pub
+fpr=D644BEB9C1B7668E3A6C16DA8D567345B265848E
+url=https://github.com/MainstreamOS/packages/releases/download/mainstream-repo
+
+# Switch [mainstream] to the signed GitHub repo ONLY once its key is trusted —
+# otherwise SigLevel = Required would break pacman. Until then the local file
+# repo (SigLevel = Never) keeps working; this is best-effort and leaves the
+# install on the local repo rather than breaking it if the import fails. Once
+# the switch lands the baked-in local repo is fully orphaned (~1.3 GB, mostly
+# NVIDIA driver archives + the browser/meta-packages), so drop it to reclaim
+# the space — only AFTER the repoint succeeds, so the local repo stays as the
+# fallback if the import ever fails.
+if [[ -f "$key" ]] && pacman-key --add "$key" && pacman-key --lsign-key "$fpr"; then
+    # Rebuild the trust db so the local-sign above takes effect immediately. The
+    # earlier --updatedb ran before this key existed, so without this pacman can
+    # still see the key as unknown-trust on the first `pacman -Syu` and reject
+    # the signed [mainstream] database.
+    pacman-key --updatedb
+    sed -i \
+        -e "s|^Server = file://.*pkgs|Server = $url|" \
+        -e "s|^SigLevel = Never|SigLevel = Required|" \
+        /etc/pacman.conf
+    rm -rf /usr/local/share/pkgs
+fi

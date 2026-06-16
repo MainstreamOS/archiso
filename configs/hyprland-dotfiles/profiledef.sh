@@ -38,6 +38,7 @@ file_permissions=(
   ["/usr/local/bin/power-key-helper"]="0:0:755"
   ["/usr/local/bin/disk-mounter"]="0:0:755"
   ["/usr/local/bin/mainstream-update-helper"]="0:0:755"
+  ["/usr/local/bin/mainstream-keyring-init"]="0:0:755"
   ["/usr/local/bin/updatems"]="0:0:755"
   ["/usr/local/bin/updatems-system"]="0:0:755"
   ["/usr/local/bin/limine-restore-auto"]="0:0:755"
