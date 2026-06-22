@@ -27,50 +27,12 @@ CUSTOM_UKI_NAME="mainstream"
 LIMINEDEF
 }
 
-refresh_limine_uki_entry() {
-    local esp_path=""
-    local limine_conf=""
-    local uki_path=""
-    local tmpfile
-
-    [[ -d /boot/efi ]] && esp_path="/boot/efi"
-    [[ -z "$esp_path" && -d /boot ]] && esp_path="/boot"
-    [[ -n "$esp_path" ]] || return 0
-
-    limine_conf="$esp_path/limine.conf"
-    uki_path="$esp_path/EFI/Linux/mainstream_linux.efi"
-    [[ -f "$uki_path" ]] || return 0
-    [[ -f "$limine_conf" ]] || return 0
-
-    tmpfile=$(mktemp)
-
-    # Strip ALL existing entry blocks (top-level /Entry lines and everything
-    # indented under them) then write the single correct UKI entry.
-    awk '
-        /^\/[^\/]/ { skip = 1; next }
-        /^[^[:space:]]/ { skip = 0 }
-        !skip { print }
-    ' "$limine_conf" > "$tmpfile"
-
-    # Sub-entry structure is required by limine-snapper-sync: it scans for
-    # //<Kernel name> sub-entries under /<OS name> as anchors for snapshot
-    # injection, and uses //Snapshots as the placeholder marking the
-    # insertion point. A flat parent (protocol/path directly under /OS)
-    # makes the OS block invisible to snapper-sync, so package installs
-    # and updates produce no snapshot menu entries.
-    cat >> "$tmpfile" << 'LIMINEUKI'
-
-/Mainstream OS\\
-    //linux
-        protocol: efi
-        path: boot():///EFI/Linux/mainstream_linux.efi
-    //Snapshots
-LIMINEUKI
-
-    install -m 644 "$tmpfile" "$limine_conf"
-    rm -f "$tmpfile"
-    info "limine.conf updated: 'Mainstream OS\\' UKI entry + //Snapshots anchor written."
-}
+# NOTE: refresh_limine_uki_entry was removed. limine-mkinitcpio-hook owns the
+# single branded "/+Mainstream OS\\" entry (machine-id tracked, with the real
+# UKI hash + cmdline), so hand-writing a "/Mainstream OS\\" entry only produced
+# a hash-less duplicate (the hook's entry starts "/+", which the old awk never
+# matched). The branded entry now comes straight from the hook; see the prune +
+# brand step after limine-mkinitcpio below.
 
 parse_disk_part_from_source() {
     local source="$1"
@@ -329,6 +291,30 @@ if [[ -n "$GPU_INFO" ]]; then
         sed -i "s/\b${1}\b *//g" /etc/mkinitcpio.conf
         info "Removed hook from initramfs: $1"
     }
+    # Early-KMS NVIDIA modules pull nvidia.ko (~90 MB) plus the GSP firmware
+    # into the initramfs, bloating the UKI to ~170 MB. On a roomy ESP (erase
+    # installs get 1 GiB) that fits and gives a flicker-free splash. But an
+    # "Install alongside" install REUSES the ESP Windows created (often
+    # 100-260 MiB), and a UKI that big overflows it — the UKI write fails with
+    # ENOSPC, the kernel image is truncated, and the system won't boot. When
+    # the ESP is too small, skip early KMS: NVIDIA still loads normally at boot
+    # (modeset is applied via nvidia_drm.modeset=1 on the cmdline + the
+    # modprobe.d option), only the early-initramfs KMS is dropped, which keeps
+    # the UKI small enough to fit. 512 MiB cleanly separates the 1 GiB erase
+    # ESP from any reused Windows ESP. No /boot/efi mount (BIOS) = no FAT-size
+    # limit, so keep early KMS there.
+    nvidia_early_kms() {
+        local mods="nvidia nvidia_modeset nvidia_uvm nvidia_drm"
+        if mountpoint -q /boot/efi 2>/dev/null; then
+            local esp_mib=$(( $(findmnt -bno SIZE /boot/efi 2>/dev/null || echo 0) / 1048576 ))
+            if (( esp_mib > 0 && esp_mib < 512 )); then
+                warn "ESP is only ${esp_mib} MiB (reused Windows ESP?) — skipping NVIDIA early KMS so the UKI fits."
+                warn "NVIDIA still loads at boot via nvidia_drm.modeset=1; only the early-initramfs KMS is off."
+                return
+            fi
+        fi
+        gpu_add_modules $mods
+    }
     gpu_append_cmdline() {
         local params="$1" LIMINE_CONF=""
         [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
@@ -506,7 +492,7 @@ if [[ -n "$GPU_INFO" ]]; then
             # 0x1E04+ = Turing and newer (RTX 2060+, 30xx, 40xx, 50xx)
             # nvidia-open is the official open source kernel module (packages installed by install-gpu-drivers)
             gpu_remove_hook kms
-            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            nvidia_early_kms
             mkdir -p /etc/modprobe.d
             cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
 options nvidia-drm modeset=1 fbdev=1
@@ -535,7 +521,7 @@ NVIDIAEOF
             # 0x1340-0x1E03 = Maxwell through Volta (GTX 900, GTX 1000, Titan V)
             # Dropped from mainline nvidia — uses nvidia-580xx-dkms
             gpu_remove_hook kms
-            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            nvidia_early_kms
             mkdir -p /etc/modprobe.d
             cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
 options nvidia-drm modeset=1 fbdev=1
@@ -563,7 +549,7 @@ NVIDIAEOF
         elif [[ $PCI_DEC -ge 4032 ]]; then
             # Kepler — 470xx installed by install-gpu-drivers if successful
             gpu_remove_hook kms
-            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            nvidia_early_kms
             cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
 options nvidia-drm modeset=1 fbdev=1
 options nvidia NVreg_PreserveVideoMemoryAllocations=1
@@ -588,7 +574,7 @@ NVIDIAEOF
         elif [[ $PCI_DEC -ge 1728 ]]; then
             # Fermi — 390xx installed by install-gpu-drivers if successful
             gpu_remove_hook kms
-            gpu_add_modules nvidia nvidia_modeset nvidia_uvm nvidia_drm
+            nvidia_early_kms
             cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
 options nvidia-drm modeset=1 fbdev=1
 options nvidia NVreg_PreserveVideoMemoryAllocations=1
@@ -775,6 +761,14 @@ if ! grep -qE '^[0-9a-f]{32}$' /etc/machine-id 2>/dev/null; then
     info "Machine-id set to: $(cat /etc/machine-id)"
 fi
 
+# Write Limine's config (branded TARGET_OS_NAME + FIND_BOOTLOADERS=no) BEFORE
+# installing limine-mkinitcpio-hook below. The package's deploy hook fixes the
+# OS entry's display name and fallback handling at creation time during that
+# pacman transaction, so the config must already be in place — otherwise the
+# entry is created unbranded ("Mainstream OS", not "Mainstream OS\\") and a
+# stray "EFI fallback" entry gets added.
+write_limine_defaults
+
 # ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
 # ---------------------------------------------------------------------------
@@ -796,9 +790,6 @@ pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-sn
     || pacman -S --noconfirm --needed snapper snap-pac 2>&1 \
     || true
 
-# Configure Limine's entry generator before mkinitcpio/limine-mkinitcpio runs.
-# The trailing slash keeps kernel sub-entries nested under "Mainstream OS".
-write_limine_defaults
 # ---------------------------------------------------------------------------
 # MKINITCPIO — build the target initramfs in-chroot for every GPU path
 # ---------------------------------------------------------------------------
@@ -833,7 +824,39 @@ if command -v limine-mkinitcpio &>/dev/null; then
     info "Updating Limine boot entries via limine-mkinitcpio..."
     limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
 fi
-refresh_limine_uki_entry
+
+# limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
+# cmdline). Two cleanups leave the menu as exactly that entry + Windows:
+#   - prune the install-limine bootstrap "/Mainstream OS\\" entry (no "+",
+#     protocol: linux) and any generic "/EFI fallback" entry. The hook entry
+#     starts "/+", so "^/Mainstream"/"^/EFI fallback" match only the strays.
+#   - force the branded name on the hook entry in case it was created before
+#     write_limine_defaults set TARGET_OS_NAME (idempotent if already branded).
+if [[ -f /boot/efi/limine.conf ]]; then
+    awk '
+        /^\/Mainstream OS/ { skip=1; next }
+        /^\/EFI fallback/  { skip=1; next }
+        /^\/[^\/]/         { if (skip) skip=0 }
+        skip { next }
+        { print }
+    ' /boot/efi/limine.conf > /boot/efi/limine.conf.tmp \
+        && mv /boot/efi/limine.conf.tmp /boot/efi/limine.conf
+    sed -i -E 's,^/\+Mainstream OS\\*$,/+Mainstream OS\\\\,; s,^comment: Mainstream OS\\*$,comment: Mainstream OS\\\\,' \
+        /boot/efi/limine.conf
+    info "Pruned stray limine entries; hook 'Mainstream OS\\' entry branded."
+fi
+
+# Add a Windows boot entry when Windows shares this ESP (Install alongside).
+# limine's FIND_BOOTLOADERS only probes systemd-boot/rEFInd/the generic
+# EFI/BOOT fallback — never Microsoft's bootmgfw.efi — so a dual-boot Windows
+# install is invisible in the menu unless we register it explicitly. The
+# limine-entry-tool EFI entry persists across kernel updates like the others.
+if [[ -f /boot/efi/EFI/Microsoft/Boot/bootmgfw.efi ]] && command -v limine-entry-tool &>/dev/null; then
+    info "Windows detected on the ESP — adding a 'Windows' limine boot entry..."
+    limine-entry-tool --add-efi "Windows" "/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi" \
+        --comment "Windows Boot Manager" --priority 15 --quiet --no-mutex --no-hooks 2>&1 \
+        || warn "Could not add the Windows boot entry."
+fi
 
 # Clean up plain kernel/initramfs from ESP root now that UKI is in place.
 # These were copied by install-limine as a bootstrap fallback; the UKI
