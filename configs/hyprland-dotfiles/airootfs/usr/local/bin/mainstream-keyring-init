@@ -40,4 +40,16 @@ if [[ -f "$key" ]] && pacman-key --add "$key" && pacman-key --lsign-key "$fpr"; 
         -e "s|^SigLevel = Never|SigLevel = Required|" \
         /etc/pacman.conf
     rm -rf /usr/local/share/pkgs
+
+    # The offline install synced an UNSIGNED mainstream.db into the pacman sync
+    # dir (the baked-in local repo was SigLevel = Never). Now that [mainstream]
+    # is SigLevel = Required, any pacman read of that stale db fails with
+    # "mainstream: missing required signature / database is not valid" until a
+    # manual pacman -Sy re-fetches it. Drop the stale db and pull the signed one
+    # from GitHub now (key is trusted, network is up via the unit deps) so the
+    # first post-boot update check succeeds instead of erroring.
+    rm -f /var/lib/pacman/sync/mainstream.db*
+    # Retry the signed-db fetch — the GitHub repo is a single server with no
+    # mirrors, so a transient first-boot blip shouldn't leave a stale/absent db.
+    for _ in 1 2 3 4 5; do pacman -Sy --noconfirm && break || sleep 5; done
 fi
