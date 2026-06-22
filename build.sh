@@ -72,6 +72,54 @@ add_mainstream_db() {
     repo-add "$repo_dir/mainstream.db.tar.gz" "${pkgs[@]}"
 }
 
+# Pull the packages the GitHub [mainstream] repo already provides into the local
+# repo, instead of rebuilding them here. The MainstreamOS/packages CI builds the
+# FOSS packages (topgrade, the fonts, nautilus/mpv extensions, limine hooks, …)
+# on its own schedule; rebuilding them AGAIN at ISO-build time grabs whatever
+# AUR has *now*, so a fresh install can end up with a package NEWER than the
+# repo. After the first-boot repoint that shows "local is newer than mainstream"
+# and blocks updates. Downloading the repo's own builds makes the ISO ship
+# byte-identical versions (no drift) and skips the recompile. Populates the
+# global GITHUB_PROVIDED set; the AUR_DEPS loop skips any name in it. Anything
+# the repo doesn't provide — or if GitHub is unreachable — falls through to the
+# local build (curl --retry hardens the single-server GitHub fetch).
+declare -A GITHUB_PROVIDED=()
+download_mainstream_repo_pkgs() {
+    local repo_dir="$1"
+    local api="https://api.github.com/repos/MainstreamOS/packages/releases/tags/mainstream-repo"
+    info "Fetching the [mainstream] GitHub repo package list..."
+    local urls
+    urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused "$api" 2>/dev/null \
+        | grep -oE '"browser_download_url":[[:space:]]*"[^"]+\.pkg\.tar\.zst"' \
+        | sed -E 's/.*"(https[^"]+)".*/\1/')
+    if [[ -z "$urls" ]]; then
+        warn "Could not list [mainstream] release assets — building every AUR package locally (versions may drift)."
+        return 0
+    fi
+    local url f name
+    while read -r url; do
+        [[ -n "$url" ]] || continue
+        f="$repo_dir/$(basename "$url")"
+        if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$f" "$url" 2>/dev/null; then
+            name=$(pacman -Qpq "$f" 2>/dev/null || true)
+            if [[ -n "$name" ]]; then
+                GITHUB_PROVIDED["$name"]=1
+                # Drop any older locally-built copy of the same package so the
+                # repo db indexes only the GitHub version (no duplicate-name clash).
+                find "$repo_dir" -maxdepth 1 -name "${name}-[0-9]*.pkg.tar.zst" \
+                    ! -name "$(basename "$f")" -delete 2>/dev/null || true
+            else
+                warn "Downloaded $(basename "$f") but could not read its name — removing."
+                rm -f "$f"
+            fi
+        else
+            warn "Failed to download $(basename "$url") — will build it locally if needed."
+            rm -f "$f"
+        fi
+    done <<< "$urls"
+    info "Pulled ${#GITHUB_PROVIDED[@]} prebuilt package(s) from the [mainstream] GitHub repo."
+}
+
 # Scan a local pacman repo directory for corrupted / zero-length .pkg.tar.zst
 # files, remove them, and regenerate the repo database so that subsequent
 # pacman / mkarchiso runs don't trip over bad checksums.
@@ -591,6 +639,10 @@ build_local_pkg "calamares-mainstream"
 # so it tracks the published repo.
 build_local_pkg "mpris-hyprland"
 
+# Pull what the GitHub [mainstream] repo already provides so we don't rebuild
+# (and drift from) those versions; the loop below skips anything it supplied.
+download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
+
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."
 echo ""
@@ -645,6 +697,11 @@ chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 
 for entry in "${AUR_DEPS[@]}"; do
     pkgname="${entry%%::*}"
+
+    if [[ -n "${GITHUB_PROVIDED[$pkgname]:-}" ]]; then
+        info "$pkgname — using the [mainstream] GitHub build, skipping local rebuild."
+        continue
+    fi
 
     existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
