@@ -22,7 +22,6 @@ Scope {
     readonly property real widgetWidth: Appearance.sizes.mediaControlsWidth
     readonly property real widgetHeight: Appearance.sizes.mediaControlsHeight
     property real popupRounding: Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1
-    property list<real> visualizerPoints: []
 
     function filterDuplicatePlayers(players) {
         let filtered = [];
@@ -34,10 +33,18 @@ Scope {
             let p1 = players[i];
             let group = [i];
 
-            // Find duplicates by trackTitle prefix
+            // Group only genuine duplicates of the SAME track: one title
+            // contains the other (a mirror bus may truncate the title). The
+            // old extra clause `p1.position - p2.position <= 2 && p1.length -
+            // p2.length <= 2` used signed subtraction (no abs), so any player
+            // shorter than another matched and distinct tracks were collapsed
+            // — with per-tab browser players (mpris-hyprland) it
+            // dropped the actually-playing video from the panel. Title match
+            // is the reliable signal; MprisController already removes the
+            // playerctld mirror and the browser built-in.
             for (let j = i + 1; j < players.length; ++j) {
                 let p2 = players[j];
-                if (p1.trackTitle && p2.trackTitle && (p1.trackTitle.includes(p2.trackTitle) || p2.trackTitle.includes(p1.trackTitle)) || (p1.position - p2.position <= 2 && p1.length - p2.length <= 2)) {
+                if (p1.trackTitle && p2.trackTitle && (p1.trackTitle.includes(p2.trackTitle) || p2.trackTitle.includes(p1.trackTitle))) {
                     group.push(j);
                 }
             }
@@ -51,24 +58,6 @@ Scope {
             group.forEach(idx => used.add(idx));
         }
         return filtered;
-    }
-
-    Process {
-        id: cavaProc
-        running: mediaControlsLoader.active
-        onRunningChanged: {
-            if (!cavaProc.running) {
-                root.visualizerPoints = [];
-            }
-        }
-        command: ["cava", "-p", `${FileUtils.trimFileProtocol(Directories.scriptPath)}/cava/raw_output_config.txt`]
-        stdout: SplitParser {
-            onRead: data => {
-                // Parse `;`-separated values into the visualizerPoints array
-                let points = data.split(";").map(p => parseFloat(p.trim())).filter(p => !isNaN(p));
-                root.visualizerPoints = points;
-            }
-        }
     }
 
     // Centralized post-send revert: once a transfer reaches Sent state
@@ -203,7 +192,6 @@ Scope {
                     delegate: PlayerControl {
                         required property MprisPlayer modelData
                         player: modelData
-                        visualizerPoints: root.visualizerPoints
                         implicitWidth: root.widgetWidth
                         implicitHeight: root.widgetHeight
                         radius: root.popupRounding
