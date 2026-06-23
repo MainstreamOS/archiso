@@ -399,7 +399,6 @@ AUR_DEPS=(
     "darkly-bin"
     "otf-space-grotesk::38c3-styles"
     "ttf-material-symbols-variable-git::material-symbols-git"
-    "ttf-readex-pro-variable"
     "ttf-readex-pro"
     "ttf-rubik-vf"
     "ttf-twemoji"
