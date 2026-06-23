@@ -177,3 +177,33 @@ hyprctl dispatch 'hl.dsp.exec_cmd("hypridle")' 2>/dev/null || true
 # ---------------------------------------------------------------------------
 fc-cache -fv 2>/dev/null || true
 hyprctl reload 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 7. Warn pre-Turing NVIDIA users (Fermi 0x06C0..just below Turing 0x1E04) that
+#    they get only software rendering here and should use the NVIDIA (legacy)
+#    edition. Standard edition only: the legacy edition ships the nvidia-580xx
+#    live driver and serves Kepler/Fermi at install, so skip it there — detected
+#    via nvidia-580xx-utils being installed.
+# ---------------------------------------------------------------------------
+if command -v notify-send &>/dev/null && ! pacman -Qq nvidia-580xx-utils &>/dev/null; then
+    NV_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" \
+            | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | grep -oE '[0-9a-fA-F]{4}' | tail -1 || true)
+    if [[ -n "$NV_ID" ]]; then
+        NV_DEC=$((16#$NV_ID))
+        if (( NV_DEC >= 1728 && NV_DEC < 7684 )); then
+            # notify-send no-ops if Quickshell hasn't claimed the notifications
+            # bus name yet — wait (bounded) for it before sending.
+            if command -v busctl &>/dev/null; then
+                for _ in $(seq 1 30); do
+                    busctl --user list --no-pager 2>/dev/null \
+                        | grep -q 'org.freedesktop.Notifications' && break
+                    sleep 0.5
+                done
+            fi
+            notify-send -u critical -t 0 -i dialog-warning \
+                "Legacy NVIDIA GPU — wrong edition" \
+                "This GPU isn't accelerated on the standard edition, so the desktop is running in slow software mode. For full acceleration, download and reinstall using the MainstreamOS NVIDIA (legacy) edition ISO." \
+                2>/dev/null || true
+        fi
+    fi
+fi

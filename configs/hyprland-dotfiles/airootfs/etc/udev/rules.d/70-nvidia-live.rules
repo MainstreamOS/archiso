@@ -1,0 +1,3 @@
+# Load NVIDIA post-pivot, only when an NVIDIA display GPU is present — keeps it
+# out of the initramfs (GSP firmware overflowed Limine). No-op on AMD/Intel.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03*", RUN+="/usr/bin/modprobe nvidia_drm"

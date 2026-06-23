@@ -65,11 +65,61 @@ add_mainstream_db() {
     local pkgs=()
     mapfile -t pkgs < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' \
         ! -name '*nvidia*' ! -name 'libxnvctrl*' | sort)
+    # Legacy-NVIDIA edition: pacstrap must resolve the live driver, so add
+    # nvidia-580xx-{dkms,utils} back in. Other gens stay files-only (target-only
+    # via install-gpu-drivers); excluding them avoids provide-ambiguity. The
+    # [0-9] pins the version segment so debug/lib32-/opencl- names don't match.
+    if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
+        local nvpkgs=()
+        mapfile -t nvpkgs < <(find "$repo_dir" -maxdepth 1 -type f \
+            \( -name 'nvidia-580xx-dkms-[0-9]*.pkg.tar.zst' \
+               -o -name 'nvidia-580xx-utils-[0-9]*.pkg.tar.zst' \) \
+            ! -name '*-debug-*' | sort)
+        pkgs+=("${nvpkgs[@]}")
+    fi
     if (( ${#pkgs[@]} == 0 )); then
         warn "No installable (non-GPU-driver) packages in $repo_dir — mainstream repo DB not created."
         return 0
     fi
     repo-add "$repo_dir/mainstream.db.tar.gz" "${pkgs[@]}"
+}
+
+# ── Legacy-NVIDIA edition overlay ───────────────────────────────────────────
+# --nvidia: from the same profile, swap the Turing+ live driver for the
+# nvidia-580xx stack + dkms (packages.x86_64) and rename the ISO (profiledef.sh).
+# The 580xx module builds against the live kernel via dkms's pacstrap hook (no
+# GSP firmware → stays out of the init). Backed up + restored on ANY exit (trap)
+# so the tree and later standard builds aren't mutated.
+apply_profile_overlay() {
+    [[ "${NVIDIA_PROFILE:-false}" == true ]] || return 0
+    _OVERLAY_BAK_DIR="$(mktemp -d /tmp/nvidia-overlay-bak-XXXXXX)"
+    cp -a "${PROFILE_DIR}/packages.x86_64" "$_OVERLAY_BAK_DIR/"
+    cp -a "${PROFILE_DIR}/profiledef.sh"   "$_OVERLAY_BAK_DIR/"
+    sed -i -e 's/^nvidia-open$/nvidia-580xx-dkms/' \
+           -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms/' \
+           "${PROFILE_DIR}/packages.x86_64"
+    # iso_name is a whole-line replace (idempotent); the iso_label pattern
+    # tolerates an existing NV_ so a re-apply can't compound to MAINSTREAM_NV_NV_.
+    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-nvidia"/' \
+           -e 's/^iso_label="MAINSTREAM_\(NV_\)\?/iso_label="MAINSTREAM_NV_/' \
+           "${PROFILE_DIR}/profiledef.sh"
+    info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver; iso_name → mainstreamos-desktop-linux-nvidia."
+}
+
+restore_profile_overlay() {
+    [[ -n "${_OVERLAY_BAK_DIR:-}" && -d "${_OVERLAY_BAK_DIR:-}" ]] || return 0
+    # Restore both even if one fails (never leave a half-overlaid tree), keep
+    # the backup on error, and always return 0 so trap cleanup continues.
+    local rc=0
+    cp -a "$_OVERLAY_BAK_DIR/packages.x86_64" "${PROFILE_DIR}/packages.x86_64" || rc=1
+    cp -a "$_OVERLAY_BAK_DIR/profiledef.sh"   "${PROFILE_DIR}/profiledef.sh"   || rc=1
+    if (( rc == 0 )); then
+        rm -rf -- "$_OVERLAY_BAK_DIR"
+        _OVERLAY_BAK_DIR=""
+    else
+        warn "Profile overlay restore hit errors — backup kept at $_OVERLAY_BAK_DIR (restore packages.x86_64 + profiledef.sh from there)."
+    fi
+    return 0
 }
 
 # Pull the packages the GitHub [mainstream] repo already provides into the local
@@ -192,6 +242,11 @@ CLEAR_WORK=0
 REFRESH_PKGS=false
 CLEAN_BUILD=false
 CLEAN_CALAMARES=false
+# Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
+# (NVIDIA_DEPS). Standard ISO omits them to stay slim.
+NVIDIA_PROFILE=false
+# Backup dir for the --nvidia profile overlay (set/cleared by apply/restore).
+_OVERLAY_BAK_DIR=""
 
 # =============================================================================
 # ARGUMENT PARSING
@@ -213,6 +268,10 @@ for arg in "$@"; do
             REFRESH_PKGS=true   # --cleancal implies --refresh
             info "Calamares clean requested — calamares-mainstream will be removed and rebuilt."
             ;;
+        --nvidia)
+            NVIDIA_PROFILE=true
+            info "Legacy-NVIDIA edition requested — legacy NVIDIA prebuilts will be included."
+            ;;
         --help|-h)
             cat <<'HELPEOF'
 Usage: sudo ./build.sh [options]
@@ -228,11 +287,17 @@ Package build options:
   --clean         Remove ALL pre-built packages and rebuild from scratch, then build ISO
   --cleancal      Remove calamares-mainstream package and rebuild it, then build ISO
 
+Edition options:
+  --nvidia        Build the legacy-NVIDIA edition: also includes the legacy
+                  NVIDIA prebuilts for full accelerated support on pre-Turing
+                  cards. Omit for the standard (slim) ISO.
+
 Examples:
   sudo ./build.sh                     # ISO only (packages must already exist)
   sudo ./build.sh --refresh           # Rebuild packages + ISO
   sudo ./build.sh --clean -c          # Full clean rebuild (packages + work dir + ISO)
   sudo ./build.sh --cleancal          # Rebuild calamares + ISO
+  sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
 HELPEOF
             exit 0
             ;;
@@ -338,32 +403,35 @@ AUR_DEPS=(
     "nautilus-admin-gtk4"
     "mpv-modernz"
     "mpv-thumbfast-git"
+)
 
-    # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
-    # Arch's mainline `nvidia` package follows the current driver (590+
-    # at time of writing) which drops Maxwell-Pascal-Volta support; the
-    # current `nvidia-open` covers Turing+ only. Older cards need the AUR
-    # legacy DKMS variants. Pre-building them here (against the build
-    # host's kernel headers — DKMS still rebuilds per-kernel at install
-    # time) lets install-gpu-drivers do a plain `pacman -U` from
-    # /usr/local/share/pkgs/ instead of yay-fetching-and-compiling from
-    # AUR inside the install chroot, which is unreliable (network +
-    # build-environment fragility inside Calamares' chroot).
-    #
-    # Trade-off: each generation's source tarball is ~600 MB during
-    # build; the resulting .pkg.tar.zst is ~50-100 MB and lives in the
-    # airootfs whether the install target needs it or not. Worth it to
-    # eliminate the chroot AUR build + the first-boot mkinitcpio retry
-    # pattern those failures used to require.
-    #
-    # NOTE: the -dkms kernel-module packages are NOT standalone AUR repos —
-    # each is a split package of its sibling -utils base (AUR PackageBase
-    # nvidia-{580,470,390}xx-utils). `git clone nvidia-470xx-dkms.git` returns
-    # an empty repo, so they must NOT be listed here (doing so just logs a
-    # "Could not obtain PKGBUILD … build failed" warning and ships no driver).
-    # They are emitted automatically when the -utils base builds and collected
-    # by the copy-every-sibling logic in the build loop below; install-gpu-drivers
-    # then pacman -U's nvidia-*-dkms by name out of /usr/local/share/pkgs/.
+# ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
+# Built ONLY for the legacy-NVIDIA edition (--nvidia), appended to AUR_DEPS
+# below; the standard ISO omits them to stay slim.
+#
+# Arch's mainline `nvidia` package follows the current driver (590+ at time
+# of writing) which drops Maxwell-Pascal-Volta support; the current
+# `nvidia-open` covers Turing+ only. Older cards need the AUR legacy DKMS
+# variants. Pre-building them here (against the build host's kernel headers —
+# DKMS still rebuilds per-kernel at install time) lets install-gpu-drivers do
+# a plain `pacman -U` from /usr/local/share/pkgs/ instead of
+# yay-fetching-and-compiling from AUR inside the install chroot, which is
+# unreliable (network + build-environment fragility inside Calamares' chroot).
+#
+# Trade-off: each generation's source tarball is ~600 MB during build; the
+# resulting .pkg.tar.zst is ~50-100 MB and lives in the airootfs whether the
+# install target needs it or not. Worth it to eliminate the chroot AUR build
+# + the first-boot mkinitcpio retry pattern those failures used to require.
+#
+# NOTE: the -dkms kernel-module packages are NOT standalone AUR repos — each
+# is a split package of its sibling -utils base (AUR PackageBase
+# nvidia-{580,470,390}xx-utils). `git clone nvidia-470xx-dkms.git` returns an
+# empty repo, so they must NOT be listed here (doing so just logs a "Could not
+# obtain PKGBUILD … build failed" warning and ships no driver). They are
+# emitted automatically when the -utils base builds and collected by the
+# copy-every-sibling logic in the build loop below; install-gpu-drivers then
+# pacman -U's nvidia-*-dkms by name out of /usr/local/share/pkgs/.
+NVIDIA_DEPS=(
     "nvidia-580xx-utils"
     "lib32-nvidia-580xx-utils"
     "nvidia-580xx-settings"
@@ -371,6 +439,11 @@ AUR_DEPS=(
     "lib32-nvidia-470xx-utils"
     "nvidia-390xx-utils"
 )
+
+# Append (not branch) so the build loop below, which iterates AUR_DEPS, builds them.
+if [[ "$NVIDIA_PROFILE" == true ]]; then
+    AUR_DEPS+=("${NVIDIA_DEPS[@]}")
+fi
 
 # Prebuilt packages to download instead of building from source.
 # Format: "filename URL"
@@ -1372,6 +1445,23 @@ info "════════════════════════�
 info "  PHASE 2: Building ISO"
 info "═══════════════════════════════════════════════════════════════"
 
+# ── Standard-edition slimming: drop legacy NVIDIA prebuilts ────────────────
+# A prior --nvidia build leaves them in this persistent dir (bundled into the
+# ISO), so a standard build prunes them. Files-only (not in the DB), so safe.
+if [[ "$NVIDIA_PROFILE" != true ]]; then
+    _PKG_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
+    _pruned=0
+    for _glob in nvidia-580xx nvidia-470xx nvidia-390xx; do
+        for _f in "$_PKG_DIR"/*"$_glob"*.pkg.tar.zst; do
+            [[ -e "$_f" ]] || continue
+            rm -f "$_f"
+            (( _pruned++ )) || true
+        done
+    done
+    (( _pruned > 0 )) && info "Standard edition: pruned ${_pruned} legacy NVIDIA prebuilt(s)." || true
+    unset _PKG_DIR _pruned _glob _f
+fi
+
 # ── ISO build dependency check ─────────────────────────────────────────────
 for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar make cc; do
     if ! command -v "${_bin}" &>/dev/null; then
@@ -1476,7 +1566,7 @@ if [[ -n "${LIMINE_VERSION}" ]]; then
         || die "Limine installer tool version does not match ${LIMINE_VERSION}."
 fi
 
-trap 'rm -rf -- "${LIMINE_STAGE}"; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
+trap 'restore_profile_overlay; rm -rf -- "${LIMINE_STAGE}"; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
 
 # ── Work directory ─────────────────────────────────────────────────────────
 if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
@@ -1515,7 +1605,14 @@ echo ">>> Building ISO (this takes several minutes)..."
 _LOCAL_REPO="${PROFILE_DIR}/airootfs/usr/local/share/pkgs"
 if [[ -d "$_LOCAL_REPO" ]]; then
     sanitize_local_repo "$_LOCAL_REPO"
+    # Rebuild the DB here (not just PHASE 1) so an ISO-only build whose edition
+    # differs from the last --refresh still matches: post-prune for standard,
+    # 580xx-included for --nvidia.
+    add_mainstream_db "$_LOCAL_REPO"
 fi
+
+# no-op unless --nvidia; the EXIT trap restores the profile on any exit.
+apply_profile_overlay
 
 "${PATCHED_MKARCHISO}" \
     ${VERBOSE} \

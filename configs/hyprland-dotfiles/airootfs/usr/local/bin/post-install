@@ -488,6 +488,19 @@ if [[ -n "$GPU_INFO" ]]; then
         PCI_DEC=$((16#$PCI_ID))
         info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
 
+        # If a pre-Turing card fell back to nouveau (no proprietary driver
+        # installed — standard edition), skip the NVIDIA config below: forcing
+        # GBM_BACKEND/__GLX_VENDOR_LIBRARY_NAME=nvidia with no driver black-screens
+        # the Wayland session. Leave nouveau + the kms hook.
+        local _nv_drv="" _p
+        for _p in nvidia-580xx-utils nvidia-470xx-utils nvidia-390xx-utils; do
+            pacman -Qq "$_p" &>/dev/null && { _nv_drv="$_p"; break; }
+        done
+        if [[ $PCI_DEC -lt 7684 && -z "$_nv_drv" ]]; then
+            info "Legacy NVIDIA with no proprietary driver installed (nouveau fallback) — keeping nouveau, skipping NVIDIA config."
+            return 0
+        fi
+
         if [[ $PCI_DEC -ge 7684 ]]; then
             # 0x1E04+ = Turing and newer (RTX 2060+, 30xx, 40xx, 50xx)
             # nvidia-open is the official open source kernel module (packages installed by install-gpu-drivers)

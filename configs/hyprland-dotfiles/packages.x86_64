@@ -89,33 +89,16 @@ xorg-xwayland
 # ==============================================================================
 # GPU & display
 # ==============================================================================
-# GPU drivers are installed on the TARGET at install time by
-# /usr/local/bin/install-gpu-drivers (Calamares shellprocess), which picks
-# the right stack for the detected hardware — the live ISO no longer ships
-# a kitchen-sink of every vendor's driver. What's listed here is only what
-# the live session itself needs to bring up a display on common hardware
-# (mesa + open Vulkan/VA-API for AMD/Intel, xf86-video-amdgpu); NVIDIA falls
-# back to nouveau for the installer UI (see the note below).
-#
-# linux-headers ships so install-gpu-drivers can build the legacy NVIDIA
-# DKMS modules against the target kernel at install time.
 linux-headers
 mesa
 vulkan-radeon
 vulkan-intel
 intel-media-driver
 xf86-video-amdgpu
-
-# NVIDIA drivers are NOT shipped in the live airootfs — install-gpu-drivers
-# picks the right one at install time (nvidia-open for Turing+, nvidia-580xx-
-# dkms for Maxwell–Volta, etc.) based on detected hardware. The live session
-# falls back to nouveau on NVIDIA cards, which is fine for the installer UI.
-#
-# Why not pre-ship: nvidia-open-dkms's modinfo references ~107 MB of GSP
-# firmware, which the kms initramfs hook auto-bundles. That ballooned
-# initramfs-linux.img to 242 MB and Limine couldn't fit the boot bundle
-# into a contiguous high-memory region on some UEFI memory maps ("High
-# memory allocator: out of memory" panic on ~every other cold boot).
+# nvidia-open: Turing+ live accel, loaded post-pivot (kept out of initramfs).
+# Pre-Turing NVIDIA is served by the NVIDIA (legacy) edition ISO.
+nvidia-open
+nvidia-utils
 
 # ==============================================================================
 # Display manager
