@@ -779,6 +779,11 @@ AURSCRIPT
 chmod 755 "$AUR_SCRIPT"
 chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
 
+# Required AUR deps that produced no package. Collected through the loop and
+# checked after it so a transient AUR/source failure aborts here with a clear
+# message instead of surfacing later as an opaque pacstrap "target not found".
+MISSING_AUR=()
+
 for entry in "${AUR_DEPS[@]}"; do
     pkgname="${entry%%::*}"
 
@@ -808,14 +813,24 @@ for entry in "${AUR_DEPS[@]}"; do
             success "$pkgname built successfully (${#built[@]} pkg(s): $(basename -a "${built[@]}" | tr '\n' ' '))."
         else
             warn "$pkgname — no output file found, skipping."
+            MISSING_AUR+=("$pkgname")
         fi
     else
         warn "$pkgname — build failed, skipping."
+        MISSING_AUR+=("$pkgname")
     fi
 done
 
 rm -f "$AUR_SCRIPT"
 echo ""
+
+if (( ${#MISSING_AUR[@]} > 0 )); then
+    die "Required AUR package(s) produced no build output: ${MISSING_AUR[*]}. \
+Each is listed in packages.x86_64, so pacstrap would fail later with an opaque \
+\"target not found\". Re-run the build — transient AUR/source download failures \
+usually clear on retry; if one persists, build it manually or add it to the \
+[mainstream] GitHub repo's packages.list."
+fi
 
 # ── Build git-based packages ───────────────────────────────────────────────
 info "Building git-based packages..."
