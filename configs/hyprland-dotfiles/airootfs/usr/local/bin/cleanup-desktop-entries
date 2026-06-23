@@ -41,6 +41,7 @@ CLEANUP_MAP=(
     "spotify:spotify.desktop"
     "resources:net.nokyan.Resources.desktop"
     "impression:io.gitlab.adhami3310.Impression.desktop"
+    "chromium:chromium.desktop"
 )
 
 # ---------------------------------------------------------------------------

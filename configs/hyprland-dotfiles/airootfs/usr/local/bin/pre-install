@@ -89,6 +89,10 @@ LIVE_PKGS=(
     livecd-sounds
     pv
     reflector
+    # Shipped on the live ISO for the browser buttons; removed here so the
+    # netinstall (pre-checked) is the sole arbiter of whether the installed
+    # system keeps chromium (re-added by pacman -S if left checked).
+    chromium
 )
 
 info "Removing live-only packages..."

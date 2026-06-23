@@ -237,6 +237,14 @@ kcoreaddons
 flatpak
 
 # ==============================================================================
+# Web browser
+# ==============================================================================
+# Shipped on the live ISO so the welcome/dock/browser buttons work. Removed
+# from the target in pre-install and re-added by netinstall (pre-checked) if
+# the user keeps it — so unchecking it in the installer cleanly omits it.
+chromium
+
+# ==============================================================================
 # Live environment extras (live only — removed by packages.conf on install)
 # ==============================================================================
 nano
