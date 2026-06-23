@@ -90,11 +90,13 @@ add_mainstream_db() {
 # The 580xx module builds against the live kernel via dkms's pacstrap hook (no
 # GSP firmware → stays out of the init). Backed up + restored on ANY exit (trap)
 # so the tree and later standard builds aren't mutated.
+_OVERLAY_ARCHISO_CONF="airootfs/etc/mkinitcpio.conf.d/archiso.conf"
 apply_profile_overlay() {
     [[ "${NVIDIA_PROFILE:-false}" == true ]] || return 0
     _OVERLAY_BAK_DIR="$(mktemp -d /tmp/nvidia-overlay-bak-XXXXXX)"
     cp -a "${PROFILE_DIR}/packages.x86_64" "$_OVERLAY_BAK_DIR/"
     cp -a "${PROFILE_DIR}/profiledef.sh"   "$_OVERLAY_BAK_DIR/"
+    cp -a "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}" "$_OVERLAY_BAK_DIR/archiso.conf"
     sed -i -e 's/^nvidia-open$/nvidia-580xx-dkms/' \
            -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms/' \
            "${PROFILE_DIR}/packages.x86_64"
@@ -103,16 +105,25 @@ apply_profile_overlay() {
     sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-nvidia"/' \
            -e 's/^iso_label="MAINSTREAM_\(NV_\)\?/iso_label="MAINSTREAM_NV_/' \
            "${PROFILE_DIR}/profiledef.sh"
-    info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver; iso_name → mainstreamos-desktop-linux-nvidia."
+    # Early KMS for the legacy card so Plymouth has a DRM device from the start
+    # (no post-pivot black screen). nvidia-gsp-strip drops the GSP firmware the
+    # MODULES= add would otherwise bundle (580xx is GSP-free at runtime), so the
+    # init stays small. Both seds are idempotent (whole-line MODULES; optional
+    # ` nvidia-gsp-strip` after modconf).
+    sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 radeon nvidia nvidia_modeset nvidia_drm)/' \
+           -e 's/modconf\( nvidia-gsp-strip\)\?/modconf nvidia-gsp-strip/' \
+           "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}"
+    info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver + early KMS; iso_name → mainstreamos-desktop-linux-nvidia."
 }
 
 restore_profile_overlay() {
     [[ -n "${_OVERLAY_BAK_DIR:-}" && -d "${_OVERLAY_BAK_DIR:-}" ]] || return 0
-    # Restore both even if one fails (never leave a half-overlaid tree), keep
-    # the backup on error, and always return 0 so trap cleanup continues.
+    # Restore all three even if one fails (never leave a half-overlaid tree),
+    # keep the backup on error, and always return 0 so trap cleanup continues.
     local rc=0
     cp -a "$_OVERLAY_BAK_DIR/packages.x86_64" "${PROFILE_DIR}/packages.x86_64" || rc=1
     cp -a "$_OVERLAY_BAK_DIR/profiledef.sh"   "${PROFILE_DIR}/profiledef.sh"   || rc=1
+    cp -a "$_OVERLAY_BAK_DIR/archiso.conf"    "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}" || rc=1
     if (( rc == 0 )); then
         rm -rf -- "$_OVERLAY_BAK_DIR"
         _OVERLAY_BAK_DIR=""

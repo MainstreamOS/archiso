@@ -1,0 +1,21 @@
+# Pre-add the legacy NVIDIA KMS modules, then drop their GSP firmware.
+# mkinitcpio runs HOOKS' build() before processing the MODULES= array, and
+# add_module is idempotent — so adding nvidia here (which copies its declared
+# ~100 MB gsp_*.bin) lets the later MODULES= entries short-circuit without
+# re-bundling that firmware, while the early-load directive is still written.
+# Maxwell/Pascal/Volta never request GSP, so the init stays lean (no Limine
+# high-memory panic) and Plymouth still gets early KMS. Only the legacy edition
+# adds this hook + the nvidia MODULES (via build.sh's --nvidia overlay).
+build() {
+    add_module 'nvidia'
+    add_module 'nvidia-modeset'
+    add_module 'nvidia-drm'
+    rm -f "$BUILDROOT"/usr/lib/firmware/nvidia/*/gsp_*.bin*
+}
+
+help() {
+    cat <<'HELPEOF'
+Adds the legacy NVIDIA KMS modules to the image without their unused GSP
+firmware, keeping the initramfs small enough for Limine.
+HELPEOF
+}
