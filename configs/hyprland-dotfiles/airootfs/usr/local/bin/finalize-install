@@ -190,6 +190,16 @@ LOOSE_FILES=(
     # default Storage=auto persists once /var/log/journal exists (created
     # below).
     /etc/systemd/journald.conf.d/volatile-storage.conf
+    # tty1 autologin for the (now-removed) liveuser — on the installed system
+    # this would make agetty try to auto-login a nonexistent user on tty1.
+    /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    # do-not-suspend keeps the installer from being interrupted by a lid close
+    # or suspend key during install; on the installed system it would disable
+    # suspend/hibernate/lid handling entirely. Remove so power management works.
+    /etc/systemd/logind.conf.d/do-not-suspend.conf
+    # Live-only archiso drop-ins / build artifacts that are inert on the target.
+    /etc/systemd/resolved.conf.d/archiso.conf
+    /etc/initcpio/install/nvidia-gsp-strip
 )
 for f in "${LOOSE_FILES[@]}"; do
     if [[ -e "$f" ]]; then

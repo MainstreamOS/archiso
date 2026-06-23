@@ -1737,6 +1737,15 @@ if [[ -n "$MAIN_USER" ]]; then
         info "Removed stale hyprland-plugins-setup hl.on entry from execs.lua."
     fi
 
+    # Strip live-only exec-once triggers that must not run on the installed
+    # system: calamares-autostart launches the (now-removed) installer, and
+    # live-setup is a live-ISO no-op. Keep dotfiles-first-login. Clean both the
+    # installed user's execs.lua and /etc/skel (for users created later).
+    for _el in "$_EXECS_LUA" /etc/skel/.config/hypr/custom/execs.lua; do
+        [[ -f "$_el" ]] && sed -i '/calamares-autostart/d; /local\/bin\/live-setup/d' "$_el"
+    done
+    info "Removed live-only exec-once entries (calamares-autostart, live-setup) from execs.lua."
+
     # --- 2. Check build-time pkg-config deps ---
     # hyprbars' Makefile requires each of these. `hyprland` ships its own
     # hyprland.pc together with the development headers on Arch.
