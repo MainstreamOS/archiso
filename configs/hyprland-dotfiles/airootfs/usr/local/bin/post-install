@@ -822,6 +822,16 @@ pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-sn
 # /lib/modules/<target>/extra/ during the install. With modules present,
 # mkinitcpio -P succeeds in chroot for every GPU generation — no deferral,
 # no firstboot unit, no auto-reboot.
+
+# Free the ESP before building the UKI: drop any stale standalone kernel +
+# initramfs left on the ESP root (e.g. from an earlier failed attempt on a
+# reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
+# small shared ESP they can fill it and make the UKI write fail.
+if [[ -d /boot/efi ]]; then
+    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img \
+          /boot/efi/initramfs-linux-fallback.img 2>/dev/null || true
+fi
+
 info "Regenerating initramfs..."
 if ! mkinitcpio -P; then
     warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."

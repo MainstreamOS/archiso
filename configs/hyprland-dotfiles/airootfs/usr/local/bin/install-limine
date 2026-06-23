@@ -90,13 +90,11 @@ mkdir -p /etc/kernel
 printf '%s\n' "$KERNEL_CMDLINE" > /etc/kernel/cmdline
 info "Kernel command line written to /etc/kernel/cmdline"
 
-# --- 2. Kernel & Initramfs Sync (Required for boot():/// syntax) ---
-if [ "$IS_UEFI" = true ]; then
-    info "Syncing kernel and initramfs to EFI partition..."
-    # We copy them from /boot (BTRFS) to /boot/efi (FAT32) so Limine can see them
-    cp -f /boot/vmlinuz-linux "$BOOT_PATH/" || exit 1
-    cp -f /boot/initramfs-linux.img "$BOOT_PATH/" || exit 1
-fi
+# --- 2. UEFI boots the UKI (built by post-install), not a standalone
+# kernel+initramfs, so do NOT copy those to the ESP: they can be large (the
+# legacy NVIDIA live initramfs is ~124 MiB) and would overflow a small shared
+# dual-boot ESP before the UKI can be written. post-install prunes the
+# template's bootstrap entry. BIOS has no ESP and reads /boot directly.
 
 # --- 3. Installation ---
 if [ "$IS_UEFI" = true ]; then
