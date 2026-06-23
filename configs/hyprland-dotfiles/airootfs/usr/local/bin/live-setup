@@ -63,10 +63,31 @@ repair_venv_paths() {
 # ---------------------------------------------------------------------------
 CONFIG_DIR="$HOME/.config/illogical-impulse"
 CONFIG_FILE="$CONFIG_DIR/config.json"
+
+# Trim the dock to apps actually present on the live ISO so there are no dead
+# icons (the spotify flatpak / gnome apps not shipped live). Liveuser-only — a
+# fresh install gets the full default set from Config.qml. Keep DEFAULT_PINS in
+# sync with Config.qml dock.pinnedApps; "settings" is a Quickshell-internal
+# token (no .desktop), always kept.
+DEFAULT_PINS=(chromium org.gnome.Nautilus org.gnome.TextEditor mpv com.spotify.Client settings kitty org.gnome.Software)
+_pin_dirs=(/usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications" /var/lib/flatpak/exports/share/applications)
+LIVE_PINS=()
+for _app in "${DEFAULT_PINS[@]}"; do
+    if [[ "$_app" == settings || "$_app" == welcome-tutorial ]]; then
+        LIVE_PINS+=("$_app"); continue
+    fi
+    for _d in "${_pin_dirs[@]}"; do
+        [[ -f "$_d/$_app.desktop" ]] && { LIVE_PINS+=("$_app"); break; }
+    done
+done
+PINS_JSON=$(jq -n -c '$ARGS.positional' --args "${LIVE_PINS[@]}")
+
 if [[ ! -f "$CONFIG_FILE" ]]; then
     mkdir -p "$CONFIG_DIR"
     jq -n --arg wall "$DEFAULT_WALL" \
-          --arg type "scheme-neutral" '{
+          --arg type "scheme-neutral" \
+          --argjson pins "$PINS_JSON" '{
+        "dock": { "pinnedApps": $pins },
         "background": {
             "wallpaperPath": $wall,
             "thumbnailPath": "",
@@ -94,7 +115,7 @@ else
     # Config already exists (e.g. user re-ran something post-marker-removal):
     # patch in the cookie clock style without touching anything else.
     tmp=$(mktemp)
-    if jq '.background.widgets.clock.style = "cookie"' "$CONFIG_FILE" > "$tmp" 2>/dev/null; then
+    if jq --argjson pins "$PINS_JSON" '.background.widgets.clock.style = "cookie" | .dock.pinnedApps = $pins' "$CONFIG_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$CONFIG_FILE"
     else
         rm -f "$tmp"
