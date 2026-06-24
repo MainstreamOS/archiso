@@ -20,7 +20,7 @@
 
 pkgname=calamares-mainstream
 pkgver=3.4.3
-pkgrel=2
+pkgrel=3
 pkgdesc='Distribution-independent installer framework (Mainstream edition)'
 arch=('x86_64')
 url='https://github.com/MainstreamOS/calamares'
