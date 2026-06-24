@@ -1301,8 +1301,16 @@ AUTOSTARTEOF
             REQUIREMENTS="$MAIN_USER_HOME/.local/share/quickshell/sdata/uv/requirements.txt"
         fi
 
-        if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
-            info "No pre-baked venv — creating Python venv at $VENV_PATH..."
+        # Resolve uv to an absolute path. It is a system binary (/usr/bin/uv),
+        # but be defensive about the user's ~/.local/bin and pass the absolute
+        # path into the su helper so the scratch build never depends on the
+        # (non-login) shell's PATH.
+        UV_BIN="$(command -v uv 2>/dev/null || true)"
+        [[ -z "$UV_BIN" && -x /usr/bin/uv ]] && UV_BIN="/usr/bin/uv"
+        [[ -z "$UV_BIN" && -x "$MAIN_USER_HOME/.local/bin/uv" ]] && UV_BIN="$MAIN_USER_HOME/.local/bin/uv"
+
+        if [[ -n "$UV_BIN" ]] && [[ -f "$REQUIREMENTS" ]]; then
+            info "No pre-baked venv — creating Python venv at $VENV_PATH (uv: $UV_BIN)..."
             mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
             chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
 
@@ -1312,8 +1320,8 @@ AUTOSTARTEOF
             VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
             cat > "$VENV_HELPER" << VENVEOF
 #!/usr/bin/env bash
-uv venv --prompt .venv "$VENV_PATH"
-uv pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+"$UV_BIN" venv --prompt .venv "$VENV_PATH"
+"$UV_BIN" pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
 VENVEOF
             chmod 755 "$VENV_HELPER"
             chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
@@ -1327,7 +1335,7 @@ VENVEOF
             fi
             rm -f "$VENV_HELPER"
         else
-            warn "uv or requirements.txt not found — venv will be created on first login"
+            warn "venv scratch-build skipped — uv=${UV_BIN:-<not found>}, requirements=$REQUIREMENTS (exists: $([[ -f "$REQUIREMENTS" ]] && echo yes || echo no)); venv will be created on first login"
         fi
     fi
 
