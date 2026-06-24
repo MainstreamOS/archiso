@@ -73,7 +73,6 @@ file_permissions=(
   ["/etc/skel/.config/hypr/hyprland/variables.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/hyprland/scripts"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland/scripts/launch_first_available.sh"]="0:0:755"
-  ["/etc/skel/.config/hypr/hyprland/scripts/workspace_action.sh"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland/shellOverrides"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland/shellOverrides/main.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/hyprland.lua"]="0:0:644"
