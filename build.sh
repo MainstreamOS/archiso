@@ -157,10 +157,23 @@ download_mainstream_repo_pkgs() {
         warn "Could not list [mainstream] release assets — building every AUR package locally (versions may drift)."
         return 0
     fi
-    local url f name
+    local url f name base skip m
     while read -r url; do
         [[ -n "$url" ]] || continue
-        f="$repo_dir/$(basename "$url")"
+        base=$(basename "$url")
+        # The mainstream-* meta-packages are compiled locally in this build,
+        # against the Qt this ISO ships. Their published prebuilt is for the
+        # script installer only (which has an ldd ABI fallback the offline ISO
+        # lacks), so skip it here and keep the local build.
+        skip=false
+        for m in "${METAPKGS[@]}"; do
+            [[ "$base" == "$m"-[0-9]* ]] && { skip=true; break; }
+        done
+        if [[ "$skip" == true ]]; then
+            info "$base — built locally for the ISO, skipping prebuilt download."
+            continue
+        fi
+        f="$repo_dir/$base"
         if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$f" "$url" 2>/dev/null; then
             name=$(pacman -Qpq "$f" 2>/dev/null || true)
             if [[ -n "$name" ]]; then
