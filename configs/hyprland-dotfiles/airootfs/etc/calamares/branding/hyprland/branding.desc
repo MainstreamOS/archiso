@@ -27,10 +27,11 @@ strings:
     versionedName:       Mainstream OS
     shortVersionedName:  Mainstream OS
     bootloaderEntryName: Mainstream
-    productUrl:          https://mainstreamos.github.io
-    supportUrl:          https://github.com/sponsors/MainstreamOS
+    productUrl:          https://mainstreamos.org/
+    supportUrl:          https://mainstreamos.org/docs
     knownIssuesUrl:      https://github.com/MainstreamOS/dots-hyprland/issues
     releaseNotesUrl:     https://github.com/MainstreamOS/dots-hyprland/releases
+    donateUrl:           https://github.com/sponsors/MainstreamOS
 
 images:
     productLogo:    "logo.png"
