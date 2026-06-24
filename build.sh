@@ -58,13 +58,16 @@ success() { log "OK:    $*"; }
 # an nvidia driver into AMD/Intel-only ISOs.
 add_mainstream_db() {
     local repo_dir="$1"
+    # Debug packages are never installed (not in packages.x86_64); drop any an
+    # earlier build left here so they neither index nor bloat the live squashfs.
+    rm -f "$repo_dir"/*-debug-*.pkg.tar.zst 2>/dev/null || true
     # repo-add only ADDS — start from a clean DB so any previously-indexed
     # (and now-excluded) GPU driver entries are dropped, not carried forward.
     rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
           "$repo_dir"/mainstream.files{,.tar.gz,.tar.gz.old}
     local pkgs=()
     mapfile -t pkgs < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' \
-        ! -name '*nvidia*' ! -name 'libxnvctrl*' | sort)
+        ! -name '*nvidia*' ! -name 'libxnvctrl*' ! -name '*-debug-*' | sort)
     # Legacy-NVIDIA edition: pacstrap must resolve the live driver, so add
     # nvidia-580xx-{dkms,utils} back in. Other gens stay files-only (target-only
     # via install-gpu-drivers); excluding them avoids provide-ambiguity. The
@@ -486,16 +489,6 @@ if [[ "$NVIDIA_PROFILE" == true ]]; then
     AUR_DEPS+=("${NVIDIA_DEPS[@]}")
 fi
 
-# Prebuilt packages to download instead of building from source.
-# Format: "filename URL"
-# These are Qt5 packages removed from official repos as part of the Qt5→Qt6 transition.
-PREBUILT_PKGS=(
-    "qt5-webengine-5.15.19-4.1-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webengine-5.15.19-4.1-x86_64.pkg.tar.zst/download"
-    "qt5-webchannel-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://sourceforge.net/projects/fabiololix-os-archive/files/Packages/qt5-webchannel-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst/download"
-    "qt5-location-5.15.18+kde+r7-2-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-location/qt5-location-5.15.18%2Bkde%2Br7-2-x86_64.pkg.tar.zst"
-    "qt5-tools-5.15.18+kde+r3-1-x86_64.pkg.tar.zst https://archive.archlinux.org/packages/q/qt5-tools/qt5-tools-5.15.18%2Bkde%2Br3-1-x86_64.pkg.tar.zst"
-)
-
 # ── Preflight checks ───────────────────────────────────────────────────────
 info "Running package-build preflight checks..."
 
@@ -676,8 +669,6 @@ for pkgname in "${METAPKGS[@]}"; do
         built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
-            debug_pkg=$(find "$TEMP_OUTPUT" -name "${pkgname}-debug-*.pkg.tar.zst" | head -1)
-            [[ -n "$debug_pkg" ]] && cp "$debug_pkg" "$PKG_OUTPUT_DIR/" || true
             rm -f "$TEMP_OUTPUT/${pkgname}"*.pkg.tar.zst
             ((SUCCESS_COUNT++)) || true
             success "$pkgname built successfully."
@@ -947,8 +938,6 @@ else
         built=$(find "$TEMP_OUTPUT" -name "${MICROTEX_PKG}-*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
-            debug_pkg=$(find "$TEMP_OUTPUT" -name "${MICROTEX_PKG}-debug-*.pkg.tar.zst" | head -1)
-            [[ -n "$debug_pkg" ]] && cp "$debug_pkg" "$PKG_OUTPUT_DIR/" || true
             rm -f "$TEMP_OUTPUT/${MICROTEX_PKG}"*.pkg.tar.zst
             success "$MICROTEX_PKG built successfully."
         else
@@ -957,27 +946,6 @@ else
     else
         warn "$MICROTEX_PKG — build failed."
     fi
-fi
-
-if [[ ${#PREBUILT_PKGS[@]} -gt 0 ]]; then
-    info "Downloading ${#PREBUILT_PKGS[@]} prebuilt packages..."
-    for entry in "${PREBUILT_PKGS[@]}"; do
-        pkg_file="${entry%% *}"
-        pkg_url="${entry#* }"
-
-        if [[ -f "$PKG_OUTPUT_DIR/$pkg_file" ]] && [[ "$CLEAN_BUILD" == false ]]; then
-            info "$pkg_file — already present, skipping download."
-            continue
-        fi
-
-        info "Downloading $pkg_file..."
-        if curl -L --retry 4 --retry-delay 2 -o "$PKG_OUTPUT_DIR/$pkg_file" "$pkg_url"; then
-            success "$pkg_file downloaded successfully."
-        else
-            warn "$pkg_file — download failed."
-        fi
-    done
-    echo ""
 fi
 
 # ── Sanitize local repo (remove corrupt packages before indexing) ──────────
