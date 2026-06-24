@@ -148,7 +148,17 @@ declare -A GITHUB_PROVIDED=()
 download_mainstream_repo_pkgs() {
     local repo_dir="$1"
     local api="https://api.github.com/repos/MainstreamOS/packages/releases/tags/mainstream-repo"
+    local rel="https://github.com/MainstreamOS/packages/releases/download/mainstream-repo"
     info "Fetching the [mainstream] GitHub repo package list..."
+    # The release only ever ADDS assets, so it accumulates stale builds (dropped
+    # or superseded packages). Trust the db, not the raw asset list: collect the
+    # pkgname-ver-rel stems the current db indexes and pull only those.
+    local current dbtmp
+    dbtmp=$(mktemp)
+    if curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused -o "$dbtmp" "$rel/mainstream.db" 2>/dev/null; then
+        current=$(tar tzf "$dbtmp" 2>/dev/null | grep -oE '^[^/]+/' | tr -d '/' | sort -u)
+    fi
+    rm -f "$dbtmp"
     local urls
     urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused "$api" 2>/dev/null \
         | grep -oE '"browser_download_url":[[:space:]]*"[^"]+\.pkg\.tar\.zst"' \
@@ -157,10 +167,19 @@ download_mainstream_repo_pkgs() {
         warn "Could not list [mainstream] release assets — building every AUR package locally (versions may drift)."
         return 0
     fi
-    local url f name base skip m
+    local url f name base skip m stem
     while read -r url; do
         [[ -n "$url" ]] || continue
         base=$(basename "$url")
+        # Skip assets the current db doesn't index — stale leftovers from old
+        # builds. If the db fetch failed, fall back to downloading everything.
+        if [[ -n "${current:-}" ]]; then
+            stem=$(sed -E 's/-[^-]+\.pkg\.tar\.zst$//' <<< "$base")
+            if ! grep -qxF "$stem" <<< "$current"; then
+                info "$base — not in current db, skipping stale asset."
+                continue
+            fi
+        fi
         # The mainstream-* meta-packages are compiled locally in this build,
         # against the Qt this ISO ships. Their published prebuilt is for the
         # script installer only (which has an ldd ABI fallback the offline ISO
