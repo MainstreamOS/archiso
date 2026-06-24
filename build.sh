@@ -1182,20 +1182,18 @@ fi
 HOST_PYTHON_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
 
 # ── Step C: Version gate ─────────────────────────────────────────────────────
-# The venv is always pinned to Python 3.12 (-p 3.12) for wheel compatibility
-# (cffi, cryptography, opencv etc. have prebuilt 3.12 wheels; newer Pythons
-# require source builds that hit ABI/dep conflicts).  So the gate is simply:
-# can uv resolve python3.12 on this build host?  The host/ISO version match
-# is no longer required — the stamp is written from the venv's own binary,
-# not from $HOST_PYTHON_VER, so it will correctly reflect 3.12 regardless of
-# what Python the build host runs.
+# The venv is pinned to the Python the ISO actually ships ($ISO_PYTHON_VER) so
+# its .python-version stamp matches the installed interpreter and post-install
+# keeps it instead of discarding it on an ABI mismatch (which forced a cold venv
+# rebuild on every first boot). requirements.txt is compiled for that same
+# version, and uv can download/manage the interpreter if the build host differs.
 _version_ok=false
 if python3 -c 'import sys; assert (sys.version_info.major, sys.version_info.minor) >= (3,8)' \
         &>/dev/null 2>&1; then
     # uv can download/manage Python 3.12 itself if it's not on the host,
     # so as long as uv is available we consider the gate passed.
     _version_ok=true
-    info "Version gate passed — venv will be pinned to Python 3.12 (ISO ships $ISO_PYTHON_VER)."
+    info "Version gate passed — venv will be pinned to Python ${ISO_PYTHON_VER:-$HOST_PYTHON_VER} (ISO ships $ISO_PYTHON_VER)."
 else
     warn "python3 not found on build host — skipping venv pre-bake."
 fi
@@ -1208,10 +1206,15 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
     info "Pre-building Python venv for skel (host Python: $HOST_PYTHON_VER)..."
     mkdir -p "$(dirname "$VENV_SKEL_PATH")"
 
-    # Step 1: Create venv using the host Python (no pin — requirements.txt is
-    # compiled against the ISO's Python version so wheels are correct).
+    # Step 1: Create the venv pinned to the Python the ISO ships ($ISO_PYTHON_VER)
+    # so the .python-version stamp matches the installed interpreter (and
+    # requirements.txt, compiled for the same version). uv downloads/manages the
+    # interpreter if the build host runs a different one.
     # --clear ensures no interactive prompt if a previous venv exists.
-    uv venv --prompt .venv --clear "$VENV_SKEL_PATH"
+    _VENV_PIN="${ISO_PYTHON_VER:-$HOST_PYTHON_VER}"
+    _pin_args=()
+    [[ -n "$_VENV_PIN" ]] && _pin_args=(-p "$_VENV_PIN")
+    uv venv --prompt .venv --clear "${_pin_args[@]}" "$VENV_SKEL_PATH"
     _uv_venv_exit=${PIPESTATUS[0]}
 
     # Step 2: Install packages. bin/python still points at uv's managed cache
@@ -1226,6 +1229,13 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
     _VENV_PY_VER=$("$VENV_SKEL_PATH/bin/python" -c \
         'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
         2>/dev/null || echo "$HOST_PYTHON_VER")
+
+    # Guard: a baked venv whose Python differs from the ISO's gets discarded by
+    # post-install (ABI mismatch) and rebuilt cold on first boot. Fail at build
+    # time instead of silently shipping that.
+    if [[ -n "$ISO_PYTHON_VER" && "$_VENV_PY_VER" != "$ISO_PYTHON_VER" ]]; then
+        die "Baked venv Python ($_VENV_PY_VER) != ISO Python ($ISO_PYTHON_VER); fix the venv pin before shipping."
+    fi
 
     # Step 2c: Replace dangling uv-cache symlinks with symlinks to system python3.
     # Must happen AFTER pip install and version query — uv needs its own managed
