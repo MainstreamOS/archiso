@@ -402,7 +402,6 @@ AUR_DEPS=(
     "ttf-readex-pro"
     "ttf-rubik-vf"
     "ttf-twemoji"
-    "cpptrace"
     "qt6-avif-image-plugin::qt5-avif-image-plugin"
 
     # Default apps that were AUR-only and got dropped from netinstall when the
