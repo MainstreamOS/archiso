@@ -2,8 +2,9 @@
 # =============================================================================
 # dotfiles-first-login
 # Triggered by a Hyprland exec-once backed by a per-user systemd service.
-# Sets dark mode, builds the python venv (if missing), runs the full color
-# pipeline, and restarts Quickshell so the bar/clock pick up wallpaper colors.
+# Sets dark mode, builds the python venv (if missing), and runs the full
+# color pipeline at idle priority so the bar paints first and the theme
+# catches up a moment later.
 # Self-removes first-login triggers and dotfiles repo on success.
 # =============================================================================
 MARKER="$HOME/.dotfiles-pending-user-setup"
@@ -76,51 +77,13 @@ generated_colors_ready() {
         "$HOME/.local/state/quickshell/user/generated/material_colors.scss" 2>/dev/null
 }
 
-restart_quickshell() {
-    local qs_bin
-    local launch_cmd
-
-    qs_bin="$(command -v qs || command -v quickshell || true)"
-    if [[ -z "$qs_bin" ]]; then
-        echo "[first-login] ERROR: cannot restart Quickshell; qs/quickshell not found"
-        return 1
-    fi
-
-    echo "[first-login] restarting Quickshell"
-    pkill -x qs 2>/dev/null || true
-    pkill -x quickshell 2>/dev/null || true
-
-    for _i in $(seq 1 30); do
-        pgrep -x qs >/dev/null 2>&1 || pgrep -x quickshell >/dev/null 2>&1 || break
-        sleep 0.2
-    done
-
-    # When run from dotfiles-first-login.service, children started directly
-    # here are killed as the oneshot service exits. Ask Hyprland to spawn the
-    # replacement so it survives outside this service cgroup.
-    launch_cmd="$qs_bin -c ii"
-    if command -v hyprctl &>/dev/null && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-        if hyprctl dispatch exec "$launch_cmd" >/dev/null 2>&1; then
-            echo "[first-login] Quickshell restart requested through Hyprland"
-            return 0
-        fi
-        echo "[first-login] WARN: Hyprland exec dispatch failed; trying systemd-run"
-    fi
-
-    if command -v systemd-run &>/dev/null; then
-        if systemd-run --user --scope --quiet --collect "$qs_bin" -c ii >/dev/null 2>&1; then
-            echo "[first-login] Quickshell restart requested through systemd-run"
-            return 0
-        fi
-        echo "[first-login] WARN: systemd-run restart failed; falling back to direct launch"
-    fi
-
-    "$qs_bin" -c ii >/dev/null 2>&1 &
-    disown
-}
-
 run_first_login_setup() {
     echo "[first-login] start $(date -Is)"
+    # Yield CPU and I/O to the shell so the bar paints first on first login;
+    # the color pipeline (matugen + venv build) catches up at idle priority
+    # a moment after the bar is up. Both are unprivileged (lowering only).
+    renice -n 19 -p "$BASHPID" >/dev/null 2>&1 || true
+    ionice -c 3  -p "$BASHPID" >/dev/null 2>&1 || true
     echo "[first-login] PATH=$PATH"
 
     # Wait for compositor — autostart can fire before WAYLAND_DISPLAY is set.
