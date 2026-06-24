@@ -238,9 +238,13 @@ STUB_EOF
     echo "[first-login] done $(date -Is)"
 }
 
+# Mirror the full first-login log onto the desktop (the same file post-install
+# writes to) so the whole install -> first-boot venv/theme run is in one place.
+DESKTOP_LOG="$HOME/Desktop/mainstream-setup.log"
+mkdir -p "$HOME/Desktop" 2>/dev/null || true
 if [[ "${DOTFILES_FIRST_LOGIN_FOREGROUND:-0}" == "1" ]]; then
-    run_first_login_setup &> "$LOG"
+    run_first_login_setup 2>&1 | tee -a "$DESKTOP_LOG" > "$LOG"
 else
-    run_first_login_setup &> "$LOG" &
+    { run_first_login_setup 2>&1 | tee -a "$DESKTOP_LOG" > "$LOG"; } &
     disown
 fi

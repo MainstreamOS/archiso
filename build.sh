@@ -1205,6 +1205,15 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
     set +e
     info "Pre-building Python venv for skel (host Python: $HOST_PYTHON_VER)..."
     mkdir -p "$(dirname "$VENV_SKEL_PATH")"
+    # Verbose venv-bake log — a dedicated file next to build.sh for easy
+    # inspection after the build (versions, full uv output, per-step exits).
+    VENV_BAKE_LOG="${SCRIPT_DIR}/venv-bake.log"
+    venv_log() { echo "[venv-bake] $*"; printf '[%s] %s\n' "$(date -Is 2>/dev/null || date)" "$*" >> "$VENV_BAKE_LOG" 2>/dev/null || true; }
+    : > "$VENV_BAKE_LOG" 2>/dev/null || true
+    venv_log "=== venv pre-bake start ==="
+    venv_log "host python=$HOST_PYTHON_VER  ISO python=$ISO_PYTHON_VER  pin=${ISO_PYTHON_VER:-$HOST_PYTHON_VER}"
+    venv_log "VENV_SKEL_PATH=$VENV_SKEL_PATH"
+    venv_log "REQUIREMENTS=$REQUIREMENTS  uv=$(command -v uv 2>/dev/null)"
 
     # Step 1: Create the venv pinned to the Python the ISO ships ($ISO_PYTHON_VER)
     # so the .python-version stamp matches the installed interpreter (and
@@ -1214,14 +1223,16 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
     _VENV_PIN="${ISO_PYTHON_VER:-$HOST_PYTHON_VER}"
     _pin_args=()
     [[ -n "$_VENV_PIN" ]] && _pin_args=(-p "$_VENV_PIN")
-    uv venv --prompt .venv --clear "${_pin_args[@]}" "$VENV_SKEL_PATH"
+    uv venv --prompt .venv --clear "${_pin_args[@]}" "$VENV_SKEL_PATH" 2>&1 | tee -a "$VENV_BAKE_LOG"
     _uv_venv_exit=${PIPESTATUS[0]}
+    venv_log "uv venv exit=$_uv_venv_exit"
 
     # Step 2: Install packages. bin/python still points at uv's managed cache
     # at this point — that's intentional, uv needs it to resolve correct wheels.
     # The symlink is replaced with the system python3 after install completes.
-    (set -o pipefail; uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS")
-    _uv_pip_exit=$?
+    (set -o pipefail; uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS") 2>&1 | tee -a "$VENV_BAKE_LOG"
+    _uv_pip_exit=${PIPESTATUS[0]}
+    venv_log "uv pip install exit=$_uv_pip_exit"
 
     # Step 2b: Query the venv Python version BEFORE replacing the symlink —
     # while bin/python still resolves to uv's managed binary, it correctly
@@ -1229,6 +1240,7 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
     _VENV_PY_VER=$("$VENV_SKEL_PATH/bin/python" -c \
         'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
         2>/dev/null || echo "$HOST_PYTHON_VER")
+    venv_log "baked venv python=$_VENV_PY_VER (expected ISO=$ISO_PYTHON_VER)"
 
     # Guard: a baked venv whose Python differs from the ISO's gets discarded by
     # post-install (ABI mismatch) and rebuilt cold on first boot. Fail at build
@@ -1253,6 +1265,7 @@ if [[ "$_version_ok" == true ]] && command -v uv &>/dev/null && [[ -f "$REQUIREM
         warn "Could not find system python3 — python symlinks in venv may be dangling on target."
     fi
 
+    venv_log "materialyoucolor present: $(compgen -G "$VENV_SKEL_PATH/lib/python*/site-packages/materialyoucolor*" >/dev/null 2>&1 && echo yes || echo no)"
     # Step 4: Gate on success then patch all paths
     if [[ $_uv_venv_exit -eq 0 ]] && \
        [[ $_uv_pip_exit  -eq 0 ]] && \

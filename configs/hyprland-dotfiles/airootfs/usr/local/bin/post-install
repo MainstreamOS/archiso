@@ -1254,6 +1254,15 @@ AUTOSTARTEOF
     # ---------------------------------------------------------------------------
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
+    # Desktop log so the venv/theme setup is inspectable on the live install.
+    SETUP_LOG="$MAIN_USER_HOME/Desktop/mainstream-setup.log"
+    setup_log() {
+        mkdir -p "$MAIN_USER_HOME/Desktop" 2>/dev/null || true
+        printf '[%s] [post-install] %s\n' "$(date -Is 2>/dev/null || date)" "$*" >> "$SETUP_LOG" 2>/dev/null || true
+        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/Desktop" "$SETUP_LOG" 2>/dev/null || true
+    }
+    setup_log "=== venv/theme setup start; VENV_PATH=$VENV_PATH; system python=$(python3 -V 2>&1) ==="
+
     if [[ -e "$VENV_PATH/bin/python" || -L "$VENV_PATH/bin/python" ]]; then
         # Verify the baked Python version matches what's actually installed.
         # build.sh writes .python-version = "MAJOR.MINOR" into the venv.
@@ -1262,6 +1271,7 @@ AUTOSTARTEOF
         # scratch-build path below runs on the correct installed interpreter.
         _sys_python_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
         _baked_ver=$(cat "$VENV_PATH/.python-version" 2>/dev/null || true)
+        setup_log "pre-baked venv present; baked python=${_baked_ver:-<none>}, system python=$_sys_python_ver"
 
         _abi_ok=false
         if [[ -z "$_baked_ver" ]]; then
@@ -1272,6 +1282,7 @@ AUTOSTARTEOF
         else
             warn "Venv ABI mismatch (baked=$_baked_ver, system=$_sys_python_ver) — discarding pre-baked venv."
             rm -rf "$VENV_PATH"
+            setup_log "pre-baked venv DISCARDED (ABI mismatch baked=$_baked_ver vs system=$_sys_python_ver) — will scratch-build or defer"
         fi
 
         if [[ "$_abi_ok" == true ]]; then
@@ -1290,6 +1301,7 @@ AUTOSTARTEOF
 
             chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
             info "Python venv ready (pre-baked)."
+            setup_log "pre-baked venv KEPT and path-fixed."
         fi
         # If _abi_ok=false, VENV_PATH was rm -rf'd above; fall through to scratch build.
     fi
@@ -1326,16 +1338,21 @@ VENVEOF
             chmod 755 "$VENV_HELPER"
             chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
 
-            if su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1; then
+            setup_log "scratch venv build START (uv=$UV_BIN, requirements=$REQUIREMENTS)"
+            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1 | tee -a "$SETUP_LOG"
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
                 find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
                 chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
                 info "Python venv created successfully."
+                setup_log "scratch venv build SUCCEEDED"
             else
                 warn "venv creation failed — will retry on first login"
+                setup_log "scratch venv build FAILED — deferring to first login"
             fi
             rm -f "$VENV_HELPER"
         else
             warn "venv scratch-build skipped — uv=${UV_BIN:-<not found>}, requirements=$REQUIREMENTS (exists: $([[ -f "$REQUIREMENTS" ]] && echo yes || echo no)); venv will be created on first login"
+            setup_log "scratch venv build SKIPPED (uv=${UV_BIN:-<none>}, requirements exists=$([[ -f "$REQUIREMENTS" ]] && echo yes || echo no)) — deferring to first login"
         fi
     fi
 
@@ -1359,6 +1376,7 @@ VENVEOF
         # including material_colors.scss and terminal/kitty-theme.conf
         if [[ -f "$VENV_PATH/bin/activate" ]] && [[ -f "$SWITCHWALL" ]]; then
             info "Running full color pipeline via switchwall.sh..."
+            setup_log "running full color pipeline (switchwall, venv ready)"
             SW_HELPER="/tmp/switchwall-$MAIN_USER.sh"
             cat > "$SW_HELPER" << SWEOF
 #!/usr/bin/env bash
@@ -1376,6 +1394,7 @@ SWEOF
             warn "Venv not ready — terminal colors will be set on first login"
         fi
         info "Initial color scheme generated."
+        setup_log "initial color scheme generated."
     else
         warn "Default wallpaper or matugen not found — skipping initial color generation."
     fi
