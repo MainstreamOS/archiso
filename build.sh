@@ -410,6 +410,7 @@ METAPKGS=(
     "mainstream-quickshell-git"
     "mainstream-extras"
     "mainstream-bibata-modern-classic-bin"
+    "mainstream-gaming"
 )
 # mainstream-microtex-git is built separately below — its cmake source build
 # needs makepkg -s (syncdeps) and --skippgpcheck, which the generic
@@ -447,6 +448,17 @@ AUR_DEPS=(
     "nautilus-admin-gtk4"
     "mpv-modernz"
     "mpv-thumbfast-git"
+
+    # Gaming Mode (Super+G) — the ChimeraOS/Open Gaming Collective gamescope
+    # session stack that the Steam Deck, Bazzite and ChimeraOS all run. Prebuilt
+    # into [mainstream]; the mainstream-gaming meta-package depends on these, so
+    # a plain `pacman -S mainstream-gaming` pulls them (never from the AUR).
+    # Both are arch=any pure file-install packages (makedepends=git only), so
+    # the --nodeps loop builds them without pulling the gamescope runtime first;
+    # gamescope-session-steam-git's dep on gamescope-session-git resolves from
+    # [mainstream] at install time.
+    "gamescope-session-git"
+    "gamescope-session-steam-git"
 )
 
 # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──

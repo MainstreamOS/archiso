@@ -1643,108 +1643,11 @@ if [[ -n "$MAIN_USER" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# GAMESCOPE SESSION SETUP (DEFERRED — FIRSTBOOT ONE-SHOT)
-# Steam is not yet installed at this point (it arrives via netinstall).
-# A one-shot systemd service is registered here and runs on first boot,
-# after netinstall has completed and Steam is present.
+# Gaming Mode (Super+G) is delivered by the mainstream-gaming package (listed in
+# packages.x86_64): the gaming-mode helpers, /usr/lib/os-session-select, the
+# scoped sudoers rule, and the gamescope Steam session as a dependency. Steam
+# itself installs on first use. No firstboot service or extra privileges here.
 # ---------------------------------------------------------------------------
-info "Registering gamescope-init firstboot service..."
-
-cat > /etc/systemd/system/gamescope-init.service << 'GAMESCOPEUNITEOF'
-[Unit]
-Description=Post-netinstall gamescope session setup
-# Run after the network is up and multi-user services are ready so that
-# pacman can reach mirrors and Steam/gamescope packages are installed.
-After=network-online.target multi-user.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/gamescope-firstboot
-# Keep the journal entry even after the unit finishes so failures are visible.
-RemainAfterExit=no
-
-[Install]
-WantedBy=multi-user.target
-GAMESCOPEUNITEOF
-
-cat > /usr/local/bin/gamescope-firstboot << 'GSFIRSTBOOTEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-log()  { echo "[gamescope-firstboot] $*"; }
-warn() { log "WARN: $*"; }
-
-# Resolve the primary non-system user at runtime (Steam must be installed
-# for this user by the time we run, so UID 1000 should be present).
-MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' \
-    | grep -vE '(liveuser|builduser|nobody|root)' | head -n 1 || true)
-MAIN_USER_HOME="/home/$MAIN_USER"
-
-if [[ -z "$MAIN_USER" ]]; then
-    log "ERROR: Primary user (UID 1000) not detected — aborting."
-    exit 1
-fi
-
-# Guard: Steam must be present before we configure anything around it.
-if ! pacman -Q steam &>/dev/null; then
-    log "Steam not yet installed — deferring. Re-run or wait for next boot."
-    exit 0
-fi
-
-log "Steam detected — setting up gamescope session support for $MAIN_USER..."
-
-# Sudoers file — allows the toggle script to stop/start sddm, chvt, seatd,
-# python3, setcap, and systemd-run without a password prompt.
-# chmod 440 is required — sudo refuses world-readable sudoers files.
-cat > /etc/sudoers.d/gamescope << SUDOERSEOF
-Defaults:${MAIN_USER} !requiretty
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop sddm
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start sddm
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/chvt
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemd-run
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/python3
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/seatd
-${MAIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/setcap
-SUDOERSEOF
-chmod 440 /etc/sudoers.d/gamescope
-log "Sudoers file written: /etc/sudoers.d/gamescope"
-
-# udev rule — allows the input proxy to create a UInput virtual device.
-cat > /etc/udev/rules.d/99-uinput.rules << 'UDEVEOF'
-KERNEL=="uinput", MODE="0660", GROUP="input"
-UDEVEOF
-udevadm control --reload-rules 2>/dev/null || true
-log "udev rule written: /etc/udev/rules.d/99-uinput.rules"
-
-# Add user to input group so the proxy can read keyboard devices.
-usermod -aG input "$MAIN_USER"
-log "Added $MAIN_USER to input group."
-
-# Enable linger so the user's systemd session persists independently
-# of SDDM being stopped. We write the file directly because loginctl
-# enable-linger requires a live PAM session.
-mkdir -p /var/lib/systemd/linger
-touch /var/lib/systemd/linger/"$MAIN_USER"
-log "Linger enabled for $MAIN_USER."
-
-# Ensure the toggle script is executable — safety net in case dotfile
-# permissions were lost during deployment.
-TOGGLE_SCRIPT="$MAIN_USER_HOME/.config/hypr/hyprland/scripts/toggle_gamescope.sh"
-if [[ -f "$TOGGLE_SCRIPT" ]]; then
-    chmod +x "$TOGGLE_SCRIPT"
-    log "toggle_gamescope.sh marked executable."
-else
-    warn "toggle_gamescope.sh not found at $TOGGLE_SCRIPT — skipping chmod."
-fi
-
-# Disable ourselves — one-shot job done.
-systemctl disable gamescope-init.service 2>/dev/null || true
-log "Gamescope firstboot setup complete."
-GSFIRSTBOOTEOF
-
-chmod +x /usr/local/bin/gamescope-firstboot
-systemctl enable gamescope-init.service 2>/dev/null || true
-info "gamescope-init.service registered — will run on first boot after netinstall."
 
 # ---------------------------------------------------------------------------
 # HYPRLAND PLUGINS — build hyprbars from source at install time (chroot)
