@@ -216,6 +216,9 @@ rsync
 bc
 curl
 wget
+# DEBUG (temporary): for the first-boot qs-block probe in dotfiles-first-login.
+# Remove with the probe once the first-boot bar-paint delay is diagnosed.
+strace
 
 # ==============================================================================
 # Calamares installer (live only — removed by packages.conf on install)
