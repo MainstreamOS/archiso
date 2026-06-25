@@ -1054,31 +1054,41 @@ info "Scheduling pacman keyring init + [mainstream] repo switch for first boot..
 cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
 [Unit]
 Description=Initialize pacman keyring and switch [mainstream] to the GitHub repo on first boot
-# gpg signature validity needs a synced clock, but ONLY this unit should
-# wait for NTP — systemd-time-wait-sync must never be enabled boot-wide
-# (it gated timers/multi-user/graphical on an NTP round-trip at EVERY
-# boot, freezing first login for 10-30+ seconds). Wanting it here runs
-# the wait only when the keyring actually initializes (first boot).
+# gpg signature validity needs a synced clock, so this Wants systemd-time-wait-
+# sync — but it must NOT gate the boot. It is triggered by
+# pacman-keyring-init.timer, NOT WantedBy=multi-user.target. A oneshot wanted by
+# multi-user.target makes multi-user.target WAIT for it; because this unit blocks
+# on the NTP round-trip (~40s on first boot) that froze multi-user.target to ~45s.
+# That delayed power-profiles-daemon (After=multi-user.target, dbus-activated),
+# which the quickshell bar synchronously activates at startup via UtilButtons'
+# PowerProfiles binding — so the bar could not paint for ~21s. Off the critical
+# path, multi-user.target reaches early, PPD activates immediately, and this
+# keyring rebuild runs in the background after the desktop is already up.
+# No ConditionPathExists gate: it must run on first boot even when the chroot's
+# best-effort pacman-key --init succeeded, because it ALSO trusts the [mainstream]
+# key and repoints the repo. Runs exactly once: ExecStartPost disables the timer.
 After=network-online.target systemd-time-wait-sync.service
 Wants=network-online.target systemd-time-wait-sync.service
-# No ConditionPathExists gate. This unit must run on first boot even when the
-# chroot's best-effort pacman-key --init already created the keyring, because it
-# ALSO trusts the [mainstream] key and repoints the repo — gating on "keyring
-# missing" skipped that whole job whenever the chroot init happened to succeed.
-# The script rebuilds the keyring from scratch (the reliable path) and runs
-# exactly once: ExecStartPost disables the unit after a successful run.
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/mainstream-keyring-init
-ExecStartPost=/usr/bin/systemctl disable pacman-keyring-init.service
+ExecStartPost=-/usr/bin/systemctl disable pacman-keyring-init.timer pacman-keyring-init.service
+KEYRINGEOF
+cat > /etc/systemd/system/pacman-keyring-init.timer << 'KEYRINGTIMEREOF'
+[Unit]
+Description=Trigger the first-boot pacman keyring init off the boot-critical path
+
+[Timer]
+OnBootSec=20
+AccuracySec=2s
 
 [Install]
-WantedBy=multi-user.target
-KEYRINGEOF
-systemctl enable pacman-keyring-init.service 2>/dev/null || true
-info "Pacman keyring init + [mainstream] repo switch scheduled."
+WantedBy=timers.target
+KEYRINGTIMEREOF
+systemctl enable pacman-keyring-init.timer 2>/dev/null || true
+info "Pacman keyring init + [mainstream] repo switch scheduled (timer, off critical path)."
 
 # ---------------------------------------------------------------------------
 # 6c. ZRAM CONFIGURATION
