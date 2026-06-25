@@ -1372,6 +1372,28 @@ VENVEOF
         mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
         chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
 
+        # Seed the shell config so the wallpaper path survives to first boot.
+        # switchwall.sh set_wallpaper_path() only writes .background.wallpaperPath
+        # when config.json already exists, but at install time quickshell has never
+        # run to create it — so without this the wallpaper renders blank on first
+        # boot. Write a minimal config (background only) if none exists; quickshell
+        # fills the remaining defaults when it loads.
+        SEED_HELPER="/tmp/seedcfg-$MAIN_USER.sh"
+        cat > "$SEED_HELPER" << SEEDEOF
+#!/usr/bin/env bash
+cfg_dir="\$HOME/.config/illogical-impulse"
+cfg="\$cfg_dir/config.json"
+mkdir -p "\$cfg_dir"
+if [ ! -f "\$cfg" ]; then
+    printf '{"background":{"wallpaperPath":"%s","thumbnailPath":"%s"}}' "$DEFAULT_WALL" "$DEFAULT_WALL" > "\$cfg"
+fi
+SEEDEOF
+        chmod 755 "$SEED_HELPER"
+        chown "$MAIN_USER:$MAIN_USER" "$SEED_HELPER"
+        su -s /bin/bash "$MAIN_USER" -c "bash $SEED_HELPER" 2>/dev/null || true
+        rm -f "$SEED_HELPER"
+        setup_log "seeded illogical-impulse config.json with default wallpaper path"
+
         # Run full switchwall pipeline if venv is ready — generates all color files
         # including material_colors.scss and terminal/kitty-theme.conf
         if [[ -f "$VENV_PATH/bin/activate" ]] && [[ -f "$SWITCHWALL" ]]; then

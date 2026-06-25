@@ -90,6 +90,30 @@ run_first_login_setup() {
     ionice -c 3  -p "$BASHPID" >/dev/null 2>&1 || true
     echo "[first-login] PATH=$PATH"
 
+    # First-boot paint instrumentation. The bar paints quickly in the live ISO
+    # but slowly on a fresh install's first boot; this records how long until the
+    # bar's layer surface appears and whether the QML cache is growing, so the
+    # desktop log pinpoints the real cost. This service starts at hyprland.start,
+    # so its start time approximates session start. Runs detached; writes straight
+    # to the desktop log so it survives this function returning.
+    QMLCACHE_DIR="$HOME/.cache/quickshell/qmlcache"
+    _qmlc_count() { find "$QMLCACHE_DIR" -name '*.qmlc' 2>/dev/null | wc -l; }
+    echo "[first-login] qmlcache .qmlc at start: $(_qmlc_count)"
+    (
+        _t0=$(date +%s.%N)
+        for _i in $(seq 1 600); do
+            if hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"'; then
+                _t1=$(date +%s.%N)
+                printf '[first-login] bar layer appeared after %ss; qmlcache .qmlc now: %s; loadavg: %s\n' \
+                    "$(echo "$_t1 - $_t0" | bc 2>/dev/null)" "$(_qmlc_count)" "$(cut -d' ' -f1-3 /proc/loadavg)" \
+                    >> "$HOME/Desktop/mainstream-setup.log" 2>/dev/null
+                break
+            fi
+            sleep 0.2
+        done
+    ) &
+    disown
+
     # Wait for compositor — autostart can fire before WAYLAND_DISPLAY is set.
     # Increased to 60 seconds to cover slower hardware and SDDM startup races.
     for _i in $(seq 1 60); do
@@ -226,6 +250,26 @@ STUB_EOF
         # already triggers a live reload of the bar/clock, and a pkill+respawn
         # during first login produced a visible flicker / blank shell window
         # while the venv pipeline was still settling.
+    fi
+
+    # Colors were generated at install but nothing has applied them to this live
+    # session yet (the heavy pipeline is skipped on a baked install). Apply the
+    # EXISTING theme cheaply once the bar is up — no regeneration: applycolor.sh
+    # repaints the desktop (GTK/kitty/hyprland) from material_colors.scss, and the
+    # quickshell theme IPC reloads colors.json into the bar. Detached so it does
+    # not hold up teardown.
+    if (( COLORS_PRESENT )); then
+        APPLYCOLOR="$HOME/.config/quickshell/ii/scripts/colors/applycolor.sh"
+        echo "[first-login] applying existing theme to live session (no regen)"
+        (
+            for _j in $(seq 1 150); do
+                hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"' && break
+                sleep 0.2
+            done
+            [[ -f "$APPLYCOLOR" ]] && nice -n 19 ionice -c 3 bash "$APPLYCOLOR" </dev/null >/dev/null 2>&1
+            qs -c ii ipc call theme reload >/dev/null 2>&1 || true
+        ) &
+        disown
     fi
 
     if (( COLORS_READY )) && command -v notify-send &>/dev/null; then
