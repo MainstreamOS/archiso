@@ -97,20 +97,33 @@ run_first_login_setup() {
     # so its start time approximates session start. Runs detached; writes straight
     # to the desktop log so it survives this function returning.
     QMLCACHE_DIR="$HOME/.cache/quickshell/qmlcache"
-    _qmlc_count() { find "$QMLCACHE_DIR" -name '*.qmlc' 2>/dev/null | wc -l; }
-    echo "[first-login] qmlcache .qmlc at start: $(_qmlc_count)"
+    DLOG="$HOME/Desktop/mainstream-setup.log"
     (
-        _t0=$(date +%s.%N)
-        for _i in $(seq 1 600); do
+        _uptime() { awk '{print $1}' /proc/uptime; }                       # monotonic clock (shared with journald)
+        _iopsi()  { awk '/^some/{for(i=1;i<=NF;i++) if($i~/^avg10=/){sub(/avg10=/,"",$i);print $i}}' /proc/pressure/io 2>/dev/null; }
+        _qmlc()   { find "$QMLCACHE_DIR" -name '*.qmlc' 2>/dev/null | wc -l; }
+        t0=$(_uptime); qs_at=""; bar_at=""
+        iosmp=$(mktemp -p /dev/shm psi.XXXXXX 2>/dev/null || mktemp)        # tmpfs: don't perturb the disk we measure
+        for _i in $(seq 1 900); do
+            [[ -z "$qs_at" ]] && pgrep -x 'qs|quickshell' >/dev/null 2>&1 && qs_at=$(_uptime)
+            _iopsi >> "$iosmp"
             if hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"'; then
-                _t1=$(date +%s.%N)
-                printf '[first-login] bar layer appeared after %ss; qmlcache .qmlc now: %s; loadavg: %s\n' \
-                    "$(echo "$_t1 - $_t0" | bc 2>/dev/null)" "$(_qmlc_count)" "$(cut -d' ' -f1-3 /proc/loadavg)" \
-                    >> "$HOME/Desktop/mainstream-setup.log" 2>/dev/null
-                break
+                bar_at=$(_uptime); [[ -z "$qs_at" ]] && qs_at=$bar_at; break
             fi
             sleep 0.2
         done
+        io_peak=$(sort -gr "$iosmp" 2>/dev/null | head -1); rm -f "$iosmp"
+        {
+            printf '[first-login] === boot paint timing (monotonic; t0=session=%ss) ===\n' "$t0"
+            awk -v t0="$t0" -v q="$qs_at" -v b="$bar_at" 'BEGIN{
+                if (q!="" && t0!="") printf "[first-login]   session -> qs process:    %.2fs\n", q-t0
+                if (b!="" && q!="")  printf "[first-login]   qs process -> bar paint:  %.2fs   (<-- quickshell cold start)\n", b-q
+                if (b!="" && t0!="") printf "[first-login]   session -> bar paint:     %.2fs   (total blank window)\n", b-t0 }'
+            printf '[first-login]   peak io pressure avg10: %s   (high => SSD I/O stall; low => CPU/compile)\n' "${io_peak:-n/a}"
+            printf '[first-login]   qmlcache .qmlc: %s   loadavg: %s\n' "$(_qmlc)" "$(cut -d' ' -f1-3 /proc/loadavg)"
+            journalctl -b -o short-monotonic -u sddm -u snapper-init -u pacman-keyring-init -u systemd-time-wait-sync --no-pager 2>/dev/null \
+                | tail -20 | sed 's/^/[first-login]   jrnl: /'
+        } >> "$DLOG" 2>/dev/null
     ) &
     disown
 
