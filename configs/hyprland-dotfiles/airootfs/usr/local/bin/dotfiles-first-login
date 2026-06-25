@@ -238,9 +238,9 @@ STUB_EOF
         APPLYCOLOR="$HOME/.config/quickshell/ii/scripts/colors/applycolor.sh"
         echo "[first-login] applying existing theme to live session (no regen)"
         (
-            for _j in $(seq 1 150); do
+            for _j in $(seq 1 90); do
                 hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"' && break
-                sleep 0.2
+                sleep 0.5
             done
             [[ -f "$APPLYCOLOR" ]] && nice -n 19 ionice -c 3 bash "$APPLYCOLOR" </dev/null >/dev/null 2>&1
             qs -c ii ipc call theme reload >/dev/null 2>&1 || true
