@@ -1264,13 +1264,8 @@ AUTOSTARTEOF
     # ---------------------------------------------------------------------------
     VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
-    # Desktop log so the venv/theme setup is inspectable on the live install.
-    SETUP_LOG="$MAIN_USER_HOME/Desktop/mainstream-setup.log"
-    setup_log() {
-        mkdir -p "$MAIN_USER_HOME/Desktop" 2>/dev/null || true
-        printf '[%s] [post-install] %s\n' "$(date -Is 2>/dev/null || date)" "$*" >> "$SETUP_LOG" 2>/dev/null || true
-        chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/Desktop" "$SETUP_LOG" 2>/dev/null || true
-    }
+    # Operational milestones go to the calamares install log via info().
+    setup_log() { info "[setup] $*"; }
     setup_log "=== venv/theme setup start; VENV_PATH=$VENV_PATH; system python=$(python3 -V 2>&1) ==="
 
     if [[ -e "$VENV_PATH/bin/python" || -L "$VENV_PATH/bin/python" ]]; then
@@ -1349,7 +1344,7 @@ VENVEOF
             chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
 
             setup_log "scratch venv build START (uv=$UV_BIN, requirements=$REQUIREMENTS)"
-            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1 | tee -a "$SETUP_LOG"
+            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1
             if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
                 find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
                 chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true

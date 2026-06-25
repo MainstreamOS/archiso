@@ -90,76 +90,6 @@ run_first_login_setup() {
     ionice -c 3  -p "$BASHPID" >/dev/null 2>&1 || true
     echo "[first-login] PATH=$PATH"
 
-    # First-boot paint probe. The bar paints fast in the live ISO but takes ~21s
-    # on a fresh install's first boot, during which the qs process is idle-blocked
-    # on a single syscall (loadavg/io both low — not compute, not disk). This
-    # samples what qs's threads are parked on (wchan) and its TCP sockets while the
-    # bar layer is still absent, so the next boot's log names the exact blocking
-    # syscall and peer. /proc/PID/syscall is unreadable (ptrace_scope=1), so this
-    # uses wchan only. Detached; writes to the desktop log so it survives return.
-    DLOG="$HOME/Desktop/mainstream-setup.log"
-    QMLCACHE_DIR="$HOME/.cache/quickshell/qmlcache"
-    (
-        _uptime(){ awk '{print $1}' /proc/uptime; }
-        _iopsi(){ awk '/^some/{for(i=1;i<=NF;i++) if($i~/^avg10=/){sub(/avg10=/,"",$i);print $i}}' /proc/pressure/io 2>/dev/null; }
-        # state = field after the LAST ')' in /proc/PID/stat (comm may contain ')')
-        _state(){ local r; r=$(cat "/proc/$1/stat" 2>/dev/null) || return; r=${r##*) }; echo "${r%% *}"; }
-        _tcpstate(){ case "$1" in 01)echo ESTAB;;02)echo SYN_SENT;;03)echo SYN_RECV;;06)echo TIME_WAIT;;08)echo CLOSE_WAIT;;0A)echo LISTEN;;*)echo "st$1";; esac; }
-        _dec4(){ awk -v a="$1" 'BEGIN{ip=a;sub(/:.*/,"",ip);p=a;sub(/.*:/,"",p);printf "%d.%d.%d.%d:%d",strtonum("0x"substr(ip,7,2)),strtonum("0x"substr(ip,5,2)),strtonum("0x"substr(ip,3,2)),strtonum("0x"substr(ip,1,2)),strtonum("0x"p)}'; }
-        _bar_up(){ hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"'; }
-        t0=$(_uptime); pid=""; io_peak=0
-        BUF=$(mktemp -p /dev/shm qsprobe.XXXXXX 2>/dev/null || mktemp)
-        for _w in $(seq 1 120); do pid=$(pgrep -x 'qs|quickshell' | head -1); [[ -n "$pid" ]] && break; sleep 0.3; done
-        qs_at=$(_uptime)
-        for _s in $(seq 1 150); do
-            _bar_up && break
-            [[ -d "/proc/$pid" ]] || { pid=$(pgrep -x 'qs|quickshell' | head -1); [[ -n "$pid" ]] || break; }
-            _p=$(_iopsi); [[ -n "$_p" ]] && awk -v a="$_p" -v b="$io_peak" 'BEGIN{exit !(a>b)}' && io_peak=$_p
-            t=$(_uptime)
-            inodes=$(ls -l "/proc/$pid/fd" 2>/dev/null | sed -n 's/.*socket:\[\([0-9]*\)\].*/\1/p' | sort -u | tr '\n' ' ')
-            {
-                echo "[probe t=${t}s] main: state=$(_state "$pid") wchan=$(cat /proc/$pid/wchan 2>/dev/null)"
-                for tk in /proc/$pid/task/*; do
-                    tid=${tk##*/}; st=$(_state "$tid"); wc=$(cat "$tk/wchan" 2>/dev/null)
-                    case "$st$wc" in
-                        D*|*inet*|*sock*|*tcp*|*connect*|*recv*|*nanosleep*|*futex*) echo "[probe]   thr $tid $(tr -d '\0' <"$tk/comm" 2>/dev/null) state=$st wchan=$wc";;
-                    esac
-                done
-                for f in /proc/$pid/net/tcp /proc/$pid/net/tcp6; do
-                    [[ -r "$f" ]] || continue
-                    while read -r st rem; do
-                        [[ "$st" =~ ^[0-9A-Fa-f]{2}$ ]] || continue
-                        if [[ "$rem" == *:*:* ]]; then peer="ipv6[$rem]"; else peer=$(_dec4 "$rem"); fi
-                        echo "[probe]   TCP $(_tcpstate "$st") -> $peer"
-                    done < <(awk -v want="$inodes" 'BEGIN{n=split(want,a," ");for(i=1;i<=n;i++)W[a[i]]=1}NR>1 && ($10 in W){print $4" "$3}' "$f")
-                done
-            } >> "$BUF" 2>&1
-            # one-time deep capture: strace -yy names the exact syscall AND the fd
-            # target (wayland-0 / dbus bus / a TCP peer) — settles wayland-vs-dbus
-            # which wchan alone cannot. Needs ptrace_scope=0 (debug sysctl) + strace.
-            if [[ "$_s" == 4 ]] && command -v strace >/dev/null 2>&1; then
-                {
-                    echo "[probe]   --- strace -fyy 4s @ t=${t}s (fd targets shown) ---"
-                    timeout 4 strace -fyy -e trace=network,desc,futex -p "$pid" 2>&1 \
-                        | grep -vE 'strace:|attached|detached' | head -40
-                } >> "$BUF" 2>&1
-            fi
-            sleep 1
-        done
-        bar_at=$(_uptime)
-        {
-            printf '[first-login] === qs-block probe (t0=session=%ss qs_up=%ss bar=%ss blank=%ss) ===\n' \
-                "$t0" "$qs_at" "$bar_at" "$(awk -v a="$qs_at" -v b="$bar_at" 'BEGIN{printf "%.1f",b-a}')"
-            printf '[first-login]   peak io avg10: %s   loadavg: %s   qmlcache: %s\n' \
-                "${io_peak:-n/a}" "$(cut -d' ' -f1-3 /proc/loadavg)" "$(find "$QMLCACHE_DIR" -name '*.qmlc' 2>/dev/null | wc -l)"
-            cat "$BUF"
-            journalctl -b -o short-monotonic -u pacman-keyring-init -u systemd-time-wait-sync --no-pager 2>/dev/null | tail -5 | sed 's/^/[first-login]   jrnl: /'
-            echo "[first-login] === end qs-block probe ==="
-        } >> "$DLOG" 2>/dev/null
-        rm -f "$BUF"
-    ) &
-    disown
-
     # Wait for compositor — autostart can fire before WAYLAND_DISPLAY is set.
     # Increased to 60 seconds to cover slower hardware and SDDM startup races.
     for _i in $(seq 1 60); do
@@ -344,13 +274,9 @@ STUB_EOF
     echo "[first-login] done $(date -Is)"
 }
 
-# Mirror the full first-login log onto the desktop (the same file post-install
-# writes to) so the whole install -> first-boot venv/theme run is in one place.
-DESKTOP_LOG="$HOME/Desktop/mainstream-setup.log"
-mkdir -p "$HOME/Desktop" 2>/dev/null || true
 if [[ "${DOTFILES_FIRST_LOGIN_FOREGROUND:-0}" == "1" ]]; then
-    run_first_login_setup 2>&1 | tee -a "$DESKTOP_LOG" > "$LOG"
+    run_first_login_setup > "$LOG" 2>&1
 else
-    { run_first_login_setup 2>&1 | tee -a "$DESKTOP_LOG" > "$LOG"; } &
+    { run_first_login_setup > "$LOG" 2>&1; } &
     disown
 fi
