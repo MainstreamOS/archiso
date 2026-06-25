@@ -73,8 +73,12 @@ repair_venv_paths() {
 }
 
 generated_colors_ready() {
-    grep -Eq '^\$onBackground: #[[:xdigit:]]{6};$' \
-        "$HOME/.local/state/quickshell/user/generated/material_colors.scss" 2>/dev/null
+    # Both the bar's color map (colors.json, read by MaterialThemeLoader) and
+    # the app/GTK theme (material_colors.scss) must be present and non-trivial.
+    local gen="$HOME/.local/state/quickshell/user/generated"
+    [[ -s "$gen/colors.json" ]] \
+        && grep -q on_background "$gen/colors.json" 2>/dev/null \
+        && grep -Eq '^\$onBackground: #[[:xdigit:]]{6};$' "$gen/material_colors.scss" 2>/dev/null
 }
 
 run_first_login_setup() {
@@ -97,6 +101,18 @@ run_first_login_setup() {
         echo "[first-login] WARN: no compositor display after 60s; continuing anyway"
     fi
 
+    # The installer already generates the theme from the default wallpaper (it
+    # runs the same pipeline as the user during post-install), so on a normal
+    # install the colors are baked in before the first boot. When they are, skip
+    # the whole color pipeline below — re-running it just thrashes CPU/I/O while
+    # the bar is loading and racing its first paint, with no visible change. The
+    # venv build/check still runs unconditionally (the running shell needs it).
+    COLORS_PRESENT=0
+    if generated_colors_ready; then
+        COLORS_PRESENT=1
+        echo "[first-login] generated theme already present; skipping color pipeline"
+    fi
+
     # PHASE 1 — fast path: dark mode + initial matugen colors
     if command -v gsettings &>/dev/null; then
         gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
@@ -112,7 +128,7 @@ run_first_login_setup() {
     # and halts waiting for user input via an interactive TUI, which never
     # arrives in an autostart context. Valid values are: darkness, lightness,
     # saturation, less-saturation, value, closest-to-fallback.
-    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
+    if (( ! COLORS_PRESENT )) && [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         mkdir -p "$HOME/.local/state/quickshell/user/generated/wallpaper"
         matugen image "$DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral || true
     fi
@@ -194,8 +210,8 @@ STUB_EOF
     grep -q "ILLOGICAL_IMPULSE_VIRTUAL_ENV" "$HOME/.bashrc" 2>/dev/null || \
         echo "export ILLOGICAL_IMPULSE_VIRTUAL_ENV='$VENV_PATH'" >> "$HOME/.bashrc"
 
-    COLORS_READY=0
-    if (( VENV_READY )) && [[ -f "$SWITCHWALL" ]]; then
+    COLORS_READY=$COLORS_PRESENT
+    if (( ! COLORS_PRESENT )) && (( VENV_READY )) && [[ -f "$SWITCHWALL" ]]; then
         echo "[first-login] running switchwall full pipeline"
         export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
         # FIX: Redirect stdin from /dev/null so switchwall's stty probe doesn't
