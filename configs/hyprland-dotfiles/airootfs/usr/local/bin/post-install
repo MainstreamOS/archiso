@@ -2049,6 +2049,15 @@ setup_mpris_hyprland() {
     fi
     info "mpris-hyprland: configuring per-tab MPRIS bridge for Firefox-based browsers..."
 
+    # The [mainstream] repo already ships the mpris-hyprland package (host binary
+    # + native-messaging manifests) and install-dotfiles installs it, so don't
+    # re-clone and source-build over the package-owned files. Mirror the dots
+    # guard: skip entirely when the package is already present.
+    if pacman -Qq mpris-hyprland &>/dev/null; then
+        info "mpris-hyprland: package already installed — skipping source build."
+        return 0
+    fi
+
     local repo_url="https://github.com/MainstreamOS/mpris-hyprland"
     local target_parent="${MAIN_USER_HOME}/Documents/GitHub"
     local target_dir="${target_parent}/mpris-hyprland"
