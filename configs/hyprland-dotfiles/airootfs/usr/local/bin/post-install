@@ -251,489 +251,58 @@ rm -f /etc/mkinitcpio.conf.d/archiso.conf
 
 
 # ---------------------------------------------------------------------------
-# 4c. GPU DETECTION & CONFIGURATION
+# 4c. GPU DETECTION & CONFIGURATION (shared library)
 # Runs after archiso.conf is removed so mkinitcpio.conf changes are safe.
-# Handles: packages, MODULES, HOOKS, modprobe, env vars, cmdline, services.
+# Sources the single source of truth shared with the dots ./setup path
+# (sdata/lib/gpu-config.sh, preserved at /tmp/dotfiles-setup). In this
+# Calamares chroot we run as root (GPU_SUDO=''), drop the kms hook and apply
+# the UKI-on-small-ESP early-KMS guard (skip early KMS when the reused ESP is
+# under 512 MiB so the UKI still fits), and target the install user's home for
+# the Hyprland tweaks. The initramfs is rebuilt later by the unconditional
+# mkinitcpio -P below, so this only stages the config.
 # ---------------------------------------------------------------------------
-info "Detecting GPU hardware..."
-GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+GPU_LIB="/tmp/dotfiles-setup/sdata/lib/gpu-config.sh"
+if [[ -r "$GPU_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$GPU_LIB"
+    GPU_SUDO=''
+    GPU_EARLY_KMS_REMOVE_HOOK=true
+    GPU_EARLY_KMS_ESP_THRESHOLD=512
 
-if [[ -n "$GPU_INFO" ]]; then
-    info "Detected GPU(s):"
-    echo "$GPU_INFO" | while read -r line; do info "  $line"; done
-
-    HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false; IS_HYBRID=false
-    IS_OLD_NVIDIA=false; IS_OLD_AMD=false; IS_ARC=false; IS_OLD_INTEL=false
-
-    # Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
-    # 10de=NVIDIA  1002=AMD/ATI  8086=Intel
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
-
-    GPU_COUNT=0
-    $HAS_NVIDIA && ((GPU_COUNT++)) || true
-    $HAS_AMD    && ((GPU_COUNT++)) || true
-    $HAS_INTEL  && ((GPU_COUNT++)) || true
-    [[ $GPU_COUNT -gt 1 ]] && IS_HYBRID=true || true
-    $IS_HYBRID && info "Hybrid GPU configuration detected." || true
-
-    # --- GPU helpers ---
-    gpu_add_modules() {
-        for mod in "$@"; do
-            if ! grep -q "\b${mod}\b" /etc/mkinitcpio.conf; then
-                sed -i "s/^MODULES=(/MODULES=(${mod} /" /etc/mkinitcpio.conf
-                info "Added module to initramfs: $mod"
-            fi
-        done
-    }
-    gpu_remove_hook() {
-        sed -i "s/\b${1}\b *//g" /etc/mkinitcpio.conf
-        info "Removed hook from initramfs: $1"
-    }
-    # Early-KMS NVIDIA modules pull nvidia.ko (~90 MB) plus the GSP firmware
-    # into the initramfs, bloating the UKI to ~170 MB. On a roomy ESP (erase
-    # installs get 1 GiB) that fits and gives a flicker-free splash. But an
-    # "Install alongside" install REUSES the ESP Windows created (often
-    # 100-260 MiB), and a UKI that big overflows it — the UKI write fails with
-    # ENOSPC, the kernel image is truncated, and the system won't boot. When
-    # the ESP is too small, skip early KMS: NVIDIA still loads normally at boot
-    # (modeset is applied via nvidia_drm.modeset=1 on the cmdline + the
-    # modprobe.d option), only the early-initramfs KMS is dropped, which keeps
-    # the UKI small enough to fit. 512 MiB cleanly separates the 1 GiB erase
-    # ESP from any reused Windows ESP. No /boot/efi mount (BIOS) = no FAT-size
-    # limit, so keep early KMS there.
-    nvidia_early_kms() {
-        local mods="nvidia nvidia_modeset nvidia_uvm nvidia_drm"
-        if mountpoint -q /boot/efi 2>/dev/null; then
-            local esp_mib=$(( $(findmnt -bno SIZE /boot/efi 2>/dev/null || echo 0) / 1048576 ))
-            if (( esp_mib > 0 && esp_mib < 512 )); then
-                warn "ESP is only ${esp_mib} MiB (reused Windows ESP?) — skipping NVIDIA early KMS so the UKI fits."
-                warn "NVIDIA still loads at boot via nvidia_drm.modeset=1; only the early-initramfs KMS is off."
-                return
-            fi
-        fi
-        gpu_add_modules $mods
-    }
-    gpu_append_cmdline() {
-        local params="$1" LIMINE_CONF=""
-        [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
-        [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
-        if [[ -n "$LIMINE_CONF" ]]; then
-            sed -i "/^ *cmdline:/ s/$/ $params/" "$LIMINE_CONF"
-            info "Added to bootloader cmdline: $params"
-        else
-            warn "limine.conf not found — could not add: $params"
-        fi
-
-        mkdir -p /etc/kernel
-        if [[ ! -s /etc/kernel/cmdline && -n "$LIMINE_CONF" ]]; then
-            awk '/^[[:space:]]*cmdline:/ { sub(/^[[:space:]]*cmdline:[[:space:]]*/, ""); print; exit }' \
-                "$LIMINE_CONF" > /etc/kernel/cmdline
-        fi
-        touch /etc/kernel/cmdline
-
-        local existing token key
-        existing="$(tr '\n' ' ' < /etc/kernel/cmdline)"
-        for token in $params; do
-            key="${token%%=*}"
-            if grep -Eq "(^|[[:space:]])${key}(=|[[:space:]]|$)" <<< "$existing"; then
-                continue
-            fi
-            existing="${existing% } $token"
-        done
-        printf '%s\n' "${existing# }" > /etc/kernel/cmdline
-    }
-    gpu_append_env() { echo "$1" >> /etc/environment; info "Set environment: $1"; }
-    # Write a single 'hl.env("KEY", "VALUE")' line into the user's Hyprland
-    # custom env.lua. Idempotent — skips if the key is already present.
-    gpu_append_hypr_env() {
-        local _key="$1" _val="$2"
-        local _env_lua="$MAIN_USER_HOME/.config/hypr/custom/env.lua"
-        if [[ ! -f "$_env_lua" ]]; then
-            warn "hypr env.lua not found at $_env_lua — skipping: $_key"
-            return
-        fi
-        if ! grep -qE "hl\.env\(\"${_key}\"" "$_env_lua"; then
-            printf 'hl.env("%s", "%s")\n' "$_key" "$_val" >> "$_env_lua"
-            info "Added hypr env: ${_key}=${_val}"
-        else
-            info "hypr env already set: ${_key} — skipping."
-        fi
-    }
-    # Add resume delays to hypridle.conf for NVIDIA cards.
-    #
-    # Root cause: nvidia-sleep.sh writes "resume" to /proc/driver/nvidia/suspend
-    # and performs a VT switch back to the Wayland session.  There is a brief
-    # window after that where the NVIDIA DRM/KMS device is still initialising.
-    # If Hyprland's Aquamarine backend receives "dpms on" during that window it
-    # hits a DRM error and crashes, producing the "recover session" prompt.
-    #
-    # This affects every NVIDIA generation that uses nvidia-sleep.sh (Fermi+),
-    # including Turing+ with nvidia-open.  AMD and Intel do not need this fix —
-    # their in-kernel DRM drivers (amdgpu/i915) complete resume synchronously
-    # before userspace is notified, so there is no race window.
-    #
-    # Fix: insert a short sleep before each "hyprctl dispatch dpms on" in
-    # after_sleep_cmd (2 s — covers cold resume from S3/S4) and on-resume
-    # (1 s — covers re-enabling the display after an idle screen blank).
-    # DPMS power-off is preserved; only the re-enable is delayed.
-    gpu_fix_hypridle() {
-        local _hypridle="$MAIN_USER_HOME/.config/hypr/hypridle.conf"
-        if [[ ! -f "$_hypridle" ]]; then
-            warn "hypridle.conf not found at $_hypridle — skipping dpms fix."
-            return
-        fi
-        local _changed=false
-        # after_sleep_cmd: delay dpms on after system wake from suspend/hibernate
-        # Hypridle config uses Lua-form dispatcher: hl.dsp.dpms({ action = "enable" })
-        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle" \
-            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle"; then
-            sed -i '/after_sleep_cmd/s|hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|sleep 2 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|' \
-                "$_hypridle"
-            _changed=true
-            info "Added 2s delay before dpms on in after_sleep_cmd (NVIDIA resume fix)."
-        fi
-        # on-resume: delay dpms on when idle screen-blank is cleared by activity
-        if grep -qE "on-resume\s*=.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle" \
-            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle"; then
-            sed -i '/on-resume/s|hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|sleep 1 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|' \
-                "$_hypridle"
-            _changed=true
-            info "Added 1s delay before dpms on in on-resume (NVIDIA resume fix)."
-        fi
-        "$_changed" \
-            || info "hypridle.conf dpms delays already present or target lines not found — nothing to patch."
-    }
-    # Inject resume=PARTUUID=<uuid> into the bootloader cmdline so the kernel
-    # can restore a hibernation (S4) image on boot.  Without this parameter the
-    # resume hook placed in the initramfs never activates, even if the hook is
-    # present and a swap partition exists.
-    #
-    # PARTUUID (GPT partition UUID) is used rather than UUID (filesystem UUID)
-    # because the limine.conf template already uses PARTUUID for root=, keeping
-    # the config uniform.  PARTUUID is also stable across mkswap reformats.
-    #
-    # Scoping note: we look for the swap partition ON THE SAME DISK as the
-    # install target's root, not just any swap visible to blkid. On
-    # multi-drive systems with swap on more than one disk, the previous
-    # `blkid -t TYPE=swap | head -1` approach picked the first by scan order
-    # (NVMe before SATA), which could be a totally unrelated drive — the
-    # kernel would then wait ~30s at boot for a swap partition that wasn't
-    # part of this install.
-    #
-    # Idempotent: skips injection if resume= is already present in limine.conf
-    # or /etc/kernel/cmdline, or if no swap partition exists on the install
-    # disk (e.g. swap-file-only or no-swap setups).
-    inject_swap_resume() {
-        local ROOT_DEV ROOT_DISK SWAP_PARTUUID=""
-
-        # Find the install partition. For LUKS-on-root, findmnt returns the
-        # mapper device — walk back to the underlying partition so the
-        # disk lookup downstream works on the real GPT entry.
-        ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
-        if [[ -z "$ROOT_DEV" ]]; then
-            warn "Cannot determine root device — skipping resume= injection."
-            return
-        fi
-        if [[ "$ROOT_DEV" == /dev/mapper/* ]]; then
-            ROOT_DEV=$(cryptsetup status "$(basename "$ROOT_DEV")" 2>/dev/null \
+    # Override the swap probe with the install-aware version: pick the swap
+    # partition on the SAME DISK as root (multi-drive safe), resolving a
+    # LUKS-on-root mapper back to its real GPT entry first. The library's
+    # generic blkid probe cannot tell which disk is the install target.
+    _gpu_swap_partuuid() {
+        local root_dev root_disk
+        root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
+        [[ -n "$root_dev" ]] || return 0
+        if [[ "$root_dev" == /dev/mapper/* ]]; then
+            root_dev=$(cryptsetup status "$(basename "$root_dev")" 2>/dev/null \
                 | awk '/^[[:space:]]*device:/ {print $2; exit}')
-            if [[ -z "$ROOT_DEV" ]]; then
-                warn "Cannot resolve LUKS backing device — skipping resume= injection."
-                return
-            fi
+            [[ -n "$root_dev" ]] || return 0
         fi
-
-        # Find the disk that hosts the root partition. lsblk PKNAME walks
-        # up the block-device tree one level (partition → disk).
-        ROOT_DISK=$(lsblk -no PKNAME "$ROOT_DEV" 2>/dev/null)
-        if [[ -z "$ROOT_DISK" ]]; then
-            warn "Cannot determine host disk for $ROOT_DEV — skipping resume= injection."
-            return
-        fi
-        ROOT_DISK="/dev/$ROOT_DISK"
-
-        # Pick the first swap partition that lives on the install disk.
-        # `-nlpo NAME,FSTYPE,PARTUUID` gives `<dev> <fstype> <partuuid>` per
-        # line (list format, full paths, no header) so awk can filter by
-        # column 2 directly.
-        SWAP_PARTUUID=$(lsblk -nlpo NAME,FSTYPE,PARTUUID "$ROOT_DISK" 2>/dev/null \
-            | awk '$2 == "swap" {print $3; exit}')
-        if [[ -z "$SWAP_PARTUUID" ]]; then
-            info "No swap partition on $ROOT_DISK — skipping resume= cmdline injection."
-            return
-        fi
-
-        local LIMINE_CONF=""
-        [[ -f "/boot/efi/limine.conf" ]] && LIMINE_CONF="/boot/efi/limine.conf"
-        [[ -f "/boot/limine.conf" ]]     && LIMINE_CONF="/boot/limine.conf"
-        if { [[ -n "$LIMINE_CONF" ]] && grep -q '\bresume=' "$LIMINE_CONF" 2>/dev/null; } \
-            || grep -q '\bresume=' /etc/kernel/cmdline 2>/dev/null; then
-            info "resume= already present in limine.conf — skipping."
-            return
-        fi
-        gpu_append_cmdline "resume=PARTUUID=$SWAP_PARTUUID"
-        info "Hibernation resume= set to swap PARTUUID=$SWAP_PARTUUID on $ROOT_DISK."
+        root_disk=$(lsblk -no PKNAME "$root_dev" 2>/dev/null)
+        [[ -n "$root_disk" ]] || return 0
+        lsblk -nlpo NAME,FSTYPE,PARTUUID "/dev/$root_disk" 2>/dev/null \
+            | awk '$2 == "swap" {print $3; exit}'
     }
 
-    # Sync db before installing
-    pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
-
-    # --- NVIDIA ---
-    configure_nvidia() {
-        local PCI_LINE PCI_ID PCI_DEC
-        PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
-        PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1                  | grep -oE '[0-9a-fA-F]{4}' | tail -1 || echo "0000")
-        PCI_DEC=$((16#$PCI_ID))
-        info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
-
-        # If a pre-Turing card fell back to nouveau (no proprietary driver
-        # installed — standard edition), skip the NVIDIA config below: forcing
-        # GBM_BACKEND/__GLX_VENDOR_LIBRARY_NAME=nvidia with no driver black-screens
-        # the Wayland session. Leave nouveau + the kms hook.
-        local _nv_drv="" _p
-        for _p in nvidia-580xx-utils nvidia-470xx-utils nvidia-390xx-utils; do
-            pacman -Qq "$_p" &>/dev/null && { _nv_drv="$_p"; break; }
-        done
-        if [[ $PCI_DEC -lt 7684 && -z "$_nv_drv" ]]; then
-            info "Legacy NVIDIA with no proprietary driver installed (nouveau fallback) — keeping nouveau, skipping NVIDIA config."
-            return 0
+    info "Detecting GPU hardware..."
+    if gpu_detect; then
+        info "Detected GPU(s):"
+        lspci 2>/dev/null | grep -iE "VGA|3D|Display" | while read -r line; do info "  $line"; done || true
+        info "GPU autoconfig — Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+        gpu_apply_autoconfig
+        if [[ -n "${MAIN_USER:-}" ]]; then
+            gpu_apply_hypr_tweaks "$MAIN_USER_HOME"
         fi
-
-        if [[ $PCI_DEC -ge 7684 ]]; then
-            # 0x1E04+ = Turing and newer (RTX 2060+, 30xx, 40xx, 50xx)
-            # nvidia-open is the official open source kernel module (packages installed by install-gpu-drivers)
-            gpu_remove_hook kms
-            nvidia_early_kms
-            mkdir -p /etc/modprobe.d
-            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
-options nvidia-drm modeset=1 fbdev=1
-options nvidia NVreg_PreserveVideoMemoryAllocations=1
-options nvidia NVreg_TemporaryFilePath=/var/tmp
-NVIDIAEOF
-            gpu_append_cmdline "nvidia_drm.modeset=1"
-            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
-                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
-            done
-            systemctl enable nvidia-powerd.service 2>/dev/null || true
-            # Write NVIDIA Wayland env vars into the user's hypr custom env.lua
-            if [[ -n "$MAIN_USER" ]]; then
-                printf '\n-- NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
-                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
-                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
-                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
-                gpu_append_hypr_env "NVD_BACKEND"                  "direct"
-                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
-            fi
-            info "NVIDIA Turing+ configured (nvidia-open)."
-            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-
-        elif [[ $PCI_DEC -ge 4928 ]]; then
-            # 0x1340-0x1E03 = Maxwell through Volta (GTX 900, GTX 1000, Titan V)
-            # Dropped from mainline nvidia — uses nvidia-580xx-dkms
-            gpu_remove_hook kms
-            nvidia_early_kms
-            mkdir -p /etc/modprobe.d
-            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
-options nvidia-drm modeset=1 fbdev=1
-options nvidia NVreg_PreserveVideoMemoryAllocations=1
-options nvidia NVreg_TemporaryFilePath=/var/tmp
-NVIDIAEOF
-            gpu_append_cmdline "nvidia_drm.modeset=1"
-            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
-                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
-            done
-            systemctl enable nvidia-powerd.service 2>/dev/null || true
-            # Write NVIDIA Wayland env vars into the user's hypr custom env.lua
-            if [[ -n "$MAIN_USER" ]]; then
-                printf '\n-- NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
-                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
-                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
-                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
-                gpu_append_hypr_env "NVD_BACKEND"                  "direct"
-                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
-            fi
-            info "NVIDIA Maxwell-Volta (GTX 900/1000/Titan V) configured (nvidia-580xx-dkms)."
-            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-
-        elif [[ $PCI_DEC -ge 4032 ]]; then
-            # Kepler — 470xx installed by install-gpu-drivers if successful
-            gpu_remove_hook kms
-            nvidia_early_kms
-            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
-options nvidia-drm modeset=1 fbdev=1
-options nvidia NVreg_PreserveVideoMemoryAllocations=1
-options nvidia NVreg_TemporaryFilePath=/var/tmp
-NVIDIAEOF
-            gpu_append_cmdline "nvidia_drm.modeset=1"
-            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
-                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
-            done
-            # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 470xx)
-            if [[ -n "$MAIN_USER" ]]; then
-                printf '\n-- NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
-                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
-                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
-                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
-                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
-            fi
-            info "NVIDIA Kepler configured."
-            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-
-        elif [[ $PCI_DEC -ge 1728 ]]; then
-            # Fermi — 390xx installed by install-gpu-drivers if successful
-            gpu_remove_hook kms
-            nvidia_early_kms
-            cat > /etc/modprobe.d/nvidia.conf << 'NVIDIAEOF'
-options nvidia-drm modeset=1 fbdev=1
-options nvidia NVreg_PreserveVideoMemoryAllocations=1
-options nvidia NVreg_TemporaryFilePath=/var/tmp
-NVIDIAEOF
-            gpu_append_cmdline "nvidia_drm.modeset=1"
-            for svc in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service; do
-                systemctl enable "$svc" 2>/dev/null && info "Enabled $svc" || warn "$svc not found."
-            done
-            # Write NVIDIA Wayland env vars (NVD_BACKEND not supported on 390xx)
-            if [[ -n "$MAIN_USER" ]]; then
-                printf '\n-- NVIDIA Wayland — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
-                gpu_append_hypr_env "LIBVA_DRIVER_NAME"            "nvidia"
-                gpu_append_hypr_env "GBM_BACKEND"                  "nvidia-drm"
-                gpu_append_hypr_env "__GLX_VENDOR_LIBRARY_NAME"    "nvidia"
-                gpu_append_hypr_env "WLR_NO_HARDWARE_CURSORS"      "1"
-            fi
-            info "NVIDIA Fermi configured."
-            [[ -n "$MAIN_USER" ]] && gpu_fix_hypridle
-
-        else
-            # Pre-Fermi — nouveau (no config changes needed, kms hook stays)
-            info "Pre-Fermi NVIDIA — using nouveau (kms hook kept)."
-        fi
-    }
-
-    # --- AMD ---
-    configure_amd() {
-        # Safety guard — only proceed if an AMD GPU was actually detected
-        if ! $HAS_AMD; then
-            warn "configure_amd called without AMD GPU present — skipping."
-            return 0
-        fi
-        info "Configuring AMD GPU..."
-        local AMD_ID AMD_DEC
-        AMD_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep "1002:"                  | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
-        AMD_DEC=$((16#${AMD_ID:-ffff}))
-        info "AMD GPU PCI device ID: 0x${AMD_ID} (${AMD_DEC})"
-        [[ $AMD_DEC -lt 26112 ]] && IS_OLD_AMD=true || true
-        local AMD_NAME
-        AMD_NAME=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | grep -i "AMD\|ATI\|Radeon" | head -1)
-        echo "$AMD_NAME" | grep -iqE "\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b"             && IS_OLD_AMD=true || true
-        if lspci 2>/dev/null | grep -iqE "Navi 4[0-9]|RX 9[0-9]{3}|gfx12"; then
-            info "RDNA 4 explicitly detected — forcing modern AMD path."; IS_OLD_AMD=false
-        fi
-
-        if $IS_OLD_AMD; then
-            info "Pre-GCN AMD — installing amdgpu+radeon."
-            mkdir -p /etc/modprobe.d
-            cat > /etc/modprobe.d/amdgpu.conf << 'AMDEOF'
-options amdgpu si_support=1
-options amdgpu cik_support=1
-options radeon si_support=0
-options radeon cik_support=0
-AMDEOF
-            gpu_add_modules amdgpu radeon
-            gpu_append_cmdline "amdgpu.si_support=1 amdgpu.cik_support=1"
-        else
-            info "GCN/RDNA AMD — installing amdgpu."
-            gpu_add_modules amdgpu
-            gpu_append_cmdline "amdgpu.modeset=1"
-            if lspci | grep -qiE "RX 9[0-9]{3}|Navi 4[0-9]|gfx1[2-9][0-9]{2}"; then
-                info "RDNA 4 detected — adding amdgpu.sg_display=0."
-                gpu_append_cmdline "amdgpu.sg_display=0"
-            fi
-        fi
-        # NOTE: AMD env vars intentionally not set globally in /etc/environment
-        # WLR_RENDERER, AMD_VULKAN_ICD, LIBVA_DRIVER_NAME can conflict with
-        # Quickshell and Hyprland on modern RDNA hardware — defaults work correctly.
-        # Set per-app in ~/.config/hypr/hyprland/env.lua if needed.
-        info "AMD configured."
-    }
-
-    # --- INTEL ---
-    configure_intel() {
-        info "Configuring Intel GPU..."
-        local INTEL_DEV
-        INTEL_DEV=$(lspci 2>/dev/null | grep -iE "Intel.*(Graphics|UHD|HD|Iris|Arc)" | head -1)
-        echo "$INTEL_DEV" | grep -iqE "Arc|Xe|A[3-7][0-9]{2}" && IS_ARC=true || true
-        local INTEL_ID INTEL_DEC
-        INTEL_ID=$(lspci -nn 2>/dev/null | grep -iE "Intel.*Graphics"                    | grep -oE '8086:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || echo "ffff")
-        INTEL_DEC=$((16#${INTEL_ID:-ffff}))
-        [[ $INTEL_DEC -lt 256 ]] && IS_OLD_INTEL=true || true
-
-        if $IS_ARC; then
-            info "Intel Arc — installing Arc drivers."
-            gpu_add_modules xe
-            # LIBVA_DRIVER_NAME set in env.lua by dotfiles
-        elif $IS_OLD_INTEL; then
-            info "Pre-Sandy Bridge Intel — installing xf86-video-intel."
-            gpu_add_modules i915
-        else
-            info "Sandy Bridge+ Intel — installing i915/media-driver."
-            gpu_add_modules i915
-            if ! $IS_HYBRID; then gpu_append_cmdline "i915.modeset=1"; fi
-            # LIBVA_DRIVER_NAME set in env.lua by dotfiles
-        fi
-        info "Intel configured."
-    }
-
-    # --- PRIME ---
-    configure_prime() {
-        info "Configuring PRIME hybrid GPU..."
-        if $HAS_NVIDIA && $HAS_INTEL; then
-            gpu_add_modules i915; gpu_append_cmdline "i915.modeset=1"
-            # PRIME env vars set in env.lua by dotfiles, not system-wide
-        elif $HAS_NVIDIA && $HAS_AMD; then
-            gpu_add_modules amdgpu
-            # PRIME env vars set in env.lua by dotfiles, not system-wide
-        elif $HAS_AMD && $HAS_INTEL; then
-            : # DRI_PRIME set per-app, not system-wide
-        fi
-
-        # Set AQ_DRM_DEVICES to the stable by-path PCI symlink for the NVIDIA card.
-        # card0/card1 enumeration order is non-deterministic across reboots; the
-        # by-path symlink is stable because it encodes the physical PCIe slot.
-        # lspci -D is safe in a Calamares chroot — /proc is bind-mounted from the host.
-        if $HAS_NVIDIA && [[ -n "$MAIN_USER" ]]; then
-            local NVIDIA_PCIADDR
-            NVIDIA_PCIADDR=$(lspci -D 2>/dev/null \
-                | grep -iE "NVIDIA|GeForce|Quadro|Tesla" \
-                | head -1 | awk '{print $1}')
-            if [[ -n "$NVIDIA_PCIADDR" ]]; then
-                local AQ_PATH="/dev/dri/by-path/pci-${NVIDIA_PCIADDR}-card"
-                printf '\n-- PRIME: stable NVIDIA DRM device — added by post-install\n' \
-                    >> "$MAIN_USER_HOME/.config/hypr/custom/env.lua" 2>/dev/null || true
-                gpu_append_hypr_env "AQ_DRM_DEVICES" "$AQ_PATH"
-            else
-                warn "Could not resolve NVIDIA PCI address — AQ_DRM_DEVICES not set."
-            fi
-        fi
-
-        info "PRIME configured."
-    }
-
-    # Run — Intel first so i915 appears before NVIDIA in MODULES
-    $HAS_INTEL  && configure_intel  || true
-    $HAS_AMD    && configure_amd    || true
-    $HAS_NVIDIA && configure_nvidia || true
-    $IS_HYBRID  && configure_prime  || true
-    inject_swap_resume
-
-    info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+        info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+    else
+        warn "No GPU detected via lspci — skipping GPU configuration."
+    fi
 else
-    warn "No GPU detected via lspci — skipping GPU configuration."
+    warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
 fi
 
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
