@@ -1911,16 +1911,20 @@ if [[ -n "$MAIN_USER" ]]; then
             if [[ -d "$_GE_INSTALL_DIR" ]]; then
                 info "GE-Proton: $_GE_TAG already present — skipping download."
             else
+                # GE-Proton now ships an -aarch64 tarball alongside the x86_64
+                # build; a broad endswith(".tar.gz") match returns two urls and
+                # corrupts the curl arg. Match the exact x86_64 asset name.
                 _GE_URL=""
                 if command -v jq &>/dev/null; then
                     _GE_URL=$(echo "$_GE_JSON" | \
-                        jq -r '.assets[] | select(.name | endswith(".tar.gz")) | .browser_download_url' \
+                        jq -r --arg tag "$_GE_TAG" '.assets[] | select(.name == ($tag + ".tar.gz")) | .browser_download_url' \
                         2>/dev/null) || true
                 else
                     _GE_URL=$(echo "$_GE_JSON" | python3 -c "
 import sys, json
+tag = '$_GE_TAG'
 for a in json.load(sys.stdin)['assets']:
-    if a['name'].endswith('.tar.gz'):
+    if a['name'] == tag + '.tar.gz':
         print(a['browser_download_url']); break
 " 2>/dev/null) || true
                 fi
