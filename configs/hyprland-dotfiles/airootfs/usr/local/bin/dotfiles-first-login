@@ -119,6 +119,8 @@ run_first_login_setup() {
         gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11' 2>/dev/null || true
         gsettings set org.gnome.desktop.wm.preferences button-layout ":" 2>/dev/null || true
     fi
 

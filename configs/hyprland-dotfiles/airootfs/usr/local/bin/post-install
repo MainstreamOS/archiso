@@ -1137,11 +1137,22 @@ for svc in NetworkManager bluetooth; do
     systemctl enable "$svc" 2>/dev/null || true
 done
 
+# Auto-power-on Bluetooth so paired devices reconnect on boot.
+if [[ -f /etc/bluetooth/main.conf ]]; then
+    sed -i 's/^#\?AutoEnable\s*=.*/AutoEnable=true/' /etc/bluetooth/main.conf
+    grep -q '^AutoEnable' /etc/bluetooth/main.conf || sed -i '/^\[Policy\]/a AutoEnable=true' /etc/bluetooth/main.conf
+fi
+
 if [[ -n "$MAIN_USER" ]]; then
-    # Add to essential groups
+    # Add to essential groups. i2c + the i2c-dev module are needed for ddcutil
+    # external-monitor brightness (mainstream-backlight); input drives the
+    # uinput virtual-input devices.
     groupadd -f render
     groupadd -f video
-    usermod -aG video,render,wheel "$MAIN_USER"
+    groupadd -f i2c
+    usermod -aG video,render,wheel,i2c,input "$MAIN_USER"
+    # Load i2c-dev at boot so ddcutil can reach the monitor's DDC/CI bus.
+    echo i2c-dev > /etc/modules-load.d/i2c-dev.conf
 
     # Change user shell to Zsh if installed
     if [ -f /usr/bin/zsh ]; then
@@ -1253,6 +1264,8 @@ AUTOSTARTEOF
         gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic' 2>/dev/null || true
         gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
         gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view' 2>/dev/null || true
