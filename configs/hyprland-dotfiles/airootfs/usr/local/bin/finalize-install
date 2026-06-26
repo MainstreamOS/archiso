@@ -256,5 +256,23 @@ if [[ -f /etc/sudoers.d/g_wheel ]]; then
     }
 fi
 
+# ── Dangling live-only service symlinks ─────────────────────────────────────
+# The ISO airootfs enables a set of services for the live environment (cloud
+# images, hypervisor guest tools, live-cd utilities). Their packages are never
+# installed on the target, so the *.target.wants enable-symlinks dangle and
+# systemd logs "unit not found" on every boot. Remove them.
+for _u in cloud-config cloud-final cloud-init-local cloud-init-main cloud-init-network \
+          hv_fcopy_daemon hv_kvp_daemon hv_vss_daemon vmtoolsd vmware-vmblock-fuse \
+          vboxservice ModemManager choose-mirror livecd-talk livecd-alsa-unmuter; do
+    rm -f /etc/systemd/system/*.target.wants/"${_u}".service
+done
+rm -f /etc/systemd/system/cloud-init.target.wants/*.service 2>/dev/null || true
+rmdir /etc/systemd/system/cloud-init.target.wants 2>/dev/null || true
+# The live-cd custom unit files themselves don't belong on the target either.
+rm -f /etc/systemd/system/choose-mirror.service \
+      /etc/systemd/system/livecd-talk.service \
+      /etc/systemd/system/livecd-alsa-unmuter.service
+info "Removed dangling live-only service symlinks."
+
 info "Cleanup done."
 exit 0
