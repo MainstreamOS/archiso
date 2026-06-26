@@ -85,7 +85,18 @@ info "Target Disk: $TARGET_DISK"
 info "Root spec: $ROOT_SPEC"
 info "Boot Path: $BOOT_PATH (UEFI: $IS_UEFI)"
 
-KERNEL_CMDLINE="$ROOT_SPEC rootflags=subvol=/@ rw zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0"
+# Canonical base cmdline from the shared GPU library (the same source the dots
+# ./setup path uses), staged at /tmp/dotfiles-setup by the dotfiles step that
+# runs before this one. The fallback below MUST mirror gpu_base_cmdline_tokens.
+GPU_LIB="/tmp/dotfiles-setup/sdata/lib/gpu-config.sh"
+if [[ -r "$GPU_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$GPU_LIB"
+    KERNEL_CMDLINE="$(gpu_base_cmdline_tokens "$ROOT_SPEC" "@")"
+else
+    warn "Shared GPU library not found at $GPU_LIB — using the inline canonical base."
+    KERNEL_CMDLINE="$ROOT_SPEC rootflags=subvol=@ rw rootfstype=btrfs zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0"
+fi
 mkdir -p /etc/kernel
 printf '%s\n' "$KERNEL_CMDLINE" > /etc/kernel/cmdline
 info "Kernel command line written to /etc/kernel/cmdline"
@@ -130,9 +141,12 @@ CONF_DEST="$BOOT_PATH/limine.conf"
 if [ -f "$TEMPLATE" ]; then
     info "Deploying configuration..."
     # `|` delimiter avoids clashes with the `/dev/mapper/...` path in the LUKS
-    # branch of ROOT_SPEC. Legacy template still using REPLACE_ME_UUID is
-    # accepted for backwards compatibility on older ISOs.
-    if grep -q 'REPLACE_ME_ROOT_SPEC' "$TEMPLATE"; then
+    # branch. The current template carries REPLACE_ME_CMDLINE and gets the whole
+    # canonical cmdline substituted in; REPLACE_ME_ROOT_SPEC / REPLACE_ME_UUID
+    # are accepted for backwards compatibility with older templates.
+    if grep -q 'REPLACE_ME_CMDLINE' "$TEMPLATE"; then
+        sed "s|REPLACE_ME_CMDLINE|$KERNEL_CMDLINE|g" "$TEMPLATE" > "$CONF_DEST"
+    elif grep -q 'REPLACE_ME_ROOT_SPEC' "$TEMPLATE"; then
         sed "s|REPLACE_ME_ROOT_SPEC|$ROOT_SPEC|g" "$TEMPLATE" > "$CONF_DEST"
     else
         sed "s|REPLACE_ME_UUID|${ROOT_PARTUUID:-}|g" "$TEMPLATE" > "$CONF_DEST"
