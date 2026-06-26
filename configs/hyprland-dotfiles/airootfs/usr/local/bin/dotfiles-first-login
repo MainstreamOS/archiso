@@ -228,20 +228,30 @@ STUB_EOF
         # while the venv pipeline was still settling.
     fi
 
-    # Colors were generated at install but nothing has applied them to this live
-    # session yet (the heavy pipeline is skipped on a baked install). Apply the
-    # EXISTING theme cheaply once the bar is up — no regeneration: applycolor.sh
-    # repaints the desktop (GTK/kitty/hyprland) from material_colors.scss, and the
-    # quickshell theme IPC reloads colors.json into the bar. Detached so it does
-    # not hold up teardown.
+    # Colors are generated at install, but on a baked install two things still need
+    # doing on the live session (the heavy pipeline is skipped): persist the default
+    # wallpaper path into config.json so the desktop shows it and the generated colors
+    # bind to it, then apply the existing theme cheaply — no regeneration. Done in a
+    # detached subshell once the bar is up so it never holds up teardown.
     if (( COLORS_PRESENT )); then
         APPLYCOLOR="$HOME/.config/quickshell/ii/scripts/colors/applycolor.sh"
-        echo "[first-login] applying existing theme to live session (no regen)"
+        echo "[first-login] setting default wallpaper + applying existing theme (no regen)"
         (
             for _j in $(seq 1 90); do
                 hyprctl layers -j 2>/dev/null | grep -Eq '"namespace": *"quickshell:(bar|verticalBar)"' && break
                 sleep 0.5
             done
+            # quickshell owns config.json now (complete), so edit it in place rather than
+            # hand-seeding a partial one at install — that is what previously broke session
+            # restore. Only set the wallpaper when it is still unset.
+            CFG="$HOME/.config/illogical-impulse/config.json"
+            if [[ -f "$CFG" && -f "$DEFAULT_WALL" ]] && command -v jq &>/dev/null \
+               && [[ -z "$(jq -r '.background.wallpaperPath // ""' "$CFG" 2>/dev/null)" ]]; then
+                _t=$(mktemp "${CFG}.XXXXXX") \
+                    && jq --arg w "$DEFAULT_WALL" \
+                         '.background.wallpaperPath=$w | .background.thumbnailPath=$w' "$CFG" > "$_t" \
+                    && mv "$_t" "$CFG" || rm -f "$_t"
+            fi
             [[ -f "$APPLYCOLOR" ]] && nice -n 19 ionice -c 3 bash "$APPLYCOLOR" </dev/null >/dev/null 2>&1
             qs -c ii ipc call theme reload >/dev/null 2>&1 || true
         ) &
