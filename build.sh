@@ -623,6 +623,39 @@ if [[ ! -d "$DIST_ARCH_PATH" ]]; then
     die "Expected dist-arch directory missing at $DIST_ARCH_PATH"
 fi
 
+# Regenerate the Calamares netinstall "Included Extras" group from the shared
+# default-app manifest (mainstream-extras/default-apps.list) so it never drifts
+# from mainstream-extras' optdepends. Idempotent: same manifest -> same output.
+regenerate_netinstall_extras() {
+    local manifest="$DIST_ARCH_PATH/mainstream-extras/default-apps.list"
+    local ni="$PROFILE_DIR/airootfs/etc/calamares/modules/netinstall.conf"
+    if [[ ! -f "$manifest" ]]; then
+        warn "default-apps.list not found at $manifest — leaving netinstall Extras unchanged."
+        return 0
+    fi
+    if ! grep -q 'GEN-EXTRAS-BEGIN' "$ni" 2>/dev/null; then
+        warn "netinstall.conf has no GEN-EXTRAS markers — skipping Extras regeneration."
+        return 0
+    fi
+    # shellcheck source=/dev/null
+    source "$manifest"
+    local blockfile e p d desc
+    blockfile="$(mktemp)"
+    for e in "${MAINSTREAM_DEFAULT_APPS[@]}"; do
+        IFS='|' read -r p d desc <<< "$e"
+        printf '          - name: %s\n            display: "%s"\n            description: "%s"\n' \
+            "$p" "$d" "$desc" >> "$blockfile"
+    done
+    awk -v bf="$blockfile" '
+        /# GEN-EXTRAS-BEGIN/ { print; while ((getline line < bf) > 0) print line; close(bf); skip=1; next }
+        /# GEN-EXTRAS-END/   { skip=0 }
+        !skip               { print }
+    ' "$ni" > "${ni}.tmp" && mv "${ni}.tmp" "$ni"
+    rm -f "$blockfile"
+    info "Regenerated netinstall Included Extras from default-apps.list (${#MAINSTREAM_DEFAULT_APPS[@]} apps)."
+}
+regenerate_netinstall_extras
+
 chown -R "$BUILD_USER":"$BUILD_USER" "$PKG_WORK_DIR"
 info "Clone successful."
 
