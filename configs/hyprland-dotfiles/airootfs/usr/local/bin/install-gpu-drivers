@@ -20,6 +20,23 @@ info() { log "INFO:  $*"; }
 warn() { log "WARN:  $*"; }
 err()  { log "ERROR: $*" >&2; }
 
+# Source the shared GPU library — the single source of truth shared with the
+# dots ./setup path (sdata/lib/gpu-config.sh, staged at /tmp/dotfiles-setup by
+# install-dotfiles earlier in the Calamares sequence). Detection (gpu_detect)
+# and NVIDIA generation classification (gpu_classify_nvidia_driver) come from
+# there; this script keeps the archiso-specific package-install machinery
+# (staged prebuilts via pacman -U, DKMS against the target kernel). Sourced
+# BEFORE note_failure below so this script's version stays in effect. Vars are
+# pre-seeded so the vendor branches stay set -u safe if the lib is ever absent.
+GPU_LIB="${GPU_LIB:-/tmp/dotfiles-setup/sdata/lib/gpu-config.sh}"
+HAS_NVIDIA=false HAS_AMD=false HAS_INTEL=false IS_HYBRID=false
+IS_OLD_AMD=false IS_RDNA4=false IS_ARC=false IS_OLD_INTEL=false NVIDIA_GEN=none
+if [[ -r "$GPU_LIB" ]]; then
+    source "$GPU_LIB"
+else
+    err "Shared GPU library not found at $GPU_LIB — vendor branches will be skipped."
+fi
+
 # Track GPU-driver install failures so a broken driver surfaces as a loud,
 # unmissable error at the end (and a breadcrumb the desktop can read on
 # first boot) instead of the old silent warn+exit-0 soft-pass.
@@ -37,12 +54,9 @@ else
     echo "$GPU_INFO" | while read -r line; do info "  $line"; done
 fi
 
-HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
-# Detect by PCI vendor ID — unambiguous, not subject to lspci name string variations.
-# 10de=NVIDIA  1002=AMD/ATI  8086=Intel
-lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
-lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
-lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
+# Detect hardware + NVIDIA generation via the shared library (sets HAS_*/IS_*/
+# NVIDIA_GEN; the vars were pre-seeded above so the branches stay set -u safe).
+command -v gpu_detect >/dev/null 2>&1 && { gpu_detect || true; }
 
 # Install repo packages for a GPU stack. Filter the target list FIRST:
 # pacman -S aborts the entire transaction on one unknown target, which is how
@@ -80,7 +94,7 @@ install_pkgs_opt() { _install_pkgs_impl warn "$@"; }
 # pacman -U so we never have to run yay-fetch-and-compile from inside the
 # Calamares chroot, which was failure-prone (network in chroot, kernel
 # version mismatch for DKMS, build-environment fragility).
-LOCAL_PKGS_DIR="/usr/local/share/pkgs"
+LOCAL_PKGS_DIR="${LOCAL_PKGS_DIR:-/usr/local/share/pkgs}"
 
 # Find the matching local pkg file(s) by glob. The version in the filename
 # varies per build, so we glob for the family name and let pacman -U pick
@@ -179,44 +193,53 @@ legacy_nvidia_fallback() {
     note_failure "Legacy NVIDIA ($gen): proprietary drivers are not on this (standard) edition — installed nouveau as a fallback. For full acceleration, reinstall using the MainstreamOS NVIDIA (legacy) edition ISO."
 }
 
+# Install one of the frozen legacy NVIDIA DKMS branches (580xx/470xx/390xx) from
+# the staged prebuilts named by the classifier's NVIDIA_LOCAL_PKGS array, then
+# build the module against the target kernel. Falls back to nouveau when the
+# prebuilts are not staged (standard edition). $1 is the human-readable label.
+install_legacy_nvidia() {
+    local label="$1" dkms_pkg="${NVIDIA_LOCAL_PKGS[0]}"
+    if [[ -z "$(find_local_pkgs "$dkms_pkg")" ]]; then
+        legacy_nvidia_fallback "$label"
+        return
+    fi
+    install_pkgs linux-headers dkms libva-utils
+    install_pkgs_opt libva-nvidia-driver
+    # The whole NVIDIA_LOCAL_PKGS set rides one pacman -U: the *-settings package
+    # depends on libxnvctrl-*xx, which exists only as a staged file (the repo DB
+    # excludes GPU packages), and one unresolvable dep aborts the transaction.
+    if install_local_pkgs "${NVIDIA_LOCAL_PKGS[@]}"; then
+        local ver; ver=$(detect_dkms_version "$dkms_pkg" || echo "")
+        if [[ -n "$ver" ]]; then
+            target_dkms_install nvidia "$ver"
+        else
+            note_failure "$dkms_pkg: could not parse version from staged package — DKMS module NOT built."
+        fi
+    else
+        note_failure "$dkms_pkg: staged packages present but pacman -U failed — $label GPU has no kernel driver."
+    fi
+    install_pkgs_opt linux-firmware-nvidia
+    info "NVIDIA $label — installed $dkms_pkg."
+}
+
 pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
 
 if $HAS_INTEL; then
-    INTEL_DEV=$(lspci 2>/dev/null | grep -iE "Intel.*(Graphics|UHD|HD|Iris|Arc)" | head -1)
-    if echo "$INTEL_DEV" | grep -iqE "Arc|Xe|A[3-7][0-9]{2}"; then
+    if $IS_ARC; then
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
         install_pkgs_opt linux-firmware-intel
+    elif $IS_OLD_INTEL; then
+        install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
     else
-        INTEL_ID=$(lspci -nn 2>/dev/null | grep -iE "Intel.*Graphics" \
-                   | grep -oE '8086:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || echo "ffff")
-        INTEL_DEC=$((16#${INTEL_ID:-ffff}))
-        if [[ $INTEL_DEC -lt 256 ]]; then
-            install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
-        else
-            install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
-            install_pkgs_opt linux-firmware-intel
-        fi
+        install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
+        install_pkgs_opt linux-firmware-intel
     fi
     info "Intel packages installed."
 fi
 
 if $HAS_AMD; then
-    AMD_ID=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep "1002:" \
-             | grep -oE "1002:[0-9a-fA-F]{4}" | head -1 | cut -d: -f2 || echo "ffff")
-    AMD_DEC=$((16#${AMD_ID:-ffff}))
-    IS_OLD_AMD=false
-    # Low device ID = old only holds for DISCRETE cards. APU iGPUs (Kaveri
-    # through Raven/Picasso/Renoir/Cezanne/Phoenix, 0x1300-0x16ff = 4864-5887)
-    # are numerically low but all modern GCN+ — without the exemption every
-    # AMD APU classifies as old and picks up the pre-GCN xf86-video-ati DDX.
-    if [[ $AMD_DEC -lt 26112 ]] && ! [[ $AMD_DEC -ge 4864 && $AMD_DEC -le 5887 ]]; then
-        IS_OLD_AMD=true
-    fi
-    AMD_NAME=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | grep -i "AMD\|ATI\|Radeon" | head -1)
-    echo "$AMD_NAME" | grep -iqE "\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b" \
-        && IS_OLD_AMD=true || true
-    if lspci 2>/dev/null | grep -iqE "Navi 4[0-9]|RX 9[0-9]{3}|gfx12"; then IS_OLD_AMD=false; fi
-
+    # IS_OLD_AMD (pre-GCN, with the APU exemption + RDNA4 override) comes from
+    # gpu_detect — see the shared library for the classification rationale.
     if $IS_OLD_AMD; then
         install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
     else
@@ -229,102 +252,30 @@ if $HAS_AMD; then
 fi
 
 if $HAS_NVIDIA; then
-    PCI_LINE=$(lspci -nn 2>/dev/null | grep -iE "NVIDIA|GeForce|Quadro|Tesla" | head -1)
-    PCI_ID=$(echo "$PCI_LINE" | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | tail -1 \
-             | grep -oE '[0-9a-fA-F]{4}' | tail -1 || echo "0000")
-    PCI_DEC=$((16#$PCI_ID))
-    info "NVIDIA PCI ID: 0x$PCI_ID ($PCI_DEC)"
-
-    if [[ $PCI_DEC -ge 7684 ]]; then
-        # 0x1E04+ = Turing and newer (RTX 2060, 2070, 2080, 30xx, 40xx, 50xx)
-        # nvidia-open is the official NVIDIA open source kernel module (SM 7.5+)
-        # Same userspace as proprietary — full Wayland/Hyprland support
-        install_pkgs nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver libva-utils
-        install_pkgs_opt linux-firmware-nvidia
-        info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
-    elif [[ $PCI_DEC -ge 4928 ]]; then
-        # 0x1340-0x1E03 = Maxwell through Pascal-Volta (GTX 900, GTX 1000, Titan V)
-        # Dropped from mainline nvidia (590+) — uses nvidia-580xx-dkms (last LTS).
-        # Pre-built into /usr/local/share/pkgs/ by build.sh (NVIDIA edition only);
-        # we pacman -U here and force DKMS to compile against the TARGET kernel
-        # (not the chroot host's). No more first-boot mkinitcpio deferral needed.
-        if [[ -z "$(find_local_pkgs nvidia-580xx-dkms)" ]]; then
-            legacy_nvidia_fallback "Maxwell/Pascal/Volta — GTX 900/1000/Titan V"
-        else
-            install_pkgs linux-headers dkms libva-utils
-            install_pkgs_opt libva-nvidia-driver
-            # libxnvctrl-580xx MUST ride the same -U: nvidia-580xx-settings
-            # depends on it, it only exists as a staged file (the repo DB
-            # deliberately excludes GPU packages), and one unresolvable dep
-            # aborts the entire pacman -U transaction.
-            if install_local_pkgs nvidia-580xx-dkms nvidia-580xx-utils \
-                                  lib32-nvidia-580xx-utils nvidia-580xx-settings \
-                                  libxnvctrl-580xx; then
-                ver=$(detect_dkms_version nvidia-580xx-dkms || echo "")
-                if [[ -n "$ver" ]]; then
-                    # DKMS module name is "nvidia" for ALL nvidia-*xx-dkms
-                    # generations (PACKAGE_NAME in dkms.conf; source dir is
-                    # /usr/src/nvidia-<ver>). The family name is NOT a module.
-                    target_dkms_install nvidia "$ver"
-                else
-                    note_failure "nvidia-580xx-dkms: could not parse version from staged package — DKMS module NOT built."
-                fi
-            else
-                note_failure "nvidia-580xx-dkms: staged packages present but pacman -U failed — Maxwell/Pascal/Volta GPU has no kernel driver."
-            fi
+    # NVIDIA_GEN (set by gpu_detect) -> driver family + package sets. The caller
+    # owns the install: nvidia-open from the repo, a frozen legacy branch from
+    # staged prebuilts, or nouveau for pre-Fermi.
+    gpu_classify_nvidia_driver
+    info "NVIDIA generation $NVIDIA_GEN -> driver family $NVIDIA_DRIVER_FAMILY"
+    case "$NVIDIA_DRIVER_FAMILY" in
+        nvidia-open)
+            # Turing and newer (RTX 2060+, 30xx/40xx/50xx) — the official open
+            # source kernel module, same userspace as proprietary.
+            install_pkgs "${NVIDIA_REPO_PKGS[@]}"
             install_pkgs_opt linux-firmware-nvidia
-            info "NVIDIA Maxwell-Pascal-Volta (GTX 900/1000/Titan V) — installed nvidia-580xx-dkms."
-        fi
-    elif [[ $PCI_DEC -ge 4032 ]]; then
-        # 0x0FC0-0x133F = Kepler (GTX 600/700, GT 710)
-        if [[ -z "$(find_local_pkgs nvidia-470xx-dkms)" ]]; then
-            legacy_nvidia_fallback "Kepler — GTX 600/700"
-        else
-            install_pkgs linux-headers dkms libva-utils
-            install_pkgs_opt libva-nvidia-driver
-            if install_local_pkgs nvidia-470xx-dkms nvidia-470xx-utils \
-                                  lib32-nvidia-470xx-utils; then
-                ver=$(detect_dkms_version nvidia-470xx-dkms || echo "")
-                if [[ -n "$ver" ]]; then
-                    target_dkms_install nvidia "$ver"
-                else
-                    note_failure "nvidia-470xx-dkms: could not parse version from staged package — DKMS module NOT built."
-                fi
-            else
-                note_failure "nvidia-470xx-dkms: staged packages present but pacman -U failed — Kepler GPU has no kernel driver."
-            fi
-            install_pkgs_opt linux-firmware-nvidia
-            info "NVIDIA Kepler (GTX 600/700) — installed nvidia-470xx-dkms."
-        fi
-    elif [[ $PCI_DEC -ge 1728 ]]; then
-        # 0x06C0-0x0FBF = Fermi (GTX 400/500, GT 6xx OEM)
-        if [[ -z "$(find_local_pkgs nvidia-390xx-dkms)" ]]; then
-            legacy_nvidia_fallback "Fermi — GTX 400/500"
-        else
-            install_pkgs linux-headers dkms libva-utils
-            install_pkgs_opt libva-nvidia-driver
-            if install_local_pkgs nvidia-390xx-dkms nvidia-390xx-utils; then
-                ver=$(detect_dkms_version nvidia-390xx-dkms || echo "")
-                if [[ -n "$ver" ]]; then
-                    target_dkms_install nvidia "$ver"
-                else
-                    note_failure "nvidia-390xx-dkms: could not parse version from staged package — DKMS module NOT built."
-                fi
-            else
-                note_failure "nvidia-390xx-dkms: staged packages present but pacman -U failed — Fermi GPU has no kernel driver."
-            fi
-            info "NVIDIA Fermi (GTX 400/500) — installed nvidia-390xx-dkms."
-        fi
-    else
-        # Pre-Fermi (Tesla / older) — nouveau is the only realistic option
-        install_pkgs xf86-video-nouveau mesa lib32-mesa
-    fi
+            info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
+            ;;
+        nvidia-580xx) install_legacy_nvidia "Maxwell/Pascal/Volta — GTX 900/1000/Titan V" ;;
+        nvidia-470xx) install_legacy_nvidia "Kepler — GTX 600/700" ;;
+        nvidia-390xx) install_legacy_nvidia "Fermi — GTX 400/500" ;;
+        nouveau|*)
+            # Pre-Fermi (Tesla / older) — nouveau is the only realistic option.
+            install_pkgs xf86-video-nouveau mesa lib32-mesa
+            ;;
+    esac
 
-    # PRIME package if hybrid
-    GPU_COUNT=0
-    $HAS_INTEL && ((GPU_COUNT++)) || true
-    $HAS_AMD   && ((GPU_COUNT++)) || true
-    [[ $GPU_COUNT -gt 0 ]] && install_pkgs nvidia-prime || true
+    # PRIME render-offload tool for hybrid (NVIDIA + Intel/AMD).
+    [[ $IS_HYBRID == true ]] && install_pkgs nvidia-prime || true
 
     info "NVIDIA packages installed."
 fi
