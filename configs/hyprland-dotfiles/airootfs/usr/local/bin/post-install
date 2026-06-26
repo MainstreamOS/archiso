@@ -386,18 +386,18 @@ if [[ -n "$GPU_INFO" ]]; then
         fi
         local _changed=false
         # after_sleep_cmd: delay dpms on after system wake from suspend/hibernate
-        # Hypridle config uses Lua-form dispatcher: hl.dsp.dpms({action = "on"})
-        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle" \
-            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle"; then
-            sed -i '/after_sleep_cmd/s|hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|sleep 2 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|' \
+        # Hypridle config uses Lua-form dispatcher: hl.dsp.dpms({ action = "enable" })
+        if grep -qE "after_sleep_cmd\s*=.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle" \
+            && ! grep -qE "after_sleep_cmd\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle"; then
+            sed -i '/after_sleep_cmd/s|hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|sleep 2 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|' \
                 "$_hypridle"
             _changed=true
             info "Added 2s delay before dpms on in after_sleep_cmd (NVIDIA resume fix)."
         fi
         # on-resume: delay dpms on when idle screen-blank is cleared by activity
-        if grep -qE "on-resume\s*=.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle" \
-            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*on" "$_hypridle"; then
-            sed -i '/on-resume/s|hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|sleep 1 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({action = "on"})'"'"'|' \
+        if grep -qE "on-resume\s*=.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle" \
+            && ! grep -qE "on-resume\s*=.*sleep\s+[0-9].*&&.*hyprctl dispatch.*dpms.*action.*enable" "$_hypridle"; then
+            sed -i '/on-resume/s|hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|sleep 1 \&\& hyprctl dispatch '"'"'hl.dsp.dpms({ action = "enable" })'"'"'|' \
                 "$_hypridle"
             _changed=true
             info "Added 1s delay before dpms on in on-resume (NVIDIA resume fix)."
