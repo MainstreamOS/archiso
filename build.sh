@@ -178,7 +178,12 @@ download_mainstream_repo_pkgs() {
         # builds. If the db fetch failed, fall back to downloading everything.
         if [[ -n "${current:-}" ]]; then
             stem=$(sed -E 's/-[^-]+\.pkg\.tar\.zst$//' <<< "$base")
-            if ! grep -qxF "$stem" <<< "$current"; then
+            # Epoch packages publish a colon-free asset filename (GitHub Release
+            # assets can't store the ':' epoch separator) while the db dir keeps
+            # the epoch, so normalise ':'->'_' on the db side before matching —
+            # otherwise the epoch package looks "stale" and falls back to a
+            # drift-prone local build.
+            if ! grep -qxF "$stem" <<< "${current//:/_}"; then
                 info "$base — not in current db, skipping stale asset."
                 continue
             fi
