@@ -436,8 +436,6 @@ AUR_DEPS=(
     "topgrade"
     "wlogout"
     "adw-gtk-theme-git"
-    "breeze-plus"
-    "darkly-bin"
     "otf-space-grotesk::38c3-styles"
     "ttf-material-symbols-variable-git::material-symbols-git"
     "ttf-readex-pro"
