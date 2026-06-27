@@ -189,7 +189,7 @@ detect_dkms_version() {
 legacy_nvidia_fallback() {
     local gen="$1"
     warn "Legacy NVIDIA ($gen): proprietary prebuilts not on this edition — falling back to nouveau."
-    install_pkgs xf86-video-nouveau mesa lib32-mesa
+    install_pkgs mesa lib32-mesa
     note_failure "Legacy NVIDIA ($gen): proprietary drivers are not on this (standard) edition — installed nouveau as a fallback. For full acceleration, reinstall using the MainstreamOS NVIDIA (legacy) edition ISO."
 }
 
@@ -229,7 +229,7 @@ if $HAS_INTEL; then
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
         install_pkgs_opt linux-firmware-intel
     elif $IS_OLD_INTEL; then
-        install_pkgs mesa lib32-mesa xf86-video-intel libva-intel-driver
+        install_pkgs mesa lib32-mesa libva-intel-driver
     else
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
         install_pkgs_opt linux-firmware-intel
@@ -241,11 +241,11 @@ if $HAS_AMD; then
     # IS_OLD_AMD (pre-GCN, with the APU exemption + RDNA4 override) comes from
     # gpu_detect — see the shared library for the classification rationale.
     if $IS_OLD_AMD; then
-        install_pkgs mesa lib32-mesa xf86-video-amdgpu xf86-video-ati vulkan-radeon lib32-vulkan-radeon
+        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon
     else
         # VA-API/VDPAU are part of mesa itself now — the old libva-mesa-driver /
         # mesa-vdpau split packages no longer exist.
-        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon xf86-video-amdgpu
+        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon
     fi
     install_pkgs_opt linux-firmware-amdgpu
     info "AMD packages installed."
@@ -270,7 +270,7 @@ if $HAS_NVIDIA; then
         nvidia-390xx) install_legacy_nvidia "Fermi — GTX 400/500" ;;
         nouveau|*)
             # Pre-Fermi (Tesla / older) — nouveau is the only realistic option.
-            install_pkgs xf86-video-nouveau mesa lib32-mesa
+            install_pkgs mesa lib32-mesa
             ;;
     esac
 

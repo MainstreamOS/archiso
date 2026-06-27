@@ -89,12 +89,10 @@ xorg-xwayland
 # ==============================================================================
 # GPU & display
 # ==============================================================================
-linux-headers
 mesa
 vulkan-radeon
 vulkan-intel
 intel-media-driver
-xf86-video-amdgpu
 # nvidia-open: Turing+ live accel, loaded post-pivot (kept out of initramfs).
 # Pre-Turing NVIDIA is served by the NVIDIA (legacy) edition ISO.
 nvidia-open

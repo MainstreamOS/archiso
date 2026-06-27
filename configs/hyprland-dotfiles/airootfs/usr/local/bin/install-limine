@@ -19,7 +19,7 @@ info "Checking network connectivity..."
 if ping -c1 -W3 archlinux.org &>/dev/null; then
     info "Network available — reinstalling linux kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
-    pacman -S --noconfirm --overwrite "*" linux linux-headers
+    pacman -S --noconfirm --overwrite "*" linux
 else
     warn "No network detected — skipping kernel reinstall. Using kernel from squashfs."
 fi

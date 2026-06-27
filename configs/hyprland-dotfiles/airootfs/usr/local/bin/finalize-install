@@ -65,8 +65,8 @@ info "CPU vendor: $CPU_VENDOR"
 #
 # NOT included here even though they look live-only:
 #   - dosfstools: needed if user creates FAT partitions post-install
-#   - testdisk, os-prober, nano, openssh, less, man-db, terminus-font:
-#     genuinely useful on the installed system
+#   - nano, openssh, less, man-db, terminus-font: genuinely useful on the
+#     installed system
 LIVEONLY=(
     arch-install-scripts
     archinstall
@@ -88,6 +88,8 @@ LIVEONLY=(
     kcrash
     kpmcore
     b43-fwcutter
+    os-prober
+    testdisk
 )
 
 # Calamares: only present on the live ISO, but if a user re-runs Calamares
@@ -152,6 +154,11 @@ else
     warn "No GPU detected via lspci — skipping wrong-vendor driver prune."
 fi
 
+if ! lspci -nn 2>/dev/null | grep -iE "Network controller|Wireless" | grep -q "\[14e4:"; then
+    info "No Broadcom wifi — removing broadcom-wl."
+    remove_pkgs broadcom-wl
+fi
+
 # ── CPU microcode prune ──────────────────────────────────────────────────────
 # The bootloader entries reference both microcode initrds; the CPU
 # applies the matching one and ignores the other. Removing the wrong one
@@ -199,6 +206,7 @@ LOOSE_FILES=(
     /etc/systemd/logind.conf.d/do-not-suspend.conf
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
     /etc/systemd/resolved.conf.d/archiso.conf
+    /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
     /etc/initcpio/install/nvidia-gsp-strip
 )
 for f in "${LOOSE_FILES[@]}"; do
