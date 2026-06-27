@@ -148,8 +148,6 @@ noto-fonts
 iptables-nft
 qt6-multimedia-ffmpeg
 tesseract-data-eng
-lapack
-libimagequant
 
 # ==============================================================================
 # Pre-built heavy dependencies (avoids 10-40 min compile during install)
@@ -208,6 +206,7 @@ expect
 jq
 python-evdev
 uv
+python312
 seatd
 rsync
 bc
