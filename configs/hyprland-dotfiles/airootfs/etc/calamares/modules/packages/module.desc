@@ -18,4 +18,4 @@ script:     "main.py"
 # (bar parks at the end while the rest of the install finishes) is
 # a better failure mode than underestimating (bar races ahead, then
 # stalls while packages chews through downloads).
-weight:     30
+weight:     39

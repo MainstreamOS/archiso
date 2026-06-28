@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# post-install-proton — Installing Proton GE for Steam
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+# ---------------------------------------------------------------------------
+# GE-PROTON — install latest release and preseed Steam compat-tool default
+#
+# Mirrors setup_proton_ge() from 3_files.sh, adapted for chroot (root context):
+#   1. Fetch the latest release tag from the GitHub API.
+#   2. Download + extract the tarball into compatibilitytools.d if not present.
+#   3. Seed ~/.steam/root/config/config.vdf with the global CompatToolMapping
+#      default; or patch the existing file's "0" entry without touching
+#      per-game overrides or any other Steam settings.
+#   4. Fix ownership — everything written under $MAIN_USER_HOME must belong
+#      to the user, not root.
+#
+# Notes:
+#   - Steam is not running in chroot, so config.vdf writes are safe.
+#   - ~/.steam/root is a symlink Steam creates on first launch pointing to
+#     ~/.local/share/Steam — pre-creating it as a real directory is fine;
+#     Steam will normalise it on first run.
+#   - Variables are pre-initialised to "" so set -u is satisfied throughout.
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" ]]; then
+    info "GE-Proton: Installing latest release for $MAIN_USER..."
+
+    _GE_COMPAT_DIR="$MAIN_USER_HOME/.steam/root/compatibilitytools.d"
+    _GE_CFG_DIR="$MAIN_USER_HOME/.steam/root/config"
+    _GE_CFG="$_GE_CFG_DIR/config.vdf"
+    _GE_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+
+    # --- 1. Resolve latest tag (e.g. "GE-Proton10-5") ---
+    _GE_JSON=""
+    _GE_JSON=$(curl -fsSL "$_GE_API" 2>/dev/null) || true
+
+    if [[ -z "$_GE_JSON" ]]; then
+        warn "GE-Proton: GitHub API query failed — check network. Skipping."
+    else
+        _GE_TAG=""
+        if command -v jq &>/dev/null; then
+            _GE_TAG=$(echo "$_GE_JSON" | jq -r '.tag_name' 2>/dev/null) || true
+        else
+            _GE_TAG=$(echo "$_GE_JSON" | python3 -c \
+                "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null) || true
+        fi
+
+        if [[ -z "$_GE_TAG" || "$_GE_TAG" == "null" ]]; then
+            warn "GE-Proton: Could not determine latest tag — skipping."
+        else
+            info "GE-Proton: Latest tag is $_GE_TAG"
+
+            # --- 2. Download + extract ---
+            _GE_INSTALL_DIR="$_GE_COMPAT_DIR/$_GE_TAG"
+            if [[ -d "$_GE_INSTALL_DIR" ]]; then
+                info "GE-Proton: $_GE_TAG already present — skipping download."
+            else
+                # GE-Proton now ships an -aarch64 tarball alongside the x86_64
+                # build; a broad endswith(".tar.gz") match returns two urls and
+                # corrupts the curl arg. Match the exact x86_64 asset name.
+                _GE_URL=""
+                if command -v jq &>/dev/null; then
+                    _GE_URL=$(echo "$_GE_JSON" | \
+                        jq -r --arg tag "$_GE_TAG" '.assets[] | select(.name == ($tag + ".tar.gz")) | .browser_download_url' \
+                        2>/dev/null) || true
+                else
+                    _GE_URL=$(echo "$_GE_JSON" | python3 -c "
+import sys, json
+tag = '$_GE_TAG'
+for a in json.load(sys.stdin)['assets']:
+    if a['name'] == tag + '.tar.gz':
+        print(a['browser_download_url']); break
+" 2>/dev/null) || true
+                fi
+
+                if [[ -z "$_GE_URL" ]]; then
+                    warn "GE-Proton: No .tar.gz asset found for $_GE_TAG — skipping."
+                else
+                    mkdir -p "$_GE_COMPAT_DIR"
+                    _GE_TMP=$(mktemp --suffix=.tar.gz)
+                    info "GE-Proton: Downloading $_GE_TAG..."
+                    if curl -fL --progress-bar -o "$_GE_TMP" "$_GE_URL"; then
+                        info "GE-Proton: Extracting to $_GE_COMPAT_DIR..."
+                        tar -xzf "$_GE_TMP" -C "$_GE_COMPAT_DIR"
+                        rm -f "$_GE_TMP"
+                        info "GE-Proton: Installed $_GE_TAG to $_GE_INSTALL_DIR"
+                    else
+                        warn "GE-Proton: Download failed — skipping."
+                        rm -f "$_GE_TMP"
+                    fi
+                fi
+            fi
+
+            # --- 3. Seed / patch config.vdf ---
+            mkdir -p "$_GE_CFG_DIR"
+            if [[ ! -f "$_GE_CFG" ]]; then
+                info "GE-Proton: Creating $_GE_CFG seeded with $_GE_TAG..."
+                cat > "$_GE_CFG" <<EOF
+"InstallConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"CompatToolMapping"
+				{
+					"0"
+					{
+						"name"		"$_GE_TAG"
+						"config"	""
+						"priority"	"1"
+					}
+				}
+			}
+		}
+	}
+}
+EOF
+                info "GE-Proton: $_GE_CFG created — global default: $_GE_TAG"
+            else
+                info "GE-Proton: Patching existing $_GE_CFG → global default: $_GE_TAG..."
+                python3 - "$_GE_CFG" "$_GE_TAG" <<'PYEOF' \
+                    || warn "GE-Proton: config.vdf patch failed — set Proton version manually in Steam."
+import sys, re
+vdf_path, tag = sys.argv[1], sys.argv[2]
+with open(vdf_path) as f:
+    content = f.read()
+zero_block = (
+    '\n\t\t\t\t\t"0"\n'
+    '\t\t\t\t\t{\n'
+    f'\t\t\t\t\t\t"name"\t\t"{tag}"\n'
+    '\t\t\t\t\t\t"config"\t""\n'
+    '\t\t\t\t\t\t"priority"\t"1"\n'
+    '\t\t\t\t\t}\n\t\t\t\t'
+)
+ctm_re = re.compile(r'("CompatToolMapping"\s*\{)(.*?)(\})', re.DOTALL)
+m = ctm_re.search(content)
+if m:
+    body = re.sub(r'\s*"0"\s*\{[^}]*\}', '', m.group(2), flags=re.DOTALL)
+    new_content = (
+        content[:m.start()] + m.group(1) + zero_block + body + m.group(3) + content[m.end():]
+    )
+    with open(vdf_path, 'w') as f:
+        f.write(new_content)
+    print(f"Patched: global Proton default → {tag}")
+else:
+    sys.stderr.write("Warning: CompatToolMapping not found in config.vdf — skipping patch.\n")
+PYEOF
+            fi
+
+            # --- 4. Fix ownership ---
+            # Everything written under $MAIN_USER_HOME must belong to the user,
+            # not root (we are running in chroot as root).
+            chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.steam" 2>/dev/null || true
+            info "GE-Proton: Ownership of Steam dirs set to $MAIN_USER."
+        fi
+    fi
+fi
+
+cleanup_limine_boot_entries
+
+info "Post-install synchronization complete. System is ready for reboot."
+

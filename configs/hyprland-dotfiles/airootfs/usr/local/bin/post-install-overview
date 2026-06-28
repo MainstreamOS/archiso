@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# post-install-overview — Building the overview plugin
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+# ---------------------------------------------------------------------------
+# HYPRLAND PLUGINS — build scrolloverview from source at install time (chroot)
+#
+# Same shape as the hyprbars block above: clone the MainstreamOS fork, build
+# scrolloverview.so with `make all`, drop it under
+# $MAIN_USER_HOME/.local/share/hyprland/plugins/, and prepend a `plugin = ...`
+# directive to the user's custom/general.lua. Difference vs hyprbars: this
+# directive is left UNCOMMENTED — the bar's top-left hot corner dispatches
+# `scrolloverview:overview on`, so the plugin needs to be loaded by default
+# for that interaction to work. There is no equivalent "Title Bars" toggle.
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" ]]; then
+    info "Building hyprland-scroll-overview plugin from source for $MAIN_USER..."
+
+    _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
+    _PLUGIN_PATH="$_PLUGIN_DATA_DIR/scrolloverview.so"
+    _GENERAL_LUA="$MAIN_USER_HOME/.config/hypr/custom/general.lua"
+    _BUILD_LOG="$_PLUGIN_DATA_DIR/scrolloverview-build.log"
+    _SRC_DIR="$(mktemp -d /tmp/hyprland-scroll-overview-build.XXXXXX)"
+
+    # --- 1. Check build-time pkg-config deps ---
+    # Same set as hyprbars (the plugin uses the same Hyprland headers +
+    # pixman/pango/libdrm). The cairo include used by the wallpaper loader
+    # comes in via pangocairo. gdk-pixbuf is needed for the wallpaper_path
+    # config to load any image format other than PNG.
+    _missing_deps=()
+    for _pc in hyprland pixman-1 libdrm pangocairo libinput libudev wayland-server xkbcommon gdk-pixbuf-2.0; do
+        pkg-config --exists "$_pc" 2>/dev/null || _missing_deps+=("$_pc")
+    done
+    if (( ${#_missing_deps[@]} > 0 )); then
+        warn "Missing pkg-config deps for scrolloverview: ${_missing_deps[*]}"
+        warn "Install the corresponding -devel packages and re-run the installer."
+        warn "Skipping scrolloverview build — plugin will not be available on first boot."
+        rm -rf "$_SRC_DIR"
+    else
+        # --- 2. Clone and build ---
+        mkdir -p "$_PLUGIN_DATA_DIR"
+        mkdir -p "$(dirname "$_BUILD_LOG")"
+
+        {
+            echo "=== scrolloverview build @ $(date '+%Y-%m-%d %H:%M:%S') ==="
+            echo "Build host: $(uname -r)"
+            echo "---"
+        } > "$_BUILD_LOG"
+
+        info "Cloning MainstreamOS/hyprland-scroll-overview (mainstream) into $_SRC_DIR..."
+        if ! git -C "$_SRC_DIR" clone --depth=1 --branch mainstream https://github.com/MainstreamOS/hyprland-scroll-overview . \
+                >> "$_BUILD_LOG" 2>&1; then
+            warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
+            rm -rf "$_SRC_DIR"
+        else
+            echo "Plugin commit: $(git -C "$_SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+                >> "$_BUILD_LOG"
+
+            info "Compiling scrolloverview ($(nproc) jobs)..."
+            if ! make -C "$_SRC_DIR" all -j"$(nproc)" >> "$_BUILD_LOG" 2>&1; then
+                warn "scrolloverview make failed — build log: $_BUILD_LOG"
+                rm -rf "$_SRC_DIR"
+            else
+                # --- 3. Install the .so ---
+                cp -f "$_SRC_DIR/scrolloverview.so" "$_PLUGIN_PATH"
+                info "Installed scrolloverview.so to $_PLUGIN_PATH"
+                rm -rf "$_SRC_DIR"
+
+                # --- 4. Prepend ACTIVE plugin directive to general.lua ---
+                # Hyprland requires the .so to be loaded *before* its settings
+                # block is parsed, so the directive goes at the top of the
+                # file. Unlike hyprbars, this is uncommented because the bar's
+                # hot corner depends on the plugin being loaded by default.
+                if [[ -f "$_GENERAL_LUA" ]]; then
+                    if ! grep -qE 'hl\.plugin\.load.*scrolloverview\.so' "$_GENERAL_LUA"; then
+                        _tmp=$(mktemp)
+                        {
+                            echo "-- scrolloverview plugin — built from source at install time"
+                            echo "hl.plugin.load(\"${_PLUGIN_PATH}\")"
+                            echo ""
+                            cat "$_GENERAL_LUA"
+                        } > "$_tmp"
+                        mv "$_tmp" "$_GENERAL_LUA"
+                        info "Prepended hl.plugin.load(\"${_PLUGIN_PATH}\") to $_GENERAL_LUA"
+                    else
+                        info "$_GENERAL_LUA already references scrolloverview — skipping directive."
+                    fi
+                else
+                    warn "$_GENERAL_LUA not found — add this line manually to a sourced hypr config:"
+                    warn "  hl.plugin.load(\"${_PLUGIN_PATH}\")"
+                fi
+            fi
+        fi
+
+        # --- 5. Fix ownership ---
+        chown -R "$MAIN_USER:$MAIN_USER" "$_PLUGIN_DATA_DIR" 2>/dev/null || true
+        [[ -f "$_GENERAL_LUA" ]] && \
+            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_LUA" 2>/dev/null || true
+        info "Ownership of plugin directory set to $MAIN_USER."
+    fi
+fi
+
+

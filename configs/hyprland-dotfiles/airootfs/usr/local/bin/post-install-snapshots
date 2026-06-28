@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# post-install-snapshots — Configuring snapshots
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+# ---------------------------------------------------------------------------
+# KILL-FPRINTD SERVICE
+# ---------------------------------------------------------------------------
+# Kills fprintd before sleep to prevent fingerprint reader issues
+info "Creating kill-fprintd service..."
+cat > /etc/systemd/system/kill-fprintd.service << 'FPRINTEOF'
+[Unit]
+Description=Kill fprintd before sleep
+Before=sleep.target
+
+[Service]
+ExecStart=killall fprintd
+
+[Install]
+WantedBy=sleep.target
+FPRINTEOF
+systemctl enable kill-fprintd.service 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# SNAPPER + LIMINE-SNAPPER-SYNC SETUP
+# ---------------------------------------------------------------------------
+# Detect btrfs — findmnt may not work inside a Calamares chroot because
+# /proc/self/mountinfo reflects the host, not the chrooted root.  Fall back
+# to checking /etc/fstab (written by Calamares before post-install runs) or
+# testing with the btrfs tool directly.
+_root_is_btrfs=false
+if findmnt -n -o FSTYPE / 2>/dev/null | grep -q btrfs; then
+    _root_is_btrfs=true
+elif grep -qE '^\s*[^#]\S+\s+/\s+btrfs\s' /etc/fstab 2>/dev/null; then
+    _root_is_btrfs=true
+elif btrfs filesystem usage / &>/dev/null; then
+    _root_is_btrfs=true
+fi
+
+if ! $_root_is_btrfs; then
+    warn "Root filesystem is NOT btrfs — skipping snapper configuration."
+fi
+
+if $_root_is_btrfs; then
+    info "Btrfs detected on / — preparing snapper for firstboot setup..."
+
+    # IMPORTANT: We do NOT create /.snapshots, write config files, or call
+    # any snapper commands in this chroot.  snapper create-config sets up
+    # internal btrfs metadata that manual file writes cannot replicate,
+    # causing "Snapshot.cc reading failed" errors.  All snapper setup is
+    # deferred to snapper-firstboot which runs on the real booted system.
+
+    # Remove any /.snapshots that Calamares may have created as a plain
+    # directory — snapper create-config needs it to NOT exist.
+    if [[ -d "/.snapshots" ]] && ! btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Removing plain /.snapshots directory (snapper will recreate it)..."
+        rm -rf /.snapshots 2>/dev/null || true
+    elif btrfs subvolume show /.snapshots &>/dev/null; then
+        info "Removing pre-existing /.snapshots subvolume (snapper will recreate it)..."
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
+    fi
+
+    # Deploy limine-snapper-sync config
+    if command -v limine-snapper-sync &>/dev/null; then
+        info "Configuring limine-snapper-sync..."
+        cat > /etc/limine-snapper-sync.conf << 'LSSCONF'
+LIMIT_USAGE_PERCENT=85
+MAX_SNAPSHOT_ENTRIES=8
+ROOT_SUBVOLUME_PATH="/@"
+ROOT_SNAPSHOTS_PATH="/@/.snapshots"
+RESTORE_METHOD=replace
+SET_SNAPSHOT_AS_DEFAULT=no
+SNAPSHOT_FORMAT_CHOICE=2
+COMMANDS_BEFORE_SAVE="limine-reset-enroll"
+COMMANDS_AFTER_SAVE="limine-enroll-config"
+NOTIFICATION_ICON="/usr/share/icons/hicolor/128x128/apps/LimineSnapperSync.png"
+LSSCONF
+
+        # Tell limine-snapper-sync which snapper config to use, so it never
+        # tries to auto-create one via "snapper create-config" (which deletes
+        # existing configs as a side effect).
+        write_limine_defaults
+        info "limine-snapper-sync config deployed."
+    else
+        warn "limine-snapper-sync not found — skipping Limine snapshot integration."
+    fi
+
+    # NOTE: snapper timers and limine-snapper-sync are NOT enabled here.
+    # They are enabled by snapper-firstboot on first boot AFTER configs are
+    # fully set up.  Enabling them here causes a race condition where
+    # snapperd starts via D-Bus activation before configs exist, deleting them.
+
+    # --- Firstboot service ---
+    # All snapper setup happens on first boot where D-Bus, btrfs, and the
+    # real filesystem are fully available.  snapper create-config sets up
+    # internal btrfs metadata that manual config file writes cannot replicate.
+    cat > /etc/systemd/system/snapper-init.service << 'SNAPPERUNITEOF'
+[Unit]
+Description=Initialize snapper configs and create first snapshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/snapper-firstboot
+
+[Install]
+WantedBy=multi-user.target
+SNAPPERUNITEOF
+
+    cat > /usr/local/bin/snapper-firstboot << 'FIRSTBOOTEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+log() { echo "[snapper-firstboot] $*"; }
+
+# --- Root config via snapper create-config ---
+if snapper list-configs 2>/dev/null | grep -q "^root"; then
+    log "Root config already exists."
+elif [[ -f /etc/snapper/configs/root ]]; then
+    # Config file exists but snapper doesn't recognize it (stale manual config).
+    # Remove it so create-config can start fresh.
+    log "Removing stale root config..."
+    rm -f /etc/snapper/configs/root
+    if btrfs subvolume show /.snapshots &>/dev/null; then
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
+    fi
+    rm -rf /.snapshots 2>/dev/null || true
+    log "Creating root config via snapper create-config..."
+    snapper create-config / || log "WARN: snapper create-config / failed."
+else
+    # Clean slate — let snapper create everything
+    if btrfs subvolume show /.snapshots &>/dev/null; then
+        btrfs subvolume delete /.snapshots 2>/dev/null || true
+    fi
+    rm -rf /.snapshots 2>/dev/null || true
+    log "Creating root config via snapper create-config..."
+    snapper create-config / || log "WARN: snapper create-config / failed."
+fi
+
+# Customize root config
+if [[ -f /etc/snapper/configs/root ]]; then
+    sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /etc/snapper/configs/root
+    sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="5"/' /etc/snapper/configs/root
+    sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="7"/' /etc/snapper/configs/root
+    # Set ALLOW_USERS to the first non-system user
+    _user=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1100 {print $1}' | grep -vE '(nobody)' | head -n1 || true)
+    if [[ -n "$_user" ]]; then
+        sed -i "s/^ALLOW_USERS=.*/ALLOW_USERS=\"$_user\"/" /etc/snapper/configs/root
+    fi
+    log "Root config customized."
+fi
+
+# --- Initial snapshot ---
+if snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
+    log "Fresh install snapshot already exists."
+else
+    log "Creating initial 'Fresh install' snapshot..."
+    snapper -c root create --description "Fresh install" 2>/dev/null || \
+        log "WARN: Could not create initial snapshot."
+fi
+
+# --- Enable snapper timers NOW that configs are set up ---
+log "Enabling snapper timers and limine-snapper-sync..."
+systemctl enable --now snapper-timeline.timer 2>/dev/null || true
+systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
+systemctl enable limine-snapper-sync.service 2>/dev/null || true
+
+# Disable ourselves — one-shot job done
+systemctl disable snapper-init.service 2>/dev/null || true
+log "Firstboot snapper init complete."
+FIRSTBOOTEOF
+    chmod +x /usr/local/bin/snapper-firstboot
+    systemctl enable snapper-init.service 2>/dev/null || true
+
+    info "Snapper setup complete."
+else
+    info "Root filesystem is not btrfs — skipping snapper setup."
+fi
+
+# ---------------------------------------------------------------------------
+# NAUTILUS BOOKMARKS
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" && -n "$MAIN_USER_HOME" ]]; then
+    info "Writing Nautilus bookmarks for $MAIN_USER..."
+    mkdir -p "$MAIN_USER_HOME/.config/gtk-3.0"
+    cat > "$MAIN_USER_HOME/.config/gtk-3.0/bookmarks" << EOF
+file://$MAIN_USER_HOME/Desktop Desktop
+file://$MAIN_USER_HOME/Downloads Downloads
+file://$MAIN_USER_HOME/Documents Documents
+file://$MAIN_USER_HOME/Music Music
+file://$MAIN_USER_HOME/Pictures Pictures
+file://$MAIN_USER_HOME/Videos Videos
+EOF
+    chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.config/gtk-3.0/bookmarks"
+    info "Nautilus bookmarks written."
+fi
+
+# ---------------------------------------------------------------------------
+# Note: $HOME/dots-hyprland is intentionally left in place here.
+# dotfiles-first-login needs sdata/uv/requirements.txt to (re)build the python
+# venv on first session, and self-removes the repo after success.
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+# GPG KEYBOX CLEANUP
+# Clear any stale lock files left by GPG operations during the chroot install.
+# A ghost lock on pubring.kbx/keyboxd causes AUR key imports to fail on first
+# post-install update. Safe to run unconditionally — no keys are deleted.
+# ---------------------------------------------------------------------------
+if [[ -n "$MAIN_USER" ]]; then
+    info "Clearing stale GPG locks for $MAIN_USER..."
+    find "$MAIN_USER_HOME/.gnupg" -name "*.lock" -delete 2>/dev/null || true
+    runuser -l "$MAIN_USER" -c 'gpgconf --kill all' 2>/dev/null || true
+    info "GPG lock cleanup complete."
+fi
+
+# ---------------------------------------------------------------------------
+# Gaming Mode (Super+G) is delivered by the mainstream-gaming package (listed in
+# packages.x86_64): the gaming-mode helpers, /usr/lib/os-session-select, the
+# scoped sudoers rule, and the gamescope Steam session as a dependency. Steam
+# itself installs on first use. No firstboot service or extra privileges here.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HYPRLAND PLUGINS — build hyprbars from source at install time (chroot)
+#
+# hyprpm requires HYPRLAND_INSTANCE_SIGNATURE (a live session) and cannot run
+# in chroot. Instead, we mirror setup_hyprland_plugins() from 3_files.sh:
+#   1. Remove any artifacts from a previous hyprpm-based approach.
+#   2. Check that the required pkg-config deps are present in the chroot.
+#   3. Clone MainstreamOS/hyprland-plugins and compile hyprbars with `make`.
+#   4. Install hyprbars.so to $MAIN_USER_HOME/.local/share/hyprland/plugins/.
+#   5. Prepend a *commented-out* `hl.plugin.load(...)` directive to
+#      custom/general.lua so the user can enable Title Bars via the settings
+#      toggle without any manual path lookup.
+#   6. Fix ownership — everything under $MAIN_USER_HOME must belong to the user.
+# ---------------------------------------------------------------------------

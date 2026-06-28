@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# post-install-login — Setting up the login screen
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+info "Installing pixie SDDM theme..."
+
+SDDM_THEME_DIR="/usr/share/sddm/themes/pixie"
+if ping -c1 -W3 github.com &>/dev/null; then
+    if git clone --depth=1 https://github.com/MainstreamOS/pixie-sddm.git "$SDDM_THEME_DIR"; then
+        info "pixie SDDM theme installed successfully."
+    else
+        warn "Failed to clone pixie-sddm — SDDM will use default theme."
+    fi
+else
+    warn "No network — skipping pixie SDDM theme install."
+fi
+
+info "Configuring SDDM-Hyprland and correcting fstab..."
+
+# SDDM Wayland Handshake + pixie theme
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/10-wayland.conf <<SDDMEOF
+[General]
+DisplayServer=wayland
+GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
+
+[Wayland]
+CompositorCommand=start-hyprland
+
+[Theme]
+Current=pixie
+SDDMEOF
+
+# Remove any live ISO autologin configs. If the user enabled autologin on the
+# Calamares users page, the displaymanager module writes that choice to
+# /etc/sddm.conf before this script runs.
+#
+# We only remove drop-ins that explicitly target 'liveuser' to avoid
+# clobbering a valid user-requested autologin if it was written to a drop-in.
+find /etc -name "autologin.conf" -type f | while read -r f; do
+    if grep -q "liveuser" "$f"; then
+        rm -f "$f"
+        info "Removed live ISO autologin config: $f"
+    fi
+done
+
+# SDDM user home directory, Hyprland greeter config, and permissions
+mkdir -p /var/lib/sddm/.config/hypr
+cat > /var/lib/sddm/.config/hypr/hyprland.conf <<HYPREOF
+monitor=,preferred,auto,1
+
+misc {
+    disable_hyprland_logo = true
+    disable_splash_rendering = true
+    force_default_wallpaper = 0
+}
+
+animations {
+    enabled = false
+}
+
+windowrule = match:class ^(sddm-greeter-qt6)$, fullscreen on
+HYPREOF
+chown -R sddm:sddm /var/lib/sddm
+chmod 700 /var/lib/sddm/.config
+chmod 700 /var/lib/sddm/.config/hypr
+chmod 600 /var/lib/sddm/.config/hypr/hyprland.conf
+
+# Fix Btrfs subvolume naming mismatch (@ vs /@)
+sed -i 's|subvol=/@|subvol=@|g' /etc/fstab || true
+
+# ---------------------------------------------------------------------------
+# 5b. SDDM BACKGROUND POLKIT SETUP
+# ---------------------------------------------------------------------------
+# Install the polkit helper + rules so wallpaper switches can update the
+# SDDM login screen background without a password prompt
+DOTFILES_REPO="/tmp/dotfiles-setup"
+if [[ -d "$DOTFILES_REPO" ]]; then
+    info "Installing SDDM background polkit helper..."
+
+    HELPER_SRC="$DOTFILES_REPO/dots/.config/quickshell/ii/scripts/colors/sddm-bg-helper.sh"
+    POLICY_SRC="$DOTFILES_REPO/sdata/polkit/org.illogicalimpulse.sddm-bg.policy"
+    RULES_SRC="$DOTFILES_REPO/sdata/polkit/50-sddm-bg.rules"
+
+    if [[ -f "$HELPER_SRC" ]]; then
+        cp "$HELPER_SRC" /usr/local/bin/sddm-bg-helper
+        chmod 755 /usr/local/bin/sddm-bg-helper
+        info "sddm-bg-helper installed."
+    else
+        warn "sddm-bg-helper.sh not found in dotfiles repo — SDDM background updates may prompt for password."
+    fi
+
+    if [[ -f "$POLICY_SRC" ]]; then
+        mkdir -p /usr/share/polkit-1/actions
+        cp "$POLICY_SRC" /usr/share/polkit-1/actions/
+        info "Polkit policy installed."
+    fi
+
+    if [[ -f "$RULES_SRC" ]]; then
+        mkdir -p /usr/share/polkit-1/rules.d
+        cp "$RULES_SRC" /usr/share/polkit-1/rules.d/
+        info "Polkit rules installed."
+    fi
+else
+    warn "/tmp/dotfiles-setup not found — skipping SDDM polkit setup."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. CLEANUP BUILDUSER
+# ---------------------------------------------------------------------------
+# Precision purge: Only remove builduser if it isn't our primary account
+if id "builduser" &>/dev/null && [[ "$MAIN_USER" != "builduser" ]]; then
+    info "Purging temporary build user..."
+    userdel -rf builduser || true
+fi
+
+# Remove builduser sudoers immediately — builduser has been deleted above.
+rm -f /etc/sudoers.d/builduser 2>/dev/null || true
+
+# g_wheel grants %wheel passwordless sudo for the duration of the
+# Calamares install. The netinstall packages module no longer needs it
+# (it runs pacman directly as root in the chroot — the yay-as-user path
+# that called sudo pacman internally is gone), but the cleanup still
+# happens synchronously at the end of finalize-install, which Calamares
+# runs after the packages module. See finalize-install for the cleanup
+# block. Stale pacman lock can still appear if a previous step
+# crashed; clear it defensively here.
+rm -f /var/lib/pacman/db.lck 2>/dev/null || true
+
+# Visual feedback ('*' per keystroke) at sudo prompts. Default sudo gives no
+# echo at all, which catches new users out — they can't tell whether the
+# keyboard is being read. Drop-in lives under sudoers.d so package upgrades
+# to /etc/sudoers can never clobber it; validated with visudo -cf so a syntax
+# error never lands on the installed system.

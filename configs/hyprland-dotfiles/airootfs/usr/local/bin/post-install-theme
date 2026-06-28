@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# post-install-theme — Generating the color theme
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+if [[ -n "$MAIN_USER" ]]; then  # per-user color/theme setup
+    # ---------------------------------------------------------------------------
+    # Use pre-baked Python venv from skel, or create one if missing
+    # ---------------------------------------------------------------------------
+    VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
+
+    # Operational milestones go to the calamares install log via info().
+    setup_log() { info "[setup] $*"; }
+    setup_log "=== venv/theme setup start; VENV_PATH=$VENV_PATH; venv interpreter=$(/usr/bin/python3.12 -V 2>&1) ==="
+
+    if [[ -e "$VENV_PATH/bin/python" || -L "$VENV_PATH/bin/python" ]]; then
+        # Verify the baked venv matches the python312 package on the target
+        # (/usr/bin/python3.12). build.sh stamps .python-version=3.12. If the
+        # package is missing or the stamp mismatches, discard the venv so the
+        # scratch-build path below runs against the correct interpreter.
+        _target_py="/usr/bin/python3.12"
+        _target_ver=$("$_target_py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+        _baked_ver=$(cat "$VENV_PATH/.python-version" 2>/dev/null || true)
+        setup_log "pre-baked venv present; baked python=${_baked_ver:-<none>}, $_target_py=${_target_ver:-<missing>}"
+
+        _abi_ok=false
+        if [[ ! -x "$_target_py" ]]; then
+            warn "python312 ($_target_py) missing on target — discarding pre-baked venv."
+            rm -rf "$VENV_PATH"
+            setup_log "pre-baked venv DISCARDED ($_target_py missing) — will scratch-build or defer"
+        elif [[ -z "$_baked_ver" || "$_baked_ver" == "$_target_ver" ]]; then
+            _abi_ok=true
+        else
+            warn "Venv ABI mismatch (baked=$_baked_ver, $_target_py=$_target_ver) — discarding pre-baked venv."
+            rm -rf "$VENV_PATH"
+            setup_log "pre-baked venv DISCARDED (ABI mismatch baked=$_baked_ver vs $_target_py=$_target_ver) — will scratch-build or defer"
+        fi
+
+        if [[ "$_abi_ok" == true ]]; then
+            # Venv was pre-baked into skel by build.sh --refresh — fix paths only
+            info "Pre-baked Python venv found — fixing paths for $MAIN_USER..."
+
+            # Rewrite all SKEL_USER placeholder paths (bin/ scripts + activate)
+            find "$VENV_PATH/bin" -type f -exec \
+                sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" {} + 2>/dev/null || true
+            find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
+
+            # Fix pyvenv.cfg — home/python already point at /usr/bin/python3.12
+            # (a fixed package path build.sh set, which this .venv-path regex
+            # leaves alone); this only rewrites a leftover venv-dir placeholder.
+            sed -i -E "s|/[^\"'[:space:]]*\\.local/state/quickshell/\\.venv|$VENV_PATH|g" \
+                "$VENV_PATH/pyvenv.cfg" 2>/dev/null || true
+
+            chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH"
+            info "Python venv ready (pre-baked)."
+            setup_log "pre-baked venv KEPT and path-fixed."
+        fi
+        # If _abi_ok=false, VENV_PATH was rm -rf'd above; fall through to scratch build.
+    fi
+
+    if [[ ! -e "$VENV_PATH/bin/python" && ! -L "$VENV_PATH/bin/python" ]]; then
+        # Fallback: create venv from scratch (slower, ~2-5 min)
+        REQUIREMENTS="/tmp/dotfiles-setup/sdata/uv/requirements.txt"
+        if [[ ! -f "$REQUIREMENTS" ]]; then
+            REQUIREMENTS="$MAIN_USER_HOME/.local/share/quickshell/sdata/uv/requirements.txt"
+        fi
+
+        # Resolve uv to an absolute path. It is a system binary (/usr/bin/uv),
+        # but be defensive about the user's ~/.local/bin and pass the absolute
+        # path into the su helper so the scratch build never depends on the
+        # (non-login) shell's PATH.
+        UV_BIN="$(command -v uv 2>/dev/null || true)"
+        [[ -z "$UV_BIN" && -x /usr/bin/uv ]] && UV_BIN="/usr/bin/uv"
+        [[ -z "$UV_BIN" && -x "$MAIN_USER_HOME/.local/bin/uv" ]] && UV_BIN="$MAIN_USER_HOME/.local/bin/uv"
+
+        if [[ -n "$UV_BIN" ]] && [[ -f "$REQUIREMENTS" ]]; then
+            info "No pre-baked venv — creating Python venv at $VENV_PATH (uv: $UV_BIN)..."
+            mkdir -p "$MAIN_USER_HOME/.local/state/quickshell"
+            chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state/quickshell"
+
+            # Use the python312 package's /usr/bin/python3.12 (shipped on the
+            # target) so numpy/pillow install as self-contained cp312 wheels — no
+            # source build, no system liblapack/libimagequant, no interpreter
+            # download. Reached only if the prebake was absent or discarded.
+            VENV_HELPER="/tmp/create-venv-$MAIN_USER.sh"
+            cat > "$VENV_HELPER" << VENVEOF
+#!/usr/bin/env bash
+"$UV_BIN" venv --prompt .venv -p /usr/bin/python3.12 "$VENV_PATH"
+"$UV_BIN" pip install --python "$VENV_PATH/bin/python" -r "$REQUIREMENTS"
+VENVEOF
+            chmod 755 "$VENV_HELPER"
+            chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
+
+            setup_log "scratch venv build START (uv=$UV_BIN, requirements=$REQUIREMENTS)"
+            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
+                chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
+                info "Python venv created successfully."
+                setup_log "scratch venv build SUCCEEDED"
+            else
+                warn "venv creation failed — will retry on first login"
+                setup_log "scratch venv build FAILED — deferring to first login"
+            fi
+            rm -f "$VENV_HELPER"
+        else
+            warn "venv scratch-build skipped — uv=${UV_BIN:-<not found>}, requirements=$REQUIREMENTS (exists: $([[ -f "$REQUIREMENTS" ]] && echo yes || echo no)); venv will be created on first login"
+            setup_log "scratch venv build SKIPPED (uv=${UV_BIN:-<none>}, requirements exists=$([[ -f "$REQUIREMENTS" ]] && echo yes || echo no)) — deferring to first login"
+        fi
+    fi
+
+    # Rebuild font cache as the target user so custom fonts are found
+    info "Rebuilding font cache for $MAIN_USER..."
+    su -s /bin/bash "$MAIN_USER" -c "fc-cache -fv" 2>/dev/null || true
+
+    # Generate initial matugen color scheme from default wallpaper
+    # This ensures theming works correctly on first login without requiring
+    # the user to manually set a wallpaper
+    DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+    SWITCHWALL="$MAIN_USER_HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
+    VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
+
+    if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
+        info "Generating initial Material You colors from default wallpaper..."
+        mkdir -p "$MAIN_USER_HOME/.local/state/quickshell/user/generated/wallpaper"
+        chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/state"
+
+        # Run full switchwall pipeline if venv is ready — generates all color files
+        # including material_colors.scss and terminal/kitty-theme.conf
+        if [[ -f "$VENV_PATH/bin/activate" ]] && [[ -f "$SWITCHWALL" ]]; then
+            info "Running full color pipeline via switchwall.sh..."
+            setup_log "running full color pipeline (switchwall, venv ready)"
+            SW_HELPER="/tmp/switchwall-$MAIN_USER.sh"
+            cat > "$SW_HELPER" << SWEOF
+#!/usr/bin/env bash
+export ILLOGICAL_IMPULSE_VIRTUAL_ENV="$VENV_PATH"
+# Redirect stdin from /dev/null to avoid stty/ioctl errors
+bash "$SWITCHWALL" --image "$DEFAULT_WALL" --mode dark </dev/null
+SWEOF
+            chmod 755 "$SW_HELPER"
+            chown "$MAIN_USER:$MAIN_USER" "$SW_HELPER"
+            su -s /bin/bash "$MAIN_USER" -c "bash $SW_HELPER" 2>&1 ||                 warn "switchwall failed — falling back to matugen only"
+            rm -f "$SW_HELPER"
+        else
+            # Fallback: just run matugen for the basic color templates (neutral)
+            su -s /bin/bash "$MAIN_USER" -c "matugen image $DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral 2>/dev/null || true
+            warn "Venv not ready — terminal colors will be set on first login"
+        fi
+        info "Initial color scheme generated."
+        setup_log "initial color scheme generated."
+    else
+        warn "Default wallpaper or matugen not found — skipping initial color generation."
+    fi
+
+    # Create the marker file so the first-login script knows to run
+    touch "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
+    chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
+    info "Created first-login marker for $MAIN_USER."
+
+    # Preserve the cloned dotfiles repo so first-login script can find it
+    if [[ -d /tmp/dotfiles-setup ]]; then
+        info "Preserving dotfiles repo to $MAIN_USER_HOME/dots-hyprland..."
+        cp -a /tmp/dotfiles-setup "$MAIN_USER_HOME/dots-hyprland"
+        chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/dots-hyprland"
+    else
+        warn "/tmp/dotfiles-setup not found — first-login uv venv setup may be skipped."
+    fi
+fi

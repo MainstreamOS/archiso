@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# post-install-system — Applying system settings
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+info "Installing /etc/sudoers.d/pwfeedback (visual feedback at sudo prompts)..."
+{
+    pwf_tmp=$(mktemp)
+    printf 'Defaults pwfeedback\n' > "$pwf_tmp"
+    if visudo -cf "$pwf_tmp" >/dev/null 2>&1; then
+        install -m 0440 -o root -g root "$pwf_tmp" /etc/sudoers.d/pwfeedback
+    else
+        warn "pwfeedback drop-in failed visudo validation; not installing."
+    fi
+    rm -f "$pwf_tmp"
+}
+
+# ---------------------------------------------------------------------------
+# 6b. PACMAN KEYRING INIT + [mainstream] REPO SWITCH (first boot)
+# ---------------------------------------------------------------------------
+# pacman-key --init often fails in a chroot (no gpg-agent, limited entropy).
+# Try it here as a best-effort, but the real guarantee is the first-boot
+# oneshot service created below — which also trusts the [mainstream] signing
+# key and repoints the repo from the baked-in local file copy to the signed
+# GitHub-hosted repo so the prebuilt packages update via pacman -Syu.
+info "Initializing pacman keyring (best-effort in chroot)..."
+pacman-key --init 2>/dev/null || true
+pacman-key --populate archlinux 2>/dev/null || true
+
+# Create a first-boot oneshot that (re-)initializes the keyring with proper
+# entropy and a running gpg-agent (unlike the unreliable chroot attempt), then
+# trusts the [mainstream] key and switches its repo to GitHub. Logic lives in
+# /usr/local/bin/mainstream-keyring-init.
+info "Scheduling pacman keyring init + [mainstream] repo switch for first boot..."
+cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
+[Unit]
+Description=Initialize pacman keyring and switch [mainstream] to the GitHub repo on first boot
+# gpg signature validity needs a synced clock, so this Wants systemd-time-wait-
+# sync — but it must NOT gate the boot. It is triggered by
+# pacman-keyring-init.timer, NOT WantedBy=multi-user.target. A oneshot wanted by
+# multi-user.target makes multi-user.target WAIT for it; because this unit blocks
+# on the NTP round-trip (~40s on first boot) that froze multi-user.target to ~45s.
+# That delayed power-profiles-daemon (After=multi-user.target, dbus-activated),
+# which the quickshell bar synchronously activates at startup via UtilButtons'
+# PowerProfiles binding — so the bar could not paint for ~21s. Off the critical
+# path, multi-user.target reaches early, PPD activates immediately, and this
+# keyring rebuild runs in the background after the desktop is already up.
+# No ConditionPathExists gate: it must run on first boot even when the chroot's
+# best-effort pacman-key --init succeeded, because it ALSO trusts the [mainstream]
+# key and repoints the repo. Runs exactly once: ExecStartPost disables the timer.
+After=network-online.target systemd-time-wait-sync.service
+Wants=network-online.target systemd-time-wait-sync.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/mainstream-keyring-init
+ExecStartPost=-/usr/bin/systemctl disable pacman-keyring-init.timer pacman-keyring-init.service
+KEYRINGEOF
+cat > /etc/systemd/system/pacman-keyring-init.timer << 'KEYRINGTIMEREOF'
+[Unit]
+Description=Trigger the first-boot pacman keyring init off the boot-critical path
+
+[Timer]
+OnBootSec=20
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target
+KEYRINGTIMEREOF
+systemctl enable pacman-keyring-init.timer 2>/dev/null || true
+info "Pacman keyring init + [mainstream] repo switch scheduled (timer, off critical path)."
+
+# ---------------------------------------------------------------------------
+# 6c. ZRAM CONFIGURATION
+# ---------------------------------------------------------------------------
+# zram-generator needs a config file to create compressed swap in RAM
+if command -v zram-generator &>/dev/null || pacman -Q zram-generator &>/dev/null 2>&1; then
+    info "Configuring zram swap..."
+    cat > /etc/systemd/zram-generator.conf << 'ZRAMEOF'
+[zram0]
+zram-size = min(ram, 8192)
+compression-algorithm = zstd
+ZRAMEOF
+    info "zram configured."
+fi
+
+# ---------------------------------------------------------------------------
+# 6d. SYSCTL PERFORMANCE TUNING
+# ---------------------------------------------------------------------------
+info "Applying sysctl performance tuning..."
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-performance.conf << 'SYSCTLEOF'
+# Keep more data in RAM — less aggressive swapping to zram
+vm.swappiness = 10
+
+# Start flushing dirty pages earlier to avoid big write spikes
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 15
+
+# Retain more dentries/inodes in cache — faster file lookups
+vm.vfs_cache_pressure = 50
+
+# Raise inotify watch limit for Quickshell file watchers
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+SYSCTLEOF
+info "sysctl tuning applied."
+
+# ---------------------------------------------------------------------------
+# 7. SERVICES, SHELL & FINAL PERMISSIONS
+# ---------------------------------------------------------------------------
+info "Enabling core services and finalizing user shell..."
+systemctl set-default graphical.target
+systemctl enable sddm.service -f
+
+for svc in NetworkManager bluetooth; do
+    systemctl enable "$svc" 2>/dev/null || true
+done
+
+# Auto-power-on Bluetooth so paired devices reconnect on boot.
+if [[ -f /etc/bluetooth/main.conf ]]; then
+    sed -i 's/^#\?AutoEnable\s*=.*/AutoEnable=true/' /etc/bluetooth/main.conf
+    grep -q '^AutoEnable' /etc/bluetooth/main.conf || sed -i '/^\[Policy\]/a AutoEnable=true' /etc/bluetooth/main.conf
+fi
+
+if [[ -n "$MAIN_USER" ]]; then
+    # Add to essential groups. i2c + the i2c-dev module are needed for ddcutil
+    # external-monitor brightness (mainstream-backlight); input drives the
+    # uinput virtual-input devices.
+    groupadd -f render
+    groupadd -f video
+    groupadd -f i2c
+    usermod -aG video,render,wheel,i2c,input "$MAIN_USER"
+    # Load i2c-dev at boot so ddcutil can reach the monitor's DDC/CI bus.
+    echo i2c-dev > /etc/modules-load.d/i2c-dev.conf
+
+    # Change user shell to Zsh if installed
+    if [ -f /usr/bin/zsh ]; then
+        info "Setting default shell to Zsh for $MAIN_USER..."
+        chsh -s /usr/bin/zsh "$MAIN_USER" || true
+    fi
+
+    # Remove quickshell first-run sentinel copied from skel so the installed
+    # user sees the welcome message on their first login.
+    rm -f "$MAIN_USER_HOME/.local/state/quickshell/user/first_run.txt"
+
+    # Final ownership guarantee
+    chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
+
+    # Add hyprpolkitagent autostart if not already present in dotfiles
+    EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+    if [[ -f "$EXECS_LUA" ]] && ! grep -q "hyprpolkitagent" "$EXECS_LUA"; then
+        info "Adding hyprpolkitagent to Hyprland autostart..."
+        echo 'hl.on("hyprland.start", function() hl.exec_cmd("hyprpolkitagent") end)' >> "$EXECS_LUA"
+    elif [[ ! -f "$EXECS_LUA" ]]; then
+        warn "Could not find $EXECS_LUA — hyprpolkitagent will not autostart."
+    fi
+
+    # ---------------------------------------------------------------------------
+    # Deploy dotfiles-first-login using Hyprland + user systemd.
+    # XDG autostart depends on a session helper being present and running; the
+    # one thing we know the installed desktop will parse is Hyprland's exec-once.
+    # Hyprland starts the user service so the setup has journal visibility, and
+    # falls back to the script directly if the user systemd manager is not ready.
+    # ---------------------------------------------------------------------------
+    if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
+        info "Deploying dotfiles-first-login first-session triggers..."
+        SYSTEMD_USER_DIR="$MAIN_USER_HOME/.config/systemd/user"
+        mkdir -p "$SYSTEMD_USER_DIR"
+        cat > "$SYSTEMD_USER_DIR/dotfiles-first-login.service" << 'SERVICEEOF'
+[Unit]
+Description=Dotfiles first graphical login setup
+Documentation=man:systemd.service(5)
+ConditionPathExists=%h/.dotfiles-pending-user-setup
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+KillMode=process
+Environment=DOTFILES_FIRST_LOGIN_FOREGROUND=1
+ExecStart=/usr/local/bin/dotfiles-first-login
+SERVICEEOF
+        chown -R "$MAIN_USER:$MAIN_USER" "$SYSTEMD_USER_DIR"
+
+        EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+        mkdir -p "$(dirname "$EXECS_LUA")"
+        touch "$EXECS_LUA"
+        sed -i \
+            -e '\|dotfiles-first-login.service|d' \
+            -e '\|/usr/local/bin/dotfiles-first-login|d' \
+            "$EXECS_LUA" 2>/dev/null || true
+        cat >> "$EXECS_LUA" << 'EXECSEOF'
+hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)
+EXECSEOF
+        chown "$MAIN_USER:$MAIN_USER" "$EXECS_LUA"
+
+        # Keep an XDG autostart entry as a harmless backup for sessions that do
+        # run an autostart helper.
+        AUTOSTART_DIR="$MAIN_USER_HOME/.config/autostart"
+        mkdir -p "$AUTOSTART_DIR"
+        cat > "$AUTOSTART_DIR/dotfiles-first-login.desktop" << 'AUTOSTARTEOF'
+[Desktop Entry]
+Type=Application
+Name=Dotfiles First-Login Setup
+Exec=sh -c 'dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login'
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+AUTOSTARTEOF
+        chown -R "$MAIN_USER:$MAIN_USER" "$AUTOSTART_DIR"
+    else
+        warn "dotfiles-first-login not found in /usr/local/bin — skipping first-session trigger deploy."
+    fi
+
+    # ---------------------------------------------------------------------------
+    # Fix Nautilus home directory and set as default file manager
+    # ---------------------------------------------------------------------------
+    info "Configuring Nautilus as default file manager..."
+
+    # Generate XDG user directories (creates ~/Downloads, ~/Documents etc.)
+    # Run as the real user so paths resolve correctly
+    su -s /bin/bash "$MAIN_USER" -c "xdg-user-dirs-update --force" || true
+
+    # Set Nautilus as default file manager
+    su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Nautilus.desktop inode/directory" || true
+
+    # Set Loupe as default image viewer for all common image types
+    IMAGE_TYPES=(
+        image/png image/jpeg image/gif image/bmp image/webp image/tiff
+        image/svg+xml image/svg+xml-compressed image/x-icon image/vnd.microsoft.icon
+        image/avif image/heif image/heic image/jxl
+    )
+    for mime in "${IMAGE_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Loupe.desktop $mime" || true
+    done
+    info "Loupe set as default image viewer."
+
+    # Compile dconf system database so dark mode is default before first login
+    dconf update 2>/dev/null || true
+
+    # Set gsettings defaults — dark mode + Nautilus preferences
+    su -s /bin/bash "$MAIN_USER" -c "
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u '$MAIN_USER')/bus
+        gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic' 2>/dev/null || true
+        gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
+        gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view' 2>/dev/null || true
+        gsettings set org.gnome.nautilus.preferences show-hidden-files false 2>/dev/null || true
+    " || true
+
+fi  # close per-user settings guard (continues in post-install-theme)

@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# post-install-boot — Configuring boot and graphics
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+info "Verifying target environment..."
+if [[ -z "$MAIN_USER" ]]; then
+    log "ERROR: Primary user (UID 1000) not detected. Check Calamares logs."
+elif [[ "$MAIN_USER" == "builduser" ]]; then
+    log "WARNING: UID 1000 is 'builduser'. Skipping account purge to prevent lockout."
+fi
+
+# ---------------------------------------------------------------------------
+# 2. THE CALAMARES & BOOT PURGE
+# ---------------------------------------------------------------------------
+info "Removing installer artifacts and masking redundant setup..."
+
+# Remove Calamares and its autostart triggers
+pacman -Rs --noconfirm calamares-mainstream || true
+rm -f /etc/xdg/autostart/calamares* || true
+rm -f /usr/share/applications/calamares.desktop || true
+
+if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
+    rm -rf "$MAIN_USER_HOME/.config/autostart/calamares"* || true
+    rm -f "$MAIN_USER_HOME/Desktop/install-arch.desktop" || true
+fi
+
+# ---------------------------------------------------------------------------
+# 3. LIVE SERVICE CLEANUP
+# ---------------------------------------------------------------------------
+info "Removing live-only services..."
+
+# Remove live-ISO-only unit files entirely — disabling is not enough because
+# etc-pacman.d-gnupg.mount mounts a tmpfs over the keyring directory,
+# destroying any keys written there on every reboot.
+for unit in \
+    /etc/systemd/system/etc-pacman.d-gnupg.mount \
+    /etc/systemd/system/pacman-init.service; do
+    if [[ -f "$unit" ]]; then
+        systemctl disable "$(basename "$unit")" 2>/dev/null || true
+        rm -f "$unit"
+        info "Removed live-only unit: $(basename "$unit")"
+    fi
+done
+
+# Disable other live-ISO-only services (unit files owned by packages, so
+# disable only — don't delete).
+for svc in \
+    reflector.service \
+    reflector.timer \
+    sshd.service; do
+    if systemctl is-enabled "$svc" &>/dev/null; then
+        info "Disabling live-only service: $svc"
+        systemctl disable "$svc" || true
+    fi
+done
+
+# Mask systemd-networkd — redundant alongside NetworkManager and can
+# cause conflicts if both try to manage the same interface.
+# Does NOT affect DNS resolution or keyring connectivity.
+systemctl mask systemd-networkd.service || true
+systemctl mask systemd-networkd.socket || true
+systemctl mask systemd-networkd-persistent-storage.service || true
+
+# ---------------------------------------------------------------------------
+# 4. MKINITCPIO PREP
+# GPU detection, module injection, modprobe config, and env vars are all
+# handled by the install-gpu-drivers shellprocess which runs before this.
+# Here we only: position the resume hook, clean up archiso preset, and
+# restore the standard linux.preset before the final mkinitcpio -P call.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 4b. PLYMOUTH WITH MAINSTREAM THEME
+# ---------------------------------------------------------------------------
+info "Installing Plymouth boot splash..."
+if pacman -S --noconfirm --needed plymouth; then
+    THEME_SRC="/tmp/dotfiles-setup/sdata/plymouth/mainstream"
+    THEME_DST="/usr/share/plymouth/themes/mainstream"
+
+    if [[ -d "$THEME_SRC" ]]; then
+        info "Deploying Mainstream Plymouth theme..."
+        rm -rf "$THEME_DST"
+        cp -r "$THEME_SRC" "$THEME_DST"
+        chown -R root:root "$THEME_DST"
+        find "$THEME_DST" -type d -exec chmod 755 {} +
+        find "$THEME_DST" -type f -exec chmod 644 {} +
+        plymouth-set-default-theme mainstream
+        info "Mainstream Plymouth theme configured."
+    else
+        warn "Mainstream Plymouth theme not found in cloned dotfiles repo — falling back to BGRT."
+        plymouth-set-default-theme bgrt
+        info "Plymouth BGRT theme configured."
+    fi
+
+else
+    warn "Plymouth failed to install — boot splash will be skipped."
+fi
+
+# Remove archiso-specific mkinitcpio config — it is only valid on the live ISO.
+# If left in place, mkinitcpio -P will attempt to build with archiso hooks
+# (archiso, archiso_loop_mnt, etc.) that do not exist on the installed system.
+info "Removing archiso-specific mkinitcpio config..."
+rm -f /etc/mkinitcpio.conf.d/archiso.conf
+
+
+# ---------------------------------------------------------------------------
+# 4c. GPU DETECTION & CONFIGURATION (shared library)
+# Runs after archiso.conf is removed so mkinitcpio.conf changes are safe.
+# Sources the single source of truth shared with the dots ./setup path
+# (sdata/lib/gpu-config.sh, preserved at /tmp/dotfiles-setup). In this
+# Calamares chroot we run as root (GPU_SUDO=''), drop the kms hook and apply
+# the UKI-on-small-ESP early-KMS guard (skip early KMS when the reused ESP is
+# under 512 MiB so the UKI still fits), and target the install user's home for
+# the Hyprland tweaks. The initramfs is rebuilt later by the unconditional
+# mkinitcpio -P below, so this only stages the config.
+# ---------------------------------------------------------------------------
+GPU_LIB="/tmp/dotfiles-setup/sdata/lib/gpu-config.sh"
+if [[ -r "$GPU_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$GPU_LIB"
+    GPU_SUDO=''
+    GPU_EARLY_KMS_REMOVE_HOOK=true
+    GPU_EARLY_KMS_ESP_THRESHOLD=512
+
+    # Override the swap probe with the install-aware version: pick the swap
+    # partition on the SAME DISK as root (multi-drive safe), resolving a
+    # LUKS-on-root mapper back to its real GPT entry first. The library's
+    # generic blkid probe cannot tell which disk is the install target.
+    _gpu_swap_partuuid() {
+        local root_dev root_disk
+        root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
+        [[ -n "$root_dev" ]] || return 0
+        if [[ "$root_dev" == /dev/mapper/* ]]; then
+            root_dev=$(cryptsetup status "$(basename "$root_dev")" 2>/dev/null \
+                | awk '/^[[:space:]]*device:/ {print $2; exit}')
+            [[ -n "$root_dev" ]] || return 0
+        fi
+        root_disk=$(lsblk -no PKNAME "$root_dev" 2>/dev/null)
+        [[ -n "$root_disk" ]] || return 0
+        lsblk -nlpo NAME,FSTYPE,PARTUUID "/dev/$root_disk" 2>/dev/null \
+            | awk '$2 == "swap" {print $3; exit}'
+    }
+
+    info "Detecting GPU hardware..."
+    if gpu_detect; then
+        info "Detected GPU(s):"
+        lspci 2>/dev/null | grep -iE "VGA|3D|Display" | while read -r line; do info "  $line"; done || true
+        info "GPU autoconfig — Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+        gpu_apply_autoconfig
+        if [[ -n "${MAIN_USER:-}" ]]; then
+            gpu_apply_hypr_tweaks "$MAIN_USER_HOME"
+        fi
+        info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+    else
+        warn "No GPU detected via lspci — skipping GPU configuration."
+    fi
+else
+    warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
+fi
+
+# Restore a standard installed-system mkinitcpio preset. On UEFI installs,
+# also emit UKIs that Limine can chainload from the ESP.
+if [[ -d /boot/efi ]]; then
+    mkdir -p /boot/efi/EFI/Linux
+    # UEFI: build only the default UKI; no fallback entry means no fallback in menu
+    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+PRESETS=('default')
+ALL_kver='/boot/vmlinuz-linux'
+default_config='/etc/mkinitcpio.conf'
+default_image='/boot/initramfs-linux.img'
+default_uki='/boot/efi/EFI/Linux/mainstream_linux.efi'
+PRESET
+else
+    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+PRESETS=('default' 'fallback')
+ALL_kver='/boot/vmlinuz-linux'
+default_config='/etc/mkinitcpio.conf'
+default_image='/boot/initramfs-linux.img'
+fallback_config='/etc/mkinitcpio.conf'
+fallback_image='/boot/initramfs-linux-fallback.img'
+fallback_options='-S autodetect'
+PRESET
+fi
+
+# ---------------------------------------------------------------------------
+# ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
+# ---------------------------------------------------------------------------
+# mkarchiso sets /etc/machine-id to "uninitialized" (13 chars) for systemd
+# first-boot semantics.  limine-mkinitcpio-hook requires a valid 32-char hex
+# machine-id to place kernel/initramfs on the EFI partition.  Calamares'
+# machineid module should have generated one, but verify and fix if needed.
+if ! grep -qE '^[0-9a-f]{32}$' /etc/machine-id 2>/dev/null; then
+    warn "Invalid or missing machine-id — generating one..."
+    systemd-machine-id-setup 2>/dev/null || \
+        printf '%s\n' "$(cat /proc/sys/kernel/random/uuid | tr -d '-')" > /etc/machine-id
+    info "Machine-id set to: $(cat /etc/machine-id)"
+fi
+
+# Write Limine's config (branded TARGET_OS_NAME + FIND_BOOTLOADERS=no) BEFORE
+# installing limine-mkinitcpio-hook below. The package's deploy hook fixes the
+# OS entry's display name and fallback handling at creation time during that
+# pacman transaction, so the config must already be in place — otherwise the
+# entry is created unbranded ("Mainstream OS", not "Mainstream OS\\") and a
+# stray "EFI fallback" entry gets added.
+write_limine_defaults
+
+# ---------------------------------------------------------------------------
+# INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
+# ---------------------------------------------------------------------------
+# These can't be in packages.x86_64 (limine-mkinitcpio-hook breaks the
+# archiso build chroot). snapper/snap-pac are in the official repos and the
+# two limine packages are pre-built into the [mainstream] file repo
+# (file:///usr/local/share/pkgs, on the target's pacman.conf), so pacman -S
+# resolves all four — no AUR helper needed.
+#
+# IMPORTANT: limine-mkinitcpio-hook must be installed BEFORE mkinitcpio -P
+# so the hook can manage kernel/initramfs placement on the EFI partition and
+# generate proper //linux sub-entries in limine.conf.
+info "Installing snapper and limine integration packages..."
+# -Sy first so the [mainstream] file-repo db is in the sync dir even if an
+# earlier step didn't refresh it. Fall back to the two official packages so
+# a [mainstream] hiccup can't block the install outright.
+pacman -Sy --noconfirm 2>/dev/null || true
+pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync 2>&1 \
+    || pacman -S --noconfirm --needed snapper snap-pac 2>&1 \
+    || true
+
+# ---------------------------------------------------------------------------
+# MKINITCPIO — build the target initramfs in-chroot for every GPU path
+# ---------------------------------------------------------------------------
+# Used to need a first-boot deferral here for the legacy NVIDIA DKMS
+# generations (580xx / 470xx / 390xx): DKMS post-install runs `dkms install`
+# without -k, picks up the chroot host's `uname -r` (which is the build
+# machine's kernel, not the target's), fails to find that kernel's headers,
+# and leaves /lib/modules/<target>/extra/ empty. Then mkinitcpio -P built
+# an initramfs missing nvidia.ko, the user booted to a kernel panic, and
+# we worked around it with a firstboot systemd unit that rebuilt the
+# initramfs after DKMS had a real running kernel to compile against —
+# followed by an auto-reboot prompt the user had to accept on first login.
+#
+# install-gpu-drivers now pre-builds the DKMS source packages into the
+# airootfs (build.sh's AUR_DEPS section), pacman -U's them at chroot time,
+# and calls `dkms install -k <target_kernel>` so modules land in
+# /lib/modules/<target>/extra/ during the install. With modules present,
+# mkinitcpio -P succeeds in chroot for every GPU generation — no deferral,
+# no firstboot unit, no auto-reboot.
+
+# Free the ESP before building the UKI: drop any stale standalone kernel +
+# initramfs left on the ESP root (e.g. from an earlier failed attempt on a
+# reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
+# small shared ESP they can fill it and make the UKI write fail.
+if [[ -d /boot/efi ]]; then
+    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img \
+          /boot/efi/initramfs-linux-fallback.img 2>/dev/null || true
+fi
+
+info "Regenerating initramfs..."
+if ! mkinitcpio -P; then
+    warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
+    if [ -f /boot/initramfs-linux.img ]; then
+        info "Initramfs images exist — continuing despite hook warning."
+    else
+        warn "Initramfs images missing — mkinitcpio truly failed."
+        exit 1
+    fi
+fi
+
+if command -v limine-mkinitcpio &>/dev/null; then
+    info "Updating Limine boot entries via limine-mkinitcpio..."
+    limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+fi
+
+# limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
+# cmdline). Two cleanups leave the menu as exactly that entry + Windows:
+#   - prune the install-limine bootstrap "/Mainstream OS\\" entry (no "+",
+#     protocol: linux) and any generic "/EFI fallback" entry. The hook entry
+#     starts "/+", so "^/Mainstream"/"^/EFI fallback" match only the strays.
+#   - force the branded name on the hook entry in case it was created before
+#     write_limine_defaults set TARGET_OS_NAME (idempotent if already branded).
+if [[ -f /boot/efi/limine.conf ]]; then
+    awk '
+        /^\/Mainstream OS/ { skip=1; next }
+        /^\/EFI fallback/  { skip=1; next }
+        /^\/[^\/]/         { if (skip) skip=0 }
+        skip { next }
+        { print }
+    ' /boot/efi/limine.conf > /boot/efi/limine.conf.tmp \
+        && mv /boot/efi/limine.conf.tmp /boot/efi/limine.conf
+    sed -i -E 's,^/\+Mainstream OS\\*$,/+Mainstream OS\\\\,; s,^comment: Mainstream OS\\*$,comment: Mainstream OS\\\\,' \
+        /boot/efi/limine.conf
+    info "Pruned stray limine entries; hook 'Mainstream OS\\' entry branded."
+fi
+
+# Add a Windows boot entry when Windows shares this ESP (Install alongside).
+# limine's FIND_BOOTLOADERS only probes systemd-boot/rEFInd/the generic
+# EFI/BOOT fallback — never Microsoft's bootmgfw.efi — so a dual-boot Windows
+# install is invisible in the menu unless we register it explicitly. The
+# limine-entry-tool EFI entry persists across kernel updates like the others.
+if [[ -f /boot/efi/EFI/Microsoft/Boot/bootmgfw.efi ]] && command -v limine-entry-tool &>/dev/null; then
+    info "Windows detected on the ESP — adding a 'Windows' limine boot entry..."
+    limine-entry-tool --add-efi "Windows" "/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi" \
+        --comment "Windows Boot Manager" --priority 15 --quiet --no-mutex --no-hooks 2>&1 \
+        || warn "Could not add the Windows boot entry."
+fi
+
+# Clean up plain kernel/initramfs from ESP root now that UKI is in place.
+# These were copied by install-limine as a bootstrap fallback; the UKI
+# supersedes them and limine-mkinitcpio will only generate entries for
+# files it finds, so removing them prevents the stale non-UKI menu entry.
+if [ -d "/boot/efi" ] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
+fi
+
+# ---------------------------------------------------------------------------
+# 5. SDDM THEME, WAYLAND CONFIG & BTRFS FIXES
+# ---------------------------------------------------------------------------
