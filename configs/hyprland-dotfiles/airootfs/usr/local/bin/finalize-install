@@ -97,6 +97,13 @@ LIVEONLY=(
 # Defensive shape — never abort the install on a package that wasn't there.
 remove_pkgs "${LIVEONLY[@]}"
 
+# ── Package cache reclaim ────────────────────────────────────────────────────
+# The target is a fresh install — every file in the pacman cache is a
+# this-install download (base pacstrap + netinstall), nothing pre-existing to
+# preserve. Drop them all; they re-fetch on demand.
+info "Reclaiming the pacman package cache..."
+find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -delete 2>/dev/null || true
+
 # ── Wrong-vendor GPU driver prune (defense in depth) ─────────────────────────
 # install-gpu-drivers installs the right stack for the detected hardware, but
 # generic provides can still leak the wrong vendor in: with --noconfirm,
