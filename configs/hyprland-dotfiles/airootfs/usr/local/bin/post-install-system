@@ -123,6 +123,15 @@ if [[ -f /etc/bluetooth/main.conf ]]; then
     grep -q '^AutoEnable' /etc/bluetooth/main.conf || sed -i '/^\[Policy\]/a AutoEnable=true' /etc/bluetooth/main.conf
 fi
 
+# ---------------------------------------------------------------------------
+# 7b. FIREWALL DEFAULT ZONE
+# ---------------------------------------------------------------------------
+if command -v firewall-offline-cmd &>/dev/null && [[ -f /etc/firewalld/zones/MainstreamWorkstation.xml ]]; then
+    info "Setting firewalld default zone to MainstreamWorkstation..."
+    firewall-offline-cmd --set-default-zone=MainstreamWorkstation 2>/dev/null \
+        || warn "Could not set firewalld default zone; staying on package default."
+fi
+
 if [[ -n "$MAIN_USER" ]]; then
     # Add to essential groups. i2c + the i2c-dev module are needed for ddcutil
     # external-monitor brightness (mainstream-backlight); input drives the

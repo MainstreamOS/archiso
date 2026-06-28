@@ -67,6 +67,7 @@ wpa_supplicant
 wireless-regdb
 avahi
 nss-mdns
+firewalld
 
 # ==============================================================================
 # Bluetooth
