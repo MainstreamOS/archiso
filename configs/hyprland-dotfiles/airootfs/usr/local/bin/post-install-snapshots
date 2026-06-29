@@ -220,18 +220,3 @@ fi
 # scoped sudoers rule, and the gamescope Steam session as a dependency. Steam
 # itself installs on first use. No firstboot service or extra privileges here.
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# HYPRLAND PLUGINS — build hyprbars from source at install time (chroot)
-#
-# hyprpm requires HYPRLAND_INSTANCE_SIGNATURE (a live session) and cannot run
-# in chroot. Instead, we mirror setup_hyprland_plugins() from 3_files.sh:
-#   1. Remove any artifacts from a previous hyprpm-based approach.
-#   2. Check that the required pkg-config deps are present in the chroot.
-#   3. Clone MainstreamOS/hyprland-plugins and compile hyprbars with `make`.
-#   4. Install hyprbars.so to $MAIN_USER_HOME/.local/share/hyprland/plugins/.
-#   5. Prepend a *commented-out* `hl.plugin.load(...)` directive to
-#      custom/general.lua so the user can enable Title Bars via the settings
-#      toggle without any manual path lookup.
-#   6. Fix ownership — everything under $MAIN_USER_HOME must belong to the user.
-# ---------------------------------------------------------------------------

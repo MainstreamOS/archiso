@@ -118,9 +118,10 @@ find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -delete 2>/de
 GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
 HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
 if [[ -n "$GPU_INFO" ]]; then
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[10de:" && HAS_NVIDIA=true || true
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[1002:" && HAS_AMD=true    || true
-    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" | grep -q "\[8086:" && HAS_INTEL=true  || true
+    GPU_NN=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+    grep -q "\[10de:" <<<"$GPU_NN" && HAS_NVIDIA=true || true
+    grep -q "\[1002:" <<<"$GPU_NN" && HAS_AMD=true    || true
+    grep -q "\[8086:" <<<"$GPU_NN" && HAS_INTEL=true  || true
     info "Detected GPUs: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD Intel=$HAS_INTEL"
 
     # egl-wayland/egl-gbm/egl-x11/egl-wayland2 are intentionally NOT listed:

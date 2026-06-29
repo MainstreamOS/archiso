@@ -192,7 +192,7 @@ fi
 if ! grep -qE '^[0-9a-f]{32}$' /etc/machine-id 2>/dev/null; then
     warn "Invalid or missing machine-id — generating one..."
     systemd-machine-id-setup 2>/dev/null || \
-        printf '%s\n' "$(cat /proc/sys/kernel/random/uuid | tr -d '-')" > /etc/machine-id
+        tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
     info "Machine-id set to: $(cat /etc/machine-id)"
 fi
 
