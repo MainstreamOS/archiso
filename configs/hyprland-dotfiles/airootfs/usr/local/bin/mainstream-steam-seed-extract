@@ -1,0 +1,30 @@
+#!/bin/bash
+# Console Mode first-boot pre-provision (option 2). Extracts the Steam client seed
+# baked into the ISO into the new user's home, so the first boot into gaming
+# launches Steam without first downloading its ~480MB client. Best-effort: on any
+# error the first boot just downloads Steam normally (gaming-mode-arm-check already
+# waits for the network), so this only ever helps. Invoked by the
+# installmethod_choice=console contextualprocess job.
+set -u
+
+seed="/usr/share/mainstream-steam-seed/steam-deck-seed.tar.zst"
+[[ -f "$seed" ]] || exit 0
+command -v zstd >/dev/null 2>&1 || exit 0
+
+# Resolve the gaming account -- the lowest-uid human user, matching
+# gaming-mode-arm-check's default_human_user().
+user="$(getent passwd 2>/dev/null \
+    | awk -F: '$3 >= 1000 && $3 < 60000 { print $3":"$1 }' \
+    | sort -t: -n | head -1 | cut -d: -f2)"
+[[ -n "$user" ]] || exit 0
+home="$(getent passwd "$user" | cut -d: -f6)"
+[[ -d "$home" ]] || exit 0
+
+# Never clobber an existing Steam install.
+[[ -e "$home/.local/share/Steam" ]] && exit 0
+
+install -d -o "$user" -g "$user" "$home/.local/share"
+if tar -C "$home/.local/share" -I zstd -xf "$seed" 2>/dev/null; then
+    chown -R "$user":"$user" "$home/.local/share/Steam"
+fi
+exit 0

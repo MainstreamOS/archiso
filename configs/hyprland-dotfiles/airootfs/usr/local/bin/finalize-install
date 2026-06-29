@@ -241,6 +241,10 @@ LOOSE_DIRS=(
     # so the home directory itself stays on disk pointing at a
     # non-existent user. Sweep it.
     /home/liveuser
+    # The Steam Deck client seed is only needed during install (a Console
+    # install extracts it into the user's home via the contextualprocess job).
+    # Drop it so no installed system carries the ~1.3GB blob.
+    /usr/share/mainstream-steam-seed
 )
 for d in "${LOOSE_DIRS[@]}"; do
     if [[ -d "$d" ]]; then
