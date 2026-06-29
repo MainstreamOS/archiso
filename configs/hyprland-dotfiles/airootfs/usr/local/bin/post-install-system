@@ -113,7 +113,7 @@ info "Enabling core services and finalizing user shell..."
 systemctl set-default graphical.target
 systemctl enable sddm.service -f
 
-for svc in NetworkManager bluetooth; do
+for svc in NetworkManager bluetooth fstrim.timer; do
     systemctl enable "$svc" 2>/dev/null || true
 done
 
@@ -130,6 +130,8 @@ if command -v firewall-offline-cmd &>/dev/null && [[ -f /etc/firewalld/zones/Mai
     info "Setting firewalld default zone to MainstreamWorkstation..."
     firewall-offline-cmd --set-default-zone=MainstreamWorkstation 2>/dev/null \
         || warn "Could not set firewalld default zone; staying on package default."
+    systemctl enable firewalld.service 2>/dev/null \
+        || warn "Could not enable firewalld; firewall will not start at boot."
 fi
 
 if [[ -n "$MAIN_USER" ]]; then
