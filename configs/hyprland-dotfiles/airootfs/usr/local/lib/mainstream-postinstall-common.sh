@@ -142,6 +142,98 @@ cleanup_limine_boot_entries() {
     fi
 }
 
+build_hyprland_plugin() {
+    local name="$1"
+    local repo_url="$2"
+    local make_subdir="$3"
+    local so_filename="$4"
+    local directive_commented="$5"
+    shift 5
+    local _deps=("$@")
+
+    local _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
+    local _PLUGIN_PATH="$_PLUGIN_DATA_DIR/$so_filename"
+    local _GENERAL_LUA="$MAIN_USER_HOME/.config/hypr/custom/general.lua"
+    local _BUILD_LOG="$_PLUGIN_DATA_DIR/$name-build.log"
+    local _SRC_DIR
+    _SRC_DIR="$(mktemp -d "/tmp/$name-build.XXXXXX")"
+
+    local _make_dir="$_SRC_DIR"
+    [[ -n "$make_subdir" ]] && _make_dir="$_SRC_DIR/$make_subdir"
+
+    local _missing_deps=()
+    local _pc
+    for _pc in "${_deps[@]}"; do
+        pkg-config --exists "$_pc" 2>/dev/null || _missing_deps+=("$_pc")
+    done
+    if (( ${#_missing_deps[@]} > 0 )); then
+        warn "Missing pkg-config deps for $name: ${_missing_deps[*]}"
+        warn "Install the corresponding -devel packages and re-run the installer."
+        warn "Skipping $name build — plugin will not be available on first boot."
+        rm -rf "$_SRC_DIR"
+    else
+        mkdir -p "$_PLUGIN_DATA_DIR"
+        mkdir -p "$(dirname "$_BUILD_LOG")"
+
+        {
+            echo "=== $name build @ $(date '+%Y-%m-%d %H:%M:%S') ==="
+            echo "Build host: $(uname -r)"
+            echo "---"
+        } > "$_BUILD_LOG"
+
+        info "Cloning $repo_url (mainstream) into $_SRC_DIR..."
+        if ! git -C "$_SRC_DIR" clone --depth=1 --branch mainstream "$repo_url" . \
+                >> "$_BUILD_LOG" 2>&1; then
+            warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
+            rm -rf "$_SRC_DIR"
+        else
+            echo "Plugin commit: $(git -C "$_SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+                >> "$_BUILD_LOG"
+
+            info "Compiling $name ($(nproc) jobs)..."
+            if ! make -C "$_make_dir" all -j"$(nproc)" >> "$_BUILD_LOG" 2>&1; then
+                warn "$name make failed — build log: $_BUILD_LOG"
+                rm -rf "$_SRC_DIR"
+            else
+                cp -f "$_make_dir/$so_filename" "$_PLUGIN_PATH"
+                info "Installed $so_filename to $_PLUGIN_PATH"
+                rm -rf "$_SRC_DIR"
+
+                if [[ -f "$_GENERAL_LUA" ]]; then
+                    if ! grep -qE "hl\.plugin\.load.*$so_filename" "$_GENERAL_LUA"; then
+                        local _tmp
+                        _tmp=$(mktemp)
+                        {
+                            if [[ "$directive_commented" == "true" ]]; then
+                                echo "-- $name plugin — built from source at install time"
+                                echo "-- TitleBars.qml toggles the comment prefix on this exact line."
+                                echo "-- hl.plugin.load(\"${_PLUGIN_PATH}\")"
+                            else
+                                echo "-- $name plugin — built from source at install time"
+                                echo "hl.plugin.load(\"${_PLUGIN_PATH}\")"
+                            fi
+                            echo ""
+                            cat "$_GENERAL_LUA"
+                        } > "$_tmp"
+                        mv "$_tmp" "$_GENERAL_LUA"
+                        info "Prepended hl.plugin.load(\"${_PLUGIN_PATH}\") to $_GENERAL_LUA"
+                    else
+                        info "$_GENERAL_LUA already references $name — skipping directive."
+                    fi
+                else
+                    warn "$_GENERAL_LUA not found — add this line manually to a sourced hypr config:"
+                    warn "  hl.plugin.load(\"${_PLUGIN_PATH}\")"
+                fi
+            fi
+        fi
+
+        chown -R "$MAIN_USER:$MAIN_USER" "$_PLUGIN_DATA_DIR" 2>/dev/null || true
+        [[ -f "$_GENERAL_LUA" ]] && \
+            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_LUA" 2>/dev/null || true
+        info "Ownership of plugin directory set to $MAIN_USER."
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. IDENTIFY USERS (SAFETY CHECK)
 # ---------------------------------------------------------------------------

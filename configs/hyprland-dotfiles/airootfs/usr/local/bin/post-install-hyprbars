@@ -5,13 +5,7 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 if [[ -n "$MAIN_USER" ]]; then
     info "Building hyprbars plugin from source for $MAIN_USER..."
 
-    _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
-    _PLUGIN_PATH="$_PLUGIN_DATA_DIR/hyprbars.so"
-    _GENERAL_LUA="$MAIN_USER_HOME/.config/hypr/custom/general.lua"
-    _BUILD_LOG="$_PLUGIN_DATA_DIR/hyprbars-build.log"
-    _SRC_DIR="$(mktemp -d /tmp/hyprland-plugins-build.XXXXXX)"
-
-    # --- 1. Remove artifacts from earlier hyprpm-based approaches ---
+    # --- Remove artifacts from earlier hyprpm-based approaches ---
     # These may not exist on a fresh install, but are removed unconditionally
     # so a reinstall always starts from a clean slate (mirrors 3_files.sh).
     rm -f /usr/local/bin/hyprland-plugins-setup
@@ -32,82 +26,12 @@ if [[ -n "$MAIN_USER" ]]; then
     done
     info "Removed live-only exec-once entries (calamares-autostart, live-setup) from execs.lua."
 
-    # --- 2. Check build-time pkg-config deps ---
-    # hyprbars' Makefile requires each of these. `hyprland` ships its own
-    # hyprland.pc together with the development headers on Arch.
-    _missing_deps=()
-    for _pc in hyprland pixman-1 libdrm pangocairo libinput libudev wayland-server xkbcommon; do
-        pkg-config --exists "$_pc" 2>/dev/null || _missing_deps+=("$_pc")
-    done
-    if (( ${#_missing_deps[@]} > 0 )); then
-        warn "Missing pkg-config deps for hyprbars: ${_missing_deps[*]}"
-        warn "Install the corresponding -devel packages and re-run the installer."
-        warn "Skipping hyprbars build — plugin will not be available on first boot."
-        rm -rf "$_SRC_DIR"
-    else
-        # --- 3. Clone and build ---
-        mkdir -p "$_PLUGIN_DATA_DIR"
-        mkdir -p "$(dirname "$_BUILD_LOG")"
-
-        {
-            echo "=== hyprbars build @ $(date '+%Y-%m-%d %H:%M:%S') ==="
-            echo "Build host: $(uname -r)"
-            echo "---"
-        } > "$_BUILD_LOG"
-
-        info "Cloning MainstreamOS/hyprland-plugins (mainstream) into $_SRC_DIR..."
-        if ! git -C "$_SRC_DIR" clone --depth=1 --branch mainstream https://github.com/MainstreamOS/hyprland-plugins . \
-                >> "$_BUILD_LOG" 2>&1; then
-            warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
-            rm -rf "$_SRC_DIR"
-        else
-            echo "Plugin commit: $(git -C "$_SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-                >> "$_BUILD_LOG"
-
-            info "Compiling hyprbars ($(nproc) jobs)..."
-            if ! make -C "$_SRC_DIR/hyprbars" all -j"$(nproc)" >> "$_BUILD_LOG" 2>&1; then
-                warn "hyprbars make failed — build log: $_BUILD_LOG"
-                rm -rf "$_SRC_DIR"
-            else
-                # --- 4. Install the .so ---
-                cp -f "$_SRC_DIR/hyprbars/hyprbars.so" "$_PLUGIN_PATH"
-                info "Installed hyprbars.so to $_PLUGIN_PATH"
-                rm -rf "$_SRC_DIR"
-
-                # --- 5. Prepend commented-out plugin directive to general.lua ---
-                # Hyprland requires the .so to be loaded *before* its settings block
-                # is parsed, so the directive goes at the top of the file.
-                # It is left commented out — the Title Bars toggle enables it.
-                if [[ -f "$_GENERAL_LUA" ]]; then
-                    if ! grep -qE 'hl\.plugin\.load.*hyprbars\.so' "$_GENERAL_LUA"; then
-                        _tmp=$(mktemp)
-                        {
-                            echo "-- hyprbars plugin — built from source at install time"
-                            echo "-- TitleBars.qml toggles the comment prefix on this exact line."
-                            echo "-- hl.plugin.load(\"${_PLUGIN_PATH}\")"
-                            echo ""
-                            cat "$_GENERAL_LUA"
-                        } > "$_tmp"
-                        mv "$_tmp" "$_GENERAL_LUA"
-                        info "Prepended commented hl.plugin.load(\"${_PLUGIN_PATH}\") to $_GENERAL_LUA (enable via Title Bars toggle)."
-                    else
-                        info "$_GENERAL_LUA already references hyprbars — skipping directive."
-                    fi
-                else
-                    warn "$_GENERAL_LUA not found — add this line manually to a sourced hypr config:"
-                    warn "  hl.plugin.load(\"${_PLUGIN_PATH}\")"
-                fi
-            fi
-        fi
-
-        # --- 6. Fix ownership ---
-        # Everything written under $MAIN_USER_HOME must belong to the user,
-        # not root (we are running in chroot as root).
-        chown -R "$MAIN_USER:$MAIN_USER" "$_PLUGIN_DATA_DIR" 2>/dev/null || true
-        [[ -f "$_GENERAL_LUA" ]] && \
-            chown "$MAIN_USER:$MAIN_USER" "$_GENERAL_LUA" 2>/dev/null || true
-        info "Ownership of plugin directory set to $MAIN_USER."
-    fi
+    build_hyprland_plugin "hyprbars" \
+        "https://github.com/MainstreamOS/hyprland-plugins" \
+        "hyprbars" \
+        "hyprbars.so" \
+        "true" \
+        hyprland pixman-1 libdrm pangocairo libinput libudev wayland-server xkbcommon
 fi
 
 
