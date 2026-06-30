@@ -131,7 +131,7 @@ local function applyPluginConfig()
         --
         -- movetoworkspacesilent has no direct equivalent in hl.dsp; only
         -- two buttons until upstream adds it (or a Lua-side wrapper).
-        if hl.plugin and hl.plugin.hyprbars and hl.plugin.hyprbars.add_button then
+        if hyprbarsActive() then
             -- Action strings are shell commands run via the legacy `exec`
             -- dispatcher (barDeco.cpp:277). Bare `()` in shell triggers a
             -- subshell, so the Lua expression after `hyprctl dispatch` must

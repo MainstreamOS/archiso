@@ -61,15 +61,18 @@ info "Network OK."
 # ---------------------------------------------------------------------------
 # 5. ENSURE BUILDUSER EXISTS FOR GIT CLONE
 # ---------------------------------------------------------------------------
+cleanup_builduser() {
+    rm -f /etc/sudoers.d/builduser-install 2>/dev/null || true
+    if id "builduser" &>/dev/null; then
+        info "Removing temporary builduser..."
+        userdel -rf builduser 2>/dev/null || true
+    fi
+}
+trap cleanup_builduser EXIT
+
 if ! id "builduser" &>/dev/null; then
     info "Creating builduser for git clone..."
-    useradd -m -G wheel builduser
-fi
-
-if ! grep -q "builduser" /etc/sudoers /etc/sudoers.d/* 2>/dev/null; then
-    info "Adding passwordless sudo for builduser..."
-    echo "builduser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builduser-install
-    chmod 440 /etc/sudoers.d/builduser-install
+    useradd -m builduser
 fi
 
 # ---------------------------------------------------------------------------

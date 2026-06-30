@@ -186,6 +186,7 @@ LOOSE_FILES=(
     # Sweep here as well in case it survived onto the target. Removing a
     # file that isn't there is a no-op.
     /etc/sudoers.d/builduser
+    /etc/sudoers.d/builduser-install
     # /etc/sudoers.d/g_wheel grants %wheel passwordless sudo for the
     # live ISO so the liveuser can run the installer. Carrying it
     # forward to the installed system would silently give every

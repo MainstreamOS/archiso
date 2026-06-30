@@ -115,7 +115,7 @@ if id "builduser" &>/dev/null && [[ "$MAIN_USER" != "builduser" ]]; then
 fi
 
 # Remove builduser sudoers immediately — builduser has been deleted above.
-rm -f /etc/sudoers.d/builduser 2>/dev/null || true
+rm -f /etc/sudoers.d/builduser /etc/sudoers.d/builduser-install 2>/dev/null || true
 
 # g_wheel grants %wheel passwordless sudo for the duration of the
 # Calamares install. The netinstall packages module no longer needs it
