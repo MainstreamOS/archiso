@@ -117,7 +117,6 @@ VENVEOF
     # the user to manually set a wallpaper
     DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
     SWITCHWALL="$MAIN_USER_HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
-    VENV_PATH="$MAIN_USER_HOME/.local/state/quickshell/.venv"
 
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then
         info "Generating initial Material You colors from default wallpaper..."

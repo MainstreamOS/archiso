@@ -5,8 +5,6 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 info "Verifying target environment..."
 if [[ -z "$MAIN_USER" ]]; then
     log "ERROR: Primary user (UID 1000) not detected. Check Calamares logs."
-elif [[ "$MAIN_USER" == "builduser" ]]; then
-    log "WARNING: UID 1000 is 'builduser'. Skipping account purge to prevent lockout."
 fi
 
 # ---------------------------------------------------------------------------
@@ -19,7 +17,7 @@ pacman -Rs --noconfirm calamares-mainstream || true
 rm -f /etc/xdg/autostart/calamares* || true
 rm -f /usr/share/applications/calamares.desktop || true
 
-if [[ -n "$MAIN_USER" && "$MAIN_USER" != "builduser" ]]; then
+if [[ -n "$MAIN_USER" ]]; then
     rm -rf "$MAIN_USER_HOME/.config/autostart/calamares"* || true
     rm -f "$MAIN_USER_HOME/Desktop/install-arch.desktop" || true
 fi
@@ -65,8 +63,8 @@ systemctl mask systemd-networkd-persistent-storage.service || true
 # 4. MKINITCPIO PREP
 # GPU detection, module injection, modprobe config, and env vars are all
 # handled by the install-gpu-drivers shellprocess which runs before this.
-# Here we only: position the resume hook, clean up archiso preset, and
-# restore the standard linux.preset before the final mkinitcpio -P call.
+# Here we only: clean up the archiso preset and restore the standard
+# linux.preset before the final mkinitcpio -P call.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

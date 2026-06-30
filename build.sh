@@ -1021,7 +1021,7 @@ info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz (GPU drive
 # We only remove files whose names match what's now in our local
 # repo, so unrelated cached packages (kernel, base-devel, etc.) stay
 # warm. Per-package `rm` calls already exist inside the local
-# PKGBUILD loop (line ~486), but those don't cover METAPKGS, AUR_DEPS,
+# PKGBUILD loop, but those don't cover METAPKGS, AUR_DEPS,
 # or the cmake-built mainstream-microtex-git / mainstream-google-sans-flex —
 # this batch sweep covers everything in $PKG_OUTPUT_DIR uniformly.
 info "Purging stale copies of locally-built packages from host pacman cache..."
