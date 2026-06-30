@@ -119,8 +119,6 @@ if [[ -r "$GPU_LIB" ]]; then
     # shellcheck source=/dev/null
     source "$GPU_LIB"
     GPU_SUDO=''
-    GPU_EARLY_KMS_REMOVE_HOOK=true
-    GPU_EARLY_KMS_ESP_THRESHOLD=512
 
     # Override the swap probe with the install-aware version: pick the swap
     # partition on the SAME DISK as root (multi-drive safe), resolving a
