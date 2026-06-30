@@ -107,14 +107,14 @@ rm -f /etc/mkinitcpio.conf.d/archiso.conf
 # 4c. GPU DETECTION & CONFIGURATION (shared library)
 # Runs after archiso.conf is removed so mkinitcpio.conf changes are safe.
 # Sources the single source of truth shared with the dots ./setup path
-# (sdata/lib/gpu-config.sh, preserved at /tmp/dotfiles-setup). In this
+# (sdata/lib/gpu-config.sh, baked into the ISO at /usr/local/lib/gpu-config.sh). In this
 # Calamares chroot we run as root (GPU_SUDO=''), drop the kms hook and apply
 # the UKI-on-small-ESP early-KMS guard (skip early KMS when the reused ESP is
 # under 512 MiB so the UKI still fits), and target the install user's home for
 # the Hyprland tweaks. The initramfs is rebuilt later by the unconditional
 # mkinitcpio -P below, so this only stages the config.
 # ---------------------------------------------------------------------------
-GPU_LIB="/tmp/dotfiles-setup/sdata/lib/gpu-config.sh"
+GPU_LIB="/usr/local/lib/gpu-config.sh"
 if [[ -r "$GPU_LIB" ]]; then
     # shellcheck source=/dev/null
     source "$GPU_LIB"

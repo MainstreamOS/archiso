@@ -21,14 +21,15 @@ warn() { log "WARN:  $*"; }
 err()  { log "ERROR: $*" >&2; }
 
 # Source the shared GPU library — the single source of truth shared with the
-# dots ./setup path (sdata/lib/gpu-config.sh, staged at /tmp/dotfiles-setup by
-# install-dotfiles earlier in the Calamares sequence). Detection (gpu_detect)
-# and NVIDIA generation classification (gpu_classify_nvidia_driver) come from
-# there; this script keeps the archiso-specific package-install machinery
-# (staged prebuilts via pacman -U, DKMS against the target kernel). Sourced
-# BEFORE note_failure below so this script's version stays in effect. Vars are
-# pre-seeded so the vendor branches stay set -u safe if the lib is ever absent.
-GPU_LIB="${GPU_LIB:-/tmp/dotfiles-setup/sdata/lib/gpu-config.sh}"
+# dots ./setup path (sdata/lib/gpu-config.sh), baked into the ISO at
+# /usr/local/lib/gpu-config.sh by build.sh so it is sourced from the trusted
+# image rather than a network-cloned tree. Detection (gpu_detect) and NVIDIA
+# generation classification (gpu_classify_nvidia_driver) come from there; this
+# script keeps the archiso-specific package-install machinery (staged prebuilts
+# via pacman -U, DKMS against the target kernel). Sourced BEFORE note_failure
+# below so this script's version stays in effect. Vars are pre-seeded so the
+# vendor branches stay set -u safe if the lib is ever absent.
+GPU_LIB="${GPU_LIB:-/usr/local/lib/gpu-config.sh}"
 HAS_NVIDIA=false HAS_AMD=false HAS_INTEL=false IS_HYBRID=false
 IS_OLD_AMD=false IS_RDNA4=false IS_ARC=false IS_OLD_INTEL=false NVIDIA_GEN=none
 if [[ -r "$GPU_LIB" ]]; then

@@ -86,9 +86,9 @@ info "Root spec: $ROOT_SPEC"
 info "Boot Path: $BOOT_PATH (UEFI: $IS_UEFI)"
 
 # Canonical base cmdline from the shared GPU library (the same source the dots
-# ./setup path uses), staged at /tmp/dotfiles-setup by the dotfiles step that
-# runs before this one. The fallback below MUST mirror gpu_base_cmdline_tokens.
-GPU_LIB="/tmp/dotfiles-setup/sdata/lib/gpu-config.sh"
+# ./setup path uses), baked into the ISO at /usr/local/lib/gpu-config.sh by
+# build.sh. The fallback below MUST mirror gpu_base_cmdline_tokens.
+GPU_LIB="/usr/local/lib/gpu-config.sh"
 if [[ -r "$GPU_LIB" ]]; then
     # shellcheck source=/dev/null
     source "$GPU_LIB"

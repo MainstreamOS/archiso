@@ -1080,6 +1080,15 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             --exclude='/.local/state/quickshell/.venv/' \
             --exclude='/.local/state/quickshell/user/first_run.txt' \
             "$DOTS_WORK/dots/" "$SKEL_DIR/"
+
+        # Bake the shared GPU library into the ISO from this build-time clone so
+        # the installed-system GPU steps source a trusted in-image copy instead
+        # of re-cloning and sourcing it as root at install time.
+        if [[ -f "$DOTS_WORK/sdata/lib/gpu-config.sh" ]]; then
+            install -Dm644 "$DOTS_WORK/sdata/lib/gpu-config.sh" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/gpu-config.sh"
+        fi
+
         # Hyprland 0.55 Lua config: each former `exec-once = ...` entry becomes a
         # separate `hl.on("hyprland.start", function() hl.exec_cmd("...") end)`
         # subscription. Multiple hl.on calls for the same event are additive, so
