@@ -20,7 +20,9 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 #     are linked to it, matching the layout Steam builds on first launch.
 #   - Variables are pre-initialised to "" so set -u is satisfied throughout.
 # ---------------------------------------------------------------------------
-if [[ -n "$MAIN_USER" ]]; then
+if [[ -n "$MAIN_USER" ]] && ! command -v steam &>/dev/null; then
+    info "GE-Proton: Steam is not installed — skipping Proton GE seed."
+elif [[ -n "$MAIN_USER" ]]; then
     info "GE-Proton: Installing latest release for $MAIN_USER..."
 
     _STEAM_STORE="$MAIN_USER_HOME/.local/share/Steam"
