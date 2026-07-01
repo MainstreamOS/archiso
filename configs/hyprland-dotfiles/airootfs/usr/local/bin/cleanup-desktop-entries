@@ -70,3 +70,70 @@ for entry in "${CLEANUP_MAP[@]}"; do
 done
 
 info "Desktop entry cleanup complete: $removed removed, $kept packages kept."
+
+# ---------------------------------------------------------------------------
+# 4. PRUNE DOCK PINNED-APP DEFAULTS FOR UNINSTALLED APPS
+#    config.json does not exist yet at this stage — quickshell writes it on
+#    first boot from the deployed Config.qml defaults. So prune those defaults
+#    here and the first-boot config.json inherits the result. Only the dock
+#    array (the one containing "settings") is touched; the launcher array is
+#    left alone. Keep folders and the shell pseudo-apps; drop any id with no
+#    resolvable .desktop. Runs after section 3, so a removed package's .desktop
+#    is already gone and its pin is correctly dropped.
+# ---------------------------------------------------------------------------
+CONFIG_QML="/home/$MAIN_USER/.config/quickshell/ii/modules/common/Config.qml"
+
+if [[ -f "$CONFIG_QML" ]]; then
+    python3 - "$CONFIG_QML" "$MAIN_USER" <<'PYEOF' || warn "Dock prune skipped (Config.qml unreadable)."
+import os, re, sys
+
+qml_path, user = sys.argv[1], sys.argv[2]
+exempt = {"settings", "welcome-tutorial"}
+app_dirs = [
+    "/usr/share/applications",
+    f"/home/{user}/.local/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    f"/home/{user}/.local/share/flatpak/exports/share/applications",
+]
+
+available = set()
+for directory in app_dirs:
+    try:
+        for entry in os.listdir(directory):
+            if entry.endswith(".desktop"):
+                available.add(entry[:-8].lower())
+    except OSError:
+        pass
+
+def keep(app_id):
+    if app_id.startswith("folder:"):
+        return True
+    if app_id.lower() in exempt:
+        return True
+    return app_id.lower() in available
+
+src = open(qml_path, encoding="utf-8").read()
+pat = re.compile(r'(property\s+list<string>\s+pinnedApps\s*:\s*\[)(.*?)(\])', re.DOTALL)
+dropped = []
+
+def rewrite(m):
+    head, body, tail = m.group(1), m.group(2), m.group(3)
+    ids = re.findall(r'"([^"]+)"', body)
+    if "settings" not in ids:            # dock array only; leave launcher alone
+        return m.group(0)
+    kept = [i for i in ids if keep(i)]
+    if kept == ids:
+        return m.group(0)
+    dropped.extend(i for i in ids if i not in kept)
+    new_body = "\n                    " + ", ".join(f'"{i}"' for i in kept) + ",\n                "
+    return head + new_body + tail
+
+new = pat.sub(rewrite, src)
+if dropped:
+    open(qml_path, "w", encoding="utf-8").write(new)
+    print("[desktop-cleanup] INFO:  pruned dock defaults: " + ", ".join(dropped))
+else:
+    print("[desktop-cleanup] INFO:  dock defaults already clean")
+PYEOF
+    chown "$MAIN_USER:$MAIN_USER" "$CONFIG_QML" 2>/dev/null || true
+fi

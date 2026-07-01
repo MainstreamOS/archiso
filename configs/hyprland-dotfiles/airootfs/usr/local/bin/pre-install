@@ -83,7 +83,6 @@ fi
 # therefore before the DB sync, causing a "target not found" failure —
 # so we do the removal here instead.
 LIVE_PKGS=(
-    calamares
     arch-install-scripts
     archinstall
     mkinitcpio-archiso
@@ -105,7 +104,43 @@ LIVE_PKGS=(
 )
 
 info "Removing live-only packages..."
-pacman -Rns --noconfirm "${LIVE_PKGS[@]}" 2>/dev/null || \
-    warn "Some live packages were not installed — continuing."
+# Filter to installed targets first: a missing name ("target not found") would
+# abort the whole -Rns. Then try the batch; if any target is still required by a
+# kept package (squashfs-tools is a depends of calamares-mainstream, which isn't
+# removed until a later Calamares module), -Rns is all-or-nothing and vetoes the
+# ENTIRE batch — silently leaving chromium behind. Fall back to a per-package
+# sweep that loops until a pass removes nothing new, so anything with no kept
+# dependent (chromium has zero reverse-deps) is removed regardless. Whatever
+# remains is genuinely still required now and gets cleaned by finalize-install
+# once calamares-mainstream is gone.
+_present=()
+for _p in "${LIVE_PKGS[@]}"; do
+    if pacman -Qq "$_p" &>/dev/null; then
+        _present+=("$_p")
+    fi
+done
+if (( ${#_present[@]} > 0 )); then
+    if pacman -Rns --noconfirm "${_present[@]}" 2>/dev/null; then
+        :
+    else
+        warn "Batch removal refused — retrying per package until stable."
+        _removed_any=1
+        while (( _removed_any )); do
+            _removed_any=0
+            for _p in "${_present[@]}"; do
+                pacman -Qq "$_p" &>/dev/null || continue
+                if pacman -Rns --noconfirm "$_p" &>/dev/null; then
+                    info "  removed $_p"
+                    _removed_any=1
+                fi
+            done
+        done
+        for _p in "${_present[@]}"; do
+            if pacman -Qq "$_p" &>/dev/null; then
+                warn "Kept $_p — still required by an installed package (deferred to finalize-install)."
+            fi
+        done
+    fi
+fi
 
 info "Pre-install environment is ready."
