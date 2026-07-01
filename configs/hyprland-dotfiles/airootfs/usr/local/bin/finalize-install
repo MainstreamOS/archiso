@@ -38,19 +38,33 @@ remove_pkgs() {
     [[ ${#installed[@]} -eq 0 ]] && return 0
     info "Removing: ${installed[*]}"
     # -Rns: cascade unused deps + remove config files. --noconfirm for
-    # automation. -Rns is also all-or-nothing on dependency refusals: if ONE
-    # target is still required by something, the whole batch is vetoed. Fall
-    # back to per-package removal so a single refusal can't shield the rest.
-    # A package that still can't be removed is kept — better a stray package
-    # than a broken install.
-    if ! pacman -Rns --noconfirm "${installed[@]}" 2>&1 | sed 's/^/[cleanup] /'; then
-        warn "Batch removal refused — retrying per package."
+    # automation. -Rns is all-or-nothing on dependency refusals: if ONE target
+    # is still required by a kept package, the whole batch is vetoed. Fall back
+    # to a per-package sweep that loops until a pass removes nothing new, so a
+    # target still required by another target listed later (arch-install-scripts
+    # before archinstall) is retried once its dependent is gone instead of
+    # leaking. Whatever remains at the end is genuinely required by a kept
+    # package and is reported as such.
+    if pacman -Rns --noconfirm "${installed[@]}" 2>&1 | sed 's/^/[cleanup] /'; then
+        return 0
+    fi
+    warn "Batch removal refused — retrying per package until stable."
+    local removed_any=1
+    while (( removed_any )); do
+        removed_any=0
         for p in "${installed[@]}"; do
             pacman -Qq "$p" >/dev/null 2>&1 || continue
-            pacman -Rns --noconfirm "$p" 2>&1 | sed 's/^/[cleanup] /' \
-                || warn "Could not remove $p (still required by something) — keeping it."
+            if pacman -Rns --noconfirm "$p" >/dev/null 2>&1; then
+                info "  removed $p"
+                removed_any=1
+            fi
         done
-    fi
+    done
+    for p in "${installed[@]}"; do
+        if pacman -Qq "$p" >/dev/null 2>&1; then
+            warn "Kept $p — still required by an installed package."
+        fi
+    done
     return 0
 }
 
@@ -85,7 +99,6 @@ LIVEONLY=(
     calamares-mainstream
     ckbcomp
     hwinfo
-    kcrash
     kpmcore
     b43-fwcutter
     os-prober
