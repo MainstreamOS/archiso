@@ -8,24 +8,24 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 # Mirrors setup_proton_ge() from 3_files.sh, adapted for chroot (root context):
 #   1. Fetch the latest release tag from the GitHub API.
 #   2. Download + extract the tarball into compatibilitytools.d if not present.
-#   3. Seed ~/.steam/root/config/config.vdf with the global CompatToolMapping
+#   3. Seed ~/.local/share/Steam/config/config.vdf with the global CompatToolMapping
 #      default; or patch the existing file's "0" entry without touching
 #      per-game overrides or any other Steam settings.
-#   4. Fix ownership — everything written under $MAIN_USER_HOME must belong
-#      to the user, not root.
+#   4. Link ~/.steam/{root,steam} to the store and fix ownership — everything
+#      written under $MAIN_USER_HOME must belong to the user, not root.
 #
 # Notes:
 #   - Steam is not running in chroot, so config.vdf writes are safe.
-#   - ~/.steam/root is a symlink Steam creates on first launch pointing to
-#     ~/.local/share/Steam — pre-creating it as a real directory is fine;
-#     Steam will normalise it on first run.
+#   - Seed lands in ~/.local/share/Steam (the real store); ~/.steam/{root,steam}
+#     are linked to it, matching the layout Steam builds on first launch.
 #   - Variables are pre-initialised to "" so set -u is satisfied throughout.
 # ---------------------------------------------------------------------------
 if [[ -n "$MAIN_USER" ]]; then
     info "GE-Proton: Installing latest release for $MAIN_USER..."
 
-    _GE_COMPAT_DIR="$MAIN_USER_HOME/.steam/root/compatibilitytools.d"
-    _GE_CFG_DIR="$MAIN_USER_HOME/.steam/root/config"
+    _STEAM_STORE="$MAIN_USER_HOME/.local/share/Steam"
+    _GE_COMPAT_DIR="$_STEAM_STORE/compatibilitytools.d"
+    _GE_CFG_DIR="$_STEAM_STORE/config"
     _GE_CFG="$_GE_CFG_DIR/config.vdf"
     _GE_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
 
@@ -149,10 +149,19 @@ else:
 PYEOF
             fi
 
+            # --- 3b. Link ~/.steam to the Steam data dir ---
+            mkdir -p "$MAIN_USER_HOME/.steam"
+            ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/steam"
+            ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/root"
+
             # --- 4. Fix ownership ---
             # Everything written under $MAIN_USER_HOME must belong to the user,
             # not root (we are running in chroot as root).
-            chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.steam" 2>/dev/null || true
+            chown -R "$MAIN_USER:$MAIN_USER" "$_STEAM_STORE" 2>/dev/null || true
+            chown -h "$MAIN_USER:$MAIN_USER" \
+                "$MAIN_USER_HOME/.steam/steam" "$MAIN_USER_HOME/.steam/root" 2>/dev/null || true
+            chown "$MAIN_USER:$MAIN_USER" \
+                "$MAIN_USER_HOME/.steam" "$MAIN_USER_HOME/.local/share" "$MAIN_USER_HOME/.local" 2>/dev/null || true
             info "GE-Proton: Ownership of Steam dirs set to $MAIN_USER."
         fi
     fi
