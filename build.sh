@@ -1556,6 +1556,27 @@ if [[ -n "${_ARCH_SUFFIX}" && "${_ARCH_SUFFIX}" != "-" ]]; then
     fi
 fi
 
+# ── Release artifacts: checksum + detached signature ──────────────────────
+# The checksum is always emitted. Signing follows the packages/build-repo.sh
+# convention: a GPGKEY env var selects the key (held by the invoking user's
+# keyring, so gpg runs as $SUDO_USER, not root) — never publish unsigned.
+ISO_DIR="$(dirname "${ISO_PATH}")"
+ISO_FILE="$(basename "${ISO_PATH}")"
+( cd "${ISO_DIR}" && sha256sum "${ISO_FILE}" > "${ISO_FILE}.sha256" )
+echo ">>> SHA256: $(cat "${ISO_PATH}.sha256")"
+if [[ -n "${GPGKEY:-}" ]]; then
+    _sign_user="${SUDO_USER:-root}"
+    rm -f "${ISO_PATH}.sig"
+    if sudo -u "${_sign_user}" gpg --batch --yes --detach-sign \
+        --local-user "${GPGKEY}" --output "${ISO_PATH}.sig" "${ISO_PATH}"; then
+        echo ">>> Signed: ${ISO_PATH}.sig (key ${GPGKEY})"
+    else
+        echo ">>> WARNING: ISO signing FAILED — do not publish this build unsigned."
+    fi
+else
+    echo ">>> GPGKEY not set — ISO left unsigned (GPGKEY=<keyid> sudo -E ./build.sh to sign a release build)."
+fi
+
 echo ""
 echo "Build complete."
 echo "Output: ${ISO_PATH}"
