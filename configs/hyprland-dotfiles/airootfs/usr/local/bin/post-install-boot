@@ -106,10 +106,10 @@ rm -f /etc/mkinitcpio.conf.d/archiso.conf
 # Runs after archiso.conf is removed so mkinitcpio.conf changes are safe.
 # Sources the single source of truth shared with the dots ./setup path
 # (sdata/lib/gpu-config.sh, baked into the ISO at /usr/local/lib/gpu-config.sh). In this
-# Calamares chroot we run as root (GPU_SUDO=''), drop the kms hook and apply
-# the UKI-on-small-ESP early-KMS guard (skip early KMS when the reused ESP is
-# under 512 MiB so the UKI still fits), and target the install user's home for
-# the Hyprland tweaks. The initramfs is rebuilt later by the unconditional
+# Calamares chroot we run as root (GPU_SUDO='') and target the install user's
+# home for the Hyprland tweaks. The library's small-ESP guard (default 512 MiB)
+# skips the explicit early-KMS MODULES on a small reused dual-boot ESP so the
+# UKI still fits. The initramfs is rebuilt later by the unconditional
 # mkinitcpio -P below, so this only stages the config.
 # ---------------------------------------------------------------------------
 GPU_LIB="/usr/local/lib/gpu-config.sh"
@@ -259,6 +259,14 @@ if ! mkinitcpio -P; then
         warn "Initramfs images missing — mkinitcpio truly failed."
         exit 1
     fi
+fi
+
+# A missing UKI after the rebuild means the ESP write failed (classically
+# ENOSPC on a small reused dual-boot ESP) — the install would "succeed" but
+# not boot. Surface it loudly instead of soft-passing.
+if [[ -d /boot/efi ]] && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
+    esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
+    warn "UKI missing after initramfs rebuild — ESP write failed (free: ${esp_free:-?} MiB). System will not boot via UKI."
 fi
 
 if command -v limine-mkinitcpio &>/dev/null; then
