@@ -61,6 +61,10 @@ add_mainstream_db() {
     # Debug packages are never installed (not in packages.x86_64); drop any an
     # earlier build left here so they neither index nor bloat the live squashfs.
     rm -f "$repo_dir"/*-debug-*.pkg.tar.zst 2>/dev/null || true
+    # Retired proprietary font packages — nothing builds these anymore; drop
+    # copies an earlier build left behind so they are never re-indexed.
+    rm -f "$repo_dir"/ttf-google-sans-*.pkg.tar.zst \
+          "$repo_dir"/mainstream-google-sans-flex-*.pkg.tar.zst 2>/dev/null || true
     # repo-add only ADDS — start from a clean DB so any previously-indexed
     # (and now-excluded) GPU driver entries are dropped, not carried forward.
     rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
@@ -430,7 +434,6 @@ AUR_DEPS=(
     # (Firefox and Chromium are in the official repos, so they need no prebuild.)
     "zen-browser-bin"
     "ckbcomp"
-    "ttf-google-sans"
     "limine-mkinitcpio-hook"
     "limine-snapper-sync"
     "topgrade"
@@ -908,57 +911,6 @@ GIT_PKGS_DIR="$PKG_WORK_DIR/git-pkgs"
 mkdir -p "$GIT_PKGS_DIR"
 chown "$BUILD_USER":"$BUILD_USER" "$GIT_PKGS_DIR"
 
-GSF_PKG="mainstream-google-sans-flex"
-existing_gsf=$(find "$PKG_OUTPUT_DIR" -name "${GSF_PKG}-*.pkg.tar.zst" 2>/dev/null | head -1)
-if [[ -n "$existing_gsf" ]] && [[ "$CLEAN_BUILD" == false ]]; then
-    info "$GSF_PKG — already built, skipping."
-else
-    info "Building $GSF_PKG..."
-    GSF_BUILD="$GIT_PKGS_DIR/google-sans-flex"
-    mkdir -p "$GSF_BUILD"
-    chown "$BUILD_USER":"$BUILD_USER" "$GSF_BUILD"
-    cat > "$GSF_BUILD/PKGBUILD" << 'GSFPKGBUILD'
-pkgname=mainstream-google-sans-flex
-pkgver=1.0
-pkgrel=2
-pkgdesc='Google Sans Flex variable font, packaged for Mainstream OS dotfiles'
-arch=(any)
-license=(OFL)
-url="https://github.com/end-4/google-sans-flex"
-provides=('illogical-impulse-google-sans-flex')
-replaces=('illogical-impulse-google-sans-flex')
-# The system-side install path keeps the illogical-impulse-google-sans-flex
-# directory name so it lines up with the dotfiles' user-side font dir
-# (XDG_DATA_HOME/fonts/illogical-impulse-google-sans-flex/) — easier mental
-# model when debugging which font dir holds the live ISO copy.
-source=("google-sans-flex::git+https://github.com/end-4/google-sans-flex.git")
-sha256sums=('SKIP')
-
-package() {
-    install -dm755 "$pkgdir/usr/share/fonts/illogical-impulse-google-sans-flex"
-    find "$srcdir/google-sans-flex" -name "*.ttf" -exec \
-        install -m644 {} "$pkgdir/usr/share/fonts/illogical-impulse-google-sans-flex/" \;
-    if [[ -f "$srcdir/google-sans-flex/LICENSE" ]]; then
-        install -Dm644 "$srcdir/google-sans-flex/LICENSE" \
-            "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-    fi
-}
-GSFPKGBUILD
-    chown "$BUILD_USER":"$BUILD_USER" "$GSF_BUILD/PKGBUILD"
-    if su "$BUILD_USER" -c "cd '$GSF_BUILD' && PKGDEST='$TEMP_OUTPUT' makepkg -s --noconfirm --skippgpcheck 2>&1"; then
-        built=$(find "$TEMP_OUTPUT" -name "${GSF_PKG}-*.pkg.tar.zst" | head -1)
-        if [[ -n "$built" ]]; then
-            cp "$built" "$PKG_OUTPUT_DIR/"
-            rm -f "$TEMP_OUTPUT/${GSF_PKG}"*.pkg.tar.zst
-            success "$GSF_PKG built successfully."
-        else
-            warn "$GSF_PKG — build ran but no output file found."
-        fi
-    else
-        warn "$GSF_PKG — build failed."
-    fi
-fi
-
 # ── Build mainstream-microtex-git ─────────────────────────────────────────
 # Built from the dotfiles repo's PKGBUILD so the rename (illogical-impulse-* →
 # mainstream-*), pkgrel bumps, and provides/replaces metadata stay in sync.
@@ -1022,7 +974,7 @@ info "Repo database generated at $PKG_OUTPUT_DIR/mainstream.db.tar.gz (GPU drive
 # repo, so unrelated cached packages (kernel, base-devel, etc.) stay
 # warm. Per-package `rm` calls already exist inside the local
 # PKGBUILD loop, but those don't cover METAPKGS, AUR_DEPS,
-# or the cmake-built mainstream-microtex-git / mainstream-google-sans-flex —
+# or the cmake-built mainstream-microtex-git —
 # this batch sweep covers everything in $PKG_OUTPUT_DIR uniformly.
 info "Purging stale copies of locally-built packages from host pacman cache..."
 _purged=0

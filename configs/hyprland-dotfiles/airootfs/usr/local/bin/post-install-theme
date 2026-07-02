@@ -150,6 +150,31 @@ SWEOF
         warn "Default wallpaper or matugen not found — skipping initial color generation."
     fi
 
+    # ---------------------------------------------------------------------------
+    # Google Sans Flex — fetched at install time, not shipped on the ISO.
+    # The font is distributed by end-4/google-sans-flex; fetching it here keeps
+    # it out of the ISO and the [mainstream] repo (same model as the dots
+    # ./setup path). Offline installs fall back to Noto Sans via fontconfig's
+    # prepend rules until the font is fetched later.
+    # ---------------------------------------------------------------------------
+    GSF_SRC="https://github.com/end-4/google-sans-flex"
+    GSF_USER_DIR="$MAIN_USER_HOME/.local/share/fonts/illogical-impulse-google-sans-flex"
+    GSF_SYS_DIR="/usr/share/fonts/google-sans-flex"
+    GSF_TMP=$(mktemp -d)
+    info "Fetching Google Sans Flex from $GSF_SRC..."
+    if git clone --depth=1 "$GSF_SRC" "$GSF_TMP/google-sans-flex" &>/dev/null \
+        && compgen -G "$GSF_TMP/google-sans-flex/*.ttf" >/dev/null; then
+        install -dm755 "$GSF_USER_DIR" "$GSF_SYS_DIR"
+        install -m644 "$GSF_TMP/google-sans-flex/"*.ttf "$GSF_USER_DIR/"
+        install -m644 "$GSF_TMP/google-sans-flex/"*.ttf "$GSF_SYS_DIR/"
+        chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.local/share/fonts"
+        fc-cache -f &>/dev/null || true
+        info "Google Sans Flex installed (user + system font dirs)."
+    else
+        warn "Could not fetch Google Sans Flex — the UI falls back to Noto Sans until it is installed."
+    fi
+    rm -rf "$GSF_TMP"
+
     # Create the marker file so the first-login script knows to run
     touch "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
     chown "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME/.dotfiles-pending-user-setup"
