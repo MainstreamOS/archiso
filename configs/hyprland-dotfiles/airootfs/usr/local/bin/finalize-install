@@ -25,7 +25,12 @@ set -uo pipefail
 
 log()  { echo "[finalize-install] $*"; }
 info() { log "INFO:  $*"; }
-warn() { log "WARN:  $*"; }
+warn() { log "WARN:  $*"; _ms_health "WARN: $*"; }
+_ms_health() {
+    mkdir -p /var/log/mainstream-install 2>/dev/null || return 0
+    printf '%s [%s] %s\n' "$(date '+%F %T')" "${0##*/}" "$*" \
+        >> /var/log/mainstream-install/health.log 2>/dev/null || true
+}
 
 remove_pkgs() {
     # Filter to packages that are actually installed first: pacman -Rns is

@@ -13,7 +13,17 @@ exec 2>&1
 
 log()  { echo "[post-install] $*"; }
 info() { log "INFO:  $*"; }
-warn() { log "WARN:  $*"; }
+warn() { log "WARN:  $*"; _ms_health "WARN: $*"; }
+
+# Persistent install-health manifest on the target. The Calamares session log
+# lives on the live system and its shellprocess stdout capture is lossy, so
+# every warn is also appended here — the installed system keeps a record of
+# what the install steps could not do.
+_ms_health() {
+    mkdir -p /var/log/mainstream-install 2>/dev/null || return 0
+    printf '%s [%s] %s\n' "$(date '+%F %T')" "${0##*/}" "$*" \
+        >> /var/log/mainstream-install/health.log 2>/dev/null || true
+}
 
 
 write_limine_defaults() {

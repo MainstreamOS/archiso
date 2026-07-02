@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# =============================================================================
+# save-install-log <target-root>
+# Persist the Calamares session log on the installed system. Runs OUTSIDE the
+# chroot (the log lives on the live system, written by the live user that
+# launched `sudo -E calamares`) as the last exec step before umount. Calamares
+# expands ${ROOT} to the target mount point; if the argument is unusable the
+# target is located from the mounted calamares root instead. Outcomes are
+# recorded in the target's install health log. Never fails the install.
+# =============================================================================
+
+set -u
+
+dest=""
+log_health() {
+    [[ -n "$dest" && -d "$dest" ]] || return 0
+    printf '%s [save-install-log] %s\n' "$(date '+%F %T')" "$*" \
+        >> "$dest/health.log" 2>/dev/null || true
+}
+
+root="${1:-}"
+if [[ -z "$root" || ! -d "$root/etc" ]]; then
+    root=""
+    for d in /tmp/calamares-root-*; do
+        if [[ -d "$d/etc" ]] && mountpoint -q "$d" 2>/dev/null; then
+            root="$d"
+            break
+        fi
+    done
+fi
+[[ -n "$root" && -d "$root" ]] || exit 0
+
+dest="$root/var/log/mainstream-install"
+mkdir -p "$dest" 2>/dev/null || exit 0
+
+# HOME survives `sudo -E`, so the log usually lands under the live user's
+# ~/.cache; check root's too and take the newest.
+latest=$(ls -t /home/*/.cache/calamares/session.log /root/.cache/calamares/session.log 2>/dev/null | head -n1)
+if [[ -n "$latest" && -f "$latest" ]]; then
+    if cp -f "$latest" "$dest/session.log" 2>/dev/null; then
+        chmod 0600 "$dest/session.log" 2>/dev/null || true
+        log_health "INFO: session log saved from $latest"
+    else
+        log_health "WARN: could not copy session log from $latest"
+    fi
+else
+    log_health "WARN: no Calamares session log found on the live system"
+fi
+
+exit 0

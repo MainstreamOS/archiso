@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# =============================================================================
+# mainstream-install-health-notify
+# One-shot first-login notifier for post-install-verify failures. Started by
+# the mainstream-install-health user unit, which is gated on the marker file —
+# once shown, the marker is consumed so the notification never repeats. The
+# full report stays at /var/log/mainstream-install/verify-report.txt.
+# =============================================================================
+
+set -u
+
+marker="$HOME/.local/state/mainstream/install-verify.failed"
+[[ -s "$marker" ]] || exit 0
+command -v notify-send &>/dev/null || exit 0
+
+# Wait for the notification daemon (the shell) to come up.
+for _ in $(seq 1 30); do
+    if busctl --user status org.freedesktop.Notifications &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+count=$(wc -l < "$marker" 2>/dev/null || echo "some")
+notify-send -u critical -a "Mainstream OS" "Install health check" \
+    "$count install check(s) did not pass. Details: /var/log/mainstream-install/verify-report.txt" \
+    2>/dev/null || true
+
+rm -f "$marker"
+exit 0

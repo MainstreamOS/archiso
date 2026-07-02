@@ -7,7 +7,12 @@ set -euo pipefail
 
 log()  { echo "[install-limine] $*"; }
 info() { log "INFO:  $*"; }
-warn() { log "WARN:  $*"; }
+warn() { log "WARN:  $*"; _ms_health "WARN: $*"; }
+_ms_health() {
+    mkdir -p /var/log/mainstream-install 2>/dev/null || return 0
+    printf '%s [%s] %s\n' "$(date '+%F %T')" "${0##*/}" "$*" \
+        >> /var/log/mainstream-install/health.log 2>/dev/null || true
+}
 
 # --- 0. Kernel & Environment Setup ---
 info "Removing archiso mkinitcpio configs..."

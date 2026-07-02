@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# =============================================================================
+# post-install-verify
+# Calamares shellprocess — runs inside the installed system chroot as the
+# last chrooted exec step (after services-systemd, before umount).
+#
+# Re-asserts what the install steps intended. The cleanup passes are
+# deliberately non-fatal, so their failures would otherwise vanish with the
+# live session; this pass turns them into a persistent record. Advisory only:
+# results land in /var/log/mainstream-install/{health.log,verify-report.txt},
+# failures raise a one-shot desktop notification on first login, and nothing
+# here ever aborts an otherwise-complete install.
+# =============================================================================
+source /usr/local/lib/mainstream-postinstall-common.sh
+
+REPORT=()
+FAILED=()
+pass() { REPORT+=("PASS  $1"); info "PASS: $1"; _ms_health "PASS: $1"; }
+fail() { REPORT+=("FAIL  $1"); log  "FAIL: $1"; _ms_health "FAIL: $1"; FAILED+=("$1"); }
+skip() { REPORT+=("SKIP  $1"); info "SKIP: $1"; }
+
+info "Verifying installed system..."
+
+# --- 1. Live-only tooling removed (mirrors finalize-install's LIVEONLY) -----
+LIVEONLY=(
+    arch-install-scripts
+    archinstall
+    mkinitcpio-archiso
+    mkinitcpio-nfs-utils
+    syslinux
+    mtools
+    squashfs-tools
+    nbd
+    memtest86+
+    memtest86+-efi
+    livecd-sounds
+    edk2-shell
+    reflector
+    pv
+    calamares-mainstream
+    ckbcomp
+    hwinfo
+    kpmcore
+    b43-fwcutter
+    os-prober
+    testdisk
+)
+leftovers=()
+for p in "${LIVEONLY[@]}"; do
+    if pacman -Qq "$p" &>/dev/null; then leftovers+=("$p"); fi
+done
+if [[ ${#leftovers[@]} -eq 0 ]]; then
+    pass "live-only packages removed"
+else
+    fail "live-only packages still installed: ${leftovers[*]}"
+fi
+
+# --- 2. Wrong-vendor GPU stacks removed (mirrors finalize-install) ----------
+NVIDIA_PKGS=(
+    nvidia nvidia-open nvidia-dkms nvidia-open-dkms
+    nvidia-utils lib32-nvidia-utils nvidia-settings nvidia-prime
+    libva-nvidia-driver opencl-nvidia lib32-opencl-nvidia
+    nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils
+    nvidia-580xx-settings opencl-nvidia-580xx libxnvctrl-580xx
+    nvidia-470xx-dkms nvidia-470xx-utils lib32-nvidia-470xx-utils
+    opencl-nvidia-470xx
+    nvidia-390xx-dkms nvidia-390xx-utils opencl-nvidia-390xx
+)
+AMD_PKGS=(
+    vulkan-radeon lib32-vulkan-radeon xf86-video-amdgpu xf86-video-ati
+)
+INTEL_PKGS=(
+    vulkan-intel lib32-vulkan-intel intel-media-driver
+    intel-compute-runtime libva-intel-driver xf86-video-intel
+)
+GPU_NN=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+if [[ -n "$GPU_NN" ]]; then
+    HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
+    grep -q "\[10de:" <<<"$GPU_NN" && HAS_NVIDIA=true || true
+    grep -q "\[1002:" <<<"$GPU_NN" && HAS_AMD=true    || true
+    grep -q "\[8086:" <<<"$GPU_NN" && HAS_INTEL=true  || true
+    wrong=()
+    if ! $HAS_NVIDIA; then
+        for p in "${NVIDIA_PKGS[@]}"; do
+            if pacman -Qq "$p" &>/dev/null; then wrong+=("$p"); fi
+        done
+    fi
+    if ! $HAS_AMD; then
+        for p in "${AMD_PKGS[@]}"; do
+            if pacman -Qq "$p" &>/dev/null; then wrong+=("$p"); fi
+        done
+    fi
+    if ! $HAS_INTEL; then
+        for p in "${INTEL_PKGS[@]}"; do
+            if pacman -Qq "$p" &>/dev/null; then wrong+=("$p"); fi
+        done
+    fi
+    if [[ ${#wrong[@]} -eq 0 ]]; then
+        pass "no wrong-vendor GPU packages"
+    else
+        fail "wrong-vendor GPU packages installed: ${wrong[*]}"
+    fi
+else
+    skip "GPU vendor check (lspci found no GPU)"
+fi
+
+# --- 3. Wrong CPU microcode removed ------------------------------------------
+CPU_VENDOR=$(awk -F: '/vendor_id/ {gsub(/ /,"",$2); print $2; exit}' /proc/cpuinfo)
+case "$CPU_VENDOR" in
+    GenuineIntel)
+        if pacman -Qq amd-ucode &>/dev/null; then
+            fail "amd-ucode still installed on an Intel CPU"
+        else
+            pass "wrong CPU microcode removed"
+        fi ;;
+    AuthenticAMD)
+        if pacman -Qq intel-ucode &>/dev/null; then
+            fail "intel-ucode still installed on an AMD CPU"
+        else
+            pass "wrong CPU microcode removed"
+        fi ;;
+    *) skip "CPU microcode check (unknown vendor: $CPU_VENDOR)" ;;
+esac
+
+# --- 4. systemd unit sanity ---------------------------------------------------
+broken=$(find /etc/systemd/system -xtype l 2>/dev/null || true)
+if [[ -z "$broken" ]]; then
+    pass "no dangling systemd unit symlinks"
+else
+    fail "dangling systemd unit symlinks: $(tr '\n' ' ' <<<"$broken")"
+fi
+if [[ -e /etc/systemd/system/display-manager.service ]] \
+    && readlink -e /etc/systemd/system/display-manager.service >/dev/null 2>&1; then
+    pass "display-manager enabled and resolves"
+else
+    fail "display-manager.service missing or dangling"
+fi
+
+# --- 5. sudo integrity --------------------------------------------------------
+if visudo -c &>/dev/null; then
+    pass "sudoers parses (visudo -c)"
+else
+    fail "sudoers does not parse (visudo -c)"
+fi
+livefiles=(
+    /etc/sudoers.d/g_wheel
+    /etc/sudoers.d/liveuser
+    /etc/sudoers.d/builduser
+    /etc/sudoers.d/builduser-install
+    /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    /etc/systemd/logind.conf.d/do-not-suspend.conf
+    /etc/systemd/journald.conf.d/volatile-storage.conf
+)
+lingering=()
+for f in "${livefiles[@]}"; do
+    if [[ -e "$f" ]]; then lingering+=("$f"); fi
+done
+if [[ ${#lingering[@]} -eq 0 ]]; then
+    pass "live-only config files removed"
+else
+    fail "live-only config files linger: ${lingering[*]}"
+fi
+if ! getent passwd liveuser &>/dev/null && [[ ! -d /home/liveuser ]]; then
+    pass "liveuser fully removed"
+else
+    fail "liveuser account or home directory remains"
+fi
+
+# --- 6. Boot chain ------------------------------------------------------------
+if compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
+    pass "UKI present in ESP"
+else
+    fail "no UKI found under /boot/efi/EFI/Linux/"
+fi
+if [[ -s /boot/efi/limine.conf || -s /boot/limine.conf ]]; then
+    pass "limine.conf present"
+else
+    fail "limine.conf missing or empty"
+fi
+if [[ -s /etc/kernel/cmdline ]]; then
+    pass "kernel cmdline present"
+else
+    fail "/etc/kernel/cmdline missing or empty"
+fi
+if [[ -n "$(awk '$1 !~ /^#/ && $2 == "/"' /etc/fstab 2>/dev/null)" ]]; then
+    pass "fstab has a root entry"
+else
+    fail "fstab has no root entry"
+fi
+
+# --- 7. Package manager health -------------------------------------------------
+if grep -q "^\[mainstream\]" /etc/pacman.conf 2>/dev/null; then
+    pass "[mainstream] repo configured"
+else
+    fail "[mainstream] repo missing from pacman.conf"
+fi
+if pacman -Qq mainstream-basic &>/dev/null; then
+    pass "mainstream-basic installed"
+else
+    fail "mainstream-basic not installed"
+fi
+
+# --- 8. User payload ------------------------------------------------------------
+if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME" ]]; then
+    owner=$(stat -c '%U' "$MAIN_USER_HOME" 2>/dev/null || true)
+    if [[ "$owner" == "$MAIN_USER" ]]; then
+        pass "user home present and owned by $MAIN_USER"
+    else
+        fail "user home owned by '$owner', expected $MAIN_USER"
+    fi
+    if [[ -d "$MAIN_USER_HOME/.config/quickshell/ii" ]]; then
+        pass "shell config deployed"
+    else
+        fail "shell config missing (~/.config/quickshell/ii)"
+    fi
+    if [[ -x "$MAIN_USER_HOME/.local/state/quickshell/.venv/bin/python" ]]; then
+        pass "shell python venv present"
+    else
+        fail "shell python venv missing or not executable"
+    fi
+    # Every default dock pin must resolve to an installed .desktop (folders and
+    # the shell pseudo-apps exempt) — the same predicate desktopcleanup prunes by.
+    CONFIG_QML="$MAIN_USER_HOME/.config/quickshell/ii/modules/common/Config.qml"
+    if [[ -f "$CONFIG_QML" ]] && command -v python3 &>/dev/null; then
+        unresolved=$(python3 - "$CONFIG_QML" "$MAIN_USER" <<'PYEOF' 2>/dev/null || true
+import os, re, sys
+qml, user = sys.argv[1], sys.argv[2]
+exempt = {"settings", "welcome-tutorial"}
+dirs = [
+    "/usr/share/applications",
+    f"/home/{user}/.local/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    f"/home/{user}/.local/share/flatpak/exports/share/applications",
+]
+avail = set()
+for d in dirs:
+    try:
+        avail |= {e[:-8].lower() for e in os.listdir(d) if e.endswith(".desktop")}
+    except OSError:
+        pass
+src = open(qml, encoding="utf-8").read()
+bad = []
+for m in re.finditer(r'property\s+list<string>\s+pinnedApps\s*:\s*\[(.*?)\]', src, re.DOTALL):
+    ids = re.findall(r'"([^"]+)"', m.group(1))
+    if "settings" not in ids:
+        continue
+    bad = [i for i in ids
+           if not (i.startswith("folder:") or i.lower() in exempt or i.lower() in avail)]
+print(",".join(bad))
+PYEOF
+)
+        if [[ -z "$unresolved" ]]; then
+            pass "all default dock pins resolve"
+        else
+            fail "dock pins with no installed app: $unresolved"
+        fi
+    else
+        skip "dock pin check (Config.qml or python3 unavailable)"
+    fi
+else
+    fail "no target user resolved (MAIN_USER empty)"
+fi
+
+# --- 9. Persistent journal -------------------------------------------------------
+if [[ -d /var/log/journal ]]; then
+    pass "persistent journald storage enabled"
+else
+    fail "/var/log/journal missing (journals will not persist)"
+fi
+
+# --- Report -----------------------------------------------------------------------
+mkdir -p /var/log/mainstream-install 2>/dev/null || true
+if [[ -d /var/log/mainstream-install ]]; then
+    {
+        echo "Mainstream OS install verification — $(date '+%F %T')"
+        echo "----------------------------------------------------"
+        printf '%s\n' "${REPORT[@]}"
+        echo "----------------------------------------------------"
+        echo "${#FAILED[@]} check(s) failed"
+    } > /var/log/mainstream-install/verify-report.txt 2>/dev/null || true
+fi
+
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+    info "Verification complete: all checks passed."
+    exit 0
+fi
+
+log "Verification complete: ${#FAILED[@]} check(s) FAILED — see /var/log/mainstream-install/verify-report.txt"
+
+# Surface the failures once on first login: a marker in the user's state dir
+# gates a one-shot user unit (same pattern as dotfiles-first-login).
+if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME" ]]; then
+    mkdir -p "$MAIN_USER_HOME/.local/state/mainstream"
+    printf '%s\n' "${FAILED[@]}" > "$MAIN_USER_HOME/.local/state/mainstream/install-verify.failed"
+
+    SYSTEMD_USER_DIR="$MAIN_USER_HOME/.config/systemd/user"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    cat > "$SYSTEMD_USER_DIR/mainstream-install-health.service" << 'SERVICEEOF'
+[Unit]
+Description=Mainstream OS install health notification
+ConditionPathExists=%h/.local/state/mainstream/install-verify.failed
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mainstream-install-health-notify
+SERVICEEOF
+
+    EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+    if [[ -f "$EXECS_LUA" ]] && ! grep -q "mainstream-install-health" "$EXECS_LUA"; then
+        cat >> "$EXECS_LUA" << 'EXECSEOF'
+hl.on("hyprland.start", function() hl.exec_cmd("systemctl --user start mainstream-install-health.service") end)
+EXECSEOF
+    fi
+    chown -R "$MAIN_USER:$MAIN_USER" \
+        "$MAIN_USER_HOME/.local/state/mainstream" "$SYSTEMD_USER_DIR" 2>/dev/null || true
+    chown "$MAIN_USER:$MAIN_USER" "$EXECS_LUA" 2>/dev/null || true
+fi
+
+exit 0
