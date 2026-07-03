@@ -231,6 +231,15 @@ LOOSE_FILES=(
     # or suspend key during install; on the installed system it would disable
     # suspend/hibernate/lid handling entirely. Remove so power management works.
     /etc/systemd/logind.conf.d/do-not-suspend.conf
+    # Root password login over SSH is a live-session convenience (headless
+    # install debugging). sshd ships disabled on the target, but the moment a
+    # user enables it this drop-in would silently accept password-based root
+    # logins — remove it so sshd_config defaults (prohibit-password) apply.
+    /etc/ssh/sshd_config.d/10-archiso.conf
+    # Live-session NVIDIA KMS defaults. On the installed system gpu-config is
+    # the single writer of nvidia-drm options; fbdev=1 here would override its
+    # per-generation gate and can black-screen legacy (470xx/390xx) drivers.
+    /etc/modprobe.d/nvidia-live.conf
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
     /etc/systemd/resolved.conf.d/archiso.conf
     /etc/systemd/system/multi-user.target.wants/systemd-resolved.service

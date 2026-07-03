@@ -150,6 +150,8 @@ livefiles=(
     /etc/systemd/system/getty@tty1.service.d/autologin.conf
     /etc/systemd/logind.conf.d/do-not-suspend.conf
     /etc/systemd/journald.conf.d/volatile-storage.conf
+    /etc/ssh/sshd_config.d/10-archiso.conf
+    /etc/modprobe.d/nvidia-live.conf
 )
 lingering=()
 for f in "${livefiles[@]}"; do
