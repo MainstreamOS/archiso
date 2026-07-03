@@ -1041,6 +1041,18 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
                 "$PROFILE_DIR/airootfs/usr/local/lib/gpu-config.sh"
         fi
 
+        # Stamp the baked dotfiles release into the image so updatems on the
+        # installed system treats it as already applied and only acts on a
+        # real version bump. Only written when the build is exactly at a
+        # release tag; dev builds carry no stamp.
+        DOTS_TAG=$(su "$BUILD_USER" -c "git -C '$DOTS_WORK' tag --points-at HEAD" 2>/dev/null \
+            | grep -E '^[0-9]{1,2}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+        if [[ -n "$DOTS_TAG" ]]; then
+            printf '%s\n' "$DOTS_TAG" > "$PROFILE_DIR/airootfs/etc/mainstream-dotfiles-tag"
+        else
+            rm -f "$PROFILE_DIR/airootfs/etc/mainstream-dotfiles-tag"
+        fi
+
         # Hyprland 0.55 Lua config: each former `exec-once = ...` entry becomes a
         # separate `hl.on("hyprland.start", function() hl.exec_cmd("...") end)`
         # subscription. Multiple hl.on calls for the same event are additive, so
