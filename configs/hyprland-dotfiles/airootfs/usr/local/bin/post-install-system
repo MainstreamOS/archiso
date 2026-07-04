@@ -245,6 +245,25 @@ AUTOSTARTEOF
     done
     info "Loupe set as default image viewer."
 
+    # Set mpv as default video player for all the video types it handles
+    VIDEO_TYPES=(
+        video/3gp video/3gpp video/3gpp2 video/avi video/divx video/dv
+        video/fli video/flv video/mkv video/mp2t video/mp4 video/mp4v-es
+        video/mpeg video/msvideo video/ogg video/quicktime video/vnd.avi
+        video/vnd.divx video/vnd.mpegurl video/vnd.rn-realvideo video/webm
+        video/x-avi video/x-flc video/x-flic video/x-flv video/x-m4v
+        video/x-matroska video/x-mpeg2 video/x-mpeg3 video/x-ms-afs
+        video/x-ms-asf video/x-msvideo video/x-ms-wmv video/x-ms-wmx
+        video/x-ms-wvxvideo video/x-ogm video/x-ogm+ogg video/x-theora
+        video/x-theora+ogg
+        application/x-matroska application/x-ogm application/x-ogm-video
+        application/vnd.rn-realmedia application/vnd.rn-realmedia-vbr
+    )
+    for mime in "${VIDEO_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default mpv.desktop $mime" || true
+    done
+    info "mpv set as default video player."
+
     # Compile dconf system database so dark mode is default before first login
     dconf update 2>/dev/null || true
 
