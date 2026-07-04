@@ -1,0 +1,74 @@
+#!/bin/bash
+# Console Mode Steam Deck client pre-provision — live-environment variant.
+#
+# Runs in the live installer (dontChroot: true) where Steam has a real user
+# session, downloads Steam's Deck-branch client, and lands it on the TARGET disk
+# so the first boot into gaming isn't a multi-minute download. This replaces the
+# seed formerly baked into the ISO: nothing is carried in the image, the client
+# is fetched during the install (behind the progress bar) instead.
+#
+# Best-effort: on any failure the target's first-boot preload timer
+# (mainstream-steam-gamescope-preload) downloads it later, so this only ever
+# helps. $1 is the mounted target root (Calamares ${ROOT}).
+set -u
+
+ROOT="${1:-}"
+[[ -n "$ROOT" && -d "$ROOT" ]] || exit 0
+
+# Console Mode only: its contextualprocess job wrote boot-target=gaming into the
+# target. Every other install skips here and relies on the first-boot preload.
+grep -q '^boot-target=gaming' "$ROOT/etc/mainstream-gaming/prefs.conf" 2>/dev/null || exit 0
+
+# Resolve the target's gaming account from the TARGET passwd (lowest-uid human
+# user, matching gaming-mode-arm-check), not the live env's liveuser.
+line="$(awk -F: '$3 >= 1000 && $3 < 60000 { print $3":"$4":"$1":"$6 }' \
+    "$ROOT/etc/passwd" 2>/dev/null | sort -t: -n | head -1)"
+[[ -n "$line" ]] || exit 0
+IFS=: read -r tuid tgid tuser thome <<<"$line"
+[[ -n "$tuid" && -n "$thome" ]] || exit 0
+
+dest="$ROOT$thome/.local/share/Steam"
+[[ -e "$dest" ]] && exit 0   # never clobber an existing Steam
+
+# The live env carries no Steam; pull it plus a virtual display (multilib is
+# enabled in the live pacman.conf). Bounded by the step timeout.
+pacman -Sy --needed --noconfirm steam xorg-server-xvfb >/dev/null 2>&1 || exit 0
+
+# Stage on the TARGET disk — the live overlay is a 1G tmpfs cow that can't hold
+# the ~1.3G client. Steam refuses to run as root, so run it as the live user
+# with HOME pointed at the target stage.
+stage="$ROOT/var/tmp/mainstream-steam-seed"
+rm -rf "$stage"
+install -d "$stage/.local/share/Steam/package"
+echo steamdeck_stable > "$stage/.local/share/Steam/package/beta"
+if [[ -f /usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz ]]; then
+    tar -xf /usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz \
+        -C "$stage/.local/share/Steam" 2>/dev/null
+fi
+chown -R liveuser:liveuser "$stage"
+
+# Launch Steam headless as the live user; it reads package/beta and downloads
+# the Deck client. Poll for the manifest, then stop Steam.
+manifest="$stage/.local/share/Steam/package/steam_client_steamdeck_stable_ubuntu12.installed"
+runuser -u liveuser -- env HOME="$stage" \
+    bash -c 'setsid xvfb-run -a steam -silent </dev/null >/dev/null 2>&1 &' \
+    >/dev/null 2>&1 || { rm -rf "$stage"; exit 0; }
+
+for _ in $(seq 1 180); do          # ~15 min; the step timeout bounds the whole job
+    [[ -s "$manifest" ]] && break
+    sleep 5
+done
+
+runuser -u liveuser -- env HOME="$stage" steam -shutdown >/dev/null 2>&1 || true
+sleep 3
+pkill -u liveuser -f steam 2>/dev/null || true
+pkill -u liveuser -f Xvfb  2>/dev/null || true
+
+# Land it on the target only if the Deck client actually completed.
+if [[ -s "$manifest" ]]; then
+    install -d "$ROOT$thome/.local/share"
+    mv "$stage/.local/share/Steam" "$dest"
+    chown -R "$tuid:$tgid" "$dest"
+fi
+rm -rf "$stage"
+exit 0

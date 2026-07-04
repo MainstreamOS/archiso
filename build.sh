@@ -1494,23 +1494,6 @@ chmod +x -- "${PATCHED_MKARCHISO}"
     tail -n +2 "${MKARCHISO}"
 } > "${PATCHED_MKARCHISO}"
 
-# ── Steam Deck client seed (Console Mode first-boot pre-provision) ──────────
-# If a captured Steam client seed is present, bake it into the airootfs so a
-# Console install extracts it (mainstream-steam-seed-extract) instead of
-# downloading Steam's ~480MB client on first boot. The seed is large and NOT
-# tracked in git (see .gitignore); finalize-install removes it from the target
-# so non-Console installs never carry it. Override the path with STEAM_DECK_SEED.
-_seed_home="${SUDO_USER:+/home/$SUDO_USER}"
-STEAM_DECK_SEED="${STEAM_DECK_SEED:-${_seed_home:-$HOME}/steam-deck-seed.tar.zst}"
-_seed_dst="${PROFILE_DIR}/airootfs/usr/share/mainstream-steam-seed/steam-deck-seed.tar.zst"
-if [[ -f "$STEAM_DECK_SEED" ]]; then
-    install -Dm644 "$STEAM_DECK_SEED" "$_seed_dst"
-    info "Steam Deck seed baked into airootfs ($(du -h "$STEAM_DECK_SEED" | cut -f1))."
-else
-    rm -f "$_seed_dst" 2>/dev/null || true
-    warn "No Steam Deck seed at $STEAM_DECK_SEED — Console installs will download Steam on first boot."
-fi
-
 echo ">>> Building ISO (this takes several minutes)..."
 
 # Sanitize the local repo one final time in case packages were corrupted
