@@ -26,8 +26,9 @@
 #   3. Runs the patched mkarchiso to build the ISO.
 #   4. Runs `limine bios-install <iso>` to embed Limine's MBR bootstrap code.
 #
-# Requirements (build host):
-#   pacman -S limine dosfstools mtools xorriso squashfs-tools erofs-utils
+# Requirements (build host): the mkarchiso toolchain (mtools, libisoburn,
+# erofs-utils, arch-install-scripts, ...) and limine are installed/fetched by
+# this script automatically; it just needs to run as root with network access.
 
 set -euo pipefail
 
@@ -1359,9 +1360,20 @@ if [[ "$NVIDIA_PROFILE" != true ]]; then
 fi
 
 # ── ISO build dependency check ─────────────────────────────────────────────
-for _bin in mkfs.fat mmd mcopy xorriso mksquashfs curl tar make cc; do
+# We ship our own mkarchiso (SCRIPT_DIR/archiso/mkarchiso) instead of the archiso
+# package, so mkarchiso's toolchain isn't pulled in as a dependency. Install it
+# here — this runs as root and pacman-installs other build deps too — so a build
+# on a fresh system (which carries none of it) just works. The set mirrors the
+# archiso package's depends.
+pacman -S --noconfirm --needed \
+    arch-install-scripts dosfstools e2fsprogs erofs-utils libarchive \
+    libisoburn mtools squashfs-tools 2>&1 | grep -v "is up to date" || true
+
+for _bin in mkfs.fat mmd mcopy xorriso mksquashfs mkfs.erofs pacstrap curl tar make cc; do
     if ! command -v "${_bin}" &>/dev/null; then
-        echo "ERROR: '${_bin}' not found. Install it on the build host." >&2
+        echo "ERROR: '${_bin}' still missing after installing the mkarchiso toolchain." >&2
+        echo "       Check network/repo access, or install it by hand:" >&2
+        echo "       pacman -S arch-install-scripts dosfstools erofs-utils libisoburn mtools squashfs-tools" >&2
         exit 1
     fi
 done
