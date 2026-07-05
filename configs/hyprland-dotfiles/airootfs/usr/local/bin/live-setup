@@ -58,7 +58,7 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 # fresh install gets the full default set from Config.qml. Keep DEFAULT_PINS in
 # sync with Config.qml dock.pinnedApps; "settings" is a Quickshell-internal
 # token (no .desktop), always kept.
-DEFAULT_PINS=(chromium org.gnome.Nautilus org.gnome.TextEditor mpv com.spotify.Client settings kitty org.gnome.Software)
+DEFAULT_PINS=(chromium org.gnome.Nautilus org.gnome.TextEditor mpv spotify settings kitty org.gnome.Software)
 _pin_dirs=(/usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications" /var/lib/flatpak/exports/share/applications)
 LIVE_PINS=()
 for _app in "${DEFAULT_PINS[@]}"; do
