@@ -101,12 +101,26 @@ app_dirs = [
     f"/home/{user}/.local/share/flatpak/exports/share/applications",
 ]
 
+# A pin can be either a desktop-file id (org.gnome.Nautilus) or a window
+# class that some entry declares via StartupWMClass (the spotify pin vs
+# spotify-launcher.desktop) — collect both.
 available = set()
 for directory in app_dirs:
     try:
         for entry in os.listdir(directory):
-            if entry.endswith(".desktop"):
-                available.add(entry[:-8].lower())
+            if not entry.endswith(".desktop"):
+                continue
+            available.add(entry[:-8].lower())
+            try:
+                with open(os.path.join(directory, entry), encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if line.startswith("StartupWMClass="):
+                            wmclass = line.split("=", 1)[1].strip().lower()
+                            if wmclass:
+                                available.add(wmclass)
+                            break
+            except OSError:
+                pass
     except OSError:
         pass
 

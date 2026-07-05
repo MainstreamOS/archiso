@@ -237,7 +237,20 @@ dirs = [
 avail = set()
 for d in dirs:
     try:
-        avail |= {e[:-8].lower() for e in os.listdir(d) if e.endswith(".desktop")}
+        for e in os.listdir(d):
+            if not e.endswith(".desktop"):
+                continue
+            avail.add(e[:-8].lower())
+            try:
+                with open(os.path.join(d, e), encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if line.startswith("StartupWMClass="):
+                            wmclass = line.split("=", 1)[1].strip().lower()
+                            if wmclass:
+                                avail.add(wmclass)
+                            break
+            except OSError:
+                pass
     except OSError:
         pass
 src = open(qml, encoding="utf-8").read()
