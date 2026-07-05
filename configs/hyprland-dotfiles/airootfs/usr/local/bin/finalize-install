@@ -105,6 +105,9 @@ LIVEONLY=(
     ckbcomp
     hwinfo
     kpmcore
+    kcrash
+    kcoreaddons
+    yaml-cpp
     b43-fwcutter
     os-prober
     testdisk
