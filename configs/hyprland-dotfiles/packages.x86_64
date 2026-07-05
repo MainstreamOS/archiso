@@ -119,7 +119,6 @@ xdg-desktop-portal-gtk
 xdg-desktop-portal-xapp
 xdg-utils
 layer-shell-qt
-kdialog
 
 # ==============================================================================
 # mainstream meta-packages (pre-built, from local repo)
@@ -153,7 +152,6 @@ tesseract-data-eng
 # Pre-built heavy dependencies (avoids 10-40 min compile during install)
 # ==============================================================================
 qt6-websockets
-kdsoap-ws-discovery-client
 
 # ==============================================================================
 # Audio (PipeWire)
