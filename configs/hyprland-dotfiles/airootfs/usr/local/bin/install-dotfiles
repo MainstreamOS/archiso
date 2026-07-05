@@ -248,6 +248,22 @@ for pkg in "${REQUIRED_EXTRAS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 11.4 FLATHUB REMOTE
+# ---------------------------------------------------------------------------
+# The pacmanflatpak backend only adds the Flathub remote lazily when a
+# Flatpak ref is actually installed. The default app set is fully native
+# now, so make sure the remote exists anyway — gnome-software's Flathub
+# catalog (the user-install path) depends on it.
+if command -v flatpak >/dev/null 2>&1; then
+    info "Ensuring the Flathub remote is configured..."
+    if flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo 2>&1; then
+        info "Flathub remote present."
+    else
+        warn "Could not add the Flathub remote — gnome-software can add it on first use."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 11.5 AUDIO SERVICES
 # ---------------------------------------------------------------------------
 # The mainstream-audio package (installed in section 8 above) ships three
