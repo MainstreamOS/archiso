@@ -12,6 +12,10 @@
 #   mount-block <device> <fstype> <uuid> <mountpoint> <label> <fstab|nofstab>
 #       Local block device (HDD/SSD partition). Optionally relabels the FS.
 #
+#   format-mount <device> <mountpoint> <label> <fstab|nofstab>
+#       Format a provably-blank device as ext4, then mount it like mount-block.
+#       Refuses any device that isn't empty (see ensure_device_blank).
+#
 #   mount-smb   <host> <share> <mountpoint> <label> <username|guest> <fstab|nofstab>
 #       SMB/CIFS share. When username != "guest", the password is read from
 #       stdin (NOT passed on the command line so it never appears in /proc/ps).
@@ -72,9 +76,17 @@ reject_label_unsafe() {  # $1=field name  $2=value
 
 # Constrain the root-created/mounted/chowned mountpoint to a safe path under /mnt.
 validate_mountpoint() {  # $1=mountpoint
-    if [[ ! "$1" =~ ^/mnt/[A-Za-z0-9._/-]+$ || "$1" == *..* ]]; then
-        die "mountpoint must be a safe path under /mnt/ (no '..')"
+    if [[ ! "$1" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]]; then
+        die "mountpoint must be a safe path under /mnt/"
     fi
+    # The regex alone lets '.', '..' and empty segments through (/mnt/.,
+    # /mnt/./x, /mnt//x) — those normalise to /mnt itself or escape it.
+    local seg IFS=/
+    for seg in ${1#/mnt/}; do
+        if [[ -z "$seg" || "$seg" == "." || "$seg" == ".." ]]; then
+            die "mountpoint has an invalid path segment"
+        fi
+    done
 }
 
 # Resolve the human who invoked pkexec so we can chown native-ownership
@@ -111,6 +123,16 @@ strip_fstab_match() {
     sed -i "\#^${key}\b#d" /etc/fstab
 }
 
+# Remove any fstab row whose mountpoint (column 2) equals $1, anchored on the
+# column rather than a space-wrapped substring, leaving comments/others intact.
+strip_fstab_mountpoint() {  # $1=mountpoint
+    [[ -f /etc/fstab ]] || return 0
+    local tmp; tmp="$(mktemp)"
+    awk -v mp="$1" '$0 ~ /^[[:space:]]*#/ || $2 != mp' /etc/fstab > "$tmp"
+    cat "$tmp" > /etc/fstab
+    rm -f "$tmp"
+}
+
 # ── Subcommand: mount-block ───────────────────────────────────────────────
 mount_block() {
     if [[ $# -ne 6 ]]; then
@@ -125,6 +147,10 @@ mount_block() {
     reject_label_unsafe label "$label"
 
     [[ -b "$device" ]] || { log "Not a block device: $device"; exit 1; }
+    # Resolve the device from the UUID we will mount, so a hostile caller can't
+    # aim the relabel/chown at a different device than the one being mounted.
+    local resolved; resolved="$(blkid -U "$uuid" 2>/dev/null || true)"
+    [[ -n "$resolved" && -b "$resolved" ]] && device="$resolved"
     resolve_caller
 
     # Optional relabel. If $label is non-empty AND differs from the current
@@ -162,8 +188,16 @@ mount_block() {
             mount_opts="defaults,nofail,rw,$gvfs_opts" ;;
     esac
 
+    # Mount NTFS with the in-kernel ntfs3 driver: blkid reports "ntfs",
+    # which mount would hand to the FUSE helper (or, without it, the
+    # legacy read-only ntfs module). Everything else mounts as reported.
+    local mount_fstype="$fstype"
+    case "$fstype" in
+        ntfs|ntfs-3g) mount_fstype="ntfs3" ;;
+    esac
+
     mkdir -p "$mountpoint"
-    mount -o "$mount_opts" UUID="$uuid" "$mountpoint"
+    mount -t "$mount_fstype" -o "$mount_opts" UUID="$uuid" "$mountpoint"
 
     case "$fstype" in
         ext2|ext3|ext4|btrfs|xfs) chown "$caller_uid:$caller_gid" "$mountpoint" ;;
@@ -171,9 +205,93 @@ mount_block() {
 
     if [[ "$fstab_mode" == "fstab" ]]; then
         strip_fstab_match "UUID=${uuid}"
-        printf 'UUID=%s %s %s %s 0 2\n' "$uuid" "$mountpoint" "$fstype" "$mount_opts" >> /etc/fstab
+        printf 'UUID=%s %s %s %s 0 2\n' "$uuid" "$mountpoint" "$mount_fstype" "$mount_opts" >> /etc/fstab
     fi
     echo "Mounted $device at $mountpoint"
+}
+
+# Refuse to act on anything that holds real data: not mounted, no child
+# partitions, no recognized filesystem, and not part of the running system
+# disk. Residual signatures on an otherwise-blank disk (an empty partition
+# table, a stale superblock left from a previous format) are cleared by the
+# format step rather than refused here. This is the hard gate the format flow
+# relies on — it never trusts the caller's claim that a device is blank.
+ensure_device_blank() {  # $1=device
+    local dev="$1"
+
+    local mnt
+    mnt="$(lsblk -nro MOUNTPOINT "$dev" 2>/dev/null | grep -v '^$' | head -n1 || true)"
+    [[ -n "$mnt" ]] && die "$dev is mounted at $mnt — refusing to format"
+
+    [[ "$(lsblk -nro NAME "$dev" 2>/dev/null | wc -l)" -gt 1 ]] \
+        && die "$dev has partitions — refusing to format a partitioned device"
+
+    local existing
+    existing="$(blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)"
+    [[ -n "$existing" ]] && die "$dev already holds a $existing filesystem — refusing to format"
+
+    local mp src disk
+    for mp in / /boot /boot/efi /efi; do
+        # --nofsroot strips the btrfs "[/@]" subvolume suffix so the source is
+        # a plain device path; the %%\[* is belt-and-suspenders for other fs.
+        src="$(findmnt -nro SOURCE --nofsroot "$mp" 2>/dev/null || true)"
+        src="${src%%\[*}"
+        [[ -z "$src" ]] && continue
+        disk="/dev/$(lsblk -nro PKNAME "$src" 2>/dev/null | head -n1)"
+        [[ "$dev" == "$src" || "$dev" == "$disk" ]] \
+            && die "$dev is part of the running system disk — refusing to format"
+    done
+}
+
+# ── Subcommand: format-mount ──────────────────────────────────────────────
+# Format a provably-blank device as ext4, then hand off to mount-block to mount
+# it and (optionally) add the fstab entry. Only ever runs mkfs after the device
+# clears ensure_device_blank.
+format_mount() {
+    if [[ $# -ne 4 ]]; then
+        log "usage: format-mount <device> <mountpoint> <label> <fstab|nofstab>"
+        exit 64
+    fi
+    local device="$1" mountpoint="$2" label="$3" fstab_mode="$4"
+
+    validate_mountpoint "$mountpoint"
+    reject_label_unsafe label "$label"
+    [[ -b "$device" ]] || { log "Not a block device: $device"; exit 1; }
+    command -v mkfs.ext4 >/dev/null || { log "mkfs.ext4 not found (install e2fsprogs)"; exit 2; }
+
+    ensure_device_blank "$device"
+
+    # Replace any prior setup so a reformat doesn't strand a stale fstab line.
+    # Clear the drive's old UUID entry (if it still carries one) and unmount +
+    # drop anything at the target mountpoint; mount-block re-adds the fresh row.
+    local old_uuid
+    old_uuid="$(blkid -p -s UUID -o value "$device" 2>/dev/null || true)"
+    [[ -n "$old_uuid" ]] && strip_fstab_match "UUID=${old_uuid}"
+    if mountpoint -q "$mountpoint" 2>/dev/null; then
+        umount "$mountpoint" 2>/dev/null || umount -l "$mountpoint" 2>/dev/null || true
+    fi
+    strip_fstab_mountpoint "$mountpoint"
+
+    # Clear residual signatures (empty partition table, stale superblock) so
+    # mkfs starts from a truly clean device.
+    wipefs -a "$device" >/dev/null 2>&1 || true
+
+    # ext4 labels cap at 16 bytes; keep the label within that so mkfs and the
+    # downstream relabel agree and the operation never aborts on a long name.
+    local fslabel="${label:0:16}"
+    log "Formatting $device as ext4..."
+    if [[ -n "$fslabel" ]]; then
+        mkfs.ext4 -q -L "$fslabel" "$device"
+    else
+        mkfs.ext4 -q "$device"
+    fi
+    udevadm settle 2>/dev/null || true
+
+    local uuid
+    uuid="$(blkid -p -s UUID -o value "$device" 2>/dev/null || true)"
+    [[ -n "$uuid" ]] || die "format succeeded but no UUID resolved for $device"
+
+    mount_block "$device" ext4 "$uuid" "$mountpoint" "$fslabel" "$fstab_mode"
 }
 
 # ── Credentials dir (SMB only) ────────────────────────────────────────────
@@ -254,7 +372,7 @@ mount_smb() {
         # Strip any earlier line for the same mountpoint (column 2) — the
         # source URL might have a different host/share spelling so we key
         # on the mountpoint instead.
-        sed -i "\# ${mountpoint} #d" /etc/fstab
+        strip_fstab_mountpoint "$mountpoint"
         printf '%s %s cifs %s 0 0\n' "$(escape_for_fstab "$source")" "$mountpoint" "$mount_opts" >> /etc/fstab
     fi
     echo "Mounted $source at $mountpoint"
@@ -291,7 +409,7 @@ mount_nfs() {
     mount -t nfs -o "$mount_opts" "$source" "$mountpoint"
 
     if [[ "$fstab_mode" == "fstab" ]]; then
-        sed -i "\# ${mountpoint} #d" /etc/fstab
+        strip_fstab_mountpoint "$mountpoint"
         printf '%s %s nfs %s 0 0\n' "$(escape_for_fstab "$source")" "$mountpoint" "$mount_opts" >> /etc/fstab
     fi
     echo "Mounted $source at $mountpoint"
@@ -355,7 +473,7 @@ unmount() {
     fi
 
     if [[ "$mode" == "remove-fstab" ]]; then
-        sed -i "\# ${mountpoint} #d" /etc/fstab
+        strip_fstab_mountpoint "$mountpoint"
 
         # SMB credentials we wrote for this mountpoint, if any.
         local creds_file; creds_file="$(creds_path_for_mountpoint "$mountpoint")"
@@ -368,13 +486,14 @@ unmount() {
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────
-[[ $# -lt 1 ]] && { log "usage: $0 {mount-block|mount-smb|mount-nfs|unmount} ..."; exit 64; }
+[[ $# -lt 1 ]] && { log "usage: $0 {mount-block|format-mount|mount-smb|mount-nfs|unmount} ..."; exit 64; }
 
 sub="$1"; shift
 case "$sub" in
-    mount-block) mount_block "$@" ;;
-    mount-smb)   mount_smb   "$@" ;;
-    mount-nfs)   mount_nfs   "$@" ;;
-    unmount)     unmount     "$@" ;;
+    mount-block)  mount_block  "$@" ;;
+    format-mount) format_mount "$@" ;;
+    mount-smb)    mount_smb    "$@" ;;
+    mount-nfs)    mount_nfs    "$@" ;;
+    unmount)      unmount      "$@" ;;
     *) log "Unknown subcommand: $sub"; exit 64 ;;
 esac

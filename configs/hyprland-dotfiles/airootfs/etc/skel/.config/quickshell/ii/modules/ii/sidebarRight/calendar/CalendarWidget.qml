@@ -1,6 +1,5 @@
 import qs
 import qs.services
-import Quickshell
 import qs.modules.common
 import qs.modules.common.widgets
 import "calendar_layout.js" as CalendarLayout
@@ -71,20 +70,6 @@ Item {
             }
             CalendarHeaderButton {
                 forceCircle: true
-                visible: CalendarEvents.accountsAppAvailable
-                tooltipText: Translation.tr("Online Accounts")
-                downAction: () => {
-                    Quickshell.execDetached(["gnome-online-accounts-gtk"]);
-                }
-                contentItem: MaterialSymbol {
-                    text: "person_add"
-                    iconSize: Appearance.font.pixelSize.larger
-                    horizontalAlignment: Text.AlignHCenter
-                    color: Appearance.colors.colOnLayer1
-                }
-            }
-            CalendarHeaderButton {
-                forceCircle: true
                 downAction: () => {
                     monthShift--;
                 }
@@ -143,8 +128,6 @@ Item {
                         isToday: cellData.today
                         hasTasks: Todo.list.length >= 0 && cellData.year !== undefined && Todo.hasTasksForDate(cellData.year, cellData.month, cellData.monthDay)
                         tasksForDay: Todo.list.length >= 0 && cellData.year !== undefined ? Todo.getTasksForDate(cellData.year, cellData.month, cellData.monthDay) : []
-                        hasEvents: CalendarEvents.eventsByDate && cellData.year !== undefined && CalendarEvents.hasEventsForDate(cellData.year, cellData.month, cellData.monthDay)
-                        eventsForDay: CalendarEvents.eventsByDate && cellData.year !== undefined ? CalendarEvents.getEventsForDate(cellData.year, cellData.month, cellData.monthDay) : []
                     }
                 }
             }

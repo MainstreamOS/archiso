@@ -1,80 +1,28 @@
 pragma Singleton
 pragma ComponentBehavior: Bound
 
-import qs
 import qs.modules.common
-import qs.modules.common.functions
 import Quickshell;
 import Quickshell.Io;
 import QtQuick;
 
 /**
- * To-do list manager. Local items live in a JSON file; on systems with
- * evolution-data-server the online accounts' task lists (e.g. Google
- * Tasks) are merged in, and changes to those items are written back
- * through the eds-tasks helper so they sync to the account. New tasks go
- * to the first online task list when one exists, otherwise to the local
- * file. Each item has "content", "done", and optional "date"; synced
- * items additionally carry "eds", "uid", "listUid", and "listName".
+ * Simple to-do list manager.
+ * Each item is an object with "content", "done", and optional "date" properties.
  */
 Singleton {
     id: root
     property var filePath: Directories.todoPath
-    property var localList: []
-    property var edsTasks: []
-    property var edsLists: []
-    property var list: localList.concat(edsTasks)
-
-    readonly property var syncList: {
-        for (let i = 0; i < edsLists.length; i++)
-            if (edsLists[i].remote) return edsLists[i]
-        return null
-    }
-
-    readonly property string helperPath: FileUtils.trimFileProtocol(`${Directories.scriptPath}/calendar/eds-tasks.py`)
-
-    function _persistLocal() {
-        todoFileView.setText(JSON.stringify(root.localList))
-    }
-
-    function _isEds(index) {
-        return index >= localList.length
-    }
-
-    function _edsAt(index) {
-        return edsTasks[index - localList.length]
-    }
-
-    function _edsWrite(args) {
-        Quickshell.execDetached([root.helperPath].concat(args))
-        edsReconcileTimer.restart()
-    }
+    property var list: []
 
     function addItem(item) {
-        localList.push(item)
-        root.localList = localList.slice(0)
-        _persistLocal()
+        list.push(item)
+        // Reassign to trigger onListChanged
+        root.list = list.slice(0)
+        todoFileView.setText(JSON.stringify(root.list))
     }
 
     function addTask(desc, date) {
-        if (root.syncList) {
-            const item = {
-                "content": desc,
-                "done": false,
-                "eds": true,
-                "uid": "",
-                "listUid": root.syncList.uid,
-                "listName": root.syncList.name,
-            }
-            if (date !== undefined && date !== null) {
-                item.date = date.toISOString()
-                _edsWrite(["add", root.syncList.uid, desc, date.toISOString().slice(0, 10)])
-            } else {
-                _edsWrite(["add", root.syncList.uid, desc, "-"])
-            }
-            root.edsTasks = edsTasks.concat([item])
-            return
-        }
         const item = {
             "content": desc,
             "done": false,
@@ -85,27 +33,15 @@ Singleton {
     }
 
     function updateTask(index, desc, date) {
-        if (index < 0 || index >= list.length) return
-        if (_isEds(index)) {
-            const item = _edsAt(index)
-            item.content = desc
+        if (index >= 0 && index < list.length) {
+            list[index].content = desc
             if (date !== undefined && date !== null)
-                item.date = date.toISOString()
+                list[index].date = date.toISOString()
             else
-                delete item.date
-            root.edsTasks = edsTasks.slice(0)
-            if (item.uid.length > 0)
-                _edsWrite(["update", item.listUid, item.uid, desc,
-                          (date !== undefined && date !== null) ? date.toISOString().slice(0, 10) : "-"])
-            return
+                delete list[index].date
+            root.list = list.slice(0)
+            todoFileView.setText(JSON.stringify(root.list))
         }
-        localList[index].content = desc
-        if (date !== undefined && date !== null)
-            localList[index].date = date.toISOString()
-        else
-            delete localList[index].date
-        root.localList = localList.slice(0)
-        _persistLocal()
     }
 
     function getTasksForDate(year, month, day) {
@@ -133,91 +69,39 @@ Singleton {
         return false
     }
 
-    function _setDone(index, value) {
-        if (index < 0 || index >= list.length) return
-        if (_isEds(index)) {
-            const item = _edsAt(index)
-            item.done = value
-            root.edsTasks = edsTasks.slice(0)
-            if (item.uid.length > 0)
-                _edsWrite(["set-done", item.listUid, item.uid, value ? "1" : "0"])
-            return
-        }
-        localList[index].done = value
-        root.localList = localList.slice(0)
-        _persistLocal()
-    }
-
     function markDone(index) {
-        _setDone(index, true)
+        if (index >= 0 && index < list.length) {
+            list[index].done = true
+            // Reassign to trigger onListChanged
+            root.list = list.slice(0)
+            todoFileView.setText(JSON.stringify(root.list))
+        }
     }
 
     function markUnfinished(index) {
-        _setDone(index, false)
+        if (index >= 0 && index < list.length) {
+            list[index].done = false
+            // Reassign to trigger onListChanged
+            root.list = list.slice(0)
+            todoFileView.setText(JSON.stringify(root.list))
+        }
     }
 
     function deleteItem(index) {
-        if (index < 0 || index >= list.length) return
-        if (_isEds(index)) {
-            const item = _edsAt(index)
-            edsTasks.splice(index - localList.length, 1)
-            root.edsTasks = edsTasks.slice(0)
-            if (item.uid.length > 0)
-                _edsWrite(["delete", item.listUid, item.uid])
-            return
+        if (index >= 0 && index < list.length) {
+            list.splice(index, 1)
+            // Reassign to trigger onListChanged
+            root.list = list.slice(0)
+            todoFileView.setText(JSON.stringify(root.list))
         }
-        localList.splice(index, 1)
-        root.localList = localList.slice(0)
-        _persistLocal()
     }
 
     function refresh() {
         todoFileView.reload()
-        if (!edsFetchProc.running) edsFetchProc.running = true
     }
 
     Component.onCompleted: {
         refresh()
-    }
-
-    Process {
-        id: edsFetchProc
-        command: [root.helperPath, "list"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    const data = JSON.parse(this.text || "{}")
-                    root.edsLists = data.lists ?? []
-                    root.edsTasks = data.tasks ?? []
-                } catch (e) {
-                    // keep the previous state on parse trouble
-                }
-            }
-        }
-    }
-
-    // Write operations fire detached; pull the authoritative state (real
-    // uids, server-side tweaks) shortly after the last one.
-    Timer {
-        id: edsReconcileTimer
-        interval: 2000
-        onTriggered: {
-            if (!edsFetchProc.running) edsFetchProc.running = true
-        }
-    }
-
-    Connections {
-        target: GlobalStates
-        function onSidebarRightOpenChanged() {
-            if (GlobalStates.sidebarRightOpen) root.refresh()
-        }
-    }
-
-    Timer {
-        interval: 15 * 60 * 1000
-        running: true
-        repeat: true
-        onTriggered: root.refresh()
     }
 
     FileView {
@@ -225,17 +109,18 @@ Singleton {
         path: Qt.resolvedUrl(root.filePath)
         onLoaded: {
             const fileContents = todoFileView.text()
-            root.localList = JSON.parse(fileContents)
+            root.list = JSON.parse(fileContents)
             console.log("[To Do] File loaded")
         }
         onLoadFailed: (error) => {
             if(error == FileViewError.FileNotFound) {
                 console.log("[To Do] File not found, creating new file.")
-                root.localList = []
-                todoFileView.setText(JSON.stringify(root.localList))
+                root.list = []
+                todoFileView.setText(JSON.stringify(root.list))
             } else {
                 console.log("[To Do] Error loading file: " + error)
             }
         }
     }
 }
+
