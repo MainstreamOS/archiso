@@ -466,6 +466,8 @@ AUR_DEPS=(
     # [mainstream] at install time.
     "gamescope-session-git"
     "gamescope-session-steam-git"
+    "xpadneo-dkms"
+    "game-devices-udev"
 )
 
 # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
