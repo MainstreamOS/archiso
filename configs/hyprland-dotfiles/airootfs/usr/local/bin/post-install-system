@@ -78,7 +78,7 @@ if command -v zram-generator &>/dev/null || pacman -Q zram-generator &>/dev/null
     info "Configuring zram swap..."
     cat > /etc/systemd/zram-generator.conf << 'ZRAMEOF'
 [zram0]
-zram-size = min(ram, 8192)
+zram-size = min(ram, 32768)
 compression-algorithm = zstd
 ZRAMEOF
     info "zram configured."
@@ -90,8 +90,9 @@ fi
 info "Applying sysctl performance tuning..."
 mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/99-performance.conf << 'SYSCTLEOF'
-# Keep more data in RAM — less aggressive swapping to zram
-vm.swappiness = 10
+# Swap lives in compressed RAM (zram) — swap eagerly, skip readahead
+vm.swappiness = 180
+vm.page-cluster = 0
 
 # Start flushing dirty pages earlier to avoid big write spikes
 vm.dirty_background_ratio = 5
