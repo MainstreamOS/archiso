@@ -233,12 +233,12 @@ pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
 if $HAS_INTEL; then
     if $IS_ARC; then
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
-        install_pkgs_opt linux-firmware-intel
+        install_pkgs_opt linux-firmware-intel vpl-gpu-rt
     elif $IS_OLD_INTEL; then
         install_pkgs mesa lib32-mesa libva-intel-driver
     else
         install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
-        install_pkgs_opt linux-firmware-intel
+        install_pkgs_opt linux-firmware-intel vpl-gpu-rt
     fi
     info "Intel packages installed."
 fi

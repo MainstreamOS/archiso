@@ -94,6 +94,7 @@ mesa
 vulkan-radeon
 vulkan-intel
 intel-media-driver
+libva-utils
 # nvidia-open: Turing+ live accel, loaded post-pivot (kept out of initramfs).
 # Pre-Turing NVIDIA is served by the NVIDIA (legacy) edition ISO.
 nvidia-open
