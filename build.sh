@@ -468,6 +468,16 @@ AUR_DEPS=(
     "gamescope-session-steam-git"
     "xpadneo-dkms"
     "game-devices-udev"
+
+    # Native OBS content-creation plugins (mainstream-obs meta depends on
+    # these + obs-studio + v4l2loopback; prebuilt into [mainstream] so no AUR
+    # on user machines). ABI-tied to obs-studio — rebuild on an obs-studio bump.
+    # lib32-obs-vkcapture is a split sibling of obs-vkcapture, emitted and
+    # collected automatically — not listed as its own entry.
+    "obs-vkcapture"
+    "obs-move-transition"
+    "obs-source-record"
+    "obs-source-clone"
 )
 
 # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
