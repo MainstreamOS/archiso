@@ -26,7 +26,7 @@ export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 # Custom wallpaper for live install
 DEFAULT_WALL="$HOME/Desktop/Mainstream_Ambient_Ribbon_4K.png"
-[[ -f "$DEFAULT_WALL" ]] || DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+[[ -f "$DEFAULT_WALL" ]] || DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.webp"
 
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 # init-qs.sh normally creates the venv, but on the live ISO uv is absent and

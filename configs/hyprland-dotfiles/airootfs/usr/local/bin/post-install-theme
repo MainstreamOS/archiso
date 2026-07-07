@@ -115,7 +115,7 @@ VENVEOF
     # Generate initial matugen color scheme from default wallpaper
     # This ensures theming works correctly on first login without requiring
     # the user to manually set a wallpaper
-    DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+    DEFAULT_WALL="$MAIN_USER_HOME/.config/quickshell/ii/assets/images/default_wallpaper.webp"
     SWITCHWALL="$MAIN_USER_HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 
     if [[ -f "$DEFAULT_WALL" ]] && command -v matugen &>/dev/null; then

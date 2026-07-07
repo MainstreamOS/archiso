@@ -24,7 +24,7 @@ DOTFILES_DIR="$HOME/dots-hyprland"
 [[ -d "$DOTFILES_DIR" ]] || DOTFILES_DIR="/opt/dots-hyprland"
 
 VENV_PATH="$HOME/.local/state/quickshell/.venv"
-DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.png"
+DEFAULT_WALL="$HOME/.config/quickshell/ii/assets/images/default_wallpaper.webp"
 SWITCHWALL="$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh"
 AUTOSTART_FILE="$HOME/.config/autostart/dotfiles-first-login.desktop"
 SYSTEMD_SERVICE_FILE="$HOME/.config/systemd/user/dotfiles-first-login.service"
