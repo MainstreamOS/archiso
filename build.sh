@@ -421,6 +421,7 @@ METAPKGS=(
     "mainstream-extras"
     "mainstream-bibata-modern-classic-bin"
     "mainstream-gaming"
+    "mainstream-welcome-installer"
 )
 # mainstream-microtex-git is built separately below — its cmake source build
 # needs makepkg -s (syncdeps) and --skippgpcheck, which the generic

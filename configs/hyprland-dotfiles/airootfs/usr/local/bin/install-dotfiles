@@ -136,6 +136,7 @@ METAPKGS=(
     "mainstream-quickshell-git"
     "mainstream-extras"
     "mainstream-bibata-modern-classic-bin"
+    "mainstream-welcome-installer"
     "topgrade"
 )
 
