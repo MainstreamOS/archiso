@@ -479,6 +479,8 @@ AUR_DEPS=(
     "obs-move-transition"
     "obs-source-record"
     "obs-source-clone"
+    "obs-composite-blur"
+    "obs-shaderfilter-git"
 )
 
 # ── Legacy NVIDIA DKMS drivers (Pascal/Maxwell/Volta → Kepler → Fermi) ──
