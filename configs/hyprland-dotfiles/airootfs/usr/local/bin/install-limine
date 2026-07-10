@@ -76,11 +76,13 @@ if [ -d "/boot/efi" ]; then
     BOOT_PATH="/boot/efi"
     IS_UEFI=true
     EFI_DEV=$(findmnt -n -o SOURCE /boot/efi)
-    TARGET_DISK=$(lsblk -no PKNAME "$EFI_DEV")
+    TARGET_DISK=$(lsblk -dno PKNAME "$EFI_DEV")
 else
     BOOT_PATH="/boot"
     IS_UEFI=false
-    TARGET_DISK=$(lsblk -no PKNAME "$DISK_HOST_DEV")
+    # -d (nodeps): a LUKS-backing partition also reports its open mapper's
+    # PKNAME, and the multi-line value would corrupt TARGET_DISK.
+    TARGET_DISK=$(lsblk -dno PKNAME "$DISK_HOST_DEV")
 fi
 
 # Ensure TARGET_DISK has the /dev/ prefix

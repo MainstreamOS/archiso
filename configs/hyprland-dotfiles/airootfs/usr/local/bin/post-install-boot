@@ -124,17 +124,20 @@ if [[ -r "$GPU_LIB" ]]; then
     # generic blkid probe cannot tell which disk is the install target.
     _gpu_swap_partuuid() {
         local root_dev root_disk
-        root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
+        root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//') || true
         [[ -n "$root_dev" ]] || return 0
         if [[ "$root_dev" == /dev/mapper/* ]]; then
             root_dev=$(cryptsetup status "$(basename "$root_dev")" 2>/dev/null \
-                | awk '/^[[:space:]]*device:/ {print $2; exit}')
+                | awk '/^[[:space:]]*device:/ {print $2; exit}') || true
             [[ -n "$root_dev" ]] || return 0
         fi
-        root_disk=$(lsblk -no PKNAME "$root_dev" 2>/dev/null)
+        # -d (nodeps) is load-bearing: without it a partition that hosts an
+        # open LUKS mapper reports its own PKNAME plus its child's, and the
+        # multi-line value poisons the /dev/ path below with exit 32.
+        root_disk=$(lsblk -dno PKNAME "$root_dev" 2>/dev/null) || true
         [[ -n "$root_disk" ]] || return 0
         lsblk -nlpo NAME,FSTYPE,PARTUUID "/dev/$root_disk" 2>/dev/null \
-            | awk '$2 == "swap" {print $3; exit}'
+            | awk '$2 == "swap" {print $3; exit}' || true
     }
 
     info "Detecting GPU hardware..."
@@ -152,6 +155,21 @@ if [[ -r "$GPU_LIB" ]]; then
     fi
 else
     warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
+fi
+
+# Encrypted installs: install-limine puts rd.luks.name= on the kernel
+# cmdline, which only the sd-encrypt hook honors — without it the initramfs
+# cannot unlock the root volume. Insert it after sd-vconsole so plymouth
+# still owns the passphrase prompt.
+if findmnt -n -o SOURCE / 2>/dev/null | grep -q '^/dev/mapper/'; then
+    if ! grep -qE '^HOOKS=.*sd-encrypt' /etc/mkinitcpio.conf; then
+        sed -i 's/\(^HOOKS=.*sd-vconsole\)/\1 sd-encrypt/' /etc/mkinitcpio.conf
+        if grep -qE '^HOOKS=.*sd-encrypt' /etc/mkinitcpio.conf; then
+            info "Encrypted root detected — added sd-encrypt to mkinitcpio HOOKS."
+        else
+            warn "Encrypted root detected but sd-encrypt could not be inserted into HOOKS — initramfs will not unlock the root volume."
+        fi
+    fi
 fi
 
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
