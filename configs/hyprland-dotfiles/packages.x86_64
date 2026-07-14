@@ -161,6 +161,7 @@ pipewire
 pipewire-alsa
 pipewire-jack
 gst-plugin-pipewire
+gst-libav
 alsa-utils
 
 # ==============================================================================
