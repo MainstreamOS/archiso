@@ -1626,6 +1626,9 @@ ISO_DIR="$(dirname "${ISO_PATH}")"
 ISO_FILE="$(basename "${ISO_PATH}")"
 ( cd "${ISO_DIR}" && sha256sum "${ISO_FILE}" > "${ISO_FILE}.sha256" )
 echo ">>> SHA256: $(cat "${ISO_PATH}.sha256")"
+if [[ -n "${SUDO_USER:-}" ]]; then
+    chown "${SUDO_USER}:" "${ISO_DIR}" "${ISO_PATH}" "${ISO_PATH}.sha256"
+fi
 if [[ -n "${GPGKEY:-}" ]]; then
     _sign_user="${SUDO_USER:-root}"
     rm -f "${ISO_PATH}.sig"
