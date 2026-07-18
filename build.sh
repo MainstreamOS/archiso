@@ -298,6 +298,7 @@ CLEAR_WORK=0
 REFRESH_PKGS=false
 CLEAN_BUILD=false
 CLEAN_CALAMARES=false
+RELEASE_BUILD=false
 # Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
 # (NVIDIA_DEPS). Standard ISO omits them to stay slim.
 NVIDIA_PROFILE=false
@@ -328,6 +329,10 @@ for arg in "$@"; do
             NVIDIA_PROFILE=true
             info "Legacy-NVIDIA edition requested — legacy NVIDIA prebuilts will be included."
             ;;
+        --release)
+            RELEASE_BUILD=true
+            info "Release build requested — dots-hyprland will be pinned to its latest version tag."
+            ;;
         --help|-h)
             cat <<'HELPEOF'
 Usage: sudo ./build.sh [options]
@@ -348,12 +353,19 @@ Edition options:
                   NVIDIA prebuilts for full accelerated support on pre-Turing
                   cards. Omit for the standard (slim) ISO.
 
+Release options:
+  --release       Pin dots-hyprland to its latest version tag (X.Y.Z) instead
+                  of the mainstream branch, for a reproducible release build.
+                  The ISO is auto-named and stamped with that version. Combine
+                  with --refresh to also rebuild the packages from the tag.
+
 Examples:
   sudo ./build.sh                     # ISO only (packages must already exist)
   sudo ./build.sh --refresh           # Rebuild packages + ISO
   sudo ./build.sh --clean -c          # Full clean rebuild (packages + work dir + ISO)
   sudo ./build.sh --cleancal          # Rebuild calamares + ISO
   sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
+  sudo ./build.sh --release --refresh # Release build: latest tag, packages rebuilt from it
 HELPEOF
             exit 0
             ;;
@@ -384,6 +396,13 @@ fi
 
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/MainstreamOS/dots-hyprland.git}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
+
+if [[ "$RELEASE_BUILD" == true ]]; then
+    DOTFILES_BRANCH=$(git ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
+        | awk -F/ '{print $NF}' | grep -E '^[0-9]{1,2}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+    [[ -n "$DOTFILES_BRANCH" ]] || die "--release: no version tag (X.Y.Z) found on $DOTFILES_REPO"
+    info "Release build: dots-hyprland pinned to tag $DOTFILES_BRANCH"
+fi
 
 # #############################################################################
 #
@@ -1575,6 +1594,22 @@ if [[ -n "${_ARCH_SUFFIX}" && "${_ARCH_SUFFIX}" != "-" ]]; then
         mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
         ISO_PATH="${_NEW_ISO_PATH}"
         echo ">>> Renamed ISO to: ${ISO_PATH}"
+    fi
+fi
+
+# ── Release naming: tag-versioned filename ─────────────────────────────────
+# When the baked dots tip carries a release tag (DOTS_TAG, resolved during
+# the skel deploy), the artifact becomes mainstream-<version>.iso — the
+# NVIDIA edition keeps its marker as mainstream-nvidia-<version>.iso.
+# Untagged builds keep the dated development name.
+if [[ -n "${DOTS_TAG:-}" ]]; then
+    _REL_BASE="mainstream"
+    [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-nvidia"
+    _NEW_ISO_PATH="$(dirname "${ISO_PATH}")/${_REL_BASE}-${DOTS_TAG}.iso"
+    if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
+        mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
+        ISO_PATH="${_NEW_ISO_PATH}"
+        echo ">>> Release build (dots ${DOTS_TAG}): ISO named $(basename "${ISO_PATH}")"
     fi
 fi
 
