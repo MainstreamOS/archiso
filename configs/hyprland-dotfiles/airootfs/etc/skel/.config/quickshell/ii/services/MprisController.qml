@@ -264,6 +264,5 @@ Singleton {
 		function playPause(): void { root.togglePlaying(); }
 		function previous(): void { root.previous(); }
 		function next(): void { root.next(); }
-		function recent(): string { return JSON.stringify(root.recentPlayerNames); }
 	}
 }
