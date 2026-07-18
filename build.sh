@@ -331,7 +331,10 @@ for arg in "$@"; do
             ;;
         --release)
             RELEASE_BUILD=true
-            info "Release build requested — dots-hyprland will be pinned to its latest version tag."
+            CLEAN_BUILD=true
+            CLEAN_CALAMARES=true
+            REFRESH_PKGS=true
+            info "Release build requested — dots-hyprland pinned to its latest version tag; all packages will be removed and rebuilt from scratch."
             ;;
         --help|-h)
             cat <<'HELPEOF'
@@ -354,10 +357,11 @@ Edition options:
                   cards. Omit for the standard (slim) ISO.
 
 Release options:
-  --release       Pin dots-hyprland to its latest version tag (X.Y.Z) instead
-                  of the mainstream branch, for a reproducible release build.
-                  The ISO is auto-named and stamped with that version. Combine
-                  with --refresh to also rebuild the packages from the tag.
+  --release       Full clean release build: pins dots-hyprland to its latest
+                  version tag (X.Y.Z) instead of the mainstream branch, then
+                  performs a complete --clean + --cleancal rebuild — every
+                  package (calamares included) rebuilt from scratch. The ISO
+                  is auto-named and stamped with that version.
 
 Examples:
   sudo ./build.sh                     # ISO only (packages must already exist)
@@ -365,7 +369,8 @@ Examples:
   sudo ./build.sh --clean -c          # Full clean rebuild (packages + work dir + ISO)
   sudo ./build.sh --cleancal          # Rebuild calamares + ISO
   sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
-  sudo ./build.sh --release --refresh # Release build: latest tag, packages rebuilt from it
+  sudo ./build.sh --release           # Release: clean rebuild from the latest tag
+  sudo ./build.sh --release --nvidia  # Release: same, NVIDIA edition
 HELPEOF
             exit 0
             ;;
