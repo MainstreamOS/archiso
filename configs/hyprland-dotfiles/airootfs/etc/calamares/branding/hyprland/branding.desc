@@ -28,7 +28,7 @@ strings:
     shortVersionedName:  Mainstream OS
     bootloaderEntryName: Mainstream
     productUrl:          https://mainstreamos.org/
-    supportUrl:          https://mainstreamos.org/#desktop
+    supportUrl:          https://discord.gg/WJ3AUK5Aqd
     knownIssuesUrl:      https://github.com/MainstreamOS/dots-hyprland/issues
     releaseNotesUrl:     https://github.com/MainstreamOS/dots-hyprland/releases
     donateUrl:           https://github.com/sponsors/MainstreamOS
