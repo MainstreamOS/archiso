@@ -110,7 +110,7 @@ apply_profile_overlay() {
            "${PROFILE_DIR}/packages.x86_64"
     # iso_name is a whole-line replace (idempotent); the iso_label pattern
     # tolerates an existing NV_ so a re-apply can't compound to MAINSTREAM_NV_NV_.
-    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-nvidia"/' \
+    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-legacy-nvidia"/' \
            -e 's/^iso_label="MAINSTREAM_\(NV_\)\?/iso_label="MAINSTREAM_NV_/' \
            "${PROFILE_DIR}/profiledef.sh"
     # Early KMS for the legacy card so Plymouth has a DRM device from the start
@@ -121,7 +121,7 @@ apply_profile_overlay() {
     sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 radeon nvidia nvidia_modeset nvidia_drm)/' \
            -e 's/modconf\( nvidia-gsp-strip\)\?/modconf nvidia-gsp-strip/' \
            "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}"
-    info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver + early KMS; iso_name → mainstreamos-desktop-linux-nvidia."
+    info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver + early KMS; iso_name → mainstreamos-desktop-linux-legacy-nvidia."
 }
 
 restore_profile_overlay() {
@@ -1605,11 +1605,11 @@ fi
 # ── Release naming: tag-versioned filename ─────────────────────────────────
 # When the baked dots tip carries a release tag (DOTS_TAG, resolved during
 # the skel deploy), the artifact becomes mainstream-<version>.iso — the
-# NVIDIA edition keeps its marker as mainstream-nvidia-<version>.iso.
+# NVIDIA edition keeps its marker as mainstream-legacy-nvidia-<version>.iso.
 # Untagged builds keep the dated development name.
 if [[ -n "${DOTS_TAG:-}" ]]; then
     _REL_BASE="mainstream"
-    [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-nvidia"
+    [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-legacy-nvidia"
     _NEW_ISO_PATH="$(dirname "${ISO_PATH}")/${_REL_BASE}-${DOTS_TAG}.iso"
     if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
         mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
