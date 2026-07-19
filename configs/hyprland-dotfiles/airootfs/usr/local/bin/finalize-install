@@ -118,6 +118,37 @@ LIVEONLY=(
 # Defensive shape — never abort the install on a package that wasn't there.
 remove_pkgs "${LIVEONLY[@]}"
 
+# ── VM guest tools ───────────────────────────────────────────────────────────
+# The live ISO ships guest agents for every major hypervisor, self-gated by
+# ConditionVirtualization. On the installed system, keep only the set for the
+# hypervisor this machine actually runs on — bare metal keeps none.
+GUEST_QEMU=(
+    qemu-guest-agent
+    spice-vdagent
+)
+GUEST_VMWARE=(
+    open-vm-tools
+)
+GUEST_VBOX=(
+    virtualbox-guest-utils
+)
+case "$(systemd-detect-virt 2>/dev/null || true)" in
+    kvm|qemu)
+        remove_pkgs "${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}"
+        ;;
+    vmware)
+        remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VBOX[@]}"
+        systemctl enable vmtoolsd.service 2>/dev/null || true
+        ;;
+    oracle)
+        remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}"
+        systemctl enable vboxservice.service 2>/dev/null || true
+        ;;
+    *)
+        remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}"
+        ;;
+esac
+
 # ── Package cache reclaim ────────────────────────────────────────────────────
 # The target is a fresh install — every file in the pacman cache is a
 # this-install download (base pacstrap + netinstall), nothing pre-existing to

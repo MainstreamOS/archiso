@@ -249,3 +249,7 @@ man-db
 terminus-font
 testdisk
 os-prober
+qemu-guest-agent
+spice-vdagent
+open-vm-tools
+virtualbox-guest-utils

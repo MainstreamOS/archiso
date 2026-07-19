@@ -45,6 +45,22 @@ LIVEONLY=(
     os-prober
     testdisk
 )
+GUEST_QEMU=(
+    qemu-guest-agent
+    spice-vdagent
+)
+GUEST_VMWARE=(
+    open-vm-tools
+)
+GUEST_VBOX=(
+    virtualbox-guest-utils
+)
+case "$(systemd-detect-virt 2>/dev/null || true)" in
+    kvm|qemu) LIVEONLY+=("${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}") ;;
+    vmware)   LIVEONLY+=("${GUEST_QEMU[@]}" "${GUEST_VBOX[@]}") ;;
+    oracle)   LIVEONLY+=("${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}") ;;
+    *)        LIVEONLY+=("${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}") ;;
+esac
 leftovers=()
 for p in "${LIVEONLY[@]}"; do
     if pacman -Qq "$p" &>/dev/null; then leftovers+=("$p"); fi
