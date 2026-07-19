@@ -122,8 +122,6 @@ _add_xorrisofs_options_bios.limine() {
         '-no-emul-boot'
         '-boot-load-size' '4'
         '-boot-info-table'
-        # Limine requires the extended boot info table for BIOS boot
-        '--grub2-boot-info'
         # Offset the first partition so GPT headers fit; shared with uefi.limine
         '-partition_offset' '16'
     )
