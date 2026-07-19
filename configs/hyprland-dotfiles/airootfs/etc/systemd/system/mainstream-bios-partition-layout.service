@@ -1,0 +1,12 @@
+[Unit]
+Description=Select the BIOS auto-partition layout for the installer
+ConditionPathExists=!/sys/firmware/efi
+ConditionPathExists=/run/archiso
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/cp -f /etc/calamares/modules/partition-bios.conf /etc/calamares/modules/partition.conf
+
+[Install]
+WantedBy=multi-user.target

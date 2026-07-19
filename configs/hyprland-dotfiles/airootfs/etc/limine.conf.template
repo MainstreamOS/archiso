@@ -1,6 +1,6 @@
 timeout: 5
 remember_last_entry: yes
-default_entry: 1/1
+default_entry: 2
 
 # ── Mainstream OS brand palette (see brand.html) ──────────────────────────
 # Background: Night (#191A1F, Surface/01).
@@ -33,7 +33,7 @@ backdrop:              191A1F
 # //<Kernel name> sub-entry under the /<OS name> parent, plus a //Snapshots
 # placeholder inside the same OS block — that placeholder is what tells the
 # tool where to insert snapshot boot entries. A flat parent breaks both.
-/Mainstream OS\\
+/+Mainstream OS\\
     //linux
         protocol: linux
         kernel_path: boot():///vmlinuz-linux

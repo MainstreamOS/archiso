@@ -185,10 +185,18 @@ else
 fi
 
 # --- 6. Boot chain ------------------------------------------------------------
-if compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
-    pass "UKI present in ESP"
+if [[ -d /sys/firmware/efi ]]; then
+    if compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
+        pass "UKI present in ESP"
+    else
+        fail "no UKI found under /boot/efi/EFI/Linux/"
+    fi
 else
-    fail "no UKI found under /boot/efi/EFI/Linux/"
+    if [[ -f /boot/vmlinuz-linux && -f /boot/limine-bios.sys ]]; then
+        pass "BIOS boot files present in /boot"
+    else
+        fail "BIOS boot files missing from /boot (vmlinuz-linux / limine-bios.sys)"
+    fi
 fi
 if [[ -s /boot/efi/limine.conf || -s /boot/limine.conf ]]; then
     pass "limine.conf present"

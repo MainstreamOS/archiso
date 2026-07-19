@@ -136,6 +136,14 @@ if [ "$IS_UEFI" = true ]; then
         --unicode 2>/dev/null || true
 else
     info "Installing BIOS MBR..."
+    # Stage 3 lives on the /boot partition; `limine bios-install` only
+    # writes stages 1-2. Without this copy the bootstrap panics with
+    # "Stage 3 file not found".
+    if [ -f "/usr/share/limine/limine-bios.sys" ]; then
+        cp -f /usr/share/limine/limine-bios.sys "$BOOT_PATH/limine-bios.sys"
+    else
+        log "CRITICAL: /usr/share/limine/limine-bios.sys missing in chroot!"
+    fi
     # Use modern limine CLI syntax
     limine bios-install "$TARGET_DISK" || true
 fi
