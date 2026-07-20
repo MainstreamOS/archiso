@@ -18,6 +18,7 @@ if [[ -n "$MAIN_USER" ]]; then
 
     build_hyprland_plugin "scrolloverview" \
         "https://github.com/MainstreamOS/hyprland-scroll-overview" \
+        "mainstream" \
         "" \
         "scrolloverview.so" \
         "false" \

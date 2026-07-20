@@ -155,10 +155,11 @@ cleanup_limine_boot_entries() {
 build_hyprland_plugin() {
     local name="$1"
     local repo_url="$2"
-    local make_subdir="$3"
-    local so_filename="$4"
-    local directive_commented="$5"
-    shift 5
+    local branch="$3"
+    local make_subdir="$4"
+    local so_filename="$5"
+    local directive_commented="$6"
+    shift 6
     local _deps=("$@")
 
     local _PLUGIN_DATA_DIR="$MAIN_USER_HOME/.local/share/hyprland/plugins"
@@ -191,8 +192,8 @@ build_hyprland_plugin() {
             echo "---"
         } > "$_BUILD_LOG"
 
-        info "Cloning $repo_url (mainstream) into $_SRC_DIR..."
-        if ! git -C "$_SRC_DIR" clone --depth=1 --branch mainstream "$repo_url" . \
+        info "Cloning $repo_url ($branch) into $_SRC_DIR..."
+        if ! git -C "$_SRC_DIR" clone --depth=1 --branch "$branch" "$repo_url" . \
                 >> "$_BUILD_LOG" 2>&1; then
             warn "git clone failed — check network and retry. Build log: $_BUILD_LOG"
             rm -rf "$_SRC_DIR"

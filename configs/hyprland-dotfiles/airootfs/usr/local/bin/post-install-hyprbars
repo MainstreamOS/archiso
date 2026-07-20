@@ -27,7 +27,8 @@ if [[ -n "$MAIN_USER" ]]; then
     info "Removed live-only exec-once entries (calamares-autostart, live-setup) from execs.lua."
 
     build_hyprland_plugin "hyprbars" \
-        "https://github.com/MainstreamOS/hyprland-plugins" \
+        "https://github.com/hyprwm/hyprland-plugins" \
+        "main" \
         "hyprbars" \
         "hyprbars.so" \
         "true" \
