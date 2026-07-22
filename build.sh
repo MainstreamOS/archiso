@@ -442,6 +442,7 @@ METAPKGS=(
     "mainstream-toolkit"
     "mainstream-widgets"
     "mainstream-quickshell-git"
+    "mainstream-system"
     "mainstream-extras"
     "mainstream-bibata-modern-classic-bin"
     "mainstream-gaming"
