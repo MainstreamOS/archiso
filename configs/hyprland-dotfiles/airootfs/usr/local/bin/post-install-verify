@@ -169,6 +169,18 @@ livefiles=(
     /etc/ssh/sshd_config.d/10-archiso.conf
     /etc/modprobe.d/nvidia-live.conf
 )
+# nvidia-live.conf re-declares nvidia-drm modeset/fbdev and can black-screen
+# legacy drivers if it survives onto the target, so self-heal it here rather
+# than only reporting: finalize-install already removes it, but a silent rm
+# failure would otherwise ship the duplicate. Advisory report still records
+# whether it had to be reclaimed.
+if [[ -e /etc/modprobe.d/nvidia-live.conf ]]; then
+    if rm -f /etc/modprobe.d/nvidia-live.conf; then
+        pass "stale nvidia-live.conf reclaimed by verify"
+    else
+        fail "stale nvidia-live.conf present and could not be removed"
+    fi
+fi
 lingering=()
 for f in "${livefiles[@]}"; do
     if [[ -e "$f" ]]; then lingering+=("$f"); fi
