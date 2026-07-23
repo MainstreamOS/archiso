@@ -104,6 +104,9 @@ vm.vfs_cache_pressure = 50
 # Raise inotify watch limit for Quickshell file watchers
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 512
+
+# Log a task that blocks in D-state for 60s so a wedged suspend/resume leaves a trace
+kernel.hung_task_timeout_secs = 60
 SYSCTLEOF
 info "sysctl tuning applied."
 
