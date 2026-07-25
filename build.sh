@@ -465,6 +465,7 @@ AUR_DEPS=(
     "limine-snapper-sync"
     "topgrade"
     "wlogout"
+    "mpvpaper"
     "adw-gtk-theme-git"
     "otf-space-grotesk::38c3-styles"
     "ttf-material-symbols-variable-git::material-symbols-git"
