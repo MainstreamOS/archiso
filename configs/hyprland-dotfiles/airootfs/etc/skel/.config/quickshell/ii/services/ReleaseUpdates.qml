@@ -109,6 +109,11 @@ Singleton {
         // marker file was unreadable would be alarming and possibly wrong.
         if (current && manifest && Array.isArray(manifest.releases)) {
             for (const entry of manifest.releases) {
+                // The manifest can carry a version that is written up but not
+                // cut yet, so the website can show what is coming. It has no
+                // tag behind it, so offering it would send updatems after a
+                // release that cannot be fetched.
+                if (entry?.unreleased) continue;
                 const version = root.parseVersion(entry?.version);
                 if (version && root.newer(version, current)) found.push({ version: version, entry: entry });
             }
