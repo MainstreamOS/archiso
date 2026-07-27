@@ -10,7 +10,7 @@
 #
 # NVIDIA: proprietary by generation, nouveau for pre-Fermi
 # AMD:    amdgpu (open source), radeon for pre-GCN
-# Intel:  i915/vulkan-intel, xf86-video-intel for pre-Sandy Bridge
+# Intel:  i915/vulkan-intel, iHD VA-API on Gen8+, i965 on Gen7.5 and older
 # =============================================================================
 
 set -uo pipefail
@@ -36,7 +36,7 @@ _ms_health() {
 # vendor branches stay set -u safe if the lib is ever absent.
 GPU_LIB="${GPU_LIB:-/usr/local/lib/gpu-config.sh}"
 HAS_NVIDIA=false HAS_AMD=false HAS_INTEL=false IS_HYBRID=false
-IS_OLD_AMD=false IS_RDNA4=false IS_ARC=false IS_OLD_INTEL=false NVIDIA_GEN=none
+IS_OLD_AMD=false IS_RDNA4=false NVIDIA_GEN=none INTEL_GEN=none
 if [[ -r "$GPU_LIB" ]]; then
     source "$GPU_LIB"
 else
@@ -231,16 +231,23 @@ install_legacy_nvidia() {
 pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
 
 if $HAS_INTEL; then
-    if $IS_ARC; then
-        install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
-        install_pkgs_opt linux-firmware-intel vpl-gpu-rt
-    elif $IS_OLD_INTEL; then
-        install_pkgs mesa lib32-mesa libva-intel-driver
-    else
-        install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver libva-intel-driver
-        install_pkgs_opt linux-firmware-intel vpl-gpu-rt
-    fi
-    info "Intel packages installed."
+    # INTEL_GEN (set by gpu_detect) picks the VA-API driver and decides whether
+    # the OpenCL/VPL runtimes are worth installing — see the shared library for
+    # the tier boundaries.
+    case "$INTEL_GEN" in
+        legacy)
+            install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel libva-intel-driver
+            ;;
+        xe)
+            install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver intel-compute-runtime ocl-icd
+            install_pkgs_opt linux-firmware-intel vpl-gpu-rt
+            ;;
+        *)
+            install_pkgs mesa lib32-mesa vulkan-intel lib32-vulkan-intel intel-media-driver
+            install_pkgs_opt linux-firmware-intel
+            ;;
+    esac
+    info "Intel generation $INTEL_GEN — packages installed."
 fi
 
 if $HAS_AMD; then
