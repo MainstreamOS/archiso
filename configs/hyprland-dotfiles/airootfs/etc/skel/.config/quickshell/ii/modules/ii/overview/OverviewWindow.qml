@@ -91,6 +91,21 @@ Item { // Window
         animation: Appearance.animation.elementMoveEnter.numberAnimation.createObject(this)
     }
 
+    // A client can refuse to close (unsaved-changes prompt). The delegate only
+    // lives as long as its toplevel, so a grace period that runs to completion
+    // means the window survived and the tile has to go live again.
+    onClosingChanged: {
+        if (root.closing) closeGracePeriod.restart();
+    }
+
+    Timer {
+        id: closeGracePeriod
+        interval: 1000
+        repeat: false
+        running: false
+        onTriggered: root.closing = false
+    }
+
     // Live preview of every visible window, including fullscreen and
     // maximised ones (games, IDEs, browsers running solo on a workspace).
     //
