@@ -253,11 +253,16 @@ fi
 if $HAS_AMD; then
     # IS_OLD_AMD (pre-GCN, with the APU exemption + RDNA4 override) comes from
     # gpu_detect — see the shared library for the classification rationale.
+    # VA-API/VDPAU are part of mesa itself now — the old libva-mesa-driver /
+    # mesa-vdpau split packages no longer exist.
     if $IS_OLD_AMD; then
-        install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon
+        # Pre-GCN runs the radeon kernel module and mesa's r300/r600 gallium
+        # drivers; RADV is GCN1+ only, so there is no Vulkan driver for this
+        # tier. Leaving vulkan-radeon out is deliberate: it provides
+        # 'vulkan-driver', which would satisfy the catch-all below and suppress
+        # the lavapipe fallback, leaving an ICD that enumerates zero devices.
+        install_pkgs mesa lib32-mesa
     else
-        # VA-API/VDPAU are part of mesa itself now — the old libva-mesa-driver /
-        # mesa-vdpau split packages no longer exist.
         install_pkgs mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon
     fi
     install_pkgs_opt linux-firmware-amdgpu
