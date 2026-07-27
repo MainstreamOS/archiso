@@ -135,6 +135,10 @@ Singleton {
         notifyState.lastNotified = version;
         notifyStateFile.writeAdapter();
 
+        // Only summary and changes are read here. The manifest also carries the
+        // release's raw commit range for the website's technical view; merging
+        // any of that into changes would put commit subjects in a desktop
+        // notification on every installed machine.
         const summary = String(root.latest.summary ?? "");
         const changes = (root.latest.changes ?? []).slice(0, 3);
         let body = summary;
@@ -192,7 +196,7 @@ Singleton {
 
     Process {
         id: manifestFetcher
-        command: ["curl", "-sfL", "--max-time", "15", Config.options.updates.release.manifestUrl]
+        command: ["curl", "-sfL", "--compressed", "--max-time", "15", Config.options.updates.release.manifestUrl]
         stdout: StdioCollector {
             onStreamFinished: {
                 if (text.trim().length > 0) {
