@@ -1246,6 +1246,33 @@ fi
 info "Installing build deps for plugin prebuild..."
 pacman -S --noconfirm --needed hyprland 2>&1 | grep -v "is up to date" || true
 
+# ── Plugin ABI guard stamps ────────────────────────────────────────────────
+# custom/general.lua refuses to load a plugin whose .builtfor stamp disagrees
+# with /var/lib/hyprland-plugins/hyprland-version. Both are pkgver-pkgrel from
+# `pacman -Q hyprland`, matching what sdata/*/rebuild.sh writes.
+#
+# The two are deliberately written from independent facts:
+#
+#   * hyprland-version, below, is unconditional — it is what the live ISO and
+#     a fresh install run, and it arms the guard from first boot.
+#   * <so>.builtfor is written inside prebuild_hyprland_plugin's success path
+#     only, so it describes the .so that is actually there.
+#
+# Both .so files are tracked in git. When a prebuild fails, the committed copy
+# ships and keeps the stamp from whichever build produced it — which is the
+# case the guard exists to catch. Writing both stamps together would make them
+# equal by construction and the comparison a no-op.
+HYPR_PREBUILD_VER=$(pacman -Q hyprland 2>/dev/null | awk '{print $2}')
+[[ -n "$HYPR_PREBUILD_VER" ]] || HYPR_PREBUILD_VER=$(pkg-config --modversion hyprland 2>/dev/null || echo "")
+if [[ -n "$HYPR_PREBUILD_VER" ]]; then
+    mkdir -p "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins"
+    printf '%s\n' "$HYPR_PREBUILD_VER" \
+        > "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins/hyprland-version"
+    info "Plugin ABI guard armed for Hyprland $HYPR_PREBUILD_VER."
+else
+    warn "Could not read Hyprland version — plugin ABI guard will be unarmed on the ISO."
+fi
+
 prebuild_hyprland_plugin() {
     local name="$1"
     local repo_url="$2"
@@ -1284,6 +1311,10 @@ prebuild_hyprland_plugin() {
     mkdir -p "$skel_plugins"
     cp -f "$build_dir/$so_filename" "$skel_plugins/$so_filename"
     chmod 755 "$skel_plugins/$so_filename"
+    if [[ -n "$HYPR_PREBUILD_VER" ]]; then
+        printf '%s\n' "$HYPR_PREBUILD_VER" > "$skel_plugins/$so_filename.builtfor"
+        chmod 644 "$skel_plugins/$so_filename.builtfor"
+    fi
     success "$so_filename pre-built and deployed to skel ($skel_plugins/$so_filename)."
 
     rm -rf "$work"
@@ -1306,6 +1337,8 @@ prebuild_hyprland_plugin "hyprbars" \
 # (also catches any prebuilt .so files dropped above).
 if [[ -n "${SUDO_USER:-}" ]]; then
     chown -R "$SUDO_USER":"$SUDO_USER" "$SKEL_DIR"
+    [[ -d "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins" ]] && \
+        chown -R "$SUDO_USER":"$SUDO_USER" "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins"
 fi
 
 rm -rf "$DOTS_WORK"

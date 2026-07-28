@@ -2,6 +2,8 @@
 # post-install-hyprbars — Building the title-bar plugin
 source /usr/local/lib/mainstream-postinstall-common.sh
 
+record_hyprland_version
+
 if [[ -n "$MAIN_USER" ]]; then
     info "Building hyprbars plugin from source for $MAIN_USER..."
 

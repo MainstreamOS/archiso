@@ -13,6 +13,8 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 # `scrolloverview:overview on`, so the plugin needs to be loaded by default
 # for that interaction to work. There is no equivalent "Title Bars" toggle.
 # ---------------------------------------------------------------------------
+record_hyprland_version
+
 if [[ -n "$MAIN_USER" ]]; then
     info "Building hyprland-scroll-overview plugin from source for $MAIN_USER..."
 

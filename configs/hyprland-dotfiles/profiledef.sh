@@ -42,6 +42,9 @@ file_permissions=(
   # SDDM user Hyprland greeter config (sddm uid:gid = 963:963)
   ["/var/lib/sddm/.config/hypr"]="963:963:700"
   ["/var/lib/sddm/.config/hypr/hyprland.lua"]="963:963:600"
+
+  ["/var/lib/hyprland-plugins"]="0:0:755"
+  ["/var/lib/hyprland-plugins/hyprland-version"]="0:0:644"
   ["/usr/local/bin/cleanup-desktop-entries"]="0:0:755"
   ["/usr/local/bin/finalize-install"]="0:0:755"
   ["/usr/local/bin/post-install-verify"]="0:0:755"

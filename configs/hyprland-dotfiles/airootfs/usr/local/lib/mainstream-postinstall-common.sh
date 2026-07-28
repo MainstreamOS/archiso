@@ -152,6 +152,29 @@ cleanup_limine_boot_entries() {
     fi
 }
 
+# The version both halves of the ABI guard are stamped with. pacman first
+# because it reports pkgrel and pkg-config does not; a pkgrel-only rebuild
+# changes the plugin ABI while the bare version stays put. Kept identical to
+# /usr/lib/mainstream/*/rebuild.sh — the guard in custom/general.lua compares
+# what they write, so a format that drifts between them fails closed.
+hyprland_stamp_version() {
+    local _v
+    _v=$(pacman -Q hyprland 2>/dev/null | awk '{print $2}')
+    [[ -n "$_v" ]] || _v=$(pkg-config --modversion hyprland 2>/dev/null || echo "")
+    printf '%s' "$_v"
+}
+
+# Record which Hyprland the installed system runs. The ISO bakes a value from
+# its own build host; this overwrites it with the target's ground truth.
+record_hyprland_version() {
+    local _v
+    _v=$(hyprland_stamp_version)
+    [[ -n "$_v" ]] || { warn "Could not read Hyprland version — plugin ABI guard left unarmed."; return 0; }
+    mkdir -p /var/lib/hyprland-plugins
+    printf '%s\n' "$_v" > /var/lib/hyprland-plugins/hyprland-version
+    info "Recorded Hyprland $_v for the plugin ABI guard."
+}
+
 build_hyprland_plugin() {
     local name="$1"
     local repo_url="$2"
@@ -207,6 +230,7 @@ build_hyprland_plugin() {
                 rm -rf "$_SRC_DIR"
             else
                 cp -f "$_make_dir/$so_filename" "$_PLUGIN_PATH"
+                printf '%s\n' "$(hyprland_stamp_version)" > "$_PLUGIN_PATH.builtfor"
                 info "Installed $so_filename to $_PLUGIN_PATH"
                 rm -rf "$_SRC_DIR"
 
