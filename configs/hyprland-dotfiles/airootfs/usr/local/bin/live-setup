@@ -82,7 +82,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
             "thumbnailPath": "",
             "widgets": {
                 "clock": {
-                    "style": "cookie"
+                    "enable": false
                 }
             }
         },
