@@ -219,6 +219,15 @@ if ! lspci -nn 2>/dev/null | grep -iE "Network controller|Wireless" | grep -q "\
     remove_pkgs broadcom-wl
 fi
 
+# The legacy-NVIDIA ISO carries linux-headers so its 580xx DKMS module can build
+# in the live environment. Installing that ISO onto an AMD/Intel box leaves the
+# headers behind with nothing to build; drop them only when no DKMS module is
+# registered, since one that is registered needs them again on every kernel bump.
+if [[ -z "$(dkms status 2>/dev/null)" ]]; then
+    info "No DKMS modules registered — removing linux-headers."
+    remove_pkgs linux-headers
+fi
+
 # ── CPU microcode prune ──────────────────────────────────────────────────────
 # The bootloader entries reference both microcode initrds; the CPU
 # applies the matching one and ignores the other. Removing the wrong one
