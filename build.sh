@@ -96,8 +96,12 @@ add_mainstream_db() {
 # --nvidia: from the same profile, swap the Turing+ live driver for the
 # nvidia-580xx stack + dkms (packages.x86_64) and rename the ISO (profiledef.sh).
 # The 580xx module builds against the live kernel via dkms's pacstrap hook (no
-# GSP firmware → stays out of the init). Backed up + restored on ANY exit (trap)
-# so the tree and later standard builds aren't mutated.
+# GSP firmware → stays out of the init). That hook needs linux-headers, which
+# nvidia-580xx-dkms does not depend on and the base list drops — without it the
+# build is a silent no-op and the ISO ships userspace with no kernel module.
+# The standard edition needs none of this: nvidia-open is prebuilt against the
+# packaged kernel. Backed up + restored on ANY exit (trap) so the tree and later
+# standard builds aren't mutated.
 _OVERLAY_ARCHISO_CONF="airootfs/etc/mkinitcpio.conf.d/archiso.conf"
 apply_profile_overlay() {
     [[ "${NVIDIA_PROFILE:-false}" == true ]] || return 0
@@ -106,7 +110,7 @@ apply_profile_overlay() {
     cp -a "${PROFILE_DIR}/profiledef.sh"   "$_OVERLAY_BAK_DIR/"
     cp -a "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}" "$_OVERLAY_BAK_DIR/archiso.conf"
     sed -i -e 's/^nvidia-open$/nvidia-580xx-dkms/' \
-           -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms/' \
+           -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms\nlinux-headers/' \
            "${PROFILE_DIR}/packages.x86_64"
     # iso_name is a whole-line replace (idempotent); the iso_label pattern
     # tolerates an existing NV_ so a re-apply can't compound to MAINSTREAM_NV_NV_.
@@ -1578,6 +1582,18 @@ if [[ -n "${LIMINE_VERSION}" ]]; then
     grep -aom1 "Limine ${LIMINE_VERSION}" "${WORK_DIR}/iso/limine-bios.sys" >/dev/null \
         || die "Built ISO tree does not contain Limine ${LIMINE_VERSION} BIOS support binary."
     success "Verified ISO Limine boot binaries are ${LIMINE_VERSION}."
+fi
+
+# DKMS reports success even when it built nothing (no kernel headers), and
+# mkinitcpio only warns about a MODULES= entry it cannot find, so a driverless
+# legacy ISO builds cleanly all the way to here and only fails on the user's
+# machine — as software rendering, since nvidia-580xx-utils blacklists nouveau.
+if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
+    if ! find "${WORK_DIR}/x86_64/airootfs/usr/lib/modules" \
+         -path '*/updates/dkms/nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
+        die "Legacy-NVIDIA edition built with no nvidia kernel module — the DKMS build produced nothing (check linux-headers in packages.x86_64)."
+    fi
+    success "Verified the legacy-NVIDIA edition carries a built nvidia kernel module."
 fi
 
 # ── Find the output ISO ───────────────────────────────────────────────────
