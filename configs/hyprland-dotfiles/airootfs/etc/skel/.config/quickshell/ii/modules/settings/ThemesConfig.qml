@@ -19,13 +19,12 @@ ContentPage {
     readonly property string homePath: FileUtils.trimFileProtocol(Directories.home)
     readonly property string shellConfigDir: Directories.shellConfig
     readonly property string shellConfigPath: Directories.shellConfigPath
-    readonly property string themesDir: homePath + "/.config/mainstream/themes"
-    readonly property string themesIndex: themesDir + "/index.json"
-    readonly property string lastAppliedPath: themesDir + "/last-applied.txt"
+    readonly property string themesDir: ThemeLibrary.themesDir
+    readonly property string lastAppliedPath: ThemeLibrary.lastAppliedPath
 
     // ── State ────────────────────────────────────────────────────────────────
-    property var themes: []
-    property string lastAppliedSlug: ""
+    readonly property var themes: ThemeLibrary.themes
+    readonly property string lastAppliedSlug: ThemeLibrary.lastAppliedSlug
     property var orderedThemes: {
         if (!root.lastAppliedSlug) return root.themes
         const first = root.themes.find(t => t.slug === root.lastAppliedSlug)
@@ -168,59 +167,6 @@ ContentPage {
         const p = tsParse12(timeStr)
         return tsTo24(p.hour12, p.minute, period)
     }
-
-    // ── Init ─────────────────────────────────────────────────────────────────
-    Component.onCompleted: ensureDirsProc.running = true
-
-    Process {
-        id: ensureDirsProc
-        command: ["bash", "-c",
-            `mkdir -p '${root.themesDir}' && ` +
-            `if [ ! -f '${root.themesIndex}' ]; then echo '[]' > '${root.themesIndex}'; fi`
-        ]
-        onExited: loadIndexProc.running = true
-    }
-
-    Process {
-        id: loadIndexProc
-        property string buf: ""
-        command: ["cat", root.themesIndex]
-        onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => loadIndexProc.buf += data }
-        onExited: {
-            let parsed = []
-            try { parsed = JSON.parse(loadIndexProc.buf || "[]") } catch (e) { parsed = [] }
-            root.themes = parsed || []
-            loadLastAppliedProc.running = false
-            loadLastAppliedProc.running = true
-        }
-    }
-
-    Process {
-        id: loadLastAppliedProc
-        property string buf: ""
-        command: ["bash", "-c", `[ -f '${root.lastAppliedPath}' ] && cat '${root.lastAppliedPath}' || true`]
-        onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => loadLastAppliedProc.buf += data }
-        onExited: root.lastAppliedSlug = (loadLastAppliedProc.buf || "").trim()
-    }
-
-    // Live-track last-applied.txt so this Settings page updates the
-    // "active" highlight in the Themes section the moment any apply
-    // happens — including ones the main shell's ThemeManager fires on
-    // its own (clock-minute crossings, Hyprsunset schedule transitions).
-    // Without this, the page only reflected applies it initiated itself.
-    FileView {
-        path: root.lastAppliedPath
-        watchChanges: true
-        onFileChanged: reload()
-        onLoaded: root.lastAppliedSlug = (text() || "").trim()
-        onLoadFailed: error => {
-            if (error == FileViewError.FileNotFound) root.lastAppliedSlug = ""
-        }
-    }
-
-    function refreshThemes() { loadIndexProc.running = false; loadIndexProc.running = true }
 
     // ── Save theme (capture) ────────────────────────────────────────────────
     Process { id: saveProc }
@@ -403,8 +349,17 @@ ContentPage {
             // Screenshot of primary focused monitor. Always overwrites
             // preview.png — same path whether this is a brand-new save
             // or an Update on an existing theme.
+            //
+            // Downscaled on the way out rather than stored at monitor
+            // resolution. Nothing ever draws this larger than the save card,
+            // so a native-resolution grim was several megabytes and a few
+            // hundred milliseconds of decode per theme, paid on every visit to
+            // the page and carried into every export. `>` only ever shrinks, so
+            // a small monitor's shot is left alone. If magick isn't there the
+            // full-size shot stays rather than the save losing its preview.
             `FOCUSED=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)\n` +
             `if [ -n "$FOCUSED" ]; then grim -o "$FOCUSED" "$DIR/preview.png"; else grim "$DIR/preview.png"; fi\n` +
+            `magick "$DIR/preview.png" -resize ${ThemeLibrary.previewMaxDimension}x${ThemeLibrary.previewMaxDimension}\\> "$DIR/preview.png" 2>/dev/null || true\n` +
             // Millisecond resolution so back-to-back Update saves (within
             // the same wall-clock second) still produce a distinct
             // `created` value. The grid's preview Image keys its
@@ -471,9 +426,9 @@ ContentPage {
             root.saveDialogOpen = false
             root.pendingUpdateSlug = ""
             root.restoreWindowAfterShot()
-            if (root.lastSavedSlug) root.lastAppliedSlug = root.lastSavedSlug
+            if (root.lastSavedSlug) ThemeLibrary.lastAppliedSlug = root.lastSavedSlug
             root.lastSavedSlug = ""
-            root.refreshThemes()
+            ThemeLibrary.refresh()
             root.showStatus(Translation.tr("Theme saved"))
         }
     }
@@ -488,7 +443,7 @@ ContentPage {
         ipcApplyProc.running = false
         ipcApplyProc.running = true
         // Optimistic UI update — the script also writes last-applied.txt.
-        root.lastAppliedSlug = theme.slug
+        ThemeLibrary.lastAppliedSlug = theme.slug
         // Ends when the apply reports back rather than on a fixed timer, which
         // otherwise expires part-way through some runs and lingers after others.
         root.showStatus(Translation.tr("Applying theme: %1").arg(theme.name), 30000)
@@ -615,9 +570,9 @@ ContentPage {
             // If the deleted theme was the one marked as active, clear the
             // in-memory marker so no ghost "active" highlight lingers.
             if (deleteProc.deletingSlug === root.lastAppliedSlug) {
-                root.lastAppliedSlug = ""
+                ThemeLibrary.lastAppliedSlug = ""
             }
-            root.refreshThemes()
+            ThemeLibrary.refresh()
             root.showStatus(Translation.tr("Theme deleted"))
         }
     }
@@ -741,7 +696,7 @@ print("OK|" + out_path)
             root.ioBusy = false
             const line = (importProc.buf || "").trim().split("\n").filter(l => l.length).pop() || ""
             if (line.startsWith("OK|")) {
-                root.refreshThemes()
+                ThemeLibrary.refresh()
                 let result = null
                 try { result = JSON.parse(line.slice(3)) } catch (e) { result = null }
                 const name = result?.name ?? ""
@@ -1048,14 +1003,15 @@ finally:
                         Layout.fillWidth: true
                         Layout.preferredHeight: width * 9 / 16
 
-                        StyledImage {
+                        ThumbnailImage {
                             id: saveWallpaper
                             anchors.fill: parent
                             fillMode: Image.PreserveAspectCrop
-                            cache: false
-                            source: Config.options.background.wallpaperPath || ""
-                            sourceSize.width: parent.width
-                            sourceSize.height: parent.height
+                            // Same thumbnail, same size and fill mode as Quick
+                            // Setup's preview, so the two share one cache entry
+                            // rather than decoding the wallpaper twice.
+                            sourcePath: Config.options.background.wallpaperPath || ""
+                            sourceSize: Images.wallpaperPreviewSourceSize
                             layer.enabled: true
                             layer.effect: OpacityMask {
                                 maskSource: Rectangle {
@@ -1124,11 +1080,9 @@ finally:
                             StyledImage {
                                 id: themePreview
                                 anchors.fill: parent
-                                fillMode: Image.PreserveAspectCrop
-                                cache: false
-                                source: "file://" + root.themesDir + "/" + themeCard.modelData.slug + "/preview.png?v=" + (themeCard.modelData.created || 0)
-                                sourceSize.width: parent.width
-                                sourceSize.height: parent.height
+                                fillMode: ThemeLibrary.previewFillMode
+                                source: ThemeLibrary.previewUrl(themeCard.modelData)
+                                sourceSize: ThemeLibrary.previewSourceSize
                                 layer.enabled: true
                                 layer.effect: OpacityMask {
                                     maskSource: Rectangle {
@@ -1376,14 +1330,10 @@ finally:
                             StyledImage {
                                 id: dayPreview
                                 anchors.fill: parent
-                                fillMode: Image.PreserveAspectCrop
-                                cache: false
+                                fillMode: ThemeLibrary.previewFillMode
                                 visible: dayCol.theme !== null
-                                source: dayCol.theme
-                                    ? "file://" + root.themesDir + "/" + dayCol.slug + "/preview.png?v=" + (dayCol.theme.created || 0)
-                                    : ""
-                                sourceSize.width: parent.width
-                                sourceSize.height: parent.height
+                                source: ThemeLibrary.previewUrl(dayCol.theme)
+                                sourceSize: ThemeLibrary.previewSourceSize
                                 layer.enabled: true
                                 layer.effect: OpacityMask {
                                     maskSource: Rectangle {
@@ -1556,14 +1506,10 @@ finally:
                             StyledImage {
                                 id: nightPreview
                                 anchors.fill: parent
-                                fillMode: Image.PreserveAspectCrop
-                                cache: false
+                                fillMode: ThemeLibrary.previewFillMode
                                 visible: nightCol.theme !== null
-                                source: nightCol.theme
-                                    ? "file://" + root.themesDir + "/" + nightCol.slug + "/preview.png?v=" + (nightCol.theme.created || 0)
-                                    : ""
-                                sourceSize.width: parent.width
-                                sourceSize.height: parent.height
+                                source: ThemeLibrary.previewUrl(nightCol.theme)
+                                sourceSize: ThemeLibrary.previewSourceSize
                                 layer.enabled: true
                                 layer.effect: OpacityMask {
                                     maskSource: Rectangle {
