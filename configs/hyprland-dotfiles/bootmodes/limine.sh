@@ -151,12 +151,18 @@ _make_bootmode_uefi.limine() {
     _msg_info "Setting up Limine for UEFI booting..."
 
     # Stage BOOTX64.EFI for size calculation, then build the FAT ESP image.
-    # _make_efibootimg() sizes the image from efiboot_files[] and creates
-    # the EFI/BOOT directory structure inside the image.
+    # _make_efibootimg() only sizes and formats the image — it creates no
+    # directories inside it. It used to, via `mmd ::/EFI ::/EFI/BOOT`, until
+    # upstream de9c6bb ("mkarchiso: reduce the number of mcopy commands")
+    # replaced the per-file copies with a recursive `mcopy -s ... ::/` that
+    # makes directories as it walks. This bootmode copies a single file to a
+    # nested path, so it has to create that path itself or mcopy aborts the
+    # build with "Bad target ::/EFI/BOOT/BOOTX64.EFI".
     efiboot_files+=("${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI")
     _make_efibootimg
 
     # Copy Limine's UEFI binary into the FAT ESP at the standard fallback path.
+    mmd -i "${efibootimg}" '::/EFI' '::/EFI/BOOT'
     mcopy -i "${efibootimg}" "${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI" '::/EFI/BOOT/BOOTX64.EFI'
 
     # Also copy into ISO 9660 so a user can manually partition a disk and copy
