@@ -144,8 +144,24 @@ else
     else
         log "CRITICAL: /usr/share/limine/limine-bios.sys missing in chroot!"
     fi
-    # Use modern limine CLI syntax
-    limine bios-install "$TARGET_DISK" || true
+    # Use modern limine CLI syntax. Still non-fatal — a half-installed system is
+    # worse than one the user can repair from a live USB — but no longer silent:
+    # warn() lands in /var/log/mainstream-install/health.log, which the health
+    # report surfaces. post-install-verify only checks that the files exist, so
+    # without this a failed MBR write reported a clean install.
+    if limine bios-install "$TARGET_DISK"; then
+        info "BIOS stages written to $TARGET_DISK"
+    else
+        warn "limine bios-install failed on $TARGET_DISK — this system may not boot. Repair with: limine bios-install $TARGET_DISK"
+    fi
+
+    # Keeping stages 1-2 (MBR) and stage 3 (limine-bios.sys) in step across
+    # future limine upgrades is handled by 61-limine-bios.hook, shipped by the
+    # mainstream-system package (packages.x86_64) rather than written here — so
+    # one copy covers both fresh installs and machines already in the field.
+    if [[ ! -x /usr/bin/limine-bios-sync ]]; then
+        warn "limine-bios-sync missing — mainstream-system may be too old. Future limine upgrades will not re-write the MBR."
+    fi
 fi
 
 # --- 4. Configuration Deployment ---
