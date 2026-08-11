@@ -78,8 +78,9 @@ if [ -f "/etc/mkinitcpio.conf.d/archiso.conf" ]; then
 fi
 
 # NOTE: We intentionally do NOT delete /etc/mkinitcpio.d/linux.preset here.
-# install-limine will reinstall the linux kernel which recreates it, and
-# post-install owns the final mkinitcpio -P call after all config is in place.
+# install-limine removes it with the rest of the archiso configs, post-install
+# writes the installed-system preset, and post-install also owns the final
+# mkinitcpio -P call after all config is in place.
 
 # --- 4. Live Package Removal ---
 # Remove packages that are only needed in the live ISO environment.

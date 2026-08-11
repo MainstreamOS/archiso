@@ -19,14 +19,40 @@ info "Removing archiso mkinitcpio configs..."
 rm -f /etc/mkinitcpio.conf.d/archiso.conf || true
 rm -f /etc/mkinitcpio.d/linux.preset || true
 
-# Only reinstall linux kernel if network is available
-info "Checking network connectivity..."
+# With a network connection the kernel MUST come from the repos, not the
+# squashfs: install-gpu-drivers runs next and upgrades kernel-locked driver
+# packages (nvidia-open's dependency on linux is unversioned), so a target
+# left on the ISO's baked kernel would have its only matching NVIDIA modules
+# replaced by ones built for a kernel it does not have — a driverless first
+# boot that every check still reports as clean. Reinstalling linux here keeps
+# the kernel in lockstep with whatever the driver step installs minutes later.
 if ping -c1 -W3 archlinux.org &>/dev/null; then
     info "Network available — reinstalling linux kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
-    pacman -S --noconfirm --overwrite "*" linux
+    if ! pacman -S --noconfirm --overwrite "*" linux; then
+        log "ERROR: the linux package could not be reinstalled — the system would not boot."
+        exit 1
+    fi
 else
-    warn "No network detected — skipping kernel reinstall. Using kernel from squashfs."
+    # Offline, the squashfs itself is the kernel source. The ISO build empties
+    # /boot before squashing and the linux package ships no /boot files — the
+    # image there is produced by the mkinitcpio hook during a pacman
+    # transaction — but the package's own copy at /usr/lib/modules/<kver>/vmlinuz
+    # survives the build, and it is by construction the same version as the
+    # modules unpacked beside it and as every driver already baked in.
+    KVER=$(for d in /usr/lib/modules/*/; do
+        [[ -f "$d/vmlinuz" && -r "$d/pkgbase" ]] || continue
+        [[ "$(<"$d/pkgbase")" == "linux" ]] || continue
+        basename "$d"
+    done | sort -V | tail -n1)
+
+    if [[ -n "$KVER" ]]; then
+        info "No network — restoring /boot/vmlinuz-linux from the squashfs (kernel $KVER)..."
+        install -Dm644 "/usr/lib/modules/$KVER/vmlinuz" /boot/vmlinuz-linux
+    else
+        log "ERROR: no kernel image under /usr/lib/modules and no network to fetch one — the system would not boot."
+        exit 1
+    fi
 fi
 
 # NOTE: mkinitcpio -P is intentionally NOT called here.
