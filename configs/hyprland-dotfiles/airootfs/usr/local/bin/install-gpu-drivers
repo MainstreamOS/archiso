@@ -151,11 +151,19 @@ target_dkms_install() {
     local module="$1"
     local version="$2"
 
-    # /lib/modules/<ver>/ exists for each kernel installed on the target.
-    # On a normal install there's exactly one (linux). If multiple, pick
-    # the newest by sort -V.
+    # /lib/modules/<ver>/ exists for each kernel installed on the target,
+    # but not every entry IS a kernel: a headers upgrade leaves a bare
+    # build tree, and a module built against headers alone lands under a
+    # version nothing can boot. Only trees holding the kernel image itself
+    # are candidates; the name-only scan stays as a last resort so an
+    # unexpected layout degrades to a warning rather than a dead stop.
     local target_kernel
-    target_kernel=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+    target_kernel=$(for d in /lib/modules/*/; do
+        [[ -f "$d/vmlinuz" && -r "$d/pkgbase" ]] || continue
+        [[ "$(<"$d/pkgbase")" == "linux" ]] || continue
+        basename "$d"
+    done | sort -V | tail -n1)
+    [[ -z "$target_kernel" ]] && target_kernel=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
     if [[ -z "$target_kernel" ]]; then
         warn "Could not detect target kernel in /lib/modules — DKMS will use \$(uname -r)."
         target_kernel=""
@@ -209,7 +217,13 @@ install_legacy_nvidia() {
         legacy_nvidia_fallback "$label"
         return
     fi
-    install_pkgs linux-headers dkms libva-utils
+    # linux rides with the headers for the same reason it rides with
+    # nvidia-open below: an unversioned headers upgrade fires the dkms
+    # remove hook for the installed kernel, and if the kernel itself is not
+    # carried to the same version in the same transaction, the working
+    # module is deleted and everything after builds for a kernel that is
+    # not there.
+    install_pkgs linux linux-headers dkms libva-utils
     install_pkgs_opt libva-nvidia-driver
     # The whole NVIDIA_LOCAL_PKGS set rides one pacman -U: the *-settings package
     # depends on libxnvctrl-*xx, which exists only as a staged file (the repo DB
@@ -279,7 +293,15 @@ if $HAS_NVIDIA; then
         nvidia-open)
             # Turing and newer (RTX 2060+, 30xx/40xx/50xx) — the official open
             # source kernel module, same userspace as proprietary.
-            install_pkgs "${NVIDIA_REPO_PKGS[@]}"
+            #
+            # linux rides the same transaction: nvidia-open's modules are built
+            # for exactly one kernel version but its linux dependency is
+            # unversioned, so a driver upgrade against a db that has moved past
+            # the installed kernel would strip the only matching modules and
+            # leave none the target can boot with. One transaction means the
+            # pair moves together or not at all; --needed makes the kernel a
+            # no-op when it is already current.
+            install_pkgs linux "${NVIDIA_REPO_PKGS[@]}"
             install_pkgs_opt linux-firmware-nvidia
             info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
             ;;
