@@ -108,9 +108,33 @@ rm -rf "$USER_DOTFILES"
 mkdir -p "$USER_DOTFILES"
 chown builduser:builduser "$USER_DOTFILES"
 
-info "Cloning dotfiles repository (branch: $DOTFILES_BRANCH)..."
-if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
-    die "git clone failed. Check the branch name and repo URL. Aborting."
+# Take the release this ISO was built from, not whatever the branch has moved
+# on to since. The build stamps its tag into /etc/mainstream-dotfiles-tag and
+# unpackfs has already placed that on the target; updatems reads the same file
+# to decide what is installed. Cloning the branch instead put configs newer
+# than the stamp on disk, so the ISO delivered code it had never been tested
+# with, against packages and a venv baked for the older tree, and updatems then
+# measured its next update from a version the user was already past.
+# A build off a tag leaves no stamp, and those keep following the branch.
+DOTFILES_REF="$DOTFILES_BRANCH"
+if [[ -r /etc/mainstream-dotfiles-tag ]]; then
+    ISO_TAG=$(</etc/mainstream-dotfiles-tag)
+    [[ -n "$ISO_TAG" ]] && DOTFILES_REF="$ISO_TAG"
+fi
+
+info "Cloning dotfiles repository (ref: $DOTFILES_REF)..."
+if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_REF' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
+    # A stamped tag that will not clone means the release was removed or renamed
+    # upstream. The branch still carries the files, so say what happened and use
+    # it rather than failing an install over a naming problem.
+    if [[ "$DOTFILES_REF" != "$DOTFILES_BRANCH" ]]; then
+        warn "Could not clone tag '$DOTFILES_REF' — falling back to branch '$DOTFILES_BRANCH'."
+        rm -rf "$USER_DOTFILES"; mkdir -p "$USER_DOTFILES"; chown builduser:builduser "$USER_DOTFILES"
+        su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'" \
+            || die "git clone failed for both tag and branch. Aborting."
+    else
+        die "git clone failed. Check the branch name and repo URL. Aborting."
+    fi
 fi
 if [[ -z "$(ls -A "$USER_DOTFILES")" ]]; then
     die "Clone directory is empty after git clone. Aborting."
