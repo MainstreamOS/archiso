@@ -693,15 +693,27 @@ if [[ "$CLEAN_BUILD" == true ]]; then
     rm -f "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
     info "Package output directory cleared."
 
-    # Also wipe the ISO output and mkarchiso work dirs so a --clean run
-    # starts from a true clean slate. Without this, leftover work/ state
-    # from a previous (possibly failed) run can interfere with the next
-    # mkarchiso pacstrap, and stale ISOs in out/ accumulate. Bakes in
-    # the manual `rm -rf out work` step that previously had to happen
-    # between --clean iterations.
+    # Also clear previous output and the mkarchiso work dir so a --clean run
+    # starts from a true clean slate. Without this, leftover work/ state from
+    # a previous (possibly failed) run can interfere with the next mkarchiso
+    # pacstrap, and stale ISOs in out/ accumulate. Bakes in the manual
+    # `rm -rf out work` step that previously had to happen between --clean
+    # iterations.
+    #
+    # Only this edition's artifacts go, though: a release is both editions at
+    # the same version, and they are built one after the other, so wiping the
+    # whole directory meant the second build destroyed the first one's ISO,
+    # checksum and signature with nothing to say it had.
     if [[ -d "$OUT_DIR" ]]; then
-        info "Removing $OUT_DIR ..."
-        rm -rf "$OUT_DIR"
+        if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
+            info "Removing previous legacy-NVIDIA output from $OUT_DIR ..."
+            find "$OUT_DIR" -maxdepth 1 -name '*legacy-nvidia*' -delete 2>/dev/null || true
+        else
+            info "Removing previous standard-edition output from $OUT_DIR ..."
+            find "$OUT_DIR" -maxdepth 1 \
+                \( -name 'mainstream-*' -o -name 'mainstreamos-desktop-linux-*' \) \
+                ! -name '*legacy-nvidia*' -delete 2>/dev/null || true
+        fi
     fi
     if [[ -d "$WORK_DIR" ]]; then
         info "Removing $WORK_DIR ..."
