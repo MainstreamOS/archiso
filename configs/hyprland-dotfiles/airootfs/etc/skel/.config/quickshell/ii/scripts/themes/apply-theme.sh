@@ -56,23 +56,63 @@ if command -v flock >/dev/null 2>&1 && { exec 9>"$APPLY_LOCK_FILE"; } 2>/dev/nul
     flock -w 120 9 2>/dev/null || dlog "lock wait timed out; applying anyway"
 fi
 
-write_apply_state "applying"
-
-[ -d "$THEME_DIR" ] || { write_apply_state "idle"; echo "theme dir missing: $THEME_DIR" >&2; exit 3; }
-[ -f "$THEME_DIR/config.json" ] || { write_apply_state "idle"; echo "theme config missing" >&2; exit 4; }
-
 # Record the pick before doing the work, not after. Readers watch this file to
 # decide which theme to mark as active, and the rest of an apply takes long
 # enough that leaving the previous slug in place makes them show the old theme
 # for several seconds — a settings page that already moved to the new one gets
-# pulled back and then forward again. rollback() puts the old value back if the
-# apply doesn't survive validation.
+# pulled back and then forward again. cleanup() puts the old value back unless
+# the run reaches the end.
 write_last_applied() {
-    [ -n "$1" ] || return 0
-    mkdir -p "$THEMES_DIR"
+    mkdir -p "$THEMES_DIR" 2>/dev/null || true
+    # Empty means there was no previous pick, so the marker is removed rather
+    # than left alone.
+    if [ -z "$1" ]; then
+        rm -f "$LAST_APPLIED" 2>/dev/null || true
+        return 0
+    fi
     printf '%s' "$1" > "$LAST_APPLIED.tmp" 2>/dev/null && mv -f "$LAST_APPLIED.tmp" "$LAST_APPLIED" 2>/dev/null || return 0
 }
 PREV_APPLIED=$(cat "$LAST_APPLIED" 2>/dev/null || true)
+
+# Set up before anything can fail, since the state file below tells the shell
+# to stop writing config.json and only this trap turns that back off.
+BACKUP=""
+STAGED=0
+SUCCESS=0
+CHILD_PID=""
+
+cleanup() {
+    if [ "$SUCCESS" != "1" ]; then
+        # Any ending short of the last line — set -e, a cancellation, a logout —
+        # leaves the staged config live with the previous theme's colours behind
+        # it, so the backup is put back.
+        if [ "$STAGED" = "1" ] && [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+            mv -f "$BACKUP" "$SHELL_CONFIG" 2>/dev/null || true
+            BACKUP=""
+            dlog "cleanup: restored backup over $SHELL_CONFIG"
+        fi
+        write_last_applied "$PREV_APPLIED"
+    fi
+    [ -n "$BACKUP" ] && [ -f "$BACKUP" ] && rm -f "$BACKUP" 2>/dev/null
+    write_apply_state "idle"
+}
+trap cleanup EXIT
+
+on_signal() {
+    trap - TERM INT
+    # Cancelled to start a different theme. Bash doesn't pass the signal on to
+    # what it is waiting for, so the colour run has to be taken down by hand or
+    # it keeps writing the cancelled theme's palette over the incoming one.
+    [ -n "$CHILD_PID" ] && kill -TERM "$CHILD_PID" 2>/dev/null
+    exit 143
+}
+trap on_signal TERM INT
+
+write_apply_state "applying"
+
+[ -d "$THEME_DIR" ] || { echo "theme dir missing: $THEME_DIR" >&2; exit 3; }
+[ -f "$THEME_DIR/config.json" ] || { echo "theme config missing" >&2; exit 4; }
+
 write_last_applied "$SLUG"
 
 # Resolve wallpaper (stored as meta.wallpaperFile, relative to $THEME_DIR) and
@@ -89,7 +129,6 @@ WP_ABS=""
 
 # ── 1. Backup live config for rollback ──────────────────────────────────────
 mkdir -p "$(dirname "$SHELL_CONFIG")"
-BACKUP=""
 if [ -f "$SHELL_CONFIG" ]; then
     BACKUP=$(mktemp --tmpdir="$(dirname "$SHELL_CONFIG")" config.json.backup.XXXXXX)
     cp -f "$SHELL_CONFIG" "$BACKUP"
@@ -108,12 +147,6 @@ rollback() {
     exit 5
 }
 
-cleanup() {
-    [ -n "$BACKUP" ] && [ -f "$BACKUP" ] && rm -f "$BACKUP"
-    write_apply_state "idle"
-}
-trap cleanup EXIT
-
 # ── 2. Stage merged config.json with wallpaperPath rewritten + user meta-state preserved ─
 # Some Config fields are user-level preferences that happen to live in the same
 # config.json themes snapshot, but conceptually outlive any one theme. If we
@@ -127,6 +160,8 @@ PRESERVE_THEME_SCHED=""
 PRESERVE_LIGHT_NIGHT=""
 PRESERVE_CURSOR=""
 PRESERVE_SEEDED=""
+PRESERVE_APPS=""
+PRESERVE_UPDATES=""
 if [ -f "$SHELL_CONFIG" ]; then
     PRESERVE_THEME_SCHED=$(jq -c '.appearance.themeSchedule // empty' "$SHELL_CONFIG" 2>/dev/null || true)
     # Preserve the entire light.night object — schedule, automatic flag,
@@ -142,14 +177,41 @@ if [ -f "$SHELL_CONFIG" ]; then
     # A snapshot taken before a widget existed doesn't have it, so restoring one
     # would hand the shell back its one chance to add a widget the user removed.
     PRESERVE_SEEDED=$(jq -c '.bar.seededWidgets // empty' "$SHELL_CONFIG" 2>/dev/null || true)
+    # apps.* is the command each button runs, by way of `bash -c`, and updates.*
+    # names the manifest this machine believes about releases. A theme that
+    # carried either would be choosing what runs here, so the live values win
+    # over the snapshot every time — including for themes saved or shared
+    # before they were kept out of snapshots at all.
+    PRESERVE_APPS=$(jq -c '.apps // empty' "$SHELL_CONFIG" 2>/dev/null || true)
+    PRESERVE_UPDATES=$(jq -c '.updates // empty' "$SHELL_CONFIG" 2>/dev/null || true)
 fi
 JQ_FILTER='.'
 JQ_ARGS=()
 [ -n "$WP_ABS" ]                  && { JQ_FILTER+=' | .background.wallpaperPath = $p';            JQ_ARGS+=(--arg p "$WP_ABS"); }
+# The wallpaper slideshow belongs to whichever theme is on, so a theme saved
+# with a single wallpaper has to stop one the previous theme started. A key
+# that is merely absent from the snapshot won't do it — the shell's config
+# adapter keeps the value it already has when a key disappears from the file —
+# so say it outright. Themes saved before the slideshow existed land here too,
+# which is what makes them turn it off rather than inherit it.
+jq -e '.background.slideshow' "$THEME_DIR/config.json" >/dev/null 2>&1 \
+    || JQ_FILTER+=' | .background.slideshow.enable = false'
+# An imported theme has had the folder stripped out of it, since it named a
+# directory in someone else's home. Empty rather than missing, so it resolves
+# to the local wallpaper directory instead of whatever this machine last used.
+jq -e '.background.slideshow | has("folder")' "$THEME_DIR/config.json" >/dev/null 2>&1 \
+    || JQ_FILTER+=' | .background.slideshow.folder = ""'
 [ -n "$PRESERVE_THEME_SCHED" ]    && { JQ_FILTER+=' | .appearance.themeSchedule = $sched';        JQ_ARGS+=(--argjson sched "$PRESERVE_THEME_SCHED"); }
 [ -n "$PRESERVE_LIGHT_NIGHT" ]    && { JQ_FILTER+=' | .light.night = $night';                     JQ_ARGS+=(--argjson night "$PRESERVE_LIGHT_NIGHT"); }
 [ -n "$PRESERVE_CURSOR" ]         && { JQ_FILTER+=' | .cursor = $cursor';                          JQ_ARGS+=(--argjson cursor "$PRESERVE_CURSOR"); }
 [ -n "$PRESERVE_SEEDED" ]         && { JQ_FILTER+=' | .bar.seededWidgets = $seeded';               JQ_ARGS+=(--argjson seeded "$PRESERVE_SEEDED"); }
+# Nothing live to put back means the snapshot's copy is dropped rather than
+# inherited: absent is the safe answer here, since the shell falls back to its
+# own defaults for these.
+if [ -n "$PRESERVE_APPS" ]; then    JQ_FILTER+=' | .apps = $apps';    JQ_ARGS+=(--argjson apps "$PRESERVE_APPS");
+else                                JQ_FILTER+=' | del(.apps)'; fi
+if [ -n "$PRESERVE_UPDATES" ]; then JQ_FILTER+=' | .updates = $upd';  JQ_ARGS+=(--argjson upd "$PRESERVE_UPDATES");
+else                                JQ_FILTER+=' | del(.updates)'; fi
 if [ "$JQ_FILTER" = '.' ]; then
     cp -f "$THEME_DIR/config.json" "$TMP" || { rm -f "$TMP"; rollback "failed to copy config.json"; }
 else
@@ -157,15 +219,32 @@ else
         || { rm -f "$TMP"; rollback "failed to stage config.json"; }
 fi
 mv -f "$TMP" "$SHELL_CONFIG"
+STAGED=1
+
+# switchwall gives up with a success code when there is no image to read, and
+# the colours already on disk would satisfy every check below. Checked here,
+# where the reason is known, rather than inferred later from an unchanged file.
+EFFECTIVE_WP=$(jq -r '.background.wallpaperPath // ""' "$SHELL_CONFIG" 2>/dev/null || echo "")
+[ -n "$EFFECTIVE_WP" ] || rollback "theme has no wallpaper to generate colours from"
 
 # ── 3. Regenerate colors via switchwall --noswitch ──────────────────────────
 # Pass --mode when the theme captured one so matugen regenerates the palette
 # in the right brightness AND pre_process() in switchwall flips the GNOME
 # color-scheme gsetting too (apps like nautilus/gnome-text-editor watch it).
-SWITCHWALL_ARGS=(--noswitch)
+SWITCHWALL_ARGS=(--noswitch --config-staged)
 [ -n "$MODE" ] && SWITCHWALL_ARGS+=(--mode "$MODE")
 if [ -x "$SWITCHWALL" ] || [ -f "$SWITCHWALL" ]; then
-    bash "$SWITCHWALL" "${SWITCHWALL_ARGS[@]}" || rollback "switchwall.sh exited non-zero"
+    # Backgrounded and waited on, because bash holds trapped signals until a
+    # foreground child finishes and a cancellation has to be acted on now.
+    # Descriptor 9 carries this run's lock and is closed for the whole colour
+    # run: switchwall starts things that outlive it — mpvpaper for a video
+    # wallpaper lasts the session — and an inherited lock is never given back.
+    SW_RC=0
+    bash "$SWITCHWALL" "${SWITCHWALL_ARGS[@]}" 9>&- &
+    CHILD_PID=$!
+    wait "$CHILD_PID" || SW_RC=$?
+    CHILD_PID=""
+    [ "$SW_RC" -eq 0 ] || rollback "switchwall.sh exited non-zero (rc=$SW_RC)"
 else
     rollback "switchwall.sh not found at $SWITCHWALL"
 fi
@@ -187,75 +266,34 @@ DECO_JSON="$THEME_DIR/decorations.json"
 # Targets the Lua-config tree introduced in Hyprland 0.55.
 GENERAL_CONF="$XDG_CONFIG_HOME/hypr/hyprland/general.lua"
 CUSTOM_CONF="$XDG_CONFIG_HOME/hypr/custom/general.lua"
-if [ -f "$DECO_JSON" ]; then
-    python3 - "$DECO_JSON" "$GENERAL_CONF" "$CUSTOM_CONF" <<'PY' || dlog "decoration restore failed"
-import json, os, re, sys
-deco_path, general, custom = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    flags = json.load(open(deco_path))
-except Exception:
-    sys.exit(0)
+DECORATIONS_PY="$SCRIPT_DIR/decorations.py"
+# A theme can carry the animation profile its snapshot names; the file has to
+# be in place before the restore below points the compositor at it. Shipped
+# names are never written — every install has its own copies, and a theme is
+# not how the stock set updates.
+ANIM_SRC="$THEME_DIR/animations"
+ANIM_DST="$XDG_CONFIG_HOME/hypr/hyprland/animations"
+if [ -d "$ANIM_SRC" ] && [ -f "$DECORATIONS_PY" ]; then
+    SHIPPED=$(python3 "$DECORATIONS_PY" shipped "$GENERAL_CONF" 2>/dev/null | tr '\n' ' ')
+    mkdir -p "$ANIM_DST"
+    for ANIM_FILE in "$ANIM_SRC"/*.lua; do
+        [ -f "$ANIM_FILE" ] || continue
+        ANIM_BASE=$(basename "$ANIM_FILE" .lua)
+        printf '%s' "$ANIM_BASE" | grep -qE '^[A-Za-z0-9_-]+$' || continue
+        case " $SHIPPED " in *" $ANIM_BASE "*) continue ;; esac
+        cp -f "$ANIM_FILE" "$ANIM_DST/$ANIM_BASE.lua" 2>/dev/null || dlog "animation profile install failed: $ANIM_BASE"
+    done
+fi
 
-def set_block_enabled(text, block, enabled):
-    # Lua: `<block> = { ... enabled = ... }` — the `=` between block name
-    # and `{` distinguishes Lua from hyprlang. Block-opener anchored at
-    # line start (re.M) so a doc comment that mentions `animations = {`
-    # or similar doesn't shadow the real block.
-    val = "true" if enabled else "false"
-    pat = r'(^[ \t]*' + re.escape(block) + r'\s*=\s*\{[^}]*?)(enabled\s*=\s*)\w+'
-    return re.sub(pat, r'\1\2' + val, text, count=1, flags=re.S|re.M)
-
-def set_borders(text, enabled):
-    # In Lua the col entries are bare keys inside `col = { ... }`, no dot prefix.
-    fields = ["border_size", "active_border", "inactive_border", "resize_on_border"]
-    out = []
-    for line in text.splitlines(keepends=True):
-        stripped = line.lstrip()
-        indent = line[:len(line) - len(stripped)]
-        matched = False
-        for f in fields:
-            if enabled:
-                if stripped.startswith('-- ' + f + ' ') or stripped.startswith('--' + f + ' ') \
-                   or stripped.startswith('-- ' + f + '=') or stripped.startswith('--' + f + '='):
-                    line = indent + stripped.lstrip('- ')
-                    matched = True
-                    break
-            else:
-                if stripped.startswith(f + ' ') or stripped.startswith(f + '='):
-                    line = indent + '-- ' + stripped
-                    matched = True
-                    break
-        if not matched:
-            if stripped.startswith('gaps_in'):
-                line = indent + 'gaps_in = ' + ('4' if enabled else '0') + ',\n'
-            elif stripped.startswith('gaps_out'):
-                line = indent + 'gaps_out = ' + ('5' if enabled else '0') + ',\n'
-        out.append(line)
-    return ''.join(out)
-
-def set_rounding(text, enabled):
-    val = "10" if enabled else "0"
-    # `rounding = N` works for both hyprlang and Lua syntax; trailing
-    # comma untouched. Line-anchored (re.M + ^\s*) so a doc comment like
-    # `-- rounding = 10` doesn't get rewritten instead of the real key.
-    return re.sub(r'(?m)^(\s*rounding\s*=\s*)\d+', r'\g<1>' + val, text, count=1)
-
-try:
-    text = open(general).read()
-    if "animations" in flags: text = set_block_enabled(text, "animations", flags["animations"])
-    if "blur" in flags:       text = set_block_enabled(text, "blur", flags["blur"])
-    if "shadow" in flags:     text = set_block_enabled(text, "shadow", flags["shadow"])
-    if "borders" in flags:    text = set_borders(text, flags["borders"])
-    if "roundCorners" in flags: text = set_rounding(text, flags["roundCorners"])
-    open(general, "w").write(text)
-except FileNotFoundError: pass
-
-if "titleBars" in flags:
-    try:
-        flag = os.path.join(os.path.dirname(custom), "titlebars.enabled")
-        open(flag, "w").write("1" if flags["titleBars"] else "0")
-    except OSError: pass
-PY
+# restore rather than write: keys the snapshot doesn't name go to their stock
+# values, because they didn't exist as settings when the theme was saved —
+# leaving them alone kept the previous theme's look bleeding into this one.
+# --push hands the same completed set to the compositor from inside the one
+# interpreter, so the change shows before the reload at the end gets there.
+if [ -f "$DECO_JSON" ] && [ -f "$DECORATIONS_PY" ]; then
+    python3 "$DECORATIONS_PY" restore "$GENERAL_CONF" "$DECO_JSON" \
+        --flag-dir "$(dirname "$CUSTOM_CONF")" --push >/dev/null 2>&1 \
+        || dlog "decoration restore failed"
 fi
 
 # ── 5b. Restore interface look (gsettings) if the theme snapshotted it ──────
@@ -281,57 +319,29 @@ fi
 # Reads the just-restored config.json; no-op if apply-gtk-font.sh is absent.
 [ -x "$SCRIPT_DIR/apply-gtk-font.sh" ] && bash "$SCRIPT_DIR/apply-gtk-font.sh" 2>/dev/null || true
 
+# ── 5d. Restore window rules if the theme snapshotted them ──────────────────
+# Same contract as decorations: a theme saved before rules existed has no
+# windowrules.json and leaves the live rules alone; one that carries the file
+# wins wholesale, empty list included — no rules at save time is part of the
+# look. Routed through the owner script's write verb rather than copied, so a
+# theme that arrived as an import gets the same validation the settings page
+# gets, and the generated Lua plus reload come along for free.
+WR_JSON="$THEME_DIR/windowrules.json"
+WINDOWRULES_PY="$XDG_CONFIG_HOME/quickshell/ii/scripts/hyprland/windowrules.py"
+if [ -f "$WR_JSON" ] && [ -f "$WINDOWRULES_PY" ]; then
+    python3 "$WINDOWRULES_PY" write \
+        "$XDG_CONFIG_HOME/hypr/hyprland/userrules.json" \
+        "$XDG_CONFIG_HOME/hypr/hyprland/userrules.lua" --no-reload \
+        < "$WR_JSON" >/dev/null 2>&1 || dlog "window rules restore failed"
+fi
+
 # ── 6. Re-assert last-applied (recorded up front; see write_last_applied) ──
 write_last_applied "$SLUG"
 
-# ── 7. Apply decorations live, reload hyprland, then restore kitty ──────────
+# ── 7. Reload hyprland, then restore kitty ─────────────────────────────────
+# The decorations already went live in step 5; this reload is what the rest of
+# the config needs.
 if command -v hyprctl >/dev/null 2>&1; then
-
-    # Apply every keyword-settable decoration flag live right now via
-    # hyprctl keyword. This gives immediate visual feedback before the
-    # reload below finishes, and means the reload is only strictly needed
-    # for matugen's hyprland color templates and the titlebar plugin.
-    if [ -f "$DECO_JSON" ]; then
-        python3 - "$DECO_JSON" <<'PY2' || true
-import json, subprocess, sys
-try:
-    flags = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-# `hyprctl keyword` is Legacy-only in 0.55 ("can't work with non-legacy
-# parsers. Use eval."). Route through `hyprctl eval` + hl.config() so
-# every theme apply still takes effect live. Section/leaf split on the
-# first `:`; bracket-string keys handle leafs that have their own dots
-# (e.g. blur:enabled → ["blur.enabled"]).
-def kw(keyword, value):
-    first_colon = keyword.find(":")
-    section = keyword[:first_colon]
-    leaf = keyword[first_colon+1:].replace(":", ".")
-    # Pick Lua literal: keep true/false/numbers bare, quote strings.
-    s = str(value)
-    if s in ("true", "false"):
-        lua_val = s
-    else:
-        try:
-            float(s)
-            lua_val = s
-        except ValueError:
-            lua_val = '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
-    expr = 'hl.config({ ' + section + ' = { ["' + leaf + '"] = ' + lua_val + ' } })'
-    subprocess.run(["hyprctl", "eval", expr], capture_output=True)
-if "animations"   in flags: kw("animations:enabled",          "true"  if flags["animations"]   else "false")
-if "blur"         in flags: kw("decoration:blur:enabled",     "true"  if flags["blur"]         else "false")
-if "shadow"       in flags: kw("decoration:shadow:enabled",   "true"  if flags["shadow"]       else "false")
-if "roundCorners" in flags: kw("decoration:rounding",         "10"    if flags["roundCorners"] else "0")
-if "borders" in flags:
-    if flags["borders"]:
-        kw("general:border_size", "4");   kw("general:resize_on_border", "true")
-        kw("general:gaps_in",     "4");   kw("general:gaps_out",         "5")
-    else:
-        kw("general:border_size", "0");   kw("general:resize_on_border", "false")
-        kw("general:gaps_in",     "0");   kw("general:gaps_out",         "0")
-PY2
-    fi
 
     # Full reload is still needed for matugen's hyprland color templates
     # (sourced files) and the titlebar plugin (hyprbars.so can't be toggled
@@ -368,4 +378,9 @@ PY2
 
 fi
 
+# ── 8. Restage the desktop portal, now the whole look has settled ───────────
+RESTAGE_PORTALS="$SCRIPT_DIR/../colors/restage-portals.sh"
+[ -f "$RESTAGE_PORTALS" ] && bash "$RESTAGE_PORTALS" >/dev/null 2>&1 9>&- &
+
+SUCCESS=1
 echo "OK"

@@ -258,6 +258,31 @@ Singleton {
 
             property JsonObject appearance: JsonObject {
                 property bool extraBackgroundTint: true
+                // Lives here rather than in the Hyprland config so a saved
+                // theme carries it. Palette mode holds role names, which are
+                // re-read from whatever palette is current so the border
+                // follows the wallpaper the way the rest of the desktop does;
+                // custom mode holds the two colours literally and ignores it.
+                property JsonObject borderGradient: JsonObject {
+                    property bool enable: false
+                    property string from: "primary"
+                    property string to: "tertiary"
+                    property bool custom: false
+                    property string customFrom: "#8ab4f8"
+                    property string customTo: "#c58af9"
+                    property int angle: 90
+                    property int opacity: 50
+                }
+                property JsonObject borderGradientInactive: JsonObject {
+                    property bool enable: false
+                    property string from: "primary"
+                    property string to: "tertiary"
+                    property bool custom: false
+                    property string customFrom: "#8ab4f8"
+                    property string customTo: "#c58af9"
+                    property int angle: 90
+                    property int opacity: 15
+                }
                 property int fakeScreenRounding: 2 // 0: None | 1: Always | 2: When not fullscreen
                 property JsonObject fonts: JsonObject {
                     property string main: "Google Sans Flex"
@@ -380,6 +405,21 @@ Singleton {
                 property string wallpaperPath: ""
                 property string thumbnailPath: ""
                 property bool hideWhenFullscreen: true
+                // Rotates wallpaperPath through `folder` on a timer. These keys
+                // ride along in a saved theme's config.json snapshot, so the
+                // slideshow belongs to whichever theme is currently on — a
+                // single-wallpaper theme taking over turns it off, and the
+                // Day/Night pair hand their own rotations back and forth.
+                // An empty folder means the stock Wallpapers directory.
+                // `recolor` regenerates the whole palette on every change;
+                // left off, a rotation only swaps the picture.
+                property JsonObject slideshow: JsonObject {
+                    property bool enable: false
+                    property string folder: ""
+                    property int intervalMinutes: 30
+                    property bool shuffle: true
+                    property bool recolor: false
+                }
                 property JsonObject parallax: JsonObject {
                     property bool vertical: false
                     property bool autoVertical: false
@@ -570,12 +610,10 @@ Singleton {
                 property real testHealthPercentage: 92.0   // drives the Health row
             }
 
-            // Userspace shim for window-state restore. xdg-session-management-v1
-            // exists in wayland-protocols/staging as of 2026 but Hyprland 0.55
-            // has no compositor-side implementation yet, so this drives a
-            // hyprctl-based relauncher (scripts/session/snapshot.sh +
-            // restore.sh). On by default — relaunches the windows that were
-            // open at logout on next login.
+            // Window-state restore. Gates scripts/session/: a resident watcher
+            // keeps the saved session current while you work, and restore.sh
+            // replays it at login. On by default — brings back the windows that
+            // were open, on the workspaces they were on.
             property JsonObject session: JsonObject {
                 property bool restoreEnabled: true
             }

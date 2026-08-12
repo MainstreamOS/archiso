@@ -50,4 +50,27 @@ TextArea {
         variableAxes: Appearance.font.variableAxes.main
     }
     wrapMode: TextEdit.Wrap
+
+    // The toolkit grows its own editing menu on a right click; leaving it in
+    // place would open both.
+    ContextMenu.menu: null
+
+    // Built on the first right click rather than with the field — see the note
+    // in MaterialTextField: asking whether there is anything to paste reaches
+    // the clipboard, and nothing has to own the selection for that to be asked.
+    Loader {
+        id: editMenuLoader
+        active: false
+        sourceComponent: TextFieldContextMenu {
+            target: root
+        }
+    }
+
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: eventPoint => {
+            editMenuLoader.active = true;
+            editMenuLoader.item.openAt(eventPoint.position.x, eventPoint.position.y);
+        }
+    }
 }

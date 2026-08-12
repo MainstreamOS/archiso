@@ -63,6 +63,10 @@ ShellRoot {
         // _autoApplyEnabled comment in ThemeManager for why. Settings.qml
         // never sets this so its ThemeManager singleton stays passive.
         ThemeManager._autoApplyEnabled = true
+        WallpaperSlideshow.load()
+        BorderGradient.load()
+        // Same story for the wallpaper rotation — see _rotationEnabled.
+        WallpaperSlideshow._rotationEnabled = true
     }
 
 

@@ -1,4 +1,5 @@
 import qs.modules.common
+import qs.modules.common.widgets
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Controls
@@ -36,5 +37,30 @@ TextField {
         acceptedButtons: Qt.NoButton
         hoverEnabled: true
         cursorShape: Qt.IBeamCursor
+    }
+
+    // The toolkit grows its own editing menu on a right click; leaving it in
+    // place would open both.
+    ContextMenu.menu: null
+
+    // Built on the first right click rather than with the field. The menu asks
+    // the field whether there is anything to paste, and that question reaches
+    // the clipboard: cheap where something owns the selection and answers,
+    // unbounded where nothing does. A field the user only ever types into
+    // should not have to ask.
+    Loader {
+        id: editMenuLoader
+        active: false
+        sourceComponent: TextFieldContextMenu {
+            target: root
+        }
+    }
+
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: eventPoint => {
+            editMenuLoader.active = true;
+            editMenuLoader.item.openAt(eventPoint.position.x, eventPoint.position.y);
+        }
     }
 }

@@ -20,6 +20,7 @@ theme_name="${PAPIRUS_MATUGEN_THEME:-Papirus-Matugen}"
 theme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/$theme_name"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/matugen"
 state_file="$state_dir/papirus-folder-color"
+pending_file="$state_file.pending"
 
 mkdir -p "$state_dir"
 
@@ -142,15 +143,38 @@ fi
 base_theme="${PAPIRUS_MATUGEN_BASE_THEME:-}"
 if [ -z "$base_theme" ]; then
   case "$current_theme" in
-    Papirus-Matugen|Papirus-Dark|Papirus-Dark-Matugen) base_theme="Papirus-Dark" ;;
+    # A Papirus variant the user chose themselves is the base to layer on.
+    Papirus-Dark|Papirus-Dark-Matugen) base_theme="Papirus-Dark" ;;
     Papirus-Light|Papirus-Light-Matugen) base_theme="Papirus-Light" ;;
-    Papirus|Papirus-Matugen-Light) base_theme="Papirus" ;;
-    *) base_theme="Papirus-Dark" ;;
+    Papirus) base_theme="Papirus" ;;
+    # Anything else, including this script's own generated theme, says nothing
+    # about light or dark: only */places is overridden here, so the base decides
+    # every other icon on the desktop and it has to follow the colour scheme.
+    *)
+      scheme=""
+      if command -v gsettings >/dev/null 2>&1; then
+        scheme="$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")"
+      fi
+      case "$scheme" in
+        prefer-light) base_theme="Papirus-Light" ;;
+        *) base_theme="Papirus-Dark" ;;
+      esac
+      ;;
   esac
 fi
 
 if [ ! -d "/usr/share/icons/$base_theme" ]; then
-  base_theme="Papirus-Dark"
+  for candidate in Papirus-Dark Papirus Papirus-Light; do
+    [ -d "/usr/share/icons/$candidate" ] && { base_theme="$candidate"; break; }
+  done
+fi
+
+# Only */places is overridden here and everything else is inherited, so without
+# a base on disk the published theme resolves to bare hicolor — every icon on
+# the desktop, not just the folders. Nothing to layer on means nothing to
+# publish, and the icon theme already in use is left alone.
+if [ ! -d "/usr/share/icons/$base_theme" ]; then
+  exit 0
 fi
 
 # The icon set depends only on which of the seventeen folder colours was
@@ -159,18 +183,44 @@ fi
 # otherwise delete and relink four hundred icons to produce byte-identical
 # output, and flip the icon theme away and back, making every open application
 # reload its icons for nothing.
-if [ "$folder_color" = "$(cat "$state_file" 2>/dev/null)" ] \
+#
+# What is on disk decides this, not what an earlier run said it was going to do.
+# The note records an intention, and a run that died partway through leaves one
+# it never carried out, along with the marker written across the rebuild; asking
+# for the same colour again is exactly when nothing else would notice. -ef
+# compares what the links resolve to and forks nothing, which matters because
+# the no-op this guards is on the path of every wallpaper change.
+#
+# An alias is checked alongside folder.svg. The links are laid down one at a
+# time, and nothing serialises two rebuilds, so a directory can hold the newer
+# folder.svg over aliases from the older colour; sampling only folder.svg reads
+# that as finished and it stays mixed for as long as the colour does.
+icons_current=1
+for size in 16x16 22x22 24x24 32x32 48x48 64x64; do
+  source_dir="/usr/share/icons/$base_theme/$size/places"
+  [ -d "$source_dir" ] || source_dir="/usr/share/icons/Papirus/$size/places"
+  [ -e "$source_dir/folder-$folder_color.svg" ] || continue
+  [ "$theme_dir/$size/places/folder.svg" -ef "$source_dir/folder-$folder_color.svg" ] || {
+    icons_current=0
+    break
+  }
+  if [ -e "$source_dir/folder-$folder_color-documents.svg" ] \
+     && [ ! "$theme_dir/$size/places/folder-documents.svg" -ef "$source_dir/folder-$folder_color-documents.svg" ]; then
+    icons_current=0
+    break
+  fi
+done
+
+if [ ! -e "$pending_file" ] \
+   && [ "$icons_current" = "1" ] \
+   && [ "$folder_color" = "$(cat "$state_file" 2>/dev/null)" ] \
    && [ "$base_theme" = "$(cat "$state_file.base" 2>/dev/null)" ] \
-   && [ -f "$theme_dir/index.theme" ] \
-   && [ -e "$theme_dir/64x64/places/folder.svg" ]; then
-    printf '#%s\n' "$source_hex" > "$state_file.hex"
+   && [ -f "$theme_dir/index.theme" ]; then
     exit 0
 fi
 
 mkdir -p "$theme_dir"
-printf '%s\n' "$folder_color" > "$state_file"
-printf '%s\n' "$base_theme" > "$state_file.base"
-printf '#%s\n' "$source_hex" > "$state_file.hex"
+: > "$pending_file"
 
 cat > "$theme_dir/index.theme" <<EOF
 [Icon Theme]
@@ -229,15 +279,21 @@ for size in 16x16 22x22 24x24 32x32 48x48 64x64; do
       folder-"$folder_color"-*) alias="folder-${name#folder-$folder_color-}" ;;
       *) continue ;;
     esac
-    ln -s "$icon" "$target_dir/$alias"
+    ln -sf "$icon" "$target_dir/$alias"
   done
 
   for icon in "$source_dir"/user-"$folder_color"-*.svg; do
     [ -e "$icon" ] || continue
     name="$(basename "$icon")"
-    ln -s "$icon" "$target_dir/user-${name#user-$folder_color-}"
+    ln -sf "$icon" "$target_dir/user-${name#user-$folder_color-}"
   done
 done
+
+# Recorded once the icon set on disk is the colour being recorded, so a run that
+# dies partway through is never mistaken for a finished one.
+printf '%s\n' "$folder_color" > "$state_file"
+printf '%s\n' "$base_theme" > "$state_file.base"
+rm -f "$pending_file"
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -f -t "$theme_dir" >/dev/null 2>&1 || true

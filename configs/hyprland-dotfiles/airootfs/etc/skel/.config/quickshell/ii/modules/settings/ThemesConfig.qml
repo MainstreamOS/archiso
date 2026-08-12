@@ -17,7 +17,6 @@ ContentPage {
 
     // ── Paths ────────────────────────────────────────────────────────────────
     readonly property string homePath: FileUtils.trimFileProtocol(Directories.home)
-    readonly property string shellConfigDir: Directories.shellConfig
     readonly property string shellConfigPath: Directories.shellConfigPath
     readonly property string themesDir: ThemeLibrary.themesDir
     readonly property string lastAppliedPath: ThemeLibrary.lastAppliedPath
@@ -281,6 +280,19 @@ ContentPage {
     function doCapture() {
         const slug = root.pendingUpdateSlug || root.slugify(root.saveThemeName)
         const name = (root.saveThemeName || slug).trim() || slug
+        // Saving a new theme onto a slug that already has one replaces it where
+        // it stands, wallpaper and preview included, and the grid just shows the
+        // card under its new name. Names are slugified down to lowercase and
+        // digits, so "Green!", "green" and "Green" are all the same theme here
+        // and the collision is easy to reach by accident. Updating an existing
+        // theme is the one case where landing on its slug is the intention.
+        if (!root.pendingUpdateSlug && ThemeLibrary.themes.some(t => t.slug === slug)) {
+            root.countingDown = false
+            root.saveDialogOpen = false
+            root.restoreWindowAfterShot()
+            root.showStatus(Translation.tr("You already have a theme called %1. Pick another name, or use Update on that theme.").arg(name), 10000)
+            return
+        }
         const wp = Config.options.background.wallpaperPath || ""
         const wpTrimmed = FileUtils.trimFileProtocol(wp)
         const modeStr = Appearance.m3colors.darkmode ? "dark" : "light"
@@ -288,8 +300,8 @@ ContentPage {
         // Build bash payload
         const bash =
             `set -e\n` +
-            `SLUG='${String(slug).replace(/'/g, "'\\''")}'\n` +
-            `NAME='${String(name).replace(/'/g, "'\\''")}'\n` +
+            `SLUG='${StringUtils.shellSingleQuoteEscape(slug)}'\n` +
+            `NAME='${StringUtils.shellSingleQuoteEscape(name)}'\n` +
             `MODE='${modeStr}'\n` +
             `THEMES='${root.themesDir}'\n` +
             `DIR="$THEMES/$SLUG"\n` +
@@ -315,10 +327,19 @@ ContentPage {
             //                                exported while it was would carry a
             //                                per-machine record onto a machine it
             //                                does not describe.)
+            //   - apps.*                   (each of these is handed to `bash -c`
+            //                                when its button is pressed. A theme
+            //                                is a look; it has no business
+            //                                naming the command the Updates
+            //                                button runs.)
+            //   - updates.*                (names the manifest the release
+            //                                checker fetches. Where a machine
+            //                                is told about updates is not
+            //                                something a look decides.)
             // apply-theme.sh ALSO preserves these from the live config when
             // applying, so older themes that still carry these keys won't
             // poison the user's settings either.
-            `jq 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets)' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
+            `jq 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets) | del(.apps) | del(.updates)' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
             // Snapshot the four interface-look gsettings (App style / Icons /
             // Mouse cursor / cursor size) so a saved theme carries the whole
             // look. Shake-to-locate is user behavior, stripped above.
@@ -341,8 +362,12 @@ ContentPage {
             // interface look were written, but before the wallpaper, the
             // screenshot and the metadata — so an update changed some of the
             // theme and left the rest, including the preview, as it was.
-            (wpTrimmed ? `WP='${wpTrimmed}'\n` +
-                         `EXT="\${WP##*.}"\n` +
+            // The extension is read off the basename, since a wallpaper with no
+            // dot in its name would otherwise take a slice of its own directory
+            // path along with it and the copy would land nowhere.
+            (wpTrimmed ? `WP='${StringUtils.shellSingleQuoteEscape(wpTrimmed)}'\n` +
+                         `WP_BASE="\${WP##*/}"\n` +
+                         `case "$WP_BASE" in *.*) EXT="\${WP_BASE##*.}" ;; *) EXT="img" ;; esac\n` +
                          `[ "$WP" -ef "$DIR/wallpaper.$EXT" ] || cp -f "$WP" "$DIR/wallpaper.$EXT"\n` +
                          `WP_FILE="wallpaper.$EXT"\n`
                        : `WP_FILE=""\n`) +
@@ -368,35 +393,63 @@ ContentPage {
             // could keep showing the previous frame even though
             // preview.png on disk was already overwritten.
             `CREATED=$(date +%s%3N)\n` +
-            `cat > "$DIR/meta.json" <<EOF\n` +
-            `{"slug":"$SLUG","name":"$NAME","wallpaperFile":"$WP_FILE","mode":"$MODE","created":$CREATED}\n` +
-            `EOF\n` +
-            // Snapshot current decoration flags (Lua-config syntax — same
-            // parsing logic as InterfaceConfig.qml's decoReader). Applying
-            // this theme later restores the look the user had at save time.
+            // Written by a serialiser rather than pasted into a heredoc: the
+            // name is whatever the user typed, and a quote or a backslash in it
+            // used to produce a meta.json nothing could parse. The index rebuild
+            // reads every theme's meta with `except Exception: pass`, so the
+            // theme simply vanished from the grid while its directory, its
+            // wallpaper copy and its preview stayed on disk unreachable.
+            `python3 - "$DIR/meta.json" "$SLUG" "$NAME" "$WP_FILE" "$MODE" "$CREATED" <<'PYMETA'\n` +
+            `import json, sys\n` +
+            `out, slug, name, wp, mode, created = sys.argv[1:7]\n` +
+            `json.dump({"slug": slug, "name": name, "wallpaperFile": wp,\n` +
+            `           "mode": mode, "created": int(created)}, open(out, "w"))\n` +
+            `PYMETA\n` +
+            // Snapshot the decoration settings so applying this theme later
+            // restores the look the user had at save time.
             `GENERAL='${root.homePath}/.config/hypr/hyprland/general.lua'\n` +
             `CUSTOM='${root.homePath}/.config/hypr/custom/general.lua'\n` +
-            `python3 - "$DIR/decorations.json" "$GENERAL" "$CUSTOM" <<'PY'\n` +
-            `import json, os, re, sys\n` +
-            `out_path, general, custom = sys.argv[1], sys.argv[2], sys.argv[3]\n` +
-            `def truthy(v): return v.lower() in ("true", "1", "yes", "on")\n` +
-            `flags = {}\n` +
+            // Snapshot through the shared reader, so what a theme records and
+            // what an apply puts back can never disagree about a key.
+            `python3 '${root.homePath}/.config/quickshell/ii/scripts/themes/decorations.py' \\\n` +
+            // On failure drop the file rather than leave `{}`: an empty object
+            // now reads as "reset every decoration to stock" on apply, so a
+            // failed snapshot must leave no file at all, which apply skips.
+            `    read "$GENERAL" --flag-dir "$(dirname "$CUSTOM")" > "$DIR/decorations.json" \\\n` +
+            `    || rm -f "$DIR/decorations.json"\n` +
+            // A custom animation profile is a file, not a value: the snapshot
+            // records its name, but on another machine the name points at
+            // nothing. The file rides in the theme so the name means the same
+            // thing wherever the theme lands. Shipped profiles stay out — every
+            // install has them, and a theme is not how the stock set updates.
+            // Which names ship is decorations.py's to answer; asking it keeps
+            // this from being a second reading of the schema that could come
+            // to a different conclusion.
+            `SHIPPED=$(python3 '${root.homePath}/.config/quickshell/ii/scripts/themes/decorations.py' \\\n` +
+            `    shipped '${root.homePath}/.config/hypr/hyprland/general.lua' 2>/dev/null | tr '\\n' ' ')\n` +
+            `python3 - "$DIR" '${root.homePath}/.config/hypr/hyprland/animations' \\\n` +
+            `    "$SHIPPED" <<'PYANIM'\n` +
+            `import json, os, re, shutil, sys\n` +
+            `theme_dir, anim_dir = sys.argv[1:3]\n` +
+            `shipped = set(sys.argv[3].split()) if len(sys.argv) > 3 else set()\n` +
             `try:\n` +
-            `    text = open(general).read()\n` +
-            `    for key, block in (("animations", "animations"), ("blur", "blur"), ("shadow", "shadow")):\n` +
-            `        m = re.search(block + r"\\s*=\\s*\\{[^}]*?enabled\\s*=\\s*(\\w+)", text, re.S)\n` +
-            `        if m: flags[key] = truthy(m.group(1))\n` +
-            `    bm = re.search(r"^(\\s*)(--\\s*)?border_size\\s*=", text, re.M)\n` +
-            `    flags["borders"] = bool(bm and not bm.group(2))\n` +
-            `    rm = re.search(r"^\\s*rounding\\s*=\\s*(\\d+)", text, re.M)\n` +
-            `    if rm: flags["roundCorners"] = int(rm.group(1)) > 0\n` +
-            `except FileNotFoundError: pass\n` +
-            `try:\n` +
-            `    fp = os.path.join(os.path.dirname(custom), "titlebars.enabled")\n` +
-            `    flags["titleBars"] = (open(fp).read().strip() != "0") if os.path.exists(fp) else True\n` +
-            `except FileNotFoundError: pass\n` +
-            `with open(out_path, "w") as f: json.dump(flags, f, indent=2)\n` +
-            `PY\n` +
+            `    name = str(json.load(open(os.path.join(theme_dir, "decorations.json"))).get("animationProfile", ""))\n` +
+            `except Exception:\n` +
+            `    name = ""\n` +
+            `dest = os.path.join(theme_dir, "animations")\n` +
+            `shutil.rmtree(dest, ignore_errors=True)\n` +
+            `src = os.path.join(anim_dir, name + ".lua")\n` +
+            `if name and name not in shipped and re.fullmatch(r"[\\w-]+", name) and os.path.isfile(src):\n` +
+            `    os.makedirs(dest, exist_ok=True)\n` +
+            `    shutil.copy2(src, os.path.join(dest, name + ".lua"))\n` +
+            `PYANIM\n` +
+            // The window rules store is already the JSON a theme wants, so the
+            // snapshot is a copy. Written even when there are no rules: an
+            // empty list at save time is part of the look, and applying the
+            // theme later puts exactly that back.
+            `USERRULES='${root.homePath}/.config/hypr/hyprland/userrules.json'\n` +
+            `if [ -f "$USERRULES" ]; then cp -f "$USERRULES" "$DIR/windowrules.json"; ` +
+            `else printf '{"rules": []}\\n' > "$DIR/windowrules.json"; fi\n` +
             // Newly saved themes are treated as the currently applied theme.
             `printf '%s' "$SLUG" > '${root.lastAppliedPath}.tmp' && mv -f '${root.lastAppliedPath}.tmp' '${root.lastAppliedPath}'\n` +
             // Rebuild index
@@ -404,7 +457,13 @@ ContentPage {
             `import json, os, sys\n` +
             `themes_dir = sys.argv[1]\n` +
             `out = []\n` +
+            // An import stages into a dot-prefixed directory alongside the real
+            // ones and only sanitises the archive's meta.json near the end, so a
+            // run killed partway leaves a hidden directory holding whatever the
+            // file claimed its slug was. Skipping dotted names keeps that out of
+            // the index instead of publishing it as a theme.
             `for name in sorted(os.listdir(themes_dir)):\n` +
+            `    if name.startswith("."): continue\n` +
             `    p = os.path.join(themes_dir, name)\n` +
             `    meta = os.path.join(p, "meta.json")\n` +
             `    if os.path.isdir(p) and os.path.isfile(meta):\n` +
@@ -421,11 +480,21 @@ ContentPage {
 
     Connections {
         target: saveProc
-        function onExited() {
+        function onExited(exitCode, exitStatus) {
             root.countingDown = false
             root.saveDialogOpen = false
             root.pendingUpdateSlug = ""
             root.restoreWindowAfterShot()
+            // The payload runs under `set -e` and can stop partway — an
+            // unwritable directory, a wallpaper that vanished between being
+            // chosen and being copied — so the library is pointed at the new
+            // slug only once there is a directory behind it.
+            if (exitCode !== 0) {
+                root.lastSavedSlug = ""
+                ThemeLibrary.refresh()
+                root.showStatus(Translation.tr("Couldn't save that theme"), 8000)
+                return
+            }
             if (root.lastSavedSlug) ThemeLibrary.lastAppliedSlug = root.lastSavedSlug
             root.lastSavedSlug = ""
             ThemeLibrary.refresh()
@@ -510,7 +579,7 @@ ContentPage {
         Config.blockWrites = true
         deleteProc.deletingSlug = theme.slug
 
-        const safeSlug = String(theme.slug).replace(/'/g, "\\'\\''")
+        const safeSlug = StringUtils.shellSingleQuoteEscape(theme.slug)
         const bash =
             `set -e\n` +
             `SLUG='${safeSlug}'\n` +
@@ -550,6 +619,7 @@ ContentPage {
             `themes_dir = sys.argv[1]\n` +
             `out = []\n` +
             `for n in sorted(os.listdir(themes_dir)):\n` +
+            `    if n.startswith("."): continue\n` +
             `    p = os.path.join(themes_dir, n); m = os.path.join(p, "meta.json")\n` +
             `    if os.path.isdir(p) and os.path.isfile(m):\n` +
             `        try:\n` +
@@ -593,11 +663,17 @@ ContentPage {
     readonly property string pyPortable: `
 import json, os
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 STRIP = [("appearance", "themeSchedule"), ("light", "night"), ("cursor",),
          ("screenRecord", "savePath"), ("screenSnip", "savePath"),
-         ("background", "thumbnailPath"), ("background", "wallpaperPath")]
+         ("background", "thumbnailPath"), ("background", "wallpaperPath"),
+         ("background", "slideshow", "folder"),
+         # A theme file arrives from somewhere else. Every apps.* value is run
+         # as a shell command by the button that owns it, and updates.* names
+         # the manifest this machine trusts for release news -- neither is part
+         # of a look, and neither may be carried in from outside.
+         ("apps",), ("updates",)]
 
 def theme_installed(kind, name, cursors=False):
     # kind is the shared-data subdirectory a look lives in ("themes" for widget
@@ -625,6 +701,33 @@ def portable(cfg):
     for p in STRIP:
         drop(cfg, p)
     return cfg
+
+# What the rotation itself considers a wallpaper — kept in step with
+# WallpaperSlideshow.extensions, and top level only, since it does not recurse.
+SS_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".avif")
+
+def slideshow_folder(cfg):
+    ss = ((cfg.get("background") or {}).get("slideshow") or {})
+    if not ss.get("enable"):
+        return ""
+    folder = str(ss.get("folder") or "").strip()
+    if not folder:
+        folder = os.path.join(os.path.expanduser("~"), "Pictures", "Wallpapers")
+    return folder if os.path.isdir(folder) else ""
+
+def slideshow_images(folder):
+    if not folder:
+        return []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        p = os.path.join(folder, n)
+        if os.path.isfile(p) and os.path.splitext(n)[1].lower() in SS_EXT:
+            out.append(p)
+    return out
 `
 
     Process {
@@ -642,7 +745,53 @@ def portable(cfg):
         }
     }
 
+    // The pictures a rotation draws from can outweigh the rest of a theme many
+    // times over, so what they weigh is put in front of the person exporting
+    // rather than decided for them. Counted before anything is asked, so a
+    // theme with no rotation never sees the question at all.
+    property bool exportDialogOpen: false
+    property string exportSlug: ""
+    property int exportImageCount: 0
+    property real exportImageMib: 0
+
+    Process {
+        id: exportPreflightProc
+        property string buf: ""
+        onRunningChanged: if (running) buf = ""
+        stdout: SplitParser { onRead: data => exportPreflightProc.buf += data }
+        onExited: {
+            const parts = (exportPreflightProc.buf || "").trim().split(/\s+/)
+            const count = parseInt(parts[0]) || 0
+            const bytes = parseInt(parts[1]) || 0
+            if (count <= 0) {
+                root.runExport(false)
+                return
+            }
+            root.exportImageCount = count
+            root.exportImageMib = bytes / 1048576
+            root.exportDialogOpen = true
+        }
+    }
+
     function exportTheme(theme) {
+        if (root.ioBusy) return
+        root.exportSlug = theme.slug
+        exportPreflightProc.command = ["bash", "-c",
+            `python3 - "$1" <<'PY'\n` + root.pyPortable + `import sys
+theme_dir = sys.argv[1]
+try:
+    raw = json.load(open(os.path.join(theme_dir, "config.json")))
+except Exception:
+    raw = {}
+images = slideshow_images(slideshow_folder(raw))
+print("%d %d" % (len(images), sum(os.path.getsize(p) for p in images)))
+` + `PY\n`,
+            "export-preflight", `${root.themesDir}/${theme.slug}`]
+        exportPreflightProc.running = false
+        exportPreflightProc.running = true
+    }
+
+    function runExport(includeImages) {
         if (root.ioBusy) return
         root.ioBusy = true
         // Values reach bash as positional arguments, never spliced into the
@@ -650,15 +799,21 @@ def portable(cfg):
         const script =
             `SLUG="$1"\n` +
             `OUT=$(zenity --file-selection --save --confirm-overwrite ` +
-            `--title="Export theme" --filename="$HOME/$SLUG.mtheme" ` +
+            `--title="$3" --filename="$HOME/$SLUG.mtheme" ` +
             `--file-filter="Mainstream theme | *.mtheme" 2>/dev/null) || { echo CANCEL; exit 0; }\n` +
             `[ -n "$OUT" ] || { echo CANCEL; exit 0; }\n` +
             `case "$OUT" in *.mtheme) ;; *) OUT="$OUT.mtheme" ;; esac\n` +
-            `python3 - '${root.themesDir}'/"$SLUG" "$OUT" <<'PY'\n` +
+            // zenity checked whatever was typed, and the extension is added
+            // after, so the name it asked about is not always the name written.
+            // Asked again here when they differ.
+            `if [ -e "$OUT" ]; then\n` +
+            `  zenity --question --title="$3" --text="$4" 2>/dev/null || { echo CANCEL; exit 0; }\n` +
+            `fi\n` +
+            `python3 - '${root.themesDir}'/"$SLUG" "$OUT" "$2" <<'PY'\n` +
             root.pyPortable +
             `import io, sys, tarfile
-theme_dir, out_path = sys.argv[1], sys.argv[2]
-KEEP = ("interface.json", "decorations.json", "preview.png")
+theme_dir, out_path, include = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+KEEP = ("interface.json", "decorations.json", "windowrules.json", "preview.png")
 
 def entry(tar, name, obj):
     blob = json.dumps(obj, indent=2).encode()
@@ -667,11 +822,15 @@ def entry(tar, name, obj):
     info.mode = 0o644
     tar.addfile(info, io.BytesIO(blob))
 
-cfg = portable(json.load(open(os.path.join(theme_dir, "config.json"))))
+raw = json.load(open(os.path.join(theme_dir, "config.json")))
+images = slideshow_images(slideshow_folder(raw)) if include else []
+cfg = portable(raw)
 meta = json.load(open(os.path.join(theme_dir, "meta.json")))
 # Stamp the layout this archive was written against, so a future reader can
 # recognise a theme it only partly understands instead of applying it blind.
-meta["formatVersion"] = FORMAT_VERSION
+# Only a bundle carrying pictures claims the newer layout, so a theme without
+# one still lands cleanly on a build that predates them.
+meta["formatVersion"] = FORMAT_VERSION if images else 1
 with tarfile.open(out_path, "w:gz") as tar:
     entry(tar, "config.json", cfg)
     entry(tar, "meta.json", meta)
@@ -679,10 +838,24 @@ with tarfile.open(out_path, "w:gz") as tar:
         p = os.path.join(theme_dir, n)
         if os.path.isfile(p) and (n in KEEP or n.startswith("wallpaper.")):
             tar.add(p, arcname=n)
+    for p in images:
+        tar.add(p, arcname="slideshow/" + os.path.basename(p))
+    ANIM_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    adir = os.path.join(theme_dir, "animations")
+    if os.path.isdir(adir):
+        for n in sorted(os.listdir(adir)):
+            p = os.path.join(adir, n)
+            stem = n[:-4] if n.endswith(".lua") else ""
+            if stem and all(c in ANIM_OK for c in stem) and os.path.isfile(p) and os.path.getsize(p) <= 262144:
+                tar.add(p, arcname="animations/" + n)
 print("OK|" + out_path)
 ` +
             `PY\n`
-        exportProc.command = ["bash", "-c", script, "export-theme", theme.slug]
+        exportProc.command = ["bash", "-c", script, "export-theme",
+            root.exportSlug,
+            includeImages ? "1" : "0",
+            Translation.tr("Export theme"),
+            Translation.tr("A theme file of that name is already there. Replace it?")]
         exportProc.running = false
         exportProc.running = true
     }
@@ -701,6 +874,12 @@ print("OK|" + out_path)
                 try { result = JSON.parse(line.slice(3)) } catch (e) { result = null }
                 const name = result?.name ?? ""
                 const missing = result?.missing ?? []
+                // Overwriting a theme the user already had is the one outcome
+                // they cannot undo, so it is said whatever else also happened —
+                // it used to be the last branch of the chain and any missing
+                // look, or a newer file, spoke instead of it.
+                const over = result?.replaced
+                    ? Translation.tr(" It replaced your saved copy.") : ""
                 if (missing.length > 0) {
                     // Name what was left out and how to get the rest, rather
                     // than quietly importing a partial look.
@@ -708,9 +887,9 @@ print("OK|" + out_path)
                     root.showStatus((missing.length === 1
                         ? Translation.tr("Imported %1 without %2 — not installed on this system. Install it, then import the file again for the complete theme.")
                         : Translation.tr("Imported %1 without %2 — not installed on this system. Install them, then import the file again for the complete theme."))
-                        .arg(name).arg(parts.join(", ")), 0)
+                        .arg(name).arg(parts.join(", ")) + over, 0)
                 } else if (result?.newer) {
-                    root.showStatus(Translation.tr("Imported %1. It was made by a newer version, so parts of it may not apply.").arg(name), 12000)
+                    root.showStatus(Translation.tr("Imported %1. It was made by a newer version, so parts of it may not apply.").arg(name) + over, 12000)
                 } else if (result?.replaced) {
                     root.showStatus(Translation.tr("Replaced your saved %1 with the imported one").arg(name))
                 } else {
@@ -736,10 +915,43 @@ print("OK|" + out_path)
             root.pyPortable +
             `import re, shutil, sys, tarfile, tempfile, time
 archive, themes_dir, live_config = sys.argv[1], sys.argv[2], sys.argv[3]
-EXACT = {"meta.json", "config.json", "interface.json", "decorations.json", "preview.png"}
+EXACT = {"meta.json", "config.json", "interface.json", "decorations.json", "windowrules.json", "preview.png"}
 
 def wanted(n):
     return n in EXACT or (n.startswith("wallpaper.") and len(n) > len("wallpaper."))
+
+# A bundle can carry the pictures its rotation draws from. They are the only
+# members allowed to sit in a subdirectory, and even then only the basename is
+# kept — the archive still never picks where anything lands. The ceilings are
+# there so a malicious file can't fill the disk on the way in.
+MAX_SS_FILES = 500
+MAX_SS_BYTES = 1024 * 1024 * 1024
+MAX_ANIM_FILES = 20
+MAX_ANIM_BYTES = 4 * 1024 * 1024
+# A theme file arrives from somewhere else, and tar members declare their own
+# size: a small archive can name an enormous one. These are what a theme's own
+# parts plausibly weigh, so a file claiming more is rejected before anything is
+# written rather than after the disk is full.
+MAX_MEMBER_BYTES = 128 * 1024 * 1024
+MAX_TOTAL_BYTES = 512 * 1024 * 1024
+
+ANIM_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+def animation_name(name):
+    parts = name.split("/")
+    if len(parts) != 2 or parts[0] != "animations":
+        return ""
+    n = os.path.basename(parts[1])
+    stem = n[:-4] if n.endswith(".lua") else ""
+    return n if stem and all(c in ANIM_OK for c in stem) else ""
+
+def slideshow_name(name):
+    parts = name.split("/")
+    if len(parts) != 2 or parts[0] != "slideshow":
+        return ""
+    n = os.path.basename(parts[1])
+    if not n or n.startswith("."):
+        return ""
+    return n if os.path.splitext(n)[1].lower() in SS_EXT else ""
 
 def fail():
     print("ERR|notatheme")
@@ -754,19 +966,53 @@ try:
     except Exception:
         fail()
     with tar:
-        picked, seen = [], set()
+        picked, seen, total_bytes = [], set(), 0
+        ss_picked, ss_seen, ss_bytes = [], set(), 0
+        anim_picked, anim_seen, anim_bytes = [], set(), 0
         for m in tar.getmembers():
+            if not m.isfile():
+                continue
+            raw = m.name[2:] if m.name.startswith("./") else m.name
+            an = animation_name(raw)
+            if an:
+                if (an in anim_seen or len(anim_picked) >= MAX_ANIM_FILES
+                        or anim_bytes + m.size > MAX_ANIM_BYTES):
+                    continue
+                anim_seen.add(an)
+                anim_bytes += m.size
+                m.name = "animations/" + an
+                anim_picked.append(m)
+                continue
+            ss = slideshow_name(raw)
+            if ss:
+                if (ss in ss_seen or len(ss_picked) >= MAX_SS_FILES
+                        or ss_bytes + m.size > MAX_SS_BYTES):
+                    continue
+                ss_seen.add(ss)
+                ss_bytes += m.size
+                m.name = "slideshow/" + ss
+                ss_picked.append(m)
+                continue
+            # Anything else nested is dropped rather than flattened, so a
+            # picture folder can't smuggle in a second meta.json.
+            if "/" in raw:
+                continue
             # Only ever write a basename we recognise, so nothing in the
             # archive can choose its own destination.
-            n = os.path.basename(m.name)
-            if not m.isfile() or n in seen or not wanted(n):
+            n = os.path.basename(raw)
+            if n in seen or not wanted(n):
                 continue
+            if m.size > MAX_MEMBER_BYTES:
+                fail()
+            total_bytes += m.size
+            if total_bytes > MAX_TOTAL_BYTES:
+                fail()
             seen.add(n)
             m.name = n
             picked.append(m)
         if "meta.json" not in seen or "config.json" not in seen:
             fail()
-        tar.extractall(tmp, members=picked, filter="data")
+        tar.extractall(tmp, members=picked + ss_picked + anim_picked, filter="data")
 
     try:
         meta = json.load(open(os.path.join(tmp, "meta.json")))
@@ -792,6 +1038,22 @@ try:
         live = {}
     wp = next((f for f in sorted(os.listdir(tmp)) if f.startswith("wallpaper.")), "")
 
+    # Replacing a theme swaps the whole directory, so anything the incoming file
+    # doesn't carry would go out with the old copy. An archive exported without
+    # its wallpaper is the ordinary case, and losing the picture -- and the
+    # preview built from it -- is not what "import an update to this theme"
+    # should mean. Carry them across so only what actually arrived is replaced.
+    if replaced:
+        for keep_name in ("preview.png",):
+            src_keep = os.path.join(dest, keep_name)
+            if os.path.isfile(src_keep) and not os.path.exists(os.path.join(tmp, keep_name)):
+                shutil.copy2(src_keep, os.path.join(tmp, keep_name))
+        if not wp:
+            old_wp = next((f for f in sorted(os.listdir(dest)) if f.startswith("wallpaper.")), "")
+            if old_wp:
+                shutil.copy2(os.path.join(dest, old_wp), os.path.join(tmp, old_wp))
+                wp = old_wp
+
     cfg = portable(cfg)
     if wp:
         cfg.setdefault("background", {})["wallpaperPath"] = os.path.join(dest, wp)
@@ -803,6 +1065,20 @@ try:
         local = (live.get(section) or {}).get(key)
         if local:
             cfg.setdefault(section, {})[key] = local
+
+    # The folder came out on export because it named a directory in someone
+    # else's home. If the pictures travelled with the theme it is re-pointed at
+    # the copy that just landed; if they didn't, the rotation is switched off
+    # rather than left running over whatever this machine happens to keep in its
+    # own wallpapers folder, which would be a different theme wearing this one's
+    # name. Only touched when there is something to say, so a theme with no
+    # rotation at all doesn't gain an empty one.
+    ss = (cfg.get("background") or {}).get("slideshow")
+    if ss_picked:
+        cfg.setdefault("background", {}).setdefault("slideshow", {})["folder"] = \
+            os.path.join(dest, "slideshow")
+    elif isinstance(ss, dict) and ss.get("enable"):
+        ss["enable"] = False
 
     # A look the machine doesn't have would otherwise be written into gsettings
     # as a name nothing can resolve, leaving the desktop on a fallback and, for
@@ -854,6 +1130,7 @@ try:
 
     index = []
     for d in sorted(os.listdir(themes_dir)):
+        if d.startswith("."): continue
         mp = os.path.join(themes_dir, d, "meta.json")
         if os.path.isdir(os.path.join(themes_dir, d)) and os.path.isfile(mp):
             try:
@@ -1059,7 +1336,6 @@ finally:
                 delegate: Rectangle {
                     id: themeCard
                     required property var modelData
-                    required property int index
                     readonly property bool isActive: modelData.slug === root.lastAppliedSlug
                     readonly property bool busy: root.applyInFlight
                     Layout.fillWidth: true
@@ -1637,6 +1913,107 @@ finally:
                 }
             }
             Item { Layout.fillWidth: true }
+        }
+    }
+
+    // ── Export: include the slideshow pictures? ─────────────────────────────
+    Rectangle {
+        id: exportDialogScrim
+        visible: root.exportDialogOpen
+        parent: Overlay.overlay
+        anchors.fill: parent
+        color: Qt.rgba(Appearance.m3colors.m3scrim.r, Appearance.m3colors.m3scrim.g, Appearance.m3colors.m3scrim.b, 0.53)
+        z: 1000
+        MouseArea {
+            anchors.fill: parent
+            onClicked: root.exportDialogOpen = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            implicitWidth: 420
+            implicitHeight: exportDialogCol.implicitHeight + 40
+            radius: Appearance.rounding.normal
+            color: Appearance.m3colors.m3surfaceContainerHigh
+            MouseArea { anchors.fill: parent } // absorb click-through
+
+            ColumnLayout {
+                id: exportDialogCol
+                anchors {
+                    fill: parent
+                    margins: 20
+                }
+                spacing: 14
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    MaterialSymbol {
+                        text: "photo_library"
+                        iconSize: 28
+                        fill: 1
+                        color: Appearance.m3colors.m3primary
+                    }
+                    StyledText {
+                        Layout.fillWidth: true
+                        text: Translation.tr("Include the slideshow wallpapers?")
+                        font.pixelSize: Appearance.font.pixelSize.larger
+                        font.weight: Font.Medium
+                        color: Appearance.colors.colOnLayer1
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: `${root.exportImageCount} ${Translation.tr("images")} · ${root.exportImageMib.toFixed(0)} MB`
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.m3colors.m3primary
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: Translation.tr("Without them the theme still carries its colors, fonts and decorations — the slideshow simply arrives switched off.")
+                    font.pixelSize: Appearance.font.pixelSize.smaller
+                    color: Appearance.colors.colSubtext
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Item { Layout.fillWidth: true }
+                    RippleButton {
+                        buttonRadius: Appearance.rounding.full
+                        implicitHeight: 36
+                        padding: 10
+                        onClicked: {
+                            root.exportDialogOpen = false
+                            root.runExport(false)
+                        }
+                        contentItem: StyledText {
+                            anchors.centerIn: parent
+                            text: Translation.tr("Skip")
+                            color: Appearance.colors.colOnLayer1
+                        }
+                    }
+                    RippleButton {
+                        buttonRadius: Appearance.rounding.full
+                        implicitHeight: 36
+                        padding: 10
+                        colBackground: Appearance.m3colors.m3primary
+                        onClicked: {
+                            root.exportDialogOpen = false
+                            root.runExport(true)
+                        }
+                        contentItem: StyledText {
+                            anchors.centerIn: parent
+                            text: Translation.tr("Include")
+                            color: Appearance.m3colors.m3onPrimary
+                        }
+                    }
+                }
+            }
         }
     }
 

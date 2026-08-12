@@ -3,9 +3,6 @@
 -- Disable blur for xwayland context menus
 hl.window_rule({match = {class = "^()$", title = "^()$" },                   no_blur = true })
 
--- Disable blur for every window
-hl.window_rule({match = {class = ".*" }, no_blur = true })
-
 -- Floating
 hl.window_rule({match = {title = "^(Open File)(.*)$" },                      center = true})
 hl.window_rule({match = {title = "^(Open File)(.*)$" },                      float = true})
@@ -171,3 +168,8 @@ hl.layer_rule({ match = { namespace = "quickshell:wTaskView" }, no_anim = true})
 
 -- Launchers need to be FAST
 hl.layer_rule({ match = { namespace = "gtk4-layer-shell" }, no_anim = true})
+
+-- The settings page keeps its window rules in a file of its own, loaded after
+-- everything above so a rule made there outranks a shipped one for the same
+-- window. Absent or broken, nothing happens.
+pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland/userrules.lua")

@@ -25,6 +25,9 @@ Singleton {
         ])
     }
     
+    // A value written through as Lua rather than quoted, for the settings that
+    // are a table: a gradient is {colors={...},angle=N}, and the single-string
+    // form is rejected.
     function setMany(entries: var) {
         let args = ""
         for (let key in entries) {
@@ -35,6 +38,22 @@ Singleton {
         ])
     }
     
+    // Every entry lands in one invocation — a value as --set-lua, a null as
+    // --reset. Two detached edits of the same file race read-modify-replace,
+    // and the loser's key comes back from the dead.
+    function applyLuaMany(entries: var) {
+        let args = ""
+        for (let key in entries) {
+            if (entries[key] === null)
+                args += `--reset "${key}" `
+            else
+                args += `--set-lua "${key}" '${entries[key]}' `
+        }
+        if (args.length === 0) return
+        Quickshell.execDetached(["bash", "-c",
+            `${root.configuratorScriptPath} --file ${root.shellOverridesPath} ${args}`])
+    }
+
     function reset(key: string) {
         Quickshell.execDetached(["bash", "-c", //
             `${root.configuratorScriptPath} --file ${root.shellOverridesPath} --reset "${key}"` //

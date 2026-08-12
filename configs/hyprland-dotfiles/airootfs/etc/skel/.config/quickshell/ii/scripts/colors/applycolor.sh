@@ -19,8 +19,14 @@ fi
 # don't cp + sed the kitty-theme.conf template over each other's
 # partial work. -w 30 queues callers up to 30 s; lock auto-releases
 # on script exit (see the `wait` calls below that keep fd 9 alive).
-exec 9>"$STATE_DIR/applycolor.lock"
-flock -w 30 9 || { echo "applycolor.sh: lock timeout — skipping"; exit 0; }
+#
+# The recolour runs whether or not the lock was taken: nothing downstream
+# checks this script's status, so it is the only chance the terminals and Qt
+# apps get. The `exec` is guarded because bash carries on past a failed
+# redirection, which would leave flock working on a descriptor never opened.
+if command -v flock >/dev/null 2>&1 && { exec 9>"$STATE_DIR/applycolor.lock"; } 2>/dev/null; then
+    flock -w 30 9 2>/dev/null || echo "applycolor.sh: lock wait timed out — applying anyway" >&2
+fi
 
 cd "$CONFIG_DIR" || exit
 
@@ -101,6 +107,17 @@ apply_anyterm() {
   done
 }
 
+apply_kvantum() {
+  # Kvantum paints Qt widgets from a static SVG and its own [GeneralColors];
+  # neither follows the palette, so both are re-derived from it.
+  if [ ! -f "$SCRIPT_DIR/generate_kvantum_theme.py" ]; then
+    echo "Generator not found for Kvantum theme. Skipping that."
+    return
+  fi
+  python3 "$SCRIPT_DIR/generate_kvantum_theme.py" \
+    --scss "$STATE_DIR/user/generated/material_colors.scss"
+}
+
 apply_term() {
   apply_anyterm &
   apply_kitty &
@@ -120,6 +137,15 @@ if [ -f "$CONFIG_FILE" ]; then
 else
   echo "Config file not found at $CONFIG_FILE. Applying terminal theming by default."
   apply_term &
+fi
+
+if [ -f "$CONFIG_FILE" ]; then
+  enable_qt_apps=$(jq -r '.appearance.wallpaperTheming.enableQtApps' "$CONFIG_FILE")
+  if [ "$enable_qt_apps" != "false" ]; then
+    apply_kvantum &
+  fi
+else
+  apply_kvantum &
 fi
 
 # apply_qt & # Qt theming is already handled by kde-material-colors
