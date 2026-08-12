@@ -302,7 +302,10 @@ CLEAR_WORK=0
 REFRESH_PKGS=false
 CLEAN_BUILD=false
 CLEAN_CALAMARES=false
-RELEASE_BUILD=false
+# --release X.Y.Z: the version the image is cut as. It does not need a tag on
+# dots-hyprland yet, so a candidate can be built and tested as the thing it
+# will ship as, and tagged once it passes.
+RELEASE_VERSION=""
 # Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
 # (NVIDIA_DEPS). Standard ISO omits them to stay slim.
 NVIDIA_PROFILE=false
@@ -314,7 +317,16 @@ _OVERLAY_BAK_DIR=""
 # =============================================================================
 # Extract long options before getopts (which only handles short opts)
 REMAINING_ARGS=()
+# This walks a fixed copy of "$@", so an option that takes a value cannot
+# consume the next argument with shift. --release sets this instead, and the
+# following iteration claims the value.
+_WANT_RELEASE_VERSION=false
 for arg in "$@"; do
+    if [[ "$_WANT_RELEASE_VERSION" == true ]]; then
+        RELEASE_VERSION="$arg"
+        _WANT_RELEASE_VERSION=false
+        continue
+    fi
     case "$arg" in
         --refresh)
             REFRESH_PKGS=true
@@ -334,11 +346,16 @@ for arg in "$@"; do
             info "Legacy-NVIDIA edition requested — legacy NVIDIA prebuilts will be included."
             ;;
         --release)
-            RELEASE_BUILD=true
+            _WANT_RELEASE_VERSION=true
             CLEAN_BUILD=true
             CLEAN_CALAMARES=true
             REFRESH_PKGS=true
-            info "Release build requested — dots-hyprland pinned to its latest version tag; all packages will be removed and rebuilt from scratch."
+            ;;
+        --release=*)
+            RELEASE_VERSION="${arg#*=}"
+            CLEAN_BUILD=true
+            CLEAN_CALAMARES=true
+            REFRESH_PKGS=true
             ;;
         --help|-h)
             cat <<'HELPEOF'
@@ -361,11 +378,21 @@ Edition options:
                   cards. Omit for the standard (slim) ISO.
 
 Release options:
-  --release       Full clean release build: pins dots-hyprland to its latest
-                  version tag (X.Y.Z) instead of the mainstream branch, then
-                  performs a complete --clean + --cleancal rebuild — every
-                  package (calamares included) rebuilt from scratch. The ISO
-                  is auto-named and stamped with that version.
+  --release X.Y.Z Full clean release build cut as that version: a complete
+                  --clean + --cleancal rebuild, every package (calamares
+                  included) rebuilt from scratch, with the ISO named and
+                  stamped X.Y.Z.
+
+                  The version does not need a tag on dots-hyprland yet — that
+                  is the point. Build the candidate, test it as the thing it
+                  will ship as, then tag the commit it came from. If the tag
+                  already exists the build pins to it instead, so rebuilding a
+                  published release keeps reproducing that release rather than
+                  following the branch onwards.
+
+                  Until the tag is pushed, an install from the image clones the
+                  branch, since the tag cannot resolve. Same commit, but push
+                  the tag before the image reaches anyone.
 
 Examples:
   sudo ./build.sh                     # ISO only (packages must already exist)
@@ -373,8 +400,8 @@ Examples:
   sudo ./build.sh --clean -c          # Full clean rebuild (packages + work dir + ISO)
   sudo ./build.sh --cleancal          # Rebuild calamares + ISO
   sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
-  sudo ./build.sh --release           # Release: clean rebuild from the latest tag
-  sudo ./build.sh --release --nvidia  # Release: same, NVIDIA edition
+  sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
+  sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
 HELPEOF
             exit 0
             ;;
@@ -397,6 +424,21 @@ while getopts 'vco:w:' opt; do
     esac
 done
 
+# A mistyped version should not cost a sudo prompt and a wait, so these run
+# before the root check rather than with the rest of the release setup.
+if [[ "$_WANT_RELEASE_VERSION" == true ]]; then
+    echo "ERROR: --release needs a version (X.Y.Z), e.g. --release 1.3.0" >&2
+    exit 1
+fi
+if [[ -n "$RELEASE_VERSION" ]]; then
+    # Same shape updatems compares, so a hand-passed version cannot stamp
+    # something the installed system would later refuse to read.
+    if [[ ! "$RELEASE_VERSION" =~ ^[0-9]{1,2}\.[0-9]+\.[0-9]+$ ]]; then
+        echo "ERROR: --release: '$RELEASE_VERSION' is not a version (X.Y.Z, major at most two digits)." >&2
+        exit 1
+    fi
+fi
+
 # ── Root check ──────────────────────────────────────────────────────────────
 if [[ ${EUID} -ne 0 ]]; then
     echo "ERROR: ${0##*/} must be run as root (mkarchiso requires root)." >&2
@@ -406,11 +448,19 @@ fi
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/MainstreamOS/dots-hyprland.git}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
 
-if [[ "$RELEASE_BUILD" == true ]]; then
-    DOTFILES_BRANCH=$(git ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
-        | awk -F/ '{print $NF}' | grep -E '^[0-9]{1,2}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-    [[ -n "$DOTFILES_BRANCH" ]] || die "--release: no version tag (X.Y.Z) found on $DOTFILES_REPO"
-    info "Release build: dots-hyprland pinned to tag $DOTFILES_BRANCH"
+if [[ -n "$RELEASE_VERSION" ]]; then
+    info "Release build $RELEASE_VERSION — all packages will be removed and rebuilt from scratch."
+    # Cutting a release happens before its tag exists, so the branch tip is the
+    # only place the code can come from. Once the tag is published the same
+    # command has to keep reproducing that release rather than following the
+    # branch onwards, so an existing tag wins.
+    if git ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
+        | awk -F/ '{print $NF}' | grep -qxF "$RELEASE_VERSION"; then
+        DOTFILES_BRANCH="$RELEASE_VERSION"
+        info "Tag $RELEASE_VERSION is published — dots-hyprland pinned to it."
+    else
+        info "No tag $RELEASE_VERSION yet — building from branch $DOTFILES_BRANCH and stamping it. Tag this commit before the image goes out."
+    fi
 fi
 
 # #############################################################################
@@ -1091,8 +1141,16 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # installed system treats it as already applied and only acts on a
         # real version bump. Only written when the build is exactly at a
         # release tag; dev builds carry no stamp.
-        DOTS_TAG=$(su "$BUILD_USER" -c "git -C '$DOTS_WORK' tag --points-at HEAD" 2>/dev/null \
-            | grep -E '^[0-9]{1,2}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+        # --release supplies the version directly, since a candidate is cut
+        # before its tag is published. install-dotfiles falls back to the
+        # branch when a stamped tag will not clone, which is the same commit
+        # this image was built from.
+        if [[ -n "$RELEASE_VERSION" ]]; then
+            DOTS_TAG="$RELEASE_VERSION"
+        else
+            DOTS_TAG=$(su "$BUILD_USER" -c "git -C '$DOTS_WORK' tag --points-at HEAD" 2>/dev/null \
+                | grep -E '^[0-9]{1,2}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+        fi
         if [[ -n "$DOTS_TAG" ]]; then
             printf '%s\n' "$DOTS_TAG" > "$PROFILE_DIR/airootfs/etc/mainstream-dotfiles-tag"
         else
