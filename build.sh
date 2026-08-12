@@ -157,6 +157,7 @@ restore_profile_overlay() {
 # the repo doesn't provide — or if GitHub is unreachable — falls through to the
 # local build (curl --retry hardens the single-server GitHub fetch).
 declare -A GITHUB_PROVIDED=()
+declare -A FAILED_DOWNLOADS=()
 download_mainstream_repo_pkgs() {
     local repo_dir="$1"
     local api="https://api.github.com/repos/MainstreamOS/packages/releases/tags/mainstream-repo"
@@ -225,8 +226,34 @@ download_mainstream_repo_pkgs() {
         else
             warn "Failed to download $(basename "$url") — will build it locally if needed."
             rm -f "$f"
+            # Strip -ver-rel-arch to recover the package name; the asset is gone,
+            # so its own .PKGINFO cannot be read.
+            FAILED_DOWNLOADS["$(sed -E 's/-[^-]+-[^-]+-[^-]+\.pkg\.tar\.zst$//' <<< "$base")"]=1
         fi
     done <<< "$urls"
+
+    # A split PKGBUILD emits several packages from one build, so a sibling that
+    # failed to download cannot be fetched by itself — the only thing that
+    # produces it is a local build of the parent. When the parent downloaded
+    # cleanly it gets skipped, and the sibling then silently never exists: that
+    # is how a hard dependency goes missing from the ISO with nothing in the
+    # build log marking it. Drop the parent's prebuilt so it is rebuilt whole.
+    local failed parent
+    for failed in "${!FAILED_DOWNLOADS[@]}"; do
+        # A later asset for the same name may have succeeded.
+        [[ -n "${GITHUB_PROVIDED[$failed]:-}" ]] && continue
+        parent="${failed#lib32-}"
+        if [[ "$parent" != "$failed" && -n "${GITHUB_PROVIDED[$parent]:-}" ]]; then
+            warn "$failed is a split sibling of $parent and did not download — rebuilding $parent locally so both halves exist."
+            # The AUR loop also skips anything already sitting in the output dir
+            # (on a non-clean build), so the downloaded parent has to go too —
+            # otherwise clearing the map changes nothing and the rebuild that
+            # this warning promises never runs.
+            rm -f "$repo_dir/${parent}-"[0-9]*.pkg.tar.zst
+            unset "GITHUB_PROVIDED[$parent]"
+        fi
+    done
+
     info "Pulled ${#GITHUB_PROVIDED[@]} prebuilt package(s) from the [mainstream] GitHub repo."
 }
 
@@ -468,6 +495,11 @@ fi
 #   PHASE 1: PACKAGE BUILD  (only when --refresh / --clean / --cleancal)
 #
 # #############################################################################
+# The bundled repo path is read by phase 2 and by the dependency check, both of
+# which run whether or not packages were rebuilt, so it cannot live inside the
+# phase-1 block below.
+PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
+
 if [[ "$REFRESH_PKGS" == true ]]; then
 
 info "═══════════════════════════════════════════════════════════════"
@@ -479,7 +511,6 @@ info "  [BUILD-DIAG] Profile dir: $PROFILE_DIR"
 info "  [BUILD-DIAG] DOTFILES_REPO: $DOTFILES_REPO  branch: $DOTFILES_BRANCH"
 
 # ── Package-build config ────────────────────────────────────────────────────
-PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
 PKG_WORK_DIR="/tmp/iso-pkg-build"
 BUILD_USER="iso-builder"
 
@@ -1438,6 +1469,72 @@ echo ""
 
 fi  # end REFRESH_PKGS
 
+# The ISO carries its own package repo, and the mainstream-* meta-packages are
+# what pull the rest in. A dependency present in neither that repo nor Arch's is
+# only discovered when a user clicks install and pacman refuses, by which point
+# the image has shipped. Runs whether or not this invocation rebuilt packages,
+# since what matters is the repo about to be baked in.
+verify_bundled_deps() {
+    local pkgdir="$PKG_OUTPUT_DIR" f name dep bare m repo p
+    local -a missing=()
+    local -A provided=()
+    [[ -d "$pkgdir" ]] || return 0
+
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        name=$(pacman -Qpq "$f" 2>/dev/null) || continue
+        provided["$name"]=1
+        # A dependency can also be met by a provides, so those count as present.
+        while IFS= read -r p; do
+            [[ -n "$p" ]] && provided["${p%%[<>=]*}"]=1
+        done < <(bsdtar -xOf "$f" .PKGINFO 2>/dev/null | sed -n 's/^provides = //p')
+    done < <(find "$pkgdir" -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' 2>/dev/null)
+
+    if ((${#provided[@]} == 0)); then
+        warn "No packages in $pkgdir — skipping the bundled-repo dependency check."
+        return 0
+    fi
+
+    # Driven by what the repo actually holds, not by METAPKGS: that array is the
+    # local-build list and omits packages the repo still carries (mainstream-obs
+    # among them — the very one whose missing dependency prompted this check).
+    local -A arch_repo_of=()
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        m=$(pacman -Qpq "$f" 2>/dev/null) || continue
+        while IFS= read -r dep; do
+            bare=${dep%%[<>=]*}
+            [[ -n "$bare" ]] || continue
+            [[ -n "${provided[$bare]:-}" ]] && continue
+            # Whatever Arch itself ships is fine. [mainstream] is deliberately
+            # not accepted: the build host runs Mainstream, so its own online
+            # repo would answer for anything and hide exactly the gap this
+            # looks for — the installed system may have no network, and the
+            # bundled repo is all it has.
+            if [[ -z "${arch_repo_of[$bare]+set}" ]]; then
+                # -Sddp resolves provides, so soname and virtual dependencies
+                # (libgl, ttf-font, libmpv.so) report the repo that really
+                # satisfies them; `pacman -Si` matches package names only and
+                # would call every one of them missing. LC_ALL=C keeps output
+                # parseable on a translated host, and `|| true` stops the
+                # non-zero exit for an unresolvable name from killing the build
+                # under `set -e` before it can be reported.
+                repo=$(LC_ALL=C pacman -Sddp --print-format '%r' "$bare" 2>/dev/null | head -1) || true
+                arch_repo_of["$bare"]="$repo"
+            fi
+            repo="${arch_repo_of[$bare]}"
+            [[ -n "$repo" && "$repo" != "mainstream" ]] && continue
+            missing+=("$m needs $bare${repo:+ (only in [$repo], not bundled)}")
+        done < <(bsdtar -xOf "$f" .PKGINFO 2>/dev/null | sed -n 's/^depend = //p')
+    done < <(find "$pkgdir" -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' 2>/dev/null)
+
+    if ((${#missing[@]})); then
+        warn "The bundled repo cannot satisfy its own packages:"
+        for m in "${missing[@]}"; do warn "  - $m"; done
+        die "Refusing to build an ISO whose bundled repo is missing packages it depends on."
+    fi
+    info "Bundled-repo dependency check passed — every dependency resolves (${#provided[@]} names bundled)."
+}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -1624,6 +1721,12 @@ if [[ -d "$_LOCAL_REPO" ]]; then
     # 580xx-included for --nvidia.
     add_mainstream_db "$_LOCAL_REPO"
 fi
+
+# Deliberately here rather than at the end of phase 1: sanitize_local_repo above
+# can delete packages and the DB is rebuilt right before this, so these are the
+# exact bytes mkarchiso is about to bake in. Checking any earlier would verify a
+# repo that still changes afterwards.
+verify_bundled_deps
 
 # no-op unless --nvidia; the EXIT trap restores the profile on any exit.
 apply_profile_overlay
