@@ -34,7 +34,13 @@ BarGroup {
 
     RowLayout {
         id: mainRow
-        anchors.centerIn: parent
+        // The default property lands this row inside the group's GridLayout,
+        // so it has to be placed as a layout child — anchoring an item a
+        // layout manages is undefined behavior.
+        Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+        // The grid would compress the row while the pill's width animates
+        // up; pinning the minimum keeps the reveal from squashing it.
+        Layout.minimumWidth: implicitWidth
         spacing: 15
 
         // --- POMODORO SECTION ---
@@ -55,6 +61,9 @@ BarGroup {
                 }
                 color: Appearance.colors.colOnLayer1
                 font.pixelSize: Appearance.font.pixelSize.small
+                // Tabular figures: every digit shares one width, so a ticking
+                // time doesn't resize the pill.
+                font.features: ({ "tnum": 1 })
                 Layout.alignment: Qt.AlignVCenter
             }
         }
@@ -80,6 +89,7 @@ BarGroup {
                 }
                 color: Appearance.colors.colOnLayer1
                 font.pixelSize: Appearance.font.pixelSize.small
+                font.features: ({ "tnum": 1 })
                 Layout.alignment: Qt.AlignVCenter
             }
         }
@@ -102,6 +112,7 @@ BarGroup {
                 }
                 color: Appearance.colors.colOnLayer1
                 font.pixelSize: Appearance.font.pixelSize.small
+                font.features: ({ "tnum": 1 })
                 Layout.alignment: Qt.AlignVCenter
             }
         }

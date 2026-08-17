@@ -110,6 +110,33 @@ ContentSection {
         return "^(" + text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")$";
     }
 
+    // One entry per app, under the name a person knows it by. The desktop
+    // entry is the authority when one matches the class; otherwise the class
+    // itself is tidied — reverse-DNS prefix dropped, dashes and underscores
+    // opened into spaces, first letters raised — so org.gnome.Nautilus and
+    // desktop-plus read as Nautilus and Desktop Plus rather than as ids.
+    function friendlyAppName(cls) {
+        const entry = DesktopEntries.heuristicLookup(cls);
+        if (entry && entry.name.length > 0) return entry.name;
+        const seg = cls.split(".").pop();
+        return seg.split(/[-_]/)
+            .filter(w => w.length > 0)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(" ");
+    }
+
+    readonly property var openApps: {
+        const seen = ({});
+        const apps = [];
+        for (const w of openWindows) {
+            if (!w.class || seen[w.class]) continue;
+            seen[w.class] = true;
+            apps.push({ displayName: friendlyAppName(w.class), cls: w.class });
+        }
+        apps.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        return apps;
+    }
+
     // ^(kitty)$ reads as noise on a card; show the plain name when the
     // pattern is just an anchored literal, the raw pattern otherwise.
     function prettyPattern(pattern) {
@@ -176,7 +203,35 @@ ContentSection {
         easing.bezierCurve: Appearance.animation.elementMove.bezierCurve
     }
 
+    // Bring a freshly built editor onto screen. Called from the Loader once
+    // the editor exists, because before that the page's content height is
+    // still the old one and a scroll target clamped against it lands above
+    // the editor — opening from the bottom of the page used to shove the
+    // view up while the editor grew in below it, off screen. Top-aligns the
+    // editor when it is taller than the view, bottom-aligns it otherwise, so
+    // the fields you fill in first are what lands in frame.
+    function scrollToEditor(item) {
+        let flick = root.parent;
+        while (flick && flick.contentY === undefined)
+            flick = flick.parent;
+        if (!flick || !item) return;
+        const top = flick.contentItem.mapFromItem(item, 0, 0).y;
+        const target = item.height > flick.height
+            ? top - 12
+            : Math.min(top - 12, top + item.height - flick.height + 12);
+        scrollBackAnim.target = flick;
+        scrollBackAnim.to = Math.max(0, Math.min(target, flick.contentHeight - flick.height));
+        scrollBackAnim.restart();
+    }
+
     function openEditor(index) {
+        // A used ConfigSwitch has had its checked: binding broken by the
+        // click, so an open editor cannot be repointed at another rule — it
+        // has to come down and go up again. Dropping editIndex first
+        // deactivates the Loader; the fresh instance then binds against the
+        // draft loaded below.
+        if (root.editorOpen && root.editIndex !== index)
+            root.editIndex = -1;
         const rule = index < root.rules.length ? root.rules[index] : null;
         const m = rule?.match ?? {};
         const e = rule?.effects ?? {};
@@ -507,7 +562,7 @@ ContentSection {
                     }
                     SmallIconButton {
                         glyph: "edit"
-                        enabled: !root.editorOpen
+                        enabled: root.editIndex !== ruleCard.index
                         onClicked: root.openEditor(ruleCard.index)
                     }
                     SmallIconButton {
@@ -529,6 +584,9 @@ ContentSection {
         visible: active
         Layout.fillWidth: true
         Layout.topMargin: 4
+        // After onLoaded the item exists but the layout has not sized it yet;
+        // one deferral lets implicitHeight land before the scroll measures it.
+        onLoaded: Qt.callLater(() => root.scrollToEditor(item))
 
         sourceComponent: Rectangle {
             color: Appearance.colors.colLayer1
@@ -543,8 +601,18 @@ ContentSection {
                 }
                 spacing: 8
 
-                ContentSubsectionLabel {
-                    text: Translation.tr("Which windows")
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    ContentSubsectionLabel {
+                        text: Translation.tr("Which windows")
+                    }
+                    Item { Layout.fillWidth: true }
+                    SmallIconButton {
+                        glyph: "close"
+                        onClicked: root.editIndex = -1
+                        StyledToolTip { text: Translation.tr("Close without saving") }
+                    }
                 }
 
                 RowLayout {
@@ -554,11 +622,8 @@ ContentSection {
                         id: windowPicker
                         Layout.fillWidth: true
                         textRole: "displayName"
-                        model: [{ displayName: Translation.tr("Pick an open window…"), cls: "" }]
-                            .concat(root.openWindows.map(w => ({
-                                displayName: w.class + "  —  " + w.title,
-                                cls: w.class
-                            })))
+                        model: [{ displayName: Translation.tr("Pick an open app…"), cls: "" }]
+                            .concat(root.openApps)
                         currentIndex: 0
                         onActivated: index => {
                             const cls = model[index]?.cls ?? "";
@@ -573,7 +638,7 @@ ContentSection {
                             windowsProc.running = false;
                             windowsProc.running = true;
                         }
-                        StyledToolTip { text: Translation.tr("Re-list the windows open right now") }
+                        StyledToolTip { text: Translation.tr("Re-list the apps open right now") }
                     }
                 }
 
@@ -609,7 +674,7 @@ ContentSection {
                     StyledText {
                         Layout.fillWidth: true
                         text: root.liveMatch.state === "nopreview" ? Translation.tr("Can't preview this pattern here, but it will still be saved")
-                            : root.liveMatch.state === "blank" ? Translation.tr("Pick a window or type a pattern to see what it catches")
+                            : root.liveMatch.state === "blank" ? Translation.tr("Pick an app or type a pattern to see what it catches")
                             : root.liveMatch.list.length === 0 ? Translation.tr("Matches none of the windows open right now")
                             : Translation.tr("Matches now: %1").arg(root.liveMatch.list.map(w => w.class).filter((c, i, a) => a.indexOf(c) === i).join(", "))
                         font.pixelSize: Appearance.font.pixelSize.smaller
