@@ -211,21 +211,48 @@ download_mainstream_repo_pkgs() {
             continue
         fi
         f="$repo_dir/$base"
-        if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$f" "$url" 2>/dev/null; then
-            name=$(pacman -Qpq "$f" 2>/dev/null || true)
+        # Downloaded beside the local build rather than over it: a package built
+        # a moment ago can carry a newer version than the published one, and
+        # writing to its name would destroy it before anything compared the two.
+        tmpf="$repo_dir/.download-$$-$base"
+        if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$tmpf" "$url" 2>/dev/null; then
+            name=$(pacman -Qpq "$tmpf" 2>/dev/null || true)
             if [[ -n "$name" ]]; then
+                remote_ver=$(pacman -Qp "$tmpf" 2>/dev/null | awk '{print $2}')
+                local_pkg=$(find "$repo_dir" -maxdepth 1 -name "${name}-[0-9]*.pkg.tar.zst" \
+                    ! -name '.download-*' 2>/dev/null | head -1)
+                local_ver=""
+                if [[ -n "$local_pkg" ]]; then
+                    local_ver=$(pacman -Qp "$local_pkg" 2>/dev/null | awk '{print $2}')
+                fi
+                if [[ -n "$local_ver" && -n "$remote_ver" ]] \
+                   && (( $(vercmp "$local_ver" "$remote_ver") > 0 )); then
+                    info "$name — keeping the local build $local_ver, newer than the published $remote_ver."
+                    rm -f "$tmpf"
+                    continue
+                fi
+                if [[ -n "$local_pkg" ]]; then
+                    info "$name — the published $remote_ver replaces the local build ${local_ver:-unknown}."
+                    if [[ "$local_pkg" != "$f" ]]; then
+                        rm -f "$local_pkg"
+                    fi
+                fi
+                mv -f "$tmpf" "$f"
                 GITHUB_PROVIDED["$name"]=1
                 # Drop any older locally-built copy of the same package so the
                 # repo db indexes only the GitHub version (no duplicate-name clash).
                 find "$repo_dir" -maxdepth 1 -name "${name}-[0-9]*.pkg.tar.zst" \
                     ! -name "$(basename "$f")" -delete 2>/dev/null || true
             else
-                warn "Downloaded $(basename "$f") but could not read its name — removing."
-                rm -f "$f"
+                warn "Downloaded $(basename "$base") but could not read its name — removing."
+                rm -f "$tmpf"
             fi
         else
+            # Only the partial download is discarded — anything already at that
+            # name is this build's own work, and a failed fetch is no reason to
+            # throw it away.
+            rm -f "$tmpf"
             warn "Failed to download $(basename "$url") — will build it locally if needed."
-            rm -f "$f"
             # Strip -ver-rel-arch to recover the package name; the asset is gone,
             # so its own .PKGINFO cannot be read.
             FAILED_DOWNLOADS["$(sed -E 's/-[^-]+-[^-]+-[^-]+\.pkg\.tar\.zst$//' <<< "$base")"]=1
