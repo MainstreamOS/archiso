@@ -255,6 +255,28 @@ mkinitcpio_add_modules() {
     done
 }
 
+# ── intel_kms_module ────────────────────────────────────────────────────────
+# Which module the initramfs needs for Intel early KMS, read off the card rather
+# than worked out from its generation. Whether i915 or xe claims a part is the
+# kernel's call and it moves from one release to the next, so a table here would
+# be a second opinion with nothing keeping it honest — and the generation tiers
+# are no help either, since the one covering Xe spans parts on both sides of the
+# split. Asking what is driving the card cannot disagree with the kernel, and
+# follows it for free the release a default changes.
+#
+# i915 when nothing answers: it is what every Intel part predating the split
+# uses, and it is what the initramfs named before any of this was asked.
+intel_kms_module() {
+    local addr drv=""
+    addr="$(_gpu_lspci_d | grep -iE 'VGA compatible controller|3D controller|Display controller' \
+            | grep -i 'Intel' | head -1 | awk '{print $1}' || true)"
+    [[ -n "$addr" ]] && drv="$(_gpu_bound_driver "$addr")" || true
+    case "$drv" in
+        i915|xe) printf '%s\n' "$drv" ;;
+        *)       printf 'i915\n' ;;
+    esac
+}
+
 # ── mkinitcpio_remove_hook <hook> ───────────────────────────────────────────
 # Idempotent removal of a HOOKS entry (scoped to the HOOKS line so MODULES and
 # comments are untouched). Used to drop the kms hook before injecting nvidia
@@ -341,6 +363,13 @@ hypr_env_retire() {
 # Extra probes/wrappers (overridable for testing).
 _gpu_lspci_d()   { lspci -D 2>/dev/null || true; }
 _gpu_systemctl() { ${GPU_SUDO:-} systemctl "$@"; }
+# The module currently driving a card, straight from the kernel. Empty when
+# nothing has claimed it.
+_gpu_bound_driver() {
+    local link="/sys/bus/pci/devices/$1/driver"
+    [[ -e "$link" ]] || return 0
+    basename "$(readlink -f "$link")" 2>/dev/null || true
+}
 _gpu_esp_mib() {
     if mountpoint -q /boot/efi 2>/dev/null; then
         echo $(( $(findmnt -bno SIZE /boot/efi 2>/dev/null || echo 0) / 1048576 ))
@@ -397,16 +426,6 @@ nvidia_write_env() {
     case "$NVIDIA_GEN" in
         maxwell) nvidia_write_qs_hint "$uh" ;;
     esac
-}
-
-# ── nvidia_write_aq_drm <user_home> ─────────────────────────────────────────
-# Hybrid NVIDIA: pin Aquamarine's DRM device to the NVIDIA card via the stable
-# by-path symlink (card0/card1 enumeration is non-deterministic).
-nvidia_write_aq_drm() {
-    local uh="$1" addr
-    addr="$(_gpu_lspci_d | grep -iE 'NVIDIA|GeForce|Quadro|Tesla' | head -1 | awk '{print $1}' || true)"
-    [[ -n "$addr" ]] || return 0
-    hypr_env_upsert "$uh" AQ_DRM_DEVICES "/dev/dri/by-path/pci-${addr}-card"
 }
 
 # ── nvidia_enable_services <enable_powerd:bool> ─────────────────────────────
@@ -494,13 +513,11 @@ gpu_apply_autoconfig() {
     if [[ "$esp_threshold" -gt 0 && "$esp_mib" -gt 0 && "$esp_mib" -lt "$esp_threshold" ]]; then
         early_kms=false
     fi
-    # Intel first so i915 precedes nvidia in MODULES.
+    # Intel first so its module precedes nvidia in MODULES.
     if [[ $HAS_INTEL == true ]]; then
-        # i915 is the kernel default for Alchemist/Iris-Xe and older; on the rare
-        # Xe2 card (Battlemage/Lunar Lake) it is a harmless no-op and xe auto-loads.
         # No i915.modeset cmdline token: the param was deprecated in 6.12 (warns)
         # and KMS is already the -1 auto default; early KMS comes from MODULES.
-        [[ $early_kms == true ]] && mkinitcpio_add_modules i915 || true
+        [[ $early_kms == true ]] && mkinitcpio_add_modules "$(intel_kms_module)" || true
     fi
     if [[ $HAS_AMD == true ]]; then
         if [[ $IS_OLD_AMD == true ]]; then
@@ -525,7 +542,7 @@ gpu_apply_autoconfig() {
     # PRIME for hybrid.
     if [[ $IS_HYBRID == true && $early_kms == true ]]; then
         if [[ $HAS_NVIDIA == true && $HAS_INTEL == true ]]; then
-            mkinitcpio_add_modules i915
+            mkinitcpio_add_modules "$(intel_kms_module)"
         elif [[ $HAS_NVIDIA == true && $HAS_AMD == true ]]; then
             mkinitcpio_add_modules amdgpu
         fi
@@ -546,8 +563,19 @@ gpu_apply_autoconfig() {
 
 # ── gpu_apply_hypr_tweaks <user_home> ───────────────────────────────────────
 # User-level Hyprland GPU config (run AFTER dotfiles deploy so env.lua/
-# hypridle.conf exist): NVIDIA env + hypridle resume fix for Fermi+, and the
-# hybrid AQ_DRM device pin. Mirrors dots setup_gpu_hypr_tweaks.
+# hypridle.conf exist): NVIDIA env + hypridle resume fix for Fermi+. Mirrors
+# dots setup_gpu_hypr_tweaks.
+#
+# AQ_DRM_DEVICES is deliberately NOT written here. This library used to pin it
+# to the NVIDIA card (and later to a joined NVIDIA+other-cards list) on hybrid
+# setups, but on at least one confirmed hybrid Blackwell laptop (HP Omen Max
+# 16, RTX 5080) both forms black-screened on boot, and the only fix that
+# worked was removing the line entirely and letting Aquamarine autodetect.
+# We intentionally do not retire a pre-existing AQ_DRM_DEVICES line either:
+# a machine in this state can't boot to rerun the installer normally, so the
+# realistic recovery path is a fresh install, which never writes the line in
+# the first place. Anyone who wants Hyprland pinned to a specific GPU can
+# still set AQ_DRM_DEVICES by hand per the Hyprland wiki.
 gpu_apply_hypr_tweaks() {
     local uh="$1"
     # Resolve driver presence once (a pacman query) and reuse for both branches.
@@ -556,8 +584,5 @@ gpu_apply_hypr_tweaks() {
     if [[ $has_nv_drv == true && $NVIDIA_PCI_DEC -ge 1728 ]]; then
         nvidia_write_env "$uh"
         hypridle_fix_nvidia "$uh"
-    fi
-    if [[ $has_nv_drv == true && $IS_HYBRID == true ]]; then
-        nvidia_write_aq_drm "$uh"
     fi
 }
