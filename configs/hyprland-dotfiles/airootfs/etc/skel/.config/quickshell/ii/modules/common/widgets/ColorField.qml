@@ -22,6 +22,10 @@ RowLayout {
     property string text: ""
     property string buttonIcon: ""
     property string value: "#000000"
+    // Whether clearing the box is a way of saying "no color of my own" rather
+    // than a typo. Off by default: somewhere like a gradient lane, an empty
+    // string is not a color it can draw, and refusing it is the kinder answer.
+    property bool allowEmpty: false
     property real textWidth: 170
     // The width the swatch, the field and the button share, so the row lines
     // up with the sliders around it: the swatch starts where their tracks
@@ -30,13 +34,23 @@ RowLayout {
     signal edited(string newValue)
 
     // Accepts what someone would actually type: with or without the hash, and
-    // the three-digit form.
+    // the three-digit form. Also the eight-digit one, which nobody types but
+    // which is what Qt hands back for a color carrying alpha — the leading pair
+    // is that alpha, and a swatch that kept it would draw a color nobody chose.
     function normalise(raw) {
         let v = String(raw).trim().replace(/^#/, "").toLowerCase()
         if (/^[0-9a-f]{3}$/.test(v))
             v = v[0] + v[0] + v[1] + v[1] + v[2] + v[2]
+        else if (/^[0-9a-f]{8}$/.test(v))
+            v = v.slice(2)
         return /^[0-9a-f]{6}$/.test(v) ? "#" + v : ""
     }
+
+    // What the swatch paints and the box shows. A caller handing over a color
+    // rather than a typed string has no reason to strip the alpha itself, and
+    // an unreadable value here is worse than a wrong one — it cannot be edited
+    // back into shape.
+    readonly property string displayValue: root.normalise(root.value) || root.value
 
     OptionalMaterialSymbol {
         icon: root.buttonIcon
@@ -55,16 +69,15 @@ RowLayout {
         Layout.fillWidth: root.sliderWidth <= 0
         Layout.preferredWidth: root.sliderWidth > 0 ? root.sliderWidth : -1
 
-        // Stretched to whatever the field and the button leave, and matched to
-        // the field's drawn outline rather than its control height — the
-        // Material style holds inset space around the visible box, so the
-        // control is taller than what the eye compares against.
+        // The button is the tallest thing in the row and the one with a hard
+        // edge, so the swatch and the field take their height from it and the
+        // three read as one control rather than three stacked differently.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: field.background ? field.background.height : field.height
+            Layout.preferredHeight: pickButton.height
             Layout.alignment: Qt.AlignVCenter
             radius: Appearance.rounding.small
-            color: root.value
+            color: root.displayValue
             border.width: 1
             border.color: Appearance.m3colors.m3outline
         }
@@ -83,28 +96,36 @@ RowLayout {
             // The style's stock padding is meant for sentences; a seven
             // character code needs just enough for itself and the cursor. The
             // insets hold room for a floating label there is none of, and
-            // dropping them lets the box fill the control, which is what the
-            // swatch's height is matched against.
+            // dropping them lets the drawn box fill the control it is given.
             leftPadding: 8
             rightPadding: 8
             topInset: 0
             bottomInset: 0
+            Layout.preferredHeight: pickButton.height
+            Layout.alignment: Qt.AlignVCenter
             Layout.preferredWidth: Math.ceil(hexMetrics.advanceWidth) + leftPadding + rightPadding + 2
-            text: root.value
+            text: root.displayValue
             onEditingFinished: {
                 const v = root.normalise(text)
-                if (v.length > 0 && v !== root.value)
+                // An emptied box is the only way of taking a color back off
+                // where one is allowed to be absent; without it the field can
+                // be given a value but never returned to not having one.
+                if (v.length === 0 && root.allowEmpty && String(text).trim().length === 0) {
+                    if (root.value !== "")
+                        root.edited("")
+                } else if (v.length > 0 && v !== root.value)
                     root.edited(v)
                 // Re-arm the binding rather than assigning text: a plain
-                // assignment would sever `text: root.value` for good, so after
-                // one edit the box would stop following the picker or an
-                // outside change. Qt.binding keeps it tracking — and snaps an
-                // unusable entry back to the real value in the same stroke.
-                text = Qt.binding(() => root.value)
+                // assignment would sever `text: root.displayValue` for good,
+                // so after one edit the box would stop following the picker or
+                // an outside change. Qt.binding keeps it tracking — and snaps
+                // an unusable entry back to the real value in the same stroke.
+                text = Qt.binding(() => root.displayValue)
             }
         }
 
         RippleButtonWithIcon {
+            id: pickButton
             materialIcon: "colorize"
             mainText: Translation.tr("Pick")
             onClicked: pickerProc.running = true

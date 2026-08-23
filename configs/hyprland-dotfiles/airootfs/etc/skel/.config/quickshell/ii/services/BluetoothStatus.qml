@@ -15,21 +15,51 @@ Singleton {
     readonly property int activeDeviceCount: Bluetooth.defaultAdapter?.devices.values.filter(device => device.connected).length ?? 0
     readonly property bool connected: Bluetooth.devices.values.some(d => d.connected)
 
-    // Track the order in which devices are first discovered
+    // BlueZ restores the adapter state at login but does not request a new
+    // connection to remembered devices. Ask trusted audio devices once during
+    // shell startup, after bluetoothd has had a chance to populate the device
+    // list. Input devices must manage their own reconnects.
+
+    function reconnectTrustedAudioDevicesAtStartup() {
+        startupReconnectTimer.restart();
+    }
+
+    function isAudioDevice(device) {
+        return (device.icon ?? "").toLowerCase().includes("audio");
+    }
+
+    Timer {
+        id: startupReconnectTimer
+        interval: 4000
+        repeat: false
+
+        onTriggered: {
+            for (const device of Bluetooth.devices.values) {
+                if (device.trusted && isAudioDevice(device) && !device.connected)
+                    device.connect();
+            }
+        }
+    }
+
+    // The order devices were first seen in, so a list of them can hold still
+    // while a scan keeps turning up more.
+    //
+    // Deliberately not announced when it grows. The only thing that reads it is
+    // the sort below, which runs inside the same list this is filled from — so
+    // saying it changed would tell that list to build itself again, and building
+    // it is what fills this in the first place. Every newly seen address would
+    // start the round again, and while a scan is running they arrive constantly.
+    // Nothing outside that list looks at this, so nothing needs telling; the
+    // sort is reading what was recorded moments earlier in its own run.
     property var discoveryOrder: ({})
     property int discoveryCounter: 0
 
     function trackDiscoveryOrder(devices) {
-        let changed = false;
         for (const d of devices) {
             const addr = d.address;
-            if (addr && !(addr in discoveryOrder)) {
+            if (addr && !(addr in discoveryOrder))
                 discoveryOrder[addr] = discoveryCounter++;
-                changed = true;
-            }
         }
-        if (changed)
-            discoveryOrderChanged();
     }
 
     function sortFunction(a, b) {

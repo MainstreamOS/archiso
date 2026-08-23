@@ -5,8 +5,6 @@ hl.on("hyprland.start", function()
     -- Input method
     -- hl.exec_cmd("fcitx5")
 
-    hl.exec_cmd("$HOME/.config/hypr/custom/scripts/bluetooth-autoconnect.sh")
-
     -- Hyprland 0.55 scrolloverview load-race workaround — see the script
     -- header for the full story. Logs to ~/.local/state/scrolloverview-power-cycle.log.
     hl.exec_cmd("$HOME/.config/hypr/custom/scripts/scrolloverview-power-cycle.sh")
@@ -22,7 +20,8 @@ hl.on("hyprland.start", function()
     -- safety net while restoring a session days out of date.
     hl.exec_cmd("$HOME/.config/quickshell/ii/scripts/session/restore.sh")
     hl.exec_cmd("$HOME/.config/quickshell/ii/scripts/session/watch.sh")
+
+    -- The Bluetooth applet carries blueman's pairing agent. Started here with
+    -- the xdg entry masked, so the tray icon is switched off before it draws.
+    hl.exec_cmd("$HOME/.config/hypr/custom/scripts/blueman-applet-quiet.sh")
 end)
-hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/calamares-autostart") end)
-hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/live-setup") end)
-hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)
