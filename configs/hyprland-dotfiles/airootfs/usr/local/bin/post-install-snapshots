@@ -163,12 +163,37 @@ systemctl enable --now snapper-timeline.timer 2>/dev/null || true
 systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
 systemctl enable limine-snapper-sync.service 2>/dev/null || true
 
-# Disable ourselves — one-shot job done
-systemctl disable snapper-init.service 2>/dev/null || true
-log "Firstboot snapper init complete."
+# Retry beats disarm. Every update snapshot this machine will ever
+# take depends on the root config existing, and snap-pac skips
+# silently without it, so a first attempt that failed and then
+# disabled this service would leave the system with no way back from
+# any future update. The service only stands down once the config and
+# the baseline snapshot both verifiably exist; until then it runs
+# again on every boot.
+if snapper -c root list &>/dev/null && snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
+    systemctl disable snapper-init.service 2>/dev/null || true
+    log "Firstboot snapper init complete."
+else
+    log "WARN: snapper is not fully armed yet; keeping snapper-init enabled to retry next boot."
+fi
 FIRSTBOOTEOF
     chmod +x /usr/local/bin/snapper-firstboot
     systemctl enable snapper-init.service 2>/dev/null || true
+
+    # A baseline the machine carries from its first minute. snapper cannot
+    # run inside this chroot, so its own "Fresh install" snapshot exists
+    # only after first boot has done its work; everything between the
+    # installer finishing and that moment, including a first boot whose
+    # setup fails, has no copy of the system to fall back to. A raw
+    # read-only subvolume needs none of snapper's machinery and closes
+    # that window. snapper never touches it; restoring it is a documented
+    # recovery step.
+    info "Creating raw install-baseline snapshot..."
+    if btrfs subvolume snapshot -r / /.install-baseline 2>/dev/null; then
+        info "Install baseline created at /.install-baseline"
+    else
+        warn "Could not create the install-baseline snapshot."
+    fi
 
     info "Snapper setup complete."
 else
