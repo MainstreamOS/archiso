@@ -352,6 +352,21 @@ else
     fail "/var/log/journal missing (journals will not persist)"
 fi
 
+# --- 9b. The install left a way back ----------------------------------------------
+# snapper's own first snapshot cannot be taken from inside the installer, so on a
+# btrfs machine this raw baseline is the only thing standing between a bad first
+# boot and a reinstall. One line writes it and nothing else in the system reads
+# it, so without a check here its absence goes unnoticed until it is needed.
+if findmnt -n -o FSTYPE / 2>/dev/null | grep -q btrfs; then
+    if btrfs subvolume show /.install-baseline &>/dev/null; then
+        pass "install baseline snapshot present"
+    else
+        fail "no /.install-baseline snapshot, so this install has no recovery point until snapper arms"
+    fi
+else
+    skip "install baseline check (root is not btrfs)"
+fi
+
 # --- Report -----------------------------------------------------------------------
 mkdir -p /var/log/mainstream-install 2>/dev/null || true
 if [[ -d /var/log/mainstream-install ]]; then
