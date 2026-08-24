@@ -149,6 +149,9 @@ if [[ -r "$GPU_LIB" ]]; then
         if [[ -n "${MAIN_USER:-}" ]]; then
             gpu_apply_hypr_tweaks "$MAIN_USER_HOME"
         fi
+        # Anything the configuration could not do is only in memory until this
+        # is called, and a reason nobody can read is the same as no reason.
+        flush_failures
         info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
     else
         warn "No GPU detected via lspci — skipping GPU configuration."

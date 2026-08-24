@@ -120,6 +120,39 @@ else
     skip "GPU vendor check (lspci found no GPU)"
 fi
 
+# --- 2b. The NVIDIA card actually has a driver -------------------------------
+# The open driver ships its module already built, for one exact kernel. If the
+# kernel moved after that module was laid down, the package stays installed and
+# current while the module sits where nothing will look, and the card comes up
+# with nothing driving it: no device node, no outputs, and every other check
+# here still passing. Asking pacman cannot see it. Ask the kernel.
+if lspci 2>/dev/null | grep -iqE "VGA|3D|Display" && lspci 2>/dev/null | grep -iq "NVIDIA"; then
+    if pacman -Qq nvidia-open &>/dev/null || pacman -Qq nvidia-open-dkms &>/dev/null; then
+        # Same library the install used, so this asks the question the same way.
+        if [[ -r /usr/local/lib/gpu-config.sh ]] && source /usr/local/lib/gpu-config.sh; then
+            _kver="$(gpu_target_kernel)"
+            if [[ -z "$_kver" ]]; then
+                fail "could not tell which kernel is installed, so the NVIDIA driver is unverified"
+            elif nvidia_module_present "$_kver"; then
+                pass "NVIDIA module present for kernel $_kver"
+            else
+                fail "NVIDIA driver installed but no module for kernel $_kver, so the card has no driver"
+            fi
+        else
+            skip "NVIDIA module check (shared GPU library unavailable)"
+        fi
+    else
+        skip "NVIDIA module check (no open driver installed)"
+    fi
+fi
+
+# Whatever the GPU steps could not do is left here for exactly this moment.
+if [[ -s /var/lib/mainstream/gpu-install-failed.log ]]; then
+    fail "GPU setup reported problems: $(tr '\n' ' ' < /var/lib/mainstream/gpu-install-failed.log | tr -s ' ' | cut -c1-240)"
+else
+    pass "no GPU setup problems recorded"
+fi
+
 # --- 3. Wrong CPU microcode removed ------------------------------------------
 CPU_VENDOR=$(awk -F: '/vendor_id/ {gsub(/ /,"",$2); print $2; exit}' /proc/cpuinfo)
 case "$CPU_VENDOR" in

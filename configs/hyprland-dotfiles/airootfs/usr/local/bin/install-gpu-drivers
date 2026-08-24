@@ -151,19 +151,11 @@ target_dkms_install() {
     local module="$1"
     local version="$2"
 
-    # /lib/modules/<ver>/ exists for each kernel installed on the target,
-    # but not every entry IS a kernel: a headers upgrade leaves a bare
-    # build tree, and a module built against headers alone lands under a
-    # version nothing can boot. Only trees holding the kernel image itself
-    # are candidates; the name-only scan stays as a last resort so an
-    # unexpected layout degrades to a warning rather than a dead stop.
+    # Which kernel the target will boot is one question with one answer, and the
+    # library holds it. Asking here in a second way is how a machine booting
+    # linux-lts got a module built against the stock tree instead.
     local target_kernel
-    target_kernel=$(for d in /lib/modules/*/; do
-        [[ -f "$d/vmlinuz" && -r "$d/pkgbase" ]] || continue
-        [[ "$(<"$d/pkgbase")" == "linux" ]] || continue
-        basename "$d"
-    done | sort -V | tail -n1)
-    [[ -z "$target_kernel" ]] && target_kernel=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+    target_kernel="$(gpu_target_kernel)"
     if [[ -z "$target_kernel" ]]; then
         warn "Could not detect target kernel in /lib/modules — DKMS will use \$(uname -r)."
         target_kernel=""
@@ -283,6 +275,91 @@ if $HAS_AMD; then
     info "AMD packages installed."
 fi
 
+# ── nvidia_ensure_module_for_target ──────────────────────────────────────────
+# nvidia-open ships PREBUILT modules under one exact kernel's directory while
+# depending on `linux` unversioned. Installing the pair in one transaction keeps
+# them together, but it cannot help when the kernel already moved on its own
+# earlier in the install and the repo's driver has not been rebuilt for the new
+# one yet: the package is current, its module sits where nothing will look, and
+# the card comes up with no driver at all, no DRM node and no outputs.
+#
+# The driver's release number moves every time the kernel does, because the
+# module inside it is built against exactly one kernel. A strand is therefore
+# never repaired by reinstalling what is already here, which would lay the same
+# files back down under the same stale kernel. It is repaired by taking the
+# build that matches the kernel now installed, and that build only becomes
+# visible once the package database has actually been refreshed. An earlier
+# refresh is allowed to fail with a warning, which is how a machine reaches
+# this point at all.
+nvidia_ensure_module_for_target() {
+    local k
+    k="$(gpu_target_kernel)"
+    if [[ -z "$k" ]]; then
+        note_failure "nvidia: could not tell which kernel the target will boot, so the module is unverified."
+        return 1
+    fi
+    if nvidia_module_present "$k"; then
+        info "nvidia module present for kernel $k."
+        return 0
+    fi
+
+    warn "nvidia module missing for kernel $k. Refreshing the database and taking the matching build."
+    pacman -Sy 2>&1 || warn "database refresh failed."
+    pacman -S --noconfirm --needed nvidia-open 2>&1 || warn "nvidia-open update failed."
+    if nvidia_module_present "$k"; then
+        info "nvidia module now present for kernel $k."
+        return 0
+    fi
+
+    # No build matching this kernel has been published yet, so no amount of
+    # reinstalling will produce one. DKMS compiles against the headers for the
+    # kernel actually installed, so it cannot be stranded the same way.
+    #
+    # The swap has to be spelled out. The DKMS driver conflicts with the one
+    # already here, and pacman's conflict question answers itself with "no"
+    # when nothing is allowed to ask, so a single transaction would simply be
+    # refused. The toolchain goes in first and on its own: a refused swap must
+    # not also cost the headers a build would need.
+    warn "No matching build available. Falling back to the DKMS driver, which builds against this kernel."
+    # The headers have to belong to the kernel being targeted. A machine booting
+    # linux-lts needs linux-lts-headers, and handing that machine linux-headers
+    # builds the module against a tree it will never boot, which is the same
+    # stranding this function exists to undo.
+    local hdr="linux-headers"
+    [[ -r "/usr/lib/modules/$k/pkgbase" ]] && hdr="$(<"/usr/lib/modules/$k/pkgbase")-headers"
+    pacman -S --noconfirm --needed "$hdr" dkms 2>&1 \
+        || warn "could not install the DKMS toolchain ($hdr)."
+    pacman -Rdd --noconfirm nvidia-open 2>&1 \
+        || warn "could not remove the prebuilt driver before the swap."
+    pacman -S --noconfirm nvidia-open-dkms 2>&1 \
+        || warn "nvidia-open-dkms install failed."
+    if nvidia_module_present "$k"; then
+        info "nvidia module built by DKMS for kernel $k."
+        return 0
+    fi
+
+    # Installing the package only queues the build. pacman's DKMS hook builds
+    # for whichever kernels have headers, and inside an installer that set does
+    # not reliably include the one this machine is about to boot. Ask for that
+    # kernel by name before concluding there is no driver.
+    local dkms_ver
+    dkms_ver="$(dkms status -m nvidia 2>/dev/null | head -1 | sed -n 's|^nvidia[/,][[:space:]]*\([^,:]*\).*|\1|p')"
+    if [[ -n "$dkms_ver" ]]; then
+        info "Asking DKMS for nvidia/$dkms_ver against kernel $k."
+        dkms install -m nvidia -v "$dkms_ver" -k "$k" 2>&1 \
+            || warn "DKMS build of nvidia/$dkms_ver for kernel $k failed."
+        if nvidia_module_present "$k"; then
+            info "nvidia module built by DKMS for kernel $k."
+            return 0
+        fi
+    else
+        warn "could not read a DKMS version for nvidia."
+    fi
+
+    note_failure "nvidia-open: no loadable module for kernel $k, so the card will have no driver."
+    return 1
+}
+
 if $HAS_NVIDIA; then
     # NVIDIA_GEN (set by gpu_detect) -> driver family + package sets. The caller
     # owns the install: nvidia-open from the repo, a frozen legacy branch from
@@ -303,6 +380,7 @@ if $HAS_NVIDIA; then
             # no-op when it is already current.
             install_pkgs linux "${NVIDIA_REPO_PKGS[@]}"
             install_pkgs_opt linux-firmware-nvidia
+            nvidia_ensure_module_for_target
             info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
             ;;
         nvidia-580xx) install_legacy_nvidia "Maxwell/Pascal/Volta — GTX 900/1000/Titan V" ;;
