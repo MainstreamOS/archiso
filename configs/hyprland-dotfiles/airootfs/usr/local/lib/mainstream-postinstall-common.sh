@@ -28,9 +28,16 @@ _ms_health() {
 
 write_limine_defaults() {
     mkdir -p /etc/default
+    # Probing is on so another system sharing the disk shows up on its own.
+    # It finds systemd-boot and rEFInd; Windows it never looks for, which is why
+    # that one is registered by hand further along. The catch is the generic
+    # fallback loader: EFI/BOOT/BOOTX64.EFI is Limine itself here, so probing
+    # offers an entry that boots the menu back into the menu. The install prunes
+    # that one, though probing runs again whenever the entries are regenerated,
+    # so it can return after a kernel update until something prunes it there too.
     cat > /etc/default/limine << 'LIMINEDEF'
 TARGET_OS_NAME="Mainstream OS\\"
-FIND_BOOTLOADERS=no
+FIND_BOOTLOADERS=yes
 SNAPPER_CONFIG_NAME=root
 ENABLE_UKI=yes
 CUSTOM_UKI_NAME="mainstream"
