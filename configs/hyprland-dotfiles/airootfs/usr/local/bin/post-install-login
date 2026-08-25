@@ -143,3 +143,65 @@ rm -f /var/lib/pacman/db.lck 2>/dev/null || true
 # keyboard is being read. Drop-in lives under sudoers.d so package upgrades
 # to /etc/sudoers can never clobber it; validated with visudo -cf so a syntax
 # error never lands on the installed system.
+
+# The keyboard answered for on the installer's own page reached the text
+# consoles and X11 and stopped there. Both things anyone actually types into on
+# this desktop are Wayland: the greeter runs its own Hyprland, and so does the
+# session, and each takes its layout from `kb_layout` and from nothing else. The
+# skel ships that hardcoded to us, so a French keyboard was asked for, recorded,
+# and then ignored at the login prompt and again on the desktop behind it.
+#
+# One lookup, both files. The X11 config is read first because it holds proper
+# XKB names, which is what Hyprland wants; the console keymap is the fallback
+# and is close enough for the layouts where the two disagree.
+seed_keyboard_layout() {
+    local x11="/etc/X11/xorg.conf.d/00-keyboard.conf"
+    local layout="" variant=""
+    if [[ -f "$x11" ]]; then
+        layout=$(grep -oP 'Option\s+"XkbLayout"\s+"\K[^"]+' "$x11" 2>/dev/null | head -1)
+        variant=$(grep -oP 'Option\s+"XkbVariant"\s+"\K[^"]*' "$x11" 2>/dev/null | head -1)
+    fi
+    if [[ -z "$layout" && -f /etc/vconsole.conf ]]; then
+        layout=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1)
+        # Console keymaps carry qualifiers XKB has no notion of.
+        layout="${layout%%-*}"
+    fi
+    [[ -n "$layout" ]] || { info "No keyboard layout recorded; leaving the stock one."; return 0; }
+    # A layout name reaches a config file and a Lua table, so accept only what
+    # one can actually be. Anything else is treated as nothing recorded.
+    if [[ ! "$layout" =~ ^[a-z]{2,8}(,[a-z]{2,8})*$ ]]; then
+        warn "Unrecognized keyboard layout '${layout}'; leaving the stock one."
+        return 0
+    fi
+    [[ "$variant" =~ ^[a-z0-9_]*(,[a-z0-9_]*)*$ ]] || variant=""
+
+    # The greeter's compositor. hyprland.lua already exists (written above,
+    # ~line 53) with the monitor/misc/window_rule config, so add to it rather
+    # than replace it — and use hl.config({ input = ... }), matching the lua
+    # config format that block already switched to.
+    install -d -o sddm -g sddm -m 700 /var/lib/sddm/.config/hypr 2>/dev/null || {
+        warn "No sddm account to give a greeter keymap to."; return 0; }
+    {
+        printf '\nhl.config({\n    input = {\n        kb_layout = "%s",\n' "$layout"
+        [[ -n "$variant" ]] && printf '        kb_variant = "%s",\n' "$variant"
+        printf '    },\n})\n'
+    } >> /var/lib/sddm/.config/hypr/hyprland.lua
+    chown sddm:sddm /var/lib/sddm/.config/hypr/hyprland.lua
+    info "Login screen keyboard set to ${layout}${variant:+ (${variant})}."
+
+    # The session behind it, for the account just created and for anyone made
+    # later. Written in place of the stock line rather than appended, since the
+    # config is read top to bottom and the later value would win.
+    local target
+    for target in /etc/skel /home/*; do
+        local lua="${target}/.config/hypr/hyprland/general.lua"
+        [[ -f "$lua" ]] || continue
+        sed -i "s/^\(\s*\)kb_layout = \"[^\"]*\",/\1kb_layout = \"${layout}\",/" "$lua"
+        if [[ -n "$variant" ]] && ! grep -q 'kb_variant' "$lua"; then
+            sed -i "s/^\(\s*\)\(kb_layout = \"[^\"]*\",\)/\1\2\n\1kb_variant = \"${variant}\",/" "$lua"
+        fi
+        [[ "$target" == /home/* ]] && chown "$(stat -c %u:%g "$target")" "$lua" 2>/dev/null
+        info "Session keyboard set to ${layout} for ${target}."
+    done
+}
+seed_keyboard_layout
