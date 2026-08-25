@@ -149,6 +149,31 @@ if [[ -f /etc/snapper/configs/root ]]; then
 fi
 
 # --- Initial snapshot ---
+# The installer took a read-only copy of the finished system before this
+# machine had ever booted, and left it outside snapper because snapper cannot
+# run in the installer's chroot. Nothing at the boot menu can reach a subvolume
+# snapper does not know about, so hand it over now that a config exists. The
+# handover costs nothing: a snapshot of a snapshot shares every extent, and it
+# describes the system at a truer moment than one taken after this boot has
+# already changed things. It carries the "Fresh install" description, so the
+# check below finds it and does not take a second copy of the same machine.
+if [[ -d /.snapshots ]] \
+   && btrfs subvolume show /.install-baseline &>/dev/null \
+   && ! snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
+    _n=1
+    while [[ -e "/.snapshots/$_n" ]]; do _n=$((_n + 1)); done
+    if mkdir -p "/.snapshots/$_n" \
+       && btrfs subvolume snapshot -r /.install-baseline "/.snapshots/$_n/snapshot" &>/dev/null; then
+        printf '<?xml version="1.0"?>\n<snapshot>\n\t<type>single</type>\n\t<num>%s</num>\n\t<date>%s</date>\n\t<description>Fresh install</description>\n</snapshot>\n' \
+            "$_n" "$(date -u '+%F %T')" > "/.snapshots/$_n/info.xml"
+        log "Registered the install baseline with snapper as snapshot $_n."
+        btrfs subvolume delete /.install-baseline &>/dev/null || true
+    else
+        log "WARN: could not hand the install baseline to snapper; leaving it in place."
+        rmdir "/.snapshots/$_n" 2>/dev/null || true
+    fi
+fi
+
 if snapper -c root list 2>/dev/null | grep -q "Fresh install"; then
     log "Fresh install snapshot already exists."
 else
@@ -161,7 +186,16 @@ fi
 log "Enabling snapper timers and limine-snapper-sync..."
 systemctl enable --now snapper-timeline.timer 2>/dev/null || true
 systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
-systemctl enable limine-snapper-sync.service 2>/dev/null || true
+# Started, not merely enabled. The boot menu is written by this service, so
+# enabling it without starting it left the entry empty until some later package
+# transaction happened to wake it: a machine with a perfectly good snapshot
+# offered nothing to boot into, and choosing the empty entry panics.
+systemctl enable --now limine-snapper-sync.service 2>/dev/null || true
+# The snapshot above was made after that service read the snapshot list, so ask
+# for one more pass rather than waiting on the next transaction to trigger it.
+if command -v limine-snapper-sync &>/dev/null; then
+    limine-snapper-sync &>/dev/null || log "WARN: limine-snapper-sync run failed; the boot menu may be stale."
+fi
 
 # Retry beats disarm. Every update snapshot this machine will ever
 # take depends on the root config existing, and snap-pac skips
