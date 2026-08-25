@@ -208,6 +208,7 @@ python-evdev
 python-pillow
 uv
 python312
+ollama
 seatd
 rsync
 bc
