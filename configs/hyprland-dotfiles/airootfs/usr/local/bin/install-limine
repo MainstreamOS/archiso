@@ -98,7 +98,7 @@ else
     info "Plaintext root: $ROOT_PART_DEV (PARTUUID=$ROOT_PARTUUID)"
 fi
 
-if [ -d "/boot/efi" ]; then
+if mountpoint -q /boot/efi; then
     BOOT_PATH="/boot/efi"
     IS_UEFI=true
     EFI_DEV=$(findmnt -n -o SOURCE /boot/efi)
@@ -146,20 +146,31 @@ if [ "$IS_UEFI" = true ]; then
     mkdir -p "$BOOT_PATH/EFI/limine" || exit 1
     mkdir -p "$BOOT_PATH/EFI/BOOT" || exit 1
 
-    info "Copying Limine binaries..."
-    if [ -f "/usr/share/limine/BOOTX64.EFI" ]; then
-        cp -f /usr/share/limine/BOOTX64.EFI "$BOOT_PATH/EFI/limine/"
-        cp -f /usr/share/limine/BOOTX64.EFI "$BOOT_PATH/EFI/BOOT/BOOTX64.EFI"
+    # build.sh stages the exact upstream EFI binary which booted this ISO. Do
+    # not silently prefer the distro package: a version difference here defeats
+    # testing on firmware with an EFI-loader compatibility quirk.
+    INSTALLER_EFI="/usr/local/share/mainstream/limine/BOOTX64.EFI"
+    if [[ ! -f "$INSTALLER_EFI" ]]; then
+        INSTALLER_EFI="/usr/share/limine/BOOTX64.EFI"
+        warn "Staged upstream Limine EFI binary missing; using distro copy at $INSTALLER_EFI."
+    fi
+    info "Copying Limine binary from $INSTALLER_EFI..."
+    if [ -f "$INSTALLER_EFI" ]; then
+        cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/limine/BOOTX64.EFI"
+        cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/BOOT/BOOTX64.EFI"
     else
-        log "CRITICAL: /usr/share/limine/BOOTX64.EFI missing in chroot!"
+        log "CRITICAL: no Limine BOOTX64.EFI available in chroot!"
         exit 1
     fi
 
     PART_NUM=$(lsblk -no PARTN "$EFI_DEV")
-    efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
+    if ! efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
         --label "Mainstream" \
         --loader "\\EFI\\limine\\BOOTX64.EFI" \
-        --unicode 2>/dev/null || true
+        --unicode; then
+        log "ERROR: could not create the Mainstream UEFI NVRAM entry. Refusing to report a bootable installation."
+        exit 1
+    fi
 else
     info "Installing BIOS MBR..."
     # Stage 3 lives on the /boot partition; `limine bios-install` only

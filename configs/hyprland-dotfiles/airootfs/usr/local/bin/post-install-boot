@@ -177,7 +177,7 @@ fi
 
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
 # also emit UKIs that Limine can chainload from the ESP.
-if [[ -d /boot/efi ]]; then
+if mountpoint -q /boot/efi; then
     mkdir -p /boot/efi/EFI/Linux
     # UEFI: build only the default UKI; no fallback entry means no fallback in menu
     cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
@@ -233,14 +233,22 @@ write_limine_defaults
 # IMPORTANT: limine-mkinitcpio-hook must be installed BEFORE mkinitcpio -P
 # so the hook can manage kernel/initramfs placement on the EFI partition and
 # generate proper //linux sub-entries in limine.conf.
-info "Installing snapper and limine integration packages..."
-# -Sy first so the [mainstream] file-repo db is in the sync dir even if an
-# earlier step didn't refresh it. Fall back to the two official packages so
-# a [mainstream] hiccup can't block the install outright.
-pacman -Sy --noconfirm 2>/dev/null || true
-pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-snapper-sync 2>&1 \
-    || pacman -S --noconfirm --needed snapper snap-pac 2>&1 \
-    || true
+info "Installing snapper and Limine integration packages..."
+# A successful install must have limine-mkinitcpio-hook: it creates the UKI and
+# Limine OS entry. Continuing without it leaves only a temporary entry whose
+# kernel and initramfs are intentionally not copied to the ESP. Snapshot support
+# is useful but is not allowed to hide a bootable-system failure.
+pacman -Sy --noconfirm || warn "Pacman database refresh failed — attempting the mandatory boot package install from bundled databases."
+if ! pacman -S --noconfirm --needed limine-mkinitcpio-hook; then
+    log "ERROR: the required Limine boot integration package could not be installed."
+    exit 1
+fi
+if ! command -v limine-mkinitcpio >/dev/null 2>&1; then
+    log "ERROR: limine-mkinitcpio is unavailable after package installation."
+    exit 1
+fi
+pacman -S --noconfirm --needed snapper snap-pac limine-snapper-sync \
+    || warn "Snapshot integration packages could not be installed; boot installation will continue."
 
 # ---------------------------------------------------------------------------
 # MKINITCPIO — build the target initramfs in-chroot for every GPU path
@@ -266,33 +274,26 @@ pacman -S --noconfirm --needed snapper snap-pac limine-mkinitcpio-hook limine-sn
 # initramfs left on the ESP root (e.g. from an earlier failed attempt on a
 # reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
 # small shared ESP they can fill it and make the UKI write fail.
-if [[ -d /boot/efi ]]; then
+if mountpoint -q /boot/efi; then
     rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img \
           /boot/efi/initramfs-linux-fallback.img 2>/dev/null || true
 fi
 
 info "Regenerating initramfs..."
-if ! mkinitcpio -P; then
-    warn "mkinitcpio -P returned non-zero (limine hook issue?) — checking if images were built..."
-    if [ -f /boot/initramfs-linux.img ]; then
-        info "Initramfs images exist — continuing despite hook warning."
-    else
-        warn "Initramfs images missing — mkinitcpio truly failed."
-        exit 1
-    fi
+if ! /usr/bin/mkinitcpio -P; then
+    log "ERROR: mkinitcpio failed; refusing to install an unbootable system."
+    exit 1
 fi
 
-# A missing UKI after the rebuild means the ESP write failed (classically
-# ENOSPC on a small reused dual-boot ESP) — the install would "succeed" but
-# not boot. Surface it loudly instead of soft-passing.
-if [[ -d /boot/efi ]] && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
+info "Building Limine boot entries..."
+if ! limine-mkinitcpio; then
+    log "ERROR: limine-mkinitcpio failed; refusing to install an unbootable system."
+    exit 1
+fi
+if mountpoint -q /boot/efi && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
     esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
-    warn "UKI missing after initramfs rebuild — ESP write failed (free: ${esp_free:-?} MiB). System will not boot via UKI."
-fi
-
-if command -v limine-mkinitcpio &>/dev/null; then
-    info "Updating Limine boot entries via limine-mkinitcpio..."
-    limine-mkinitcpio 2>/dev/null || warn "limine-mkinitcpio returned non-zero (may be OK in chroot)."
+    log "ERROR: UKI missing after Limine build (free ESP space: ${esp_free:-?} MiB)."
+    exit 1
 fi
 
 # limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
@@ -329,10 +330,10 @@ if [[ -f /boot/efi/EFI/Microsoft/Boot/bootmgfw.efi ]] && command -v limine-entry
 fi
 
 # Clean up plain kernel/initramfs from ESP root now that UKI is in place.
-# These were copied by install-limine as a bootstrap fallback; the UKI
-# supersedes them and limine-mkinitcpio will only generate entries for
-# files it finds, so removing them prevents the stale non-UKI menu entry.
-if [ -d "/boot/efi" ] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+# These stale files can be left by an earlier install attempt. The UKI
+# supersedes them and limine-mkinitcpio will only generate entries for files it
+# finds, so remove them to prevent a stale non-UKI menu entry.
+if mountpoint -q /boot/efi && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
     rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
 fi
 

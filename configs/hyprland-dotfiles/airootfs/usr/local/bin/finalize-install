@@ -369,7 +369,7 @@ info "Removed dangling live-only service symlinks."
 # boot-deploy that runs afterward resets /boot/efi/loader. Do it here, the last
 # step before umount, so nothing wipes it. The first-boot service refreshes it
 # properly afterward.
-if [[ -d /boot/efi ]]; then
+if mountpoint -q /boot/efi; then
     mkdir -p /boot/efi/loader
     if [[ ! -s /boot/efi/loader/random-seed ]]; then
         head -c 32 /dev/urandom > /boot/efi/loader/random-seed 2>/dev/null || true

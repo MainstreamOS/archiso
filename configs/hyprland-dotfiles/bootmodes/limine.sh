@@ -44,6 +44,23 @@ _make_limine_iso_config() {
         "${profile}/limine-iso.conf" > "${isofs_dir}/limine.conf"
 }
 
+# The live medium is built with the upstream Limine binary selected by build.sh.
+# Keep an exact copy in the airootfs so install-limine can put that same binary
+# on the target ESP. Previously the installed system used whatever version the
+# Arch `limine` package happened to provide, while the ISO used a newer upstream
+# binary. That made firmware compatibility differ between a live boot and the
+# resulting installation.
+_stage_limine_efi_for_installer() {
+    local _source="${LIMINE_DIR:-/usr/share/limine}/BOOTX64.EFI"
+    local _destination="${pacstrap_dir}/usr/local/share/mainstream/limine/BOOTX64.EFI"
+
+    [[ -f "${_source}" ]] || {
+        _msg_error "Cannot stage Limine for the installed system: ${_source} is missing." 1
+        return 1
+    }
+    install -D -m 0644 -- "${_source}" "${_destination}"
+}
+
 # Copy CPU microcode images alongside the kernel + initramfs that
 # mkarchiso's _make_boot_on_iso9660 already placed in
 # ${isofs_dir}/${install_dir}/boot/${arch}/. The Limine boot entries
@@ -149,6 +166,11 @@ _validate_requirements_bootmode_uefi.limine() {
 
 _make_bootmode_uefi.limine() {
     _msg_info "Setting up Limine for UEFI booting..."
+
+    # Do this before _cleanup_pacstrap_dir()/the squashfs build. The installed
+    # system uses this staged upstream image instead of a possibly older distro
+    # package copy.
+    _stage_limine_efi_for_installer
 
     # Stage BOOTX64.EFI for size calculation, then build the FAT ESP image.
     # _make_efibootimg() only sizes and formats the image — it creates no

@@ -71,16 +71,15 @@ cleanup_limine_boot_entries() {
     local loader_path="\\EFI\\limine\\BOOTX64.EFI"
     local loader_path_normalized="/efi/limine/bootx64.efi"
 
-    [[ -d /boot/efi ]] && esp_path="/boot/efi"
+    mountpoint -q /boot/efi && esp_path="/boot/efi"
     [[ -z "$esp_path" && -d /boot ]] && esp_path="/boot"
     [[ -n "$esp_path" ]] || { warn "No ESP mount found — skipping boot entry cleanup."; return 0; }
 
     write_limine_defaults
 
     if [[ -d "$esp_path/EFI" ]]; then
-        info "Removing stale fallback and old bootloader files from $esp_path..."
+        info "Removing stale old bootloader files from $esp_path..."
         rm -rf \
-            "$esp_path/EFI/BOOT" \
             "$esp_path/EFI/grub" \
             "$esp_path/EFI/GRUB" \
             "$esp_path/EFI/systemd" \
@@ -88,6 +87,14 @@ cleanup_limine_boot_entries() {
             "$esp_path/loader" \
             "$esp_path/grub" \
             2>/dev/null || true
+    fi
+
+    # EFI/BOOT/BOOTX64.EFI is the UEFI-defined removable-media fallback. Some
+    # firmware boots it when it ignores or loses an NVRAM entry, so it is part
+    # of the installed boot chain and must never be cleaned up.
+    if [[ ! -f "$esp_path/EFI/BOOT/BOOTX64.EFI" && -f "$esp_path/EFI/limine/BOOTX64.EFI" ]]; then
+        install -Dm0644 "$esp_path/EFI/limine/BOOTX64.EFI" "$esp_path/EFI/BOOT/BOOTX64.EFI"
+        info "Restored Limine's UEFI fallback loader."
     fi
 
     if [[ -f "$esp_path/EFI/Linux/mainstream_linux.efi" ]]; then

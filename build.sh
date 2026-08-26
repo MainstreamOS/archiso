@@ -1726,11 +1726,14 @@ fi
 
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 
-# mkarchiso caches bootmode function execution with work/base._make_bootmode_*.
-# Always invalidate only the Limine boot artifacts so a reused work directory
-# cannot carry old BOOTX64.EFI/BIOS binaries into a new ISO.
-info "Invalidating cached Limine boot artifacts in work directory..."
+# mkarchiso caches both bootmode functions and the completed airootfs image.
+# Re-copy the profile and rebuild the image so an ISO-only rebuild picks up the
+# staged installer Limine binary and installer-script changes without requiring
+# the caller to remember `-c`.
+info "Invalidating cached Limine boot artifacts and airootfs image..."
 rm -f -- \
+    "${WORK_DIR}/base._make_custom_airootfs" \
+    "${WORK_DIR}/base._prepare_airootfs_image" \
     "${WORK_DIR}/base._make_bootmode_bios.limine" \
     "${WORK_DIR}/base._make_bootmode_uefi.limine" \
     "${WORK_DIR}/efiboot.img" \
