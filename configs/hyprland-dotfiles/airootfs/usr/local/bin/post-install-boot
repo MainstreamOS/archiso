@@ -194,7 +194,6 @@ ALL_kver='/boot/vmlinuz-linux'
 default_config='/etc/mkinitcpio.conf'
 default_image='/boot/initramfs-linux.img'
 fallback_config='/etc/mkinitcpio.conf'
-fallback_image='/boot/initramfs-linux-fallback.img'
 fallback_options='-S autodetect'
 PRESET
 fi
@@ -275,8 +274,7 @@ pacman -S --noconfirm --needed snapper snap-pac limine-snapper-sync \
 # reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
 # small shared ESP they can fill it and make the UKI write fail.
 if mountpoint -q /boot/efi; then
-    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img \
-          /boot/efi/initramfs-linux-fallback.img 2>/dev/null || true
+    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img
 fi
 
 info "Regenerating initramfs..."
