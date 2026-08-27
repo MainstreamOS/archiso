@@ -169,7 +169,5 @@ PYEOF
     fi
 fi
 
-cleanup_limine_boot_entries
-
 info "Post-install synchronization complete. System is ready for reboot."
 
