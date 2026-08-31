@@ -25,7 +25,6 @@ intel-ucode
 # Firmware & hardware support
 # ==============================================================================
 sof-firmware
-broadcom-wl
 b43-fwcutter
 usb_modeswitch
 
