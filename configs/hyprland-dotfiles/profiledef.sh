@@ -57,7 +57,6 @@ file_permissions=(
   ["/usr/local/bin/mainstream-keyring-init"]="0:0:755"
   ["/usr/local/bin/updatems"]="0:0:755"
   ["/usr/local/bin/updatems-system"]="0:0:755"
-  ["/usr/local/bin/limine-restore-auto"]="0:0:755"
   ["/usr/share/polkit-1/actions/org.mainstreamos.disk-mounter.policy"]="0:0:644"
   ["/usr/share/polkit-1/actions/org.mainstreamos.app-remover.policy"]="0:0:644"
   # Calamares autostart (XDG autostart — read by dex/autostart managers)
@@ -80,7 +79,6 @@ file_permissions=(
   ["/etc/skel/.config/hypr/custom/rules.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/custom/variables.lua"]="0:0:644"
   ["/etc/skel/.config/hypr/custom/scripts"]="0:0:755"
-  ["/etc/skel/.config/hypr/custom/scripts/bluetooth-autoconnect.sh"]="0:0:755"
   ["/etc/skel/.config/hypr/custom/scripts/__restore_video_wallpaper.sh"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland"]="0:0:755"
   ["/etc/skel/.config/hypr/hyprland/colors.lua"]="0:0:644"
