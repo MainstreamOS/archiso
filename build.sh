@@ -954,6 +954,10 @@ build_local_pkg() {
 }
 
 info "Building local PKGBUILDs..."
+# KPMCore performs Calamares' partition and LUKS operations. Build the
+# Mainstream-patched package before Calamares so the ISO repo supplies it in
+# preference to Arch's stock package.
+build_local_pkg "kpmcore"
 build_local_pkg "calamares-mainstream"
 # mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
 # plasma-browser-integration replacement). Builds the Rust host + bundles the

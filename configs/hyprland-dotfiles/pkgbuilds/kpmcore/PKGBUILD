@@ -1,0 +1,64 @@
+# Maintainer: MainstreamOS <maintainers@mainstreamos.org>
+#
+# Package the released KPMCore version used by the ISO, with a narrowly scoped
+# LUKS2 fix for partitions created by Calamares' Alongside mode.
+
+pkgname=kpmcore
+pkgver=26.08.0
+pkgrel=2
+pkgdesc='Library for managing partitions (Mainstream LUKS2 alignment fix)'
+arch=('x86_64')
+url='https://apps.kde.org/partitionmanager/'
+license=('GPL-2.0-or-later')
+depends=(
+    'glibc'
+    'kcoreaddons'
+    'ki18n'
+    'kwidgetsaddons'
+    'libgcc'
+    'libstdc++'
+    'polkit-qt6'
+    'qt6-base'
+    'smartmontools'
+    'util-linux-libs'
+)
+makedepends=('extra-cmake-modules' 'cmake' 'ninja' 'pkgconf')
+optdepends=(
+    'bcachefs-tools: BCacheFS support'
+    'dosfstools: FAT32 support'
+    'e2fsprogs: ext2/3/4 support'
+    'exfat-utils: exFAT support'
+    'exfatprogs: exFAT support (alternative to exfat-utils)'
+    'f2fs-tools: F2FS support'
+    'fatresize: FAT resize support'
+    'jfsutils: JFS support'
+    'nilfs-utils: NILFS support'
+    'ntfsprogs: NTFS support'
+    'udftools: UDF support'
+    'xfsprogs: XFS support'
+)
+source=(
+    "https://download.kde.org/stable/release-service/${pkgver}/src/${pkgname}-${pkgver}.tar.xz"
+    'kpmcore-luks2-sector-alignment.patch'
+)
+sha256sums=(
+    '3367f581294363fe450f0891518f7f07b7d0c6562c7348236d90008065f79e50'
+    'SKIP'
+)
+
+prepare() {
+    cd "${pkgname}-${pkgver}"
+    patch --forward --strip=1 --input="${srcdir}/kpmcore-luks2-sector-alignment.patch"
+}
+
+build() {
+    cmake -B "${pkgname}-${pkgver}/build" -S "${pkgname}-${pkgver}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=None \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DBUILD_TESTING=OFF
+    cmake --build "${pkgname}-${pkgver}/build"
+}
+
+package() {
+    DESTDIR="${pkgdir}" cmake --install "${pkgname}-${pkgver}/build"
+}
