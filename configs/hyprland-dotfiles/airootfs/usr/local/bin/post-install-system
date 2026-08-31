@@ -117,9 +117,22 @@ info "Enabling core services and finalizing user shell..."
 systemctl set-default graphical.target
 systemctl enable sddm.service -f
 
-for svc in NetworkManager bluetooth fstrim.timer; do
+# cups.socket rather than cups.service: the spooler is started by systemd on
+# the first print job. Named here as well as in the Calamares services module
+# because an install that takes a different route through the installer still
+# has to come out able to print.
+for svc in NetworkManager bluetooth fstrim.timer cups.socket; do
     systemctl enable "$svc" 2>/dev/null || true
 done
+
+# Most home printers are found over mDNS and answer to a .local name, which
+# nothing resolves until nss-mdns is named in nsswitch. The package installs the
+# resolver and stops there, so a printer the machine can see advertised is still
+# one it cannot reach. Inserted before `dns` so ordinary lookups are unchanged,
+# and only when the entry is absent.
+if [[ -f /etc/nsswitch.conf ]] && ! grep -q 'mdns_minimal' /etc/nsswitch.conf; then
+    sed -i -E 's/^(hosts:.*[[:space:]])(dns)([[:space:]]|$)/\1mdns_minimal [NOTFOUND=return] \2\3/' /etc/nsswitch.conf
+fi
 
 # Auto-power-on Bluetooth so paired devices reconnect on boot.
 if [[ -f /etc/bluetooth/main.conf ]]; then
