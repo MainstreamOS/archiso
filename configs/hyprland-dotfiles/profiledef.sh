@@ -8,8 +8,7 @@ iso_application="Mainstream Dotfiles Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m%d)"
 install_dir="arch"
 buildmodes=('iso')
-bootmodes=('bios.limine'
-           'uefi.limine')
+bootmodes=('bios.syslinux' 'uefi.systemd-boot')
 pacman_conf="pacman.conf"
 airootfs_image_type="squashfs"
 airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '22' '-b' '1M')

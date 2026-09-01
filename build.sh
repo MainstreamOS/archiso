@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build.sh — Build the Mainstream Hyprland archiso with Limine bootloader
+# build.sh — Build the Mainstream Hyprland archiso
 # =============================================================================
 # Usage:
 #   sudo ./build.sh [options]
@@ -22,13 +22,12 @@
 #   1. (Optional) Builds pre-compiled .pkg.tar.zst meta-packages, AUR deps,
 #      skel dotfiles, and Python venv — depositing them into
 #      configs/hyprland-dotfiles/airootfs/usr/local/share/pkgs/
-#   2. Prepends Limine bootmode functions into a temporary copy of mkarchiso.
-#   3. Runs the patched mkarchiso to build the ISO.
-#   4. Runs `limine bios-install <iso>` to embed Limine's MBR bootstrap code.
+#   2. Runs mkarchiso to build the ISO. syslinux boots it on BIOS and
+#      systemd-boot on UEFI, both as mkarchiso ships them.
 #
 # Requirements (build host): the mkarchiso toolchain (mtools, libisoburn,
-# erofs-utils, arch-install-scripts, ...) and limine are installed/fetched by
-# this script automatically; it just needs to run as root with network access.
+# erofs-utils, arch-install-scripts, ...) is installed by this script
+# automatically; it just needs to run as root with network access.
 
 set -euo pipefail
 
@@ -345,7 +344,6 @@ sanitize_local_repo() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_DIR="${SCRIPT_DIR}/configs/hyprland-dotfiles"
 MKARCHISO="${SCRIPT_DIR}/archiso/mkarchiso"
-LIMINE_BOOTMODES="${PROFILE_DIR}/bootmodes/limine.sh"
 
 OUT_DIR="${SCRIPT_DIR}/out"
 WORK_DIR="${SCRIPT_DIR}/work"
@@ -1624,103 +1622,7 @@ for _bin in mkfs.fat mmd mcopy xorriso mksquashfs mkfs.erofs pacstrap curl tar m
     fi
 done
 
-# ── Fetch latest upstream Limine ───────────────────────────────────────────
-# Arch's [extra] repo can lag upstream Limine. Pull the latest binary release
-# from limine-bootloader/limine on GitHub so each ISO ships current bootloader
-# code (UEFI security fixes, new firmware compat, etc.). Refuse to build with a
-# stale system Limine unless ALLOW_SYSTEM_LIMINE_FALLBACK=1 is set explicitly.
-#
-# After this step:
-#   $LIMINE_DIR/{limine, limine-bios-cd.bin, limine-bios.sys, BOOTX64.EFI, ...}
-# are the binaries used by mkarchiso (via bootmodes/limine.sh) and by the
-# `limine bios-install` step that embeds the MBR bootstrap.
-LIMINE_STAGE="$(mktemp -d /tmp/limine-upstream-XXXXXX)"
-LIMINE_DIR="/usr/share/limine"   # fallback default
-LIMINE_VERSION=""
-ALLOW_SYSTEM_LIMINE_FALLBACK="${ALLOW_SYSTEM_LIMINE_FALLBACK:-0}"
-_LIMINE_FETCH_OK=0
-
-info "Fetching latest Limine release from GitHub..."
-if _LATEST_TAG="$(curl -fsSL --retry 3 \
-        https://api.github.com/repos/limine-bootloader/limine/releases/latest \
-        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | head -1)" \
-   && [[ -n "${_LATEST_TAG}" ]]; then
-
-    _ASSET_URL="https://github.com/limine-bootloader/limine/releases/download/${_LATEST_TAG}/limine-binary.tar.xz"
-    info "Downloading Limine ${_LATEST_TAG} binary tarball..."
-    if curl -fsSL --retry 3 -o "${LIMINE_STAGE}/limine.tar.xz" "${_ASSET_URL}"; then
-        if tar -xf "${LIMINE_STAGE}/limine.tar.xz" -C "${LIMINE_STAGE}"; then
-            # Tarball extracts to limine-binary/
-            _UPSTREAM_DIR="$(find "${LIMINE_STAGE}" -mindepth 1 -maxdepth 2 -type d \( -name 'limine-binary' -o -name 'limine-binary-*' \) | head -1)"
-            if [[ -n "${_UPSTREAM_DIR}" \
-                  && -f "${_UPSTREAM_DIR}/limine-bios-cd.bin" \
-                  && -f "${_UPSTREAM_DIR}/limine-bios.sys" \
-                  && -f "${_UPSTREAM_DIR}/BOOTX64.EFI" ]]; then
-                if [[ ! -x "${_UPSTREAM_DIR}/limine" ]]; then
-                    info "Building upstream Limine installer tool..."
-                    make -C "${_UPSTREAM_DIR}" limine >/dev/null
-                fi
-                if [[ -x "${_UPSTREAM_DIR}/limine" ]]; then
-                    LIMINE_DIR="${_UPSTREAM_DIR}"
-                    LIMINE_VERSION="${_LATEST_TAG#v}"
-                    if grep -aom1 "Limine ${LIMINE_VERSION}" "${LIMINE_DIR}/BOOTX64.EFI" >/dev/null; then
-                        _LIMINE_FETCH_OK=1
-                        info "Using upstream Limine ${LIMINE_VERSION} from ${LIMINE_DIR}"
-                    else
-                        warn "Upstream BOOTX64.EFI does not report Limine ${LIMINE_VERSION} — refusing to use it."
-                    fi
-                else
-                    warn "Failed to build upstream Limine installer tool."
-                fi
-            else
-                warn "Upstream Limine tarball missing expected files."
-            fi
-        else
-            warn "Failed to extract upstream Limine tarball."
-        fi
-    else
-        warn "Failed to download upstream Limine."
-    fi
-else
-    warn "Failed to query GitHub for latest Limine release."
-fi
-
-if (( _LIMINE_FETCH_OK == 0 )); then
-    if [[ "${ALLOW_SYSTEM_LIMINE_FALLBACK}" == "1" ]]; then
-        warn "Using system Limine from ${LIMINE_DIR}; this may not be the latest upstream release."
-    else
-        die "Could not fetch/build latest upstream Limine. Refusing to build an ISO with stale bootloader binaries. Set ALLOW_SYSTEM_LIMINE_FALLBACK=1 to override."
-    fi
-fi
-export LIMINE_DIR
-
-# Validate whichever source we ended up with.
-for _f in "${LIMINE_DIR}/limine-bios-cd.bin" \
-          "${LIMINE_DIR}/limine-bios.sys" \
-          "${LIMINE_DIR}/BOOTX64.EFI"; do
-    if [[ ! -f "${_f}" ]]; then
-        echo "ERROR: ${_f} not found. Install 'limine' on the build host or check network connectivity." >&2
-        exit 1
-    fi
-done
-
-# `limine bios-install` needs an executable. Use the upstream-provided one if
-# we've got it, otherwise fall back to whatever's on $PATH.
-if [[ -x "${LIMINE_DIR}/limine" ]]; then
-    LIMINE_BIN="${LIMINE_DIR}/limine"
-elif command -v limine &>/dev/null; then
-    LIMINE_BIN="$(command -v limine)"
-else
-    echo "ERROR: no usable 'limine' binary found." >&2
-    exit 1
-fi
-
-if [[ -n "${LIMINE_VERSION}" ]]; then
-    "${LIMINE_BIN}" --version | head -1 | grep -F "Limine ${LIMINE_VERSION}" >/dev/null \
-        || die "Limine installer tool version does not match ${LIMINE_VERSION}."
-fi
-
-trap 'restore_profile_overlay; rm -rf -- "${LIMINE_STAGE}"; rm -f -- "${PATCHED_MKARCHISO:-}"' EXIT
+trap 'restore_profile_overlay' EXIT
 
 # ── Work directory ─────────────────────────────────────────────────────────
 if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
@@ -1731,29 +1633,31 @@ fi
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 
 # mkarchiso caches both bootmode functions and the completed airootfs image.
-# Re-copy the profile and rebuild the image so an ISO-only rebuild picks up the
-# staged installer Limine binary and installer-script changes without requiring
-# the caller to remember `-c`.
-info "Invalidating cached Limine boot artifacts and airootfs image..."
+# Re-copy the profile and rebuild the image so an ISO-only rebuild picks up
+# installer-script changes without requiring the caller to remember `-c`. The
+# stamps have to match the bootmodes in profiledef.sh: a stale stamp from a
+# previous set means mkarchiso skips the step and the ISO keeps boot files the
+# profile no longer asks for.
+info "Invalidating cached boot artifacts and airootfs image..."
 rm -f -- \
+    "${WORK_DIR}/build._build_buildmode_iso" \
+    "${WORK_DIR}/iso._build_iso_image" \
     "${WORK_DIR}/base._make_custom_airootfs" \
     "${WORK_DIR}/base._prepare_airootfs_image" \
-    "${WORK_DIR}/base._make_bootmode_bios.limine" \
-    "${WORK_DIR}/base._make_bootmode_uefi.limine" \
+    "${WORK_DIR}/base._make_bootmode_bios.syslinux" \
+    "${WORK_DIR}/base._make_bootmode_uefi.systemd-boot" \
+    "${WORK_DIR}/base._make_boot_on_fat" \
     "${WORK_DIR}/efiboot.img" \
     "${WORK_DIR}/iso/limine-bios-cd.bin" \
     "${WORK_DIR}/iso/limine-bios.sys" \
+    "${WORK_DIR}/iso/limine.conf" \
     "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI"
 
-# ── Patch mkarchiso with Limine bootmode functions ─────────────────────────
-PATCHED_MKARCHISO="$(mktemp /tmp/mkarchiso-limine-XXXXXX)"
-chmod +x -- "${PATCHED_MKARCHISO}"
-
-{
-    head -1 "${MKARCHISO}"
-    cat -- "${LIMINE_BOOTMODES}"
-    tail -n +2 "${MKARCHISO}"
-} > "${PATCHED_MKARCHISO}"
+# mkarchiso implements syslinux and systemd-boot itself, so it runs unpatched.
+# Limine is deliberately not among the ISO's bootmodes: Ventoy boots a stick by
+# chainloading, and it refuses to chainload another bootloader, so a Limine ISO
+# cannot be booted from one. Limine still installs to the target system, which
+# is a separate concern and unaffected.
 
 echo ">>> Building ISO (this takes several minutes)..."
 
@@ -1777,19 +1681,11 @@ verify_bundled_deps
 # no-op unless --nvidia; the EXIT trap restores the profile on any exit.
 apply_profile_overlay
 
-"${PATCHED_MKARCHISO}" \
+"${MKARCHISO}" \
     ${VERBOSE} \
     -w "${WORK_DIR}" \
     -o "${OUT_DIR}" \
     "${PROFILE_DIR}"
-
-if [[ -n "${LIMINE_VERSION}" ]]; then
-    grep -aom1 "Limine ${LIMINE_VERSION}" "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI" >/dev/null \
-        || die "Built ISO tree does not contain Limine ${LIMINE_VERSION} BOOTX64.EFI."
-    grep -aom1 "Limine ${LIMINE_VERSION}" "${WORK_DIR}/iso/limine-bios.sys" >/dev/null \
-        || die "Built ISO tree does not contain Limine ${LIMINE_VERSION} BIOS support binary."
-    success "Verified ISO Limine boot binaries are ${LIMINE_VERSION}."
-fi
 
 # DKMS reports success even when it built nothing (no kernel headers), and
 # mkinitcpio only warns about a MODULES= entry it cannot find, so a driverless
@@ -1811,15 +1707,52 @@ if [[ -z "${ISO_PATH}" ]]; then
 fi
 echo ">>> ISO created: ${ISO_PATH}"
 
-# ── Embed Limine BIOS bootstrap for USB hybrid boot ───────────────────────
-echo ">>> Embedding Limine BIOS bootstrap (limine bios-install)..."
-"${LIMINE_BIN}" bios-install "${ISO_PATH}"
+# The two ways this image gets booted rest on different structures, so both are
+# checked. Ventoy keeps the .iso as a file and chainloads a boot image out of
+# the El Torito catalog, one per firmware type; it never looks at the MBR. A
+# stick written with dd boots the other way round, off the partition table.
+# Neither is written with an exit status to read, so the image itself is the
+# only evidence, and a missing one is silent until someone tries that path.
+_ET_REPORT="$(xorriso -indev "${ISO_PATH}" -report_el_torito plain 2>/dev/null || true)"
+_ET_FAULT=""
+grep -qE '^El Torito boot img :.*[[:space:]]BIOS[[:space:]]+y[[:space:]]' <<<"${_ET_REPORT}" \
+    || _ET_FAULT="no bootable BIOS image in the El Torito catalog"
+[[ -n "${_ET_FAULT}" ]] || grep -qE '^El Torito boot img :.*[[:space:]]UEFI[[:space:]]+y[[:space:]]' <<<"${_ET_REPORT}" \
+    || _ET_FAULT="no bootable UEFI image in the El Torito catalog"
+if [[ -n "${_ET_FAULT}" ]]; then
+    printf '%s\n' "${_ET_REPORT}" >&2
+    die "El Torito check failed: ${_ET_FAULT}. Booting this ISO from Ventoy would fail."
+fi
+success "Verified the ISO offers bootable BIOS and UEFI El Torito images."
+
+_MBR_REPORT="$(xorriso -indev "${ISO_PATH}" -report_system_area plain 2>/dev/null || true)"
+_MBR_PARTS="$(grep '^MBR partition ' <<<"${_MBR_REPORT}" || true)"
+_MBR_FAULT=""
+# xorriso names the system-area layout here. It reports "isohybrid" only when
+# it laid down an isohdpfx.bin bootstrap, which is the arrangement wanted: an
+# MBR a BIOS machine can boot with a GPT behind it. Other layouts also carry a
+# bootable entry, so the partition checks below do not imply this one.
+grep -q 'System area summary:.*isohybrid' <<<"${_MBR_REPORT}" \
+    || _MBR_FAULT="the system area is not an isohybrid MBR"
+# Columns are: N, Status, Type, Start, Blocks. Anchor to the column being
+# tested, or a partition whose TYPE is 0x80 would read as a bootable one.
+# --mbr-force-bootable sets the status. Without it BIOS firmware skips the disk.
+[[ -n "${_MBR_FAULT}" ]] || grep -qE '^MBR partition +: +[0-9]+ +0x80' <<<"${_MBR_PARTS}" \
+    || _MBR_FAULT="no MBR partition is marked bootable"
+# -isohybrid-gpt-basdat is passed before -e, which gives the appended EFI
+# system partition the EFI type in the MBR as well as the GPT.
+[[ -n "${_MBR_FAULT}" ]] || grep -qE '^MBR partition +: +[0-9]+ +0x[0-9a-fA-F]+ +0xef' <<<"${_MBR_PARTS}" \
+    || _MBR_FAULT="the EFI system partition has no 0xef MBR entry"
+if [[ -n "${_MBR_FAULT}" ]]; then
+    printf '%s\n' "${_MBR_REPORT}" >&2
+    die "Boot layout check failed: ${_MBR_FAULT}. The bootmodes in profiledef.sh are what decide this."
+fi
+success "Verified the ISO carries a hybrid MBR with both a bootable and an EFI entry."
 
 # ── Strip the architecture suffix from the filename ───────────────────────
 # mkarchiso composes the output as ${iso_name}-${iso_version}-${arch}.iso and
-# offers no setting to suppress the -${arch} segment. Rename in place after
-# bios-install so the embed step still operates on the mkarchiso-named file
-# (avoids any chance of touching the wrong artefact mid-build).
+# offers no setting to suppress the -${arch} segment. Rename in place once every
+# check that reads the ISO by its mkarchiso name has run.
 _ARCH_SUFFIX="-$(awk -F= '/^arch=/{gsub(/"/,"",$2); print $2}' "${PROFILE_DIR}/profiledef.sh")"
 if [[ -n "${_ARCH_SUFFIX}" && "${_ARCH_SUFFIX}" != "-" ]]; then
     _NEW_ISO_PATH="${ISO_PATH/${_ARCH_SUFFIX}.iso/.iso}"

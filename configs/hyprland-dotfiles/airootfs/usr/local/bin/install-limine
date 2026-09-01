@@ -146,14 +146,10 @@ if [ "$IS_UEFI" = true ]; then
     mkdir -p "$BOOT_PATH/EFI/limine" || exit 1
     mkdir -p "$BOOT_PATH/EFI/BOOT" || exit 1
 
-    # build.sh stages the exact upstream EFI binary which booted this ISO. Do
-    # not silently prefer the distro package: a version difference here defeats
-    # testing on firmware with an EFI-loader compatibility quirk.
-    INSTALLER_EFI="/usr/local/share/mainstream/limine/BOOTX64.EFI"
-    if [[ ! -f "$INSTALLER_EFI" ]]; then
-        INSTALLER_EFI="/usr/share/limine/BOOTX64.EFI"
-        warn "Staged upstream Limine EFI binary missing; using distro copy at $INSTALLER_EFI."
-    fi
+    # The live ISO boots via systemd-boot, so there is no Limine binary in play
+    # at boot for the target to match. The limine package in the airootfs is the
+    # single source, which keeps the installed bootloader on Arch's update path.
+    INSTALLER_EFI="/usr/share/limine/BOOTX64.EFI"
     info "Copying Limine binary from $INSTALLER_EFI..."
     if [ -f "$INSTALLER_EFI" ]; then
         cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/limine/BOOTX64.EFI"
