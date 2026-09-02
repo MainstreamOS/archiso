@@ -158,6 +158,30 @@ if [[ -f /etc/bluetooth/main.conf ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 7a. CJK FONTS: KEEP ONLY WHERE THEY ARE USED
+# ---------------------------------------------------------------------------
+# The ISO carries noto-fonts-cjk so the installer renders Japanese, Korean,
+# and Chinese instead of mojibake, and so those users' installs work at first
+# boot. An install whose language and keyboard both say otherwise gets the
+# space back.
+_cjk_keep=false
+_lang=$(grep -oP '^LANG=\K.*' /etc/locale.conf 2>/dev/null | tr -d '"')
+case "$_lang" in
+    ja_*|ko_*|zh_*) _cjk_keep=true ;;
+esac
+if [[ "$_cjk_keep" == false ]]; then
+    _kb=$(grep -oP 'XkbLayout"?\s+"\K[^"]+' /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null | head -1)
+    [[ -z "$_kb" ]] && _kb=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1)
+    case "$_kb" in
+        jp*|kr*|cn*) _cjk_keep=true ;;
+    esac
+fi
+if [[ "$_cjk_keep" == false ]] && pacman -Q noto-fonts-cjk &>/dev/null; then
+    info "Neither the language nor the keyboard uses CJK; removing noto-fonts-cjk..."
+    pacman -Rns --noconfirm noto-fonts-cjk 2>/dev/null || warn "Could not remove noto-fonts-cjk; leaving it installed."
+fi
+
+# ---------------------------------------------------------------------------
 # 7b. FIREWALL DEFAULT ZONE
 # ---------------------------------------------------------------------------
 if command -v firewall-offline-cmd &>/dev/null && [[ -f /etc/firewalld/zones/MainstreamWorkstation.xml ]]; then

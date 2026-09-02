@@ -143,6 +143,7 @@ mainstream-extras
 mainstream-gaming
 mainstream-bibata-modern-classic-bin
 noto-fonts
+noto-fonts-cjk
 
 # ==============================================================================
 # Explicit providers (prevents interactive prompts during mkarchiso build)
