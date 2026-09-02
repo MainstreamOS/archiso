@@ -27,6 +27,7 @@ file_permissions=(
   ["/usr/local/bin/post-install-boot"]="0:0:755"
   ["/usr/local/bin/post-install-login"]="0:0:755"
   ["/usr/local/bin/post-install-system"]="0:0:755"
+  ["/usr/local/bin/mainstream-printer-setup"]="0:0:755"
   ["/usr/local/bin/post-install-theme"]="0:0:755"
   ["/usr/local/bin/post-install-snapshots"]="0:0:755"
   ["/usr/local/bin/post-install-hyprbars"]="0:0:755"
