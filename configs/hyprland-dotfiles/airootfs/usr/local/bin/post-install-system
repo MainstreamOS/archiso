@@ -158,27 +158,48 @@ if [[ -f /etc/bluetooth/main.conf ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7a. CJK FONTS: KEEP ONLY WHERE THEY ARE USED
+# 7a. CJK FONTS + INPUT METHOD: KEEP ONLY WHERE THEY ARE USED
 # ---------------------------------------------------------------------------
-# The ISO carries noto-fonts-cjk so the installer renders Japanese, Korean,
-# and Chinese instead of mojibake, and so those users' installs work at first
-# boot. An install whose language and keyboard both say otherwise gets the
-# space back.
-_cjk_keep=false
+# The ISO carries noto-fonts-cjk and the fcitx5 input-method stack so the
+# installer renders Japanese, Korean, and Chinese instead of mojibake, and
+# so those users can actually type their language at first boot instead of
+# hand-assembling an IME from a forum thread. An install whose language and
+# keyboard both say otherwise gets all of the space back, and a CJK install
+# keeps only its own engine.
+_cjk_ime=""
 _lang=$(grep -oP '^LANG=\K.*' /etc/locale.conf 2>/dev/null | tr -d '"')
 case "$_lang" in
-    ja_*|ko_*|zh_*) _cjk_keep=true ;;
+    ja_*) _cjk_ime=mozc ;;
+    ko_*) _cjk_ime=hangul ;;
+    zh_*) _cjk_ime=pinyin ;;
 esac
-if [[ "$_cjk_keep" == false ]]; then
-    _kb=$(grep -oP 'XkbLayout"?\s+"\K[^"]+' /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null | head -1)
-    [[ -z "$_kb" ]] && _kb=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1)
+_kb=$(grep -oP 'XkbLayout"?\s+"\K[^"]+' /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null | head -1)
+[[ -z "$_kb" ]] && _kb=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1)
+if [[ -z "$_cjk_ime" ]]; then
     case "$_kb" in
-        jp*|kr*|cn*) _cjk_keep=true ;;
+        jp*) _cjk_ime=mozc ;;
+        kr*) _cjk_ime=hangul ;;
+        cn*) _cjk_ime=pinyin ;;
     esac
 fi
-if [[ "$_cjk_keep" == false ]] && pacman -Q noto-fonts-cjk &>/dev/null; then
-    info "Neither the language nor the keyboard uses CJK; removing noto-fonts-cjk..."
-    pacman -Rns --noconfirm noto-fonts-cjk 2>/dev/null || warn "Could not remove noto-fonts-cjk; leaving it installed."
+if [[ -z "$_cjk_ime" ]]; then
+    _cjk_remove=()
+    for _p in noto-fonts-cjk fcitx5-mozc fcitx5-chinese-addons fcitx5-hangul fcitx5-configtool fcitx5-gtk fcitx5-qt fcitx5; do
+        pacman -Q "$_p" &>/dev/null && _cjk_remove+=("$_p")
+    done
+    if [[ ${#_cjk_remove[@]} -gt 0 ]]; then
+        info "Neither the language nor the keyboard uses CJK; removing fonts and input method..."
+        pacman -Rns --noconfirm "${_cjk_remove[@]}" 2>/dev/null || warn "Could not remove the CJK stack; leaving it installed."
+    fi
+else
+    _cjk_engines_drop=()
+    [[ "$_cjk_ime" != mozc   ]] && pacman -Q fcitx5-mozc &>/dev/null && _cjk_engines_drop+=(fcitx5-mozc)
+    [[ "$_cjk_ime" != pinyin ]] && pacman -Q fcitx5-chinese-addons &>/dev/null && _cjk_engines_drop+=(fcitx5-chinese-addons)
+    [[ "$_cjk_ime" != hangul ]] && pacman -Q fcitx5-hangul &>/dev/null && _cjk_engines_drop+=(fcitx5-hangul)
+    if [[ ${#_cjk_engines_drop[@]} -gt 0 ]]; then
+        info "Keeping the $_cjk_ime input method; removing the other engines..."
+        pacman -Rns --noconfirm "${_cjk_engines_drop[@]}" 2>/dev/null || true
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -215,6 +236,67 @@ if [[ -n "$MAIN_USER" ]]; then
 
     # Final ownership guarantee
     chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
+
+    # The CJK input method chosen above only helps if the session loads it.
+    # Env vars follow the fcitx5 Wayland guidance: no GTK_IM_MODULE, since
+    # GTK talks text-input-v3 natively and the module causes the blinking
+    # candidate window; X11 GTK apps get the module through settings.ini.
+    # GLFW speaks only the ibus protocol, which fcitx5 serves, and the
+    # wrong value there is a documented way to break input entirely.
+    if [[ -n "$_cjk_ime" ]]; then
+        info "Configuring the $_cjk_ime input method for $MAIN_USER..."
+        _ime_env="$MAIN_USER_HOME/.config/hypr/custom/env.lua"
+        if [[ -f "$_ime_env" ]] && ! grep -q 'im=fcitx' "$_ime_env"; then
+            cat >> "$_ime_env" << 'IMEENVEOF'
+hl.env({ name = "XMODIFIERS", value = "@im=fcitx" })
+hl.env({ name = "QT_IM_MODULE", value = "fcitx" })
+hl.env({ name = "QT_IM_MODULES", value = "wayland;fcitx" })
+hl.env({ name = "SDL_IM_MODULE", value = "fcitx" })
+hl.env({ name = "GLFW_IM_MODULE", value = "ibus" })
+IMEENVEOF
+            chown "$MAIN_USER:$MAIN_USER" "$_ime_env"
+        fi
+        _ime_execs="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
+        if [[ -f "$_ime_execs" ]] && ! grep -q 'fcitx5' "$_ime_execs"; then
+            echo 'hl.on("hyprland.start", function() hl.exec_cmd("fcitx5 -d") end)' >> "$_ime_execs"
+            chown "$MAIN_USER:$MAIN_USER" "$_ime_execs"
+        fi
+        for _gtkv in gtk-3.0 gtk-4.0; do
+            _gtkini="$MAIN_USER_HOME/.config/$_gtkv/settings.ini"
+            if [[ -f "$_gtkini" ]]; then
+                grep -q '^gtk-im-module=' "$_gtkini" || sed -i '/^\[Settings\]/a gtk-im-module=fcitx' "$_gtkini"
+            else
+                printf '[Settings]\ngtk-im-module=fcitx\n' > "$_gtkini"
+            fi
+            chown "$MAIN_USER:$MAIN_USER" "$_gtkini"
+        done
+        # A profile with the engine already in the group is the difference
+        # between typing at first boot and a trip through the config tool.
+        _ime_profile="$MAIN_USER_HOME/.config/fcitx5/profile"
+        _ime_layout=us
+        case "$_kb" in jp*) _ime_layout=jp ;; kr*) _ime_layout=kr ;; esac
+        if [[ ! -f "$_ime_profile" ]]; then
+            install -d -o "$MAIN_USER" -g "$MAIN_USER" "$MAIN_USER_HOME/.config/fcitx5"
+            cat > "$_ime_profile" << IMEPROFEOF
+[Groups/0]
+Name=Default
+Default Layout=$_ime_layout
+DefaultIM=$_cjk_ime
+
+[Groups/0/Items/0]
+Name=keyboard-$_ime_layout
+Layout=
+
+[Groups/0/Items/1]
+Name=$_cjk_ime
+Layout=
+
+[GroupOrder]
+0=Default
+IMEPROFEOF
+            chown "$MAIN_USER:$MAIN_USER" "$_ime_profile"
+        fi
+    fi
 
     # Add hyprpolkitagent autostart if not already present in dotfiles
     EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"

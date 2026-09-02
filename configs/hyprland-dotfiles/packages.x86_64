@@ -144,6 +144,13 @@ mainstream-gaming
 mainstream-bibata-modern-classic-bin
 noto-fonts
 noto-fonts-cjk
+fcitx5
+fcitx5-configtool
+fcitx5-gtk
+fcitx5-qt
+fcitx5-mozc
+fcitx5-chinese-addons
+fcitx5-hangul
 
 # ==============================================================================
 # Explicit providers (prevents interactive prompts during mkarchiso build)
