@@ -78,6 +78,7 @@ bluez-utils
 # Printing
 # ==============================================================================
 cups
+cups-browsed
 cups-pk-helper
 ipp-usb
 system-config-printer
