@@ -1,5 +1,0 @@
-# Mirrors ipp-usb's own activation rules exactly (standard 7/1/4 printers
-# plus HP's non-standard 255/9/1 class), so the queue maker runs for
-# precisely the devices ipp-usb claims, at hotplug and boot coldplug alike.
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:070104:*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="mainstream-printer-setup.service"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_VENDOR_ID}=="03f0", ENV{ID_USB_INTERFACES}=="*:ff0901:*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="mainstream-printer-setup.service"
