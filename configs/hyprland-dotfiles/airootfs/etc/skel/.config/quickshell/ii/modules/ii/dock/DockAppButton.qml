@@ -1,6 +1,7 @@
 import qs.services
 import qs.modules.common
 import qs.modules.common.functions
+import qs.modules.common.widgets
 import Qt5Compat.GraphicalEffects
 import QtQuick
 import QtQuick.Layouts
@@ -12,13 +13,28 @@ DockButton {
     property var appToplevel
     property var appListRoot
     property int delegateIndex: -1
-    property real iconSize: 35
+    property real iconSize: dockRoot.fittedIconSize
     property real countDotWidth: 10
     property real countDotHeight: 4
-    property bool appIsActive: appToplevel.toplevels.find(t => (t.activated == true)) !== undefined
+    property bool appIsActive: appToplevel?.toplevels?.find(t => (t.activated == true)) !== undefined
 
-    readonly property bool isSeparator: appToplevel.appId === "SEPARATOR"
-    readonly property bool isFolder: appToplevel.isFolder === true
+    // How many windows this button stands for. A delegate goes on answering
+    // for a moment after the model has dropped it, so everything that counts
+    // windows reads this rather than reaching through what is no longer there.
+    readonly property int windowCount: appToplevel?.toplevels?.length ?? 0
+
+    readonly property bool isSeparator: appToplevel?.appId === "SEPARATOR"
+    readonly property bool isFolder: appToplevel?.isFolder === true
+    // Which of the two ways of showing window count this button is drawing.
+    // Both name the styles they want rather than the ones they do not, so a
+    // style added later stays off until it is asked for, instead of switching
+    // the marks on by not having been excluded.
+    readonly property bool showsMarks: !isFolder
+        && (Config.options.dock.indicatorStyle === "dashes"
+            || Config.options.dock.indicatorStyle === "dots")
+    readonly property bool showsBadge: !isFolder
+        && Config.options.dock.indicatorStyle === "badge"
+        && windowCount >= 2
 
     // appToplevel.appId is already the canonical resolved id (e.g.
     // "settings", "welcome-tutorial") because TaskbarApps.resolveAppId
@@ -26,7 +42,7 @@ DockButton {
     // We keep this property so callers can still go through one lookup
     // point if the resolution rules ever need to differ between the
     // dock and elsewhere.
-    readonly property string lookupAppId: appToplevel.appId
+    readonly property string lookupAppId: appToplevel?.appId ?? ""
 
     // Bumped by the retry timer to re-run the lookup below. The timer used to
     // assign straight to desktopEntry, which replaced the binding with whatever
@@ -40,9 +56,11 @@ DockButton {
     readonly property var desktopEntry: {
         // guessDesktopEntry() resolves through DesktopEntries.byId(), a plain
         // function call that registers no dependency, so read the entry list to
-        // make the database itself one: when it finishes populating, every icon
-        // re-resolves on its own.
-        DesktopEntries.applications.values.length;
+        // make the database itself one. The list value, not its length: a
+        // rescan after a .desktop change replaces entry objects while the
+        // count stays the same, and a length dependency would leave this
+        // binding holding a dead object showing the pre-rescan icon.
+        DesktopEntries.applications.values;
         root.lookupAttempt;
         if (root.isFolder) return null;
         return AppSearch.guessDesktopEntry(root.lookupAppId);
@@ -86,7 +104,7 @@ DockButton {
     readonly property real dragTranslate: {
         if (!appListRoot.dragging) return 0;
         if (isDragged) return appListRoot.dragCursorPos - appListRoot.dragStartCursorPos;
-        if (!appToplevel.pinned || isSeparator) return 0;
+        if (!appToplevel?.pinned || isSeparator) return 0;
         var src = appListRoot.dragSourceIndex;
         var tgt = appListRoot.dragTargetIndex;
         var idx = delegateIndex;
@@ -94,11 +112,36 @@ DockButton {
         if (src > tgt && idx >= tgt && idx < src) return appListRoot.slotSize;
         return 0;
     }
-    z: isDragged ? 100 : 0
+    // Idle siblings paint in list order once z ties, so a separator
+    // delegate can draw over a neighbor magnifying into its space. Racing
+    // it on its own hoverScale isn't enough — falloff-based magnification
+    // gives it a nontrivial value of its own even though it never grows —
+    // so it's pinned below the baseline instead (icons never go below 1).
+    // Regular icons still race each other on hoverScale, so the biggest
+    // one paints frontmost.
+    // A haloed button has to paint above its neighbours for as long as any of
+    // the halo is on screen: it spills past the button's own bounds, and the
+    // lift that comes with it is far too slight to say so through scale, which
+    // is what orders the rest. Below a dragged one, above every resting one.
+    z: isDragged ? 100 : (isSeparator ? -1 : (glowFade > 0 ? 99 : hoverScale))
     scale: isDragged ? 1.05 : 1
 
     enabled: !isSeparator
     property real hoverScale: 1.0
+    // The size to decode an icon at so it stays sharp once hovering has grown
+    // it, quantised so a dial being dragged does not mint a raster per step.
+    function rasterFor(size) {
+        return Math.ceil(size * root.appListRoot.maxScale / 16) * 16;
+    }
+    // Set by the list, not by a MouseArea here — see pointerIsOver in DockApps.
+    property bool pointerOver: false
+    // How much of the halo is showing. The button owns this rather than the
+    // loader that draws it, because its own stacking has to follow the fade
+    // out as well as the fade in.
+    property real glowFade: root.pointerOver ? 1 : 0
+    Behavior on glowFade {
+        animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
+    }
     property int buttonIndex: 0
 
     implicitWidth: dockRoot.dockVertical ? dockButtonSize + leftInset + rightInset
@@ -136,7 +179,7 @@ DockButton {
         id: dragOverlay
         anchors.fill: parent
         z: 10
-        enabled: appToplevel.pinned && !isSeparator
+        enabled: (appToplevel?.pinned ?? false) && !isSeparator
         acceptedButtons: Qt.LeftButton
         preventStealing: true
         property real pressPos: 0
@@ -196,13 +239,18 @@ DockButton {
                 const folder = AppFolderManager.getFolder(folderId);
                 if (folder) appListRoot.showFolderPopup(root, folder);
             }
-        } else if (appToplevel.toplevels.length > 0) {
-            // Toggle preview
+        } else if (root.windowCount > 1) {
+            // Multiple windows: toggle the preview so there's something to pick between
             if (appListRoot.clickedButton === root) {
                 appListRoot.hidePreview();
             } else {
                 appListRoot.showPreview(root);
             }
+        } else if (root.windowCount === 1) {
+            // Exactly one window: nothing to choose between, so skip the
+            // preview and go straight to it — the same thing that happens
+            // when you click that window's thumbnail inside a preview.
+            appListRoot.focusToplevel(root.appToplevel?.toplevels?.[0]);
         } else {
             // Only here: opening a folder or toggling a window preview is not a
             // launch, and animating those would say something happened that did not.
@@ -252,6 +300,42 @@ DockButton {
                 NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
             }
 
+            // Hover glow. Declared before the icon so it is drawn behind it —
+            // the icon stays sharp and only the halo shows around the edges.
+            // Carries the launch animation's transform for the same reason the
+            // tint overlay does: anchors follow geometry, and scale and rotation
+            // do not touch geometry, so without it the halo would sit still
+            // while the icon moved inside it.
+            Loader {
+                // Fills the very item it takes as its source: the halo renders
+                // that source into its own bounds, so a box of any other size
+                // draws a second icon stretched across it rather than a glow
+                // around the one that is there. Both icon loaders take their
+                // height from what they hold, which is not the whole button.
+                anchors.fill: root.isFolder ? folderIconLoader : iconImageLoader
+                // Built only while some of it shows, and not at all when it has
+                // no reach to speak of: a blur of no radius is the icon's own
+                // silhouette in another colour, fringing whatever it shows
+                // through rather than glowing.
+                active: root.glowFade > 0 && Appearance.sizes.dockGlowReach > 0
+                opacity: root.glowFade
+                scale: launchAnims.scale
+                rotation: launchAnims.rot
+                transformOrigin: Item.Center
+                sourceComponent: Glow {
+                    source: root.isFolder ? folderIconLoader : iconImageLoader
+                    radius: Appearance.sizes.dockGlowReach
+                    // Sized for the radius the slider can ask for, so turning
+                    // it up never underruns the blur.
+                    samples: 57
+                    color: Appearance.colors.colDockGlow
+                    // Without this the blur is cut off at the item edges, and
+                    // since the item is exactly the icon's size the halo ends up
+                    // entirely behind the icon with nothing showing.
+                    transparentBorder: true
+                }
+            }
+
             // Regular app icon
             Loader {
                 id: iconImageLoader
@@ -283,8 +367,11 @@ DockButton {
                     // keeps the idle state cleanly anti-aliased without
                     // visibly softening the magnified peak (mip 0 == 1:1
                     // sample at full hover).
-                    backer.sourceSize.width: root.iconSize * root.appListRoot.maxScale
-                    backer.sourceSize.height: root.iconSize * root.appListRoot.maxScale
+                    // Rounded up to a step, so dragging the amount dial asks
+                    // for a handful of raster sizes rather than one at every
+                    // whole number it passes through.
+                    backer.sourceSize.width: root.rasterFor(root.iconSize)
+                    backer.sourceSize.height: root.rasterFor(root.iconSize)
                 }
             }
 
@@ -323,8 +410,8 @@ DockButton {
                                 // as the main app icon, so they need the
                                 // same maxScale-bumped sourceSize to stay
                                 // crisp through the hover animation.
-                                backer.sourceSize.width: root.iconSize * 0.4 * root.appListRoot.maxScale
-                                backer.sourceSize.height: root.iconSize * 0.4 * root.appListRoot.maxScale
+                                backer.sourceSize.width: root.rasterFor(root.iconSize * 0.4)
+                                backer.sourceSize.height: root.rasterFor(root.iconSize * 0.4)
                             }
                         }
                     }
@@ -356,6 +443,44 @@ DockButton {
                 }
             }
 
+            // How many windows an app holds, said outright rather than
+            // counted off in marks. It only speaks from the second window on:
+            // one window is what an open app already looks like.
+            // Built only for the style that draws it: the marks are the stock
+            // choice, so every icon on a default dock would otherwise carry a
+            // circle and a text run that can never be shown.
+            Loader {
+                id: badgeLoader
+                readonly property real diameter: Math.max(14, root.iconSize * 0.3)
+                active: root.showsBadge
+                // The icon corner furthest from the screen, tucked back over
+                // the art. Both corners are measured out from the center by
+                // half an icon: the loaders around the art are stretched to
+                // the button's cross axis, so their own edges sit outside the
+                // art by however much wider the button is, which on a dock
+                // narrow enough carries the badge clear off the surface.
+                anchors {
+                    horizontalCenter: parent.horizontalCenter
+                    horizontalCenterOffset: (dockRoot.dockEdge === "right" ? -1 : 1)
+                        * (root.iconSize / 2 - badgeLoader.diameter * 0.2)
+                    verticalCenter: parent.verticalCenter
+                    verticalCenterOffset: (dockRoot.dockEdge === "top" ? 1 : -1)
+                        * (root.iconSize / 2 - badgeLoader.diameter * 0.15)
+                }
+                sourceComponent: Rectangle {
+                    implicitWidth: badgeLoader.diameter
+                    implicitHeight: badgeLoader.diameter
+                    radius: badgeLoader.diameter / 2
+                    color: Appearance.colors.colDockBadge
+                    StyledText {
+                        anchors.centerIn: parent
+                        text: root.windowCount > 9 ? "9+" : root.windowCount
+                        font.pixelSize: badgeLoader.diameter * 0.62
+                        color: Appearance.colors.colDockBadgeText
+                    }
+                }
+            }
+
             GridLayout {
                 columnSpacing: 3
                 rowSpacing: 3
@@ -379,16 +504,24 @@ DockButton {
                     horizontalCenter: dockRoot.dockVertical ? undefined : parent.horizontalCenter
                     verticalCenter: dockRoot.dockVertical ? parent.verticalCenter : undefined
                 }
-                visible: !root.isFolder
+                visible: root.showsMarks
                 Repeater {
-                    model: Math.min(appToplevel.toplevels.length, 3)
+                    // Gated on the style as well as the count: `visible` alone
+                    // still builds a mark per window and rebuilds them on every
+                    // window opened or closed, for a style that draws nothing.
+                    model: root.showsMarks ? Math.min(root.windowCount, 3) : 0
                     delegate: Rectangle {
                         required property int index
+                        // Dashes stretch along the dock while few and tighten
+                        // to dots past three; the dots style stays a dot at
+                        // any count.
+                        readonly property bool asDash: Config.options.dock.indicatorStyle !== "dots"
+                            && root.windowCount <= 3
                         radius: Appearance.rounding.full
                         implicitWidth: dockRoot.dockVertical ? root.countDotHeight
-                            : (appToplevel.toplevels.length <= 3) ? root.countDotWidth : root.countDotHeight
+                            : asDash ? root.countDotWidth : root.countDotHeight
                         implicitHeight: !dockRoot.dockVertical ? root.countDotHeight
-                            : (appToplevel.toplevels.length <= 3) ? root.countDotWidth : root.countDotHeight
+                            : asDash ? root.countDotWidth : root.countDotHeight
                         color: appIsActive ? Appearance.colors.colPrimary : ColorUtils.transparentize(Appearance.colors.colOnLayer0, 0.4)
                     }
                 }

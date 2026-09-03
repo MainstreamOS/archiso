@@ -161,29 +161,51 @@ PRESERVE_LIGHT_NIGHT=""
 PRESERVE_CURSOR=""
 PRESERVE_SEEDED=""
 PRESERVE_APPS=""
+PRESERVE_DOCK_PINS=""
 PRESERVE_UPDATES=""
+PRESERVE_WEATHER=""
 if [ -f "$SHELL_CONFIG" ]; then
-    PRESERVE_THEME_SCHED=$(jq -c '.appearance.themeSchedule // empty' "$SHELL_CONFIG" 2>/dev/null || true)
-    # Preserve the entire light.night object — schedule, automatic flag,
-    # mode, colour temperature, etc. are user preferences that should NOT
-    # be reset by theme switching. The matching strip on the save side
-    # also drops .light.night from new theme snapshots; this preserve
-    # path is what protects older snapshots that still carry those keys.
-    PRESERVE_LIGHT_NIGHT=$(jq -c '.light.night // empty' "$SHELL_CONFIG" 2>/dev/null || true)
-    # Shake-to-locate (cursor.*) is user behavior, kept out of theme snapshots
-    # and preserved live here so applying a theme never changes it.
-    PRESERVE_CURSOR=$(jq -c '.cursor // empty' "$SHELL_CONFIG" 2>/dev/null || true)
-    # Record of which bar widgets have already been offered to this machine.
-    # A snapshot taken before a widget existed doesn't have it, so restoring one
-    # would hand the shell back its one chance to add a widget the user removed.
-    PRESERVE_SEEDED=$(jq -c '.bar.seededWidgets // empty' "$SHELL_CONFIG" 2>/dev/null || true)
-    # apps.* is the command each button runs, by way of `bash -c`, and updates.*
-    # names the manifest this machine believes about releases. A theme that
-    # carried either would be choosing what runs here, so the live values win
-    # over the snapshot every time — including for themes saved or shared
-    # before they were kept out of snapshots at all.
-    PRESERVE_APPS=$(jq -c '.apps // empty' "$SHELL_CONFIG" 2>/dev/null || true)
-    PRESERVE_UPDATES=$(jq -c '.updates // empty' "$SHELL_CONFIG" 2>/dev/null || true)
+    # What the live config keeps regardless of what a theme carries, read in
+    # one pass. Each of these was its own jq, so the file was forked over and
+    # parsed in full seven times on a path the user is waiting through.
+    #
+    #   appearance.themeSchedule  when the machine changes mode, not a look.
+    #   light.night               schedule, automatic flag, mode and color
+    #                             temperature are preferences a theme must not
+    #                             reset. The save side drops this from new
+    #                             snapshots; this protects older ones that
+    #                             still carry it.
+    #   cursor                    shake-to-locate is behavior, not appearance.
+    #   bar.seededWidgets         which widgets have already been offered to
+    #                             this machine. A snapshot taken before a
+    #                             widget existed would hand the shell back its
+    #                             one chance to re-add one the user removed.
+    #   dock.pinnedApps           this machine's apps rather than a look;
+    #                             a theme carrying them strands a user with
+    #                             launchers for software they do not have.
+    #   apps, updates             apps.* is the command each button runs by way
+    #                             of `bash -c`, and updates.* names the
+    #                             manifest this machine believes about
+    #                             releases. A theme carrying either would be
+    #                             choosing what runs here.
+    #
+    # One value per line, which is safe because tojson escapes any newline
+    # inside a value rather than emitting it. Reading them tab separated would
+    # not be: that escapes backslashes too, and apps.* holds shell commands.
+    # `// empty` also treats false as absent, so that is matched here.
+    mapfile -t _PRESERVED < <(jq -r '
+        [.appearance.themeSchedule, .light.night, .cursor, .bar.seededWidgets,
+         .dock.pinnedApps, .apps, .updates, .bar.weather]
+        | map(if . == null or . == false then "" else tojson end) | .[]' \
+        "$SHELL_CONFIG" 2>/dev/null || true)
+    PRESERVE_THEME_SCHED="${_PRESERVED[0]:-}"
+    PRESERVE_LIGHT_NIGHT="${_PRESERVED[1]:-}"
+    PRESERVE_CURSOR="${_PRESERVED[2]:-}"
+    PRESERVE_SEEDED="${_PRESERVED[3]:-}"
+    PRESERVE_DOCK_PINS="${_PRESERVED[4]:-}"
+    PRESERVE_APPS="${_PRESERVED[5]:-}"
+    PRESERVE_UPDATES="${_PRESERVED[6]:-}"
+    PRESERVE_WEATHER="${_PRESERVED[7]:-}"
 fi
 JQ_FILTER='.'
 JQ_ARGS=()
@@ -201,6 +223,22 @@ jq -e '.background.slideshow' "$THEME_DIR/config.json" >/dev/null 2>&1 \
 # to the local wallpaper directory instead of whatever this machine last used.
 jq -e '.background.slideshow | has("folder")' "$THEME_DIR/config.json" >/dev/null 2>&1 \
     || JQ_FILTER+=' | .background.slideshow.folder = ""'
+# How see-through the bar is and what color its pills take belong to the theme,
+# so a snapshot naming none of it means stock rather than whatever the last theme
+# was wearing — the rule the decorations restore further down states, for the
+# same reason: every theme saved before these existed was saved wearing stock, so
+# stock is the honest reading of one. Asked one at a time because a snapshot can
+# hold some and not others; the keys it carries deserve their values and the
+# rest deserve stock.
+# A right-biased object merge, because presence is the whole test: false and 0
+# are both settings someone chose, and only a key the snapshot never wrote may
+# take the stock value.
+# How big the dock's icons are, what it marks its running apps with and whether
+# it keeps the buttons at its ends belong to the look as much as its colors do,
+# so they ride along with the rest of its dress. A theme that names none of them
+# was saved wearing stock and reads as stock, the same as one naming no color.
+JQ_FILTER+=' | .bar = ({backgroundOpacity: -1, widgetOpacity: -1, widgetRadius: -1, floatRadius: -1, floatWidth: -1, notchWidth: -1, floatSplit: false, widgetColorDark: "", widgetColorLight: "", backgroundColorDark: "", backgroundColorLight: "", floatStyleShadow: true} + (.bar // {}))'
+JQ_FILTER+=' | .dock = ({showBackground: true, backgroundOpacity: -1, backgroundColorDark: "", backgroundColorLight: "", badgeColorDark: "", badgeColorLight: "", badgeTextColorDark: "", badgeTextColorLight: "", radius: -1, cornerStyle: "float", topRadius: -1, iconSize: -1, indicatorStyle: "dashes", hoverEffect: "magnify", hoverMagnify: -1, glowMagnify: -1, glowColorDark: "", glowColorLight: "", glowIntensity: -1, showOverviewButton: true, showPinButton: true} + (.dock // {}))'
 # Which edge the dock sits on belongs to the theme, but only when the theme has
 # an opinion. A snapshot taken before the setting existed names no edge, and an
 # absent key is the worst of both: the adapter keeps showing the dock where it
@@ -217,10 +255,17 @@ fi
 # Nothing live to put back means the snapshot's copy is dropped rather than
 # inherited: absent is the safe answer here, since the shell falls back to its
 # own defaults for these.
+[ -n "$PRESERVE_DOCK_PINS" ]      && { JQ_FILTER+=' | .dock.pinnedApps = $pins';               JQ_ARGS+=(--argjson pins "$PRESERVE_DOCK_PINS"); }
 if [ -n "$PRESERVE_APPS" ]; then    JQ_FILTER+=' | .apps = $apps';    JQ_ARGS+=(--argjson apps "$PRESERVE_APPS");
 else                                JQ_FILTER+=' | del(.apps)'; fi
 if [ -n "$PRESERVE_UPDATES" ]; then JQ_FILTER+=' | .updates = $upd';  JQ_ARGS+=(--argjson upd "$PRESERVE_UPDATES");
 else                                JQ_FILTER+=' | del(.updates)'; fi
+# Dropped rather than inherited when there is nothing live to put back, the same
+# as apps and updates. A theme carries where its author was and what they call a
+# degree, and the unit key also records whether that question has been answered
+# at all, so an inherited copy would answer it on this machine's behalf.
+if [ -n "$PRESERVE_WEATHER" ]; then JQ_FILTER+=' | .bar.weather = $weather'; JQ_ARGS+=(--argjson weather "$PRESERVE_WEATHER");
+else                                JQ_FILTER+=' | del(.bar.weather)'; fi
 if [ "$JQ_FILTER" = '.' ]; then
     cp -f "$THEME_DIR/config.json" "$TMP" || { rm -f "$TMP"; rollback "failed to copy config.json"; }
 else

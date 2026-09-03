@@ -240,7 +240,7 @@ ContentPage {
     function resetWindowSections() {
         const d = root.decoDefaults;
         const pairs = Object.keys(d)
-            .filter(k => k !== "titleBars")
+            .filter(k => k !== "titleBars" && k !== "titleBarColor" && k !== "titleBarOpacity")
             .map(k => `${k}=${d[k]}`);
         if (pairs.length === 0) return;
         root.setDecoration(pairs);
@@ -258,6 +258,7 @@ ContentPage {
         swDimInactive.checked = Qt.binding(() => root.dimInactiveEnabled);
         if (d.titleBars !== undefined) TitleBars.setEnabled(d.titleBars);
         swTitleBars.checked = Qt.binding(() => TitleBars.enabled);
+        titleBarSection.resetAppearance();
         activeBorderLane.rearm();
         inactiveBorderLane.rearm();
         const gradientStock = [
@@ -436,6 +437,11 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
     }
 
     // ── Decorations ──────────────────────────────────────────────────────────
+    // Shown only while title bars are drawn: with them off there is no bar for
+    // a colour to land on, and the controls would be asking about something
+    // that is not on screen. TitleBars.enabled mirrors the same flag file the
+    // toggle writes, so this follows it without the two pages having to agree
+    // with each other.
     ContentSection {
         icon: "auto_awesome"
         title: Translation.tr("Window decorations")
@@ -570,15 +576,105 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         }
     }
 
+    ContentSection {
+        id: titleBarSection
+        icon: "title"
+        title: Translation.tr("Title bars")
+        visible: TitleBars.enabled
+
+        // Held apart from the service until the user lets go, so the whole
+        // desktop is not reloaded on every step of a drag: setAppearance()
+        // runs `hyprctl reload`, and a slider sends a value per pixel.
+        property string pendingColor: TitleBars.color
+        property real pendingOpacity: TitleBars.opacity
+
+        // The stock bar carries no colour of ours, which plugins.lua reads as
+        // "leave the key alone", at the plugin's own alpha.
+        readonly property real defaultOpacity: 0.5333
+        // Compared with a tolerance because the value makes a round trip
+        // through a file as text, and the slider quantises to whole percents.
+        readonly property bool appearanceChanged: pendingColor !== ""
+            || Math.abs(Number(pendingOpacity) - defaultOpacity) > 0.0001
+
+        // Reset back to stock title bar settings in one press: the color file
+        // goes empty, so the plugin paints its own stock bar again.
+        function resetAppearance() {
+            pendingColor = "";
+            pendingOpacity = defaultOpacity;
+            if (TitleBars.color !== "" || Number(TitleBars.opacity) !== defaultOpacity)
+                TitleBars.setAppearance("", defaultOpacity);
+        }
+
+        ColorField {
+            text: Translation.tr("Color")
+            buttonIcon: "format_color_fill"
+            value: titleBarSection.pendingColor
+            // An absent color is this field's stock state, so clearing it must
+            // be allowed; the stand-in is the plugin's own default bar color.
+            allowEmpty: true
+            fallback: "#333333"
+            onEdited: newValue => {
+                // The picker commits on every pointer move so the swatch is
+                // its own preview, and applying reloads the compositor, so
+                // the colour waits on the same debounce the slider uses.
+                titleBarSection.pendingColor = newValue;
+                titleBarApplyDebounce.restart();
+            }
+            StyledToolTip {
+                text: Translation.tr("Left empty, the title bar keeps the color it comes with.")
+            }
+        }
+
+        ConfigSlider {
+            id: titleBarOpacitySlider
+            text: Translation.tr("Opacity")
+            buttonIcon: "opacity"
+            stopIndicatorValues: [53]
+            from: 0
+            to: 100
+            value: Math.round(titleBarSection.pendingOpacity * 100)
+            onMoved: {
+                const stepped = Math.round(value) / 100;
+                if (stepped === titleBarSection.pendingOpacity) return;
+                titleBarSection.pendingOpacity = stepped;
+                titleBarApplyDebounce.restart();
+            }
+        }
+
+        // Applying means reloading the compositor, and a drag sends a value
+        // per step, so the slider is allowed to settle first.
+        Timer {
+            id: titleBarApplyDebounce
+            interval: 400
+            onTriggered: TitleBars.setAppearance(titleBarSection.pendingColor,
+                titleBarSection.pendingOpacity)
+        }
+
+        // Nothing to put back while the bars are already stock, and a control
+        // that cannot do anything reads as one that is not working. The whole
+        // row goes so no gap is left behind.
+        ConfigRow {
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            visible: titleBarSection.appearanceChanged
+            RippleButtonWithIcon {
+                materialIcon: "settings_backup_restore"
+                mainText: Translation.tr("Reset title bar settings")
+                onClicked: titleBarSection.resetAppearance()
+                StyledToolTip {
+                    text: Translation.tr("The color and opacity go back to how the title bars come")
+                }
+            }
+        }
+    }
+
     // ── Shape ─────────────────────────────────────────────────────────────────
     ContentSection {
         icon: "rounded_corner"
         title: Translation.tr("Window shape")
 
         ConfigSlider {
-            text: Translation.tr("Corner radius")
-            textWidth: 170
-            sliderWidth: 340
+            text: Translation.tr("Corner roundness")
             stopIndicatorValues: root.defaultMark("rounding")
             buttonIcon: "rounded_corner"
             usePercentTooltip: false
@@ -597,8 +693,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Border thickness")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("borderSize")
             buttonIcon: "border_style"
             usePercentTooltip: false
@@ -617,8 +711,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Gap between windows")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("gapsIn")
             buttonIcon: "width"
             usePercentTooltip: false
@@ -635,8 +727,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Gap around the edge")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("gapsOut")
             buttonIcon: "fit_screen"
             usePercentTooltip: false
@@ -659,8 +749,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Focused window")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("activeOpacity")
             buttonIcon: "filter_center_focus"
             from: 0.7
@@ -675,8 +763,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Unfocused windows")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("inactiveOpacity")
             buttonIcon: "filter_none"
             from: 0.7
@@ -699,8 +785,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         // where they were found rather than moving as things are toggled.
         ConfigSlider {
             text: Translation.tr("Strength")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: (root.decoDefaults.blurSize !== undefined && root.decoDefaults.blurPasses !== undefined)
                 ? [root.blurStrengthOf(root.decoDefaults.blurSize, root.decoDefaults.blurPasses)] : []
             buttonIcon: "lens_blur"
@@ -724,8 +808,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Noise")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("blurNoise")
             buttonIcon: "grain"
             enabled: root.blurEnabled
@@ -743,8 +825,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Saturation")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("blurVibrancy")
             buttonIcon: "palette"
             enabled: root.blurEnabled
@@ -799,8 +879,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Amount")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("dimStrength")
             buttonIcon: "gradient"
             enabled: root.dimInactiveEnabled
@@ -889,8 +967,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 ColorField {
                     text: Translation.tr("From")
                     buttonIcon: "trip_origin"
-                    textWidth: 170
-                    sliderWidth: 340
                     visible: bgSection.gradientOpts.custom
                     value: bgSection.gradientOpts.customFrom
                     onEdited: newValue => bgSection.gradientOpts.customFrom = newValue
@@ -899,8 +975,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 ColorField {
                     text: Translation.tr("To")
                     buttonIcon: "adjust"
-                    textWidth: 170
-                    sliderWidth: 340
                     visible: bgSection.gradientOpts.custom
                     value: bgSection.gradientOpts.customTo
                     onEdited: newValue => bgSection.gradientOpts.customTo = newValue
@@ -908,8 +982,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
                 ConfigSlider {
                     text: Translation.tr("Angle")
-                    textWidth: 170
-                    sliderWidth: 340
                     stopIndicatorValues: [90]
                     buttonIcon: "rotate_right"
                     usePercentTooltip: false
@@ -925,8 +997,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
                 ConfigSlider {
                     text: Translation.tr("Strength")
-                    textWidth: 170
-                    sliderWidth: 340
                     stopIndicatorValues: [bgSection.defaultStrength]
                     buttonIcon: "opacity"
                     from: 10
@@ -971,8 +1041,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Size")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("shadowRange")
             buttonIcon: "photo_size_select_large"
             usePercentTooltip: false
@@ -992,8 +1060,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Falloff")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.defaultMark("shadowRenderPower")
             buttonIcon: "gradient"
             usePercentTooltip: false
@@ -1017,8 +1083,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         // tints its shadow keeps the tint while the darkness moves.
         ConfigSlider {
             text: Translation.tr("Darkness")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.decoDefaults.shadowColor !== undefined
                 ? [root.shadowAlphaOf(root.decoDefaults.shadowColor)] : []
             buttonIcon: "contrast"
@@ -1039,8 +1103,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Offset X")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.decoDefaults.shadowOffset !== undefined
                 ? [root.decoDefaults.shadowOffset[0]] : []
             buttonIcon: "swap_horiz"
@@ -1061,8 +1123,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
 
         ConfigSlider {
             text: Translation.tr("Offset Y")
-            textWidth: 170
-            sliderWidth: 340
             stopIndicatorValues: root.decoDefaults.shadowOffset !== undefined
                 ? [root.decoDefaults.shadowOffset[1]] : []
             buttonIcon: "swap_vert"
@@ -1277,33 +1337,13 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         // is asked of them, by anything asking — the compositor included — so
         // there is nothing to be done here except say so. Carried the same way
         // the Themes page carries its notices, so the settings speak alike.
-        Rectangle {
+        SubtleNoticeBox {
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 8
             Layout.topMargin: 4
             Layout.bottomMargin: 4
-            radius: Appearance.rounding.small
-            color: Qt.rgba(Appearance.m3colors.m3primary.r, Appearance.m3colors.m3primary.g, Appearance.m3colors.m3primary.b, 0.12)
-            implicitHeight: cursorNoteRow.implicitHeight + 16
-            RowLayout {
-                id: cursorNoteRow
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 8
-                MaterialSymbol {
-                    text: "info"
-                    iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.m3colors.m3primary
-                }
-                StyledText {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: Appearance.colors.colOnLayer1
-                    font.pixelSize: Appearance.font.pixelSize.small
-                    text: Translation.tr("Not every cursor theme can be resized. One built at a single size stays that size whichever you pick here.")
-                }
-            }
+            text: Translation.tr("Not every cursor theme can be resized. One built at a single size stays that size whichever you pick here.")
         }
     }
 

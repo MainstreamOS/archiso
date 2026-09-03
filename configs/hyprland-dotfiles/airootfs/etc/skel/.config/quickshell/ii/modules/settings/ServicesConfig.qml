@@ -6,6 +6,7 @@ import qs.services
 import qs.modules.common
 import qs.modules.common.functions
 import qs.modules.common.widgets
+import qs.modules.settings.services
 
 ContentPage {
     forceWidth: true
@@ -315,49 +316,41 @@ ContentPage {
     //     }
     // }
 
-    ContentSection {
+    WeatherSection {
         icon: "weather_mix"
-        title: Translation.tr("Weather")
-        ConfigRow {
-            ConfigSwitch {
-                buttonIcon: "assistant_navigation"
-                text: Translation.tr("Enable GPS based location")
-                checked: Config.options.bar.weather.enableGPS
-                onCheckedChanged: {
-                    Config.options.bar.weather.enableGPS = checked;
+    }
+
+    ContentSection {
+        // Only worth a row when there is a real choice to make. A machine
+        // with one backlight, or none at all, has nothing this can pick
+        // between: Automatic already resolves to the only one there is. The
+        // case it exists for is a laptop that reports a second, dead
+        // backlight alongside the panel.
+        visible: Brightness.availableDevices.length > 1
+        icon: "brightness_medium"
+        title: Translation.tr("Brightness")
+
+        ContentSubsection {
+            title: Translation.tr("Device")
+            tooltip: Translation.tr("Which backlight to drive.\nAutomatic lets brightnessctl choose, which is usually right.\nLaptops with hybrid graphics can expose a second, non-functional backlight: if the brightness keys do nothing, pick the panel explicitly.\nMonitors controlled over DDC are unaffected.")
+
+            ConfigSelectionArray {
+                currentValue: Config.options.brightness.device
+                onSelected: newValue => {
+                    Config.options.brightness.device = newValue;
                 }
-            }
-            ConfigSwitch {
-                buttonIcon: "thermometer"
-                text: Translation.tr("Fahrenheit unit")
-                checked: Config.options.bar.weather.useUSCS
-                onCheckedChanged: {
-                    Config.options.bar.weather.useUSCS = checked;
-                }
-                StyledToolTip {
-                    text: Translation.tr("It may take a few seconds to update")
-                }
-            }
-        }
-        
-        MaterialTextArea {
-            Layout.fillWidth: true
-            placeholderText: Translation.tr("City name")
-            text: Config.options.bar.weather.city
-            wrapMode: TextEdit.Wrap
-            onTextChanged: {
-                Config.options.bar.weather.city = text;
-            }
-        }
-        ConfigSpinBox {
-            icon: "av_timer"
-            text: Translation.tr("Polling interval (m)")
-            value: Config.options.bar.weather.fetchInterval
-            from: 5
-            to: 50
-            stepSize: 5
-            onValueChanged: {
-                Config.options.bar.weather.fetchInterval = value;
+                options: [
+                    {
+                        displayName: Translation.tr("Automatic"),
+                        icon: "auto_mode",
+                        value: ""
+                    },
+                    ...Brightness.availableDevices.map(device => ({
+                                displayName: device,
+                                icon: "light_mode",
+                                value: device
+                            }))
+                ]
             }
         }
     }

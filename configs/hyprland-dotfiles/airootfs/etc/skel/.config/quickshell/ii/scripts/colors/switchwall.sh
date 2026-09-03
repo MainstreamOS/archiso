@@ -281,6 +281,26 @@ set_thumbnail_path() {
     config_jq --arg path "$path" '.background.thumbnailPath = $path'
 }
 
+# The pixel box one shared wallpaper copy has to cover so that it serves every
+# monitor at that monitor's own resolution. `hyprctl monitors -j` states a mode in
+# the panel's own orientation, so a quarter turned output has its axes exchanged
+# before anything is compared: the odd transforms are the quarter turns, 1 and 3
+# being 90 and 270 and 5 and 7 those two mirrored, and a mirror never changes
+# which axis is which. The largest of each axis rather than the smallest, because
+# the resize is shrink only and so the box is a ceiling, and a ceiling set by the
+# smallest monitor is one every larger monitor has to blow up from. Emits nothing
+# when there are no monitors to read, which leaves the caller's variables empty
+# and skips the scaling rather than guessing at it.
+desired_wallpaper_box() {
+    hyprctl monitors -j 2>/dev/null | jq -r '
+        [ .[] | if (((.transform // 0) % 2) == 1)
+                then { w: .height, h: .width }
+                else { w: .width,  h: .height }
+                end ]
+        | (([ .[].w ] | max) // empty), (([ .[].h ] | max) // empty)
+    ' 2>/dev/null | xargs
+}
+
 # Rewrite the `wallpaper_path = ...` line that the scrolloverview plugin
 # (built from sdata/scrolloverview/) reads, then poke Hyprland to reload
 # its config. The plugin keys its texture cache off the configured path,
@@ -299,12 +319,20 @@ set_scrolloverview_wallpaper() {
     # the next overview render either way. A reload makes every Wayland client
     # re-configure, so it isn't something to run on a timer.
     local push_mode="${4:-reload}"
-    local target="$XDG_CONFIG_HOME/hypr/custom/general.lua"
-    [[ -z "$path" || ! -f "$target" ]] && return
+    # Saved beside the other runtime flags rather than spliced into the Lua.
+    # The plugin config that reads it is shipped and refreshed on update, so a
+    # path written into that file would be replaced by the stock one the next
+    # time it was.
+    local target="$XDG_CONFIG_HOME/hypr/custom/overview.wallpaper"
+    [[ -z "$path" ]] && return
+    mkdir -p "$(dirname "$target")"
 
     # The plugin uploads its wallpaper twice (sharp + pre-blurred), so hand it a
     # monitor-sized copy rather than the raw source (often 4K, and a video the
-    # plugin can't decode). Shrink-only ('>') keeps the visible result identical.
+    # plugin can't decode). The plugin covers the screen with whatever it is given,
+    # so the box is a floor and not a ceiling: '^' fills it instead of fitting
+    # inside it, which is what stops the axis the box did not constrain from
+    # falling short. '>' keeps it shrink only, so a small picture is never blown up.
     local plugin_path="$path"
     local src="$path"
     if is_video "$src"; then
@@ -328,9 +356,9 @@ set_scrolloverview_wallpaper() {
             # folder for as long as it runs, and this is a full decode and encode.
             plugin_path="$scaled"
         elif command -v magick &>/dev/null; then
-            magick "$src" -resize "${screen_width}x${screen_height}>" "$scaled" 2>/dev/null && plugin_path="$scaled"
+            magick "$src" -resize "${screen_width}x${screen_height}^>" "$scaled" 2>/dev/null && plugin_path="$scaled"
         elif command -v convert &>/dev/null; then
-            convert "$src" -resize "${screen_width}x${screen_height}>" "$scaled" 2>/dev/null && plugin_path="$scaled"
+            convert "$src" -resize "${screen_width}x${screen_height}^>" "$scaled" 2>/dev/null && plugin_path="$scaled"
         fi
         # One monitor-sized copy per picture, and a rotation is pointed at whole
         # folders, so the oldest are dropped rather than kept for a wallpaper
@@ -339,51 +367,27 @@ set_scrolloverview_wallpaper() {
             | tail -n +33 | while IFS= read -r stale; do rm -f "$stale"; done
     fi
 
-    if grep -qE '^[[:space:]]*wallpaper_path[[:space:]]*=' "$target"; then
-        # The value lands inside a Lua double-quoted string, in the file and in
-        # the eval alike, so a backslash or a quote in the name has to survive
-        # as itself. Escaped once here for both. A line break is legal in a
-        # filename but not inside a Lua string literal, and the rewrite below is
-        # line-oriented besides, so those go in as escapes and Lua puts them
-        # back. Backslashes are doubled first, or the escapes added after would
-        # be doubled too.
-        local lua_path="${plugin_path//\\/\\\\}"
-        lua_path="${lua_path//\"/\\\"}"
-        lua_path="${lua_path//$'\n'/\\n}"
-        lua_path="${lua_path//$'\r'/\\r}"
+    # One line, written whole. Placed beside the target and renamed, because a
+    # reload can be reading it at any moment and half a path reads as none.
+    local tmpfile
+    tmpfile="$(mktemp "$target.XXXXXX" 2>/dev/null)" || return
+    if printf '%s\n' "$plugin_path" > "$tmpfile" && [ -s "$tmpfile" ]; then
+        mv -f "$tmpfile" "$target"
+    else
+        rm -f "$tmpfile"
+        return
+    fi
 
-        local tmpfile
-        # Beside the target, so replacing it is a rename. general.lua is
-        # sourced by the Hyprland config and a reload can be reading it at any
-        # moment; a copy in from elsewhere would truncate it first.
-        tmpfile="$(mktemp "$target.XXXXXX" 2>/dev/null)" || return
-        # Lua form: `wallpaper_path = "...",` (with quotes and trailing comma).
-        # Preserves leading indent so the value stays inside the parent table.
-        # Passed through the environment because awk -v expands escape
-        # sequences in what it is given.
-        if SCROLLOVERVIEW_PATH="$lua_path" awk '
-            /^[[:space:]]*wallpaper_path[[:space:]]*=/ {
-                match($0, /^[[:space:]]*/)
-                printf "%swallpaper_path = \"%s\",\n", substr($0, 1, RLENGTH), ENVIRON["SCROLLOVERVIEW_PATH"]
-                next
-            }
-            { print }
-        ' "$target" > "$tmpfile" && [ -s "$tmpfile" ]; then
-            chmod --reference="$target" "$tmpfile" 2>/dev/null
-            mv -f "$tmpfile" "$target"
-        else
-            rm -f "$tmpfile"
-            return
-        fi
-
-        # Push the new value into the running compositor (and thus the
-        # plugin's getDataStaticPtr-cached value). Run async so we don't
-        # block the rest of post_process.
-        if [[ "$push_mode" == "eval" ]]; then
-            hyprctl eval "hl.config({ plugin = { scrolloverview = { wallpaper_path = \"$lua_path\" } } })" >/dev/null 2>&1 &
-        else
-            hyprctl reload >/dev/null 2>&1 &
-        fi
+    # Push the new value into the running compositor (and thus the plugin's
+    # cached copy). Run async so the rest of post_process is not held up. The
+    # escaping stays here: this one is read as Lua.
+    local lua_path="$plugin_path"
+    lua_path="${lua_path//\\/\\\\}"
+    lua_path="${lua_path//\"/\\\"}"
+    if [[ "$push_mode" == "eval" ]]; then
+        hyprctl eval "hl.config({ plugin = { scrolloverview = { wallpaper_path = \"$lua_path\" } } })" >/dev/null 2>&1 &
+    else
+        hyprctl reload >/dev/null 2>&1 &
     fi
 }
 
@@ -399,8 +403,7 @@ picture_only_post_process() {
             flock -w 30 8 2>/dev/null || true
         fi
         local screen_width screen_height
-        read -r screen_width screen_height < <(hyprctl monitors -j \
-            | jq -r '([.[].width] | min), ([.[].height] | min)' | xargs)
+        read -r screen_width screen_height < <(desired_wallpaper_box)
         set_scrolloverview_wallpaper "$wallpaper_path" "$screen_width" "$screen_height" "eval"
     ) >/dev/null 2>&1 9>&- &
 }
@@ -750,8 +753,7 @@ switch() {
     "$SCRIPT_DIR"/applycolor.sh
 
     # Pass screen width, height, and wallpaper path to post_process
-    max_width_desired="$(hyprctl monitors -j | jq '([.[].width] | min)' | xargs)"
-    max_height_desired="$(hyprctl monitors -j | jq '([.[].height] | min)' | xargs)"
+    read -r max_width_desired max_height_desired < <(desired_wallpaper_box)
     post_process "$max_width_desired" "$max_height_desired" "$imgpath"
 }
 

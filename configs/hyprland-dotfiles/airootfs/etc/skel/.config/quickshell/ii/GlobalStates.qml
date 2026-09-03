@@ -11,6 +11,12 @@ Singleton {
     id: root
     property bool hdrActive: false
     property bool barOpen: true
+    // The narrowest a floating strip can be set to without its widgets running
+    // together, as a percentage, published by the bar itself because only it
+    // knows how wide the widgets on show actually are. With more than one
+    // monitor the last strip to settle wins, which only costs the slider a
+    // little precision: each strip clamps its own drawing regardless.
+    property real barFloatMinPercent: 40
     property bool crosshairOpen: false
     property bool sidebarLeftOpen: false
     property bool sidebarRightOpen: false
@@ -93,10 +99,22 @@ Singleton {
     // independent of the bar's per-monitor LazyLoader.
     signal hotCornerTriggered()
 
+    // A vertical bar brings both panels to its own edge, where one would cover
+    // the other with no way to reach underneath. Showing either puts the other
+    // away; side by side on a horizontal bar they stay independent.
+    onSidebarLeftOpenChanged: {
+        if (GlobalStates.sidebarLeftOpen && Appearance.sizes.sidebarsShareEdge) {
+            GlobalStates.sidebarRightOpen = false;
+        }
+    }
+
     onSidebarRightOpenChanged: {
         if (GlobalStates.sidebarRightOpen) {
             Notifications.timeoutAll();
             Notifications.markAllRead();
+            if (Appearance.sizes.sidebarsShareEdge) {
+                GlobalStates.sidebarLeftOpen = false;
+            }
         }
     }
 

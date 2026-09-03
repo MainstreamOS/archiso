@@ -15,6 +15,7 @@ Item {
     readonly property var moduleCatalog: [
         { id: "sidebarButton", name: Translation.tr("Sidebar button"),    icon: "left_panel_open" },
         { id: "activeWindow",  name: Translation.tr("Window title"),      icon: "select_window" },
+        { id: "activeWindowPill", name: Translation.tr("Window title (pill)"), icon: "select_window" },
         { id: "resources",     name: Translation.tr("System resources"),  icon: "monitor_heart" },
         { id: "media",         name: Translation.tr("Media"),             icon: "music_note" },
         { id: "workspaces",    name: Translation.tr("Workspaces"),        icon: "workspaces" },
@@ -44,7 +45,7 @@ Item {
     readonly property var barManagedModules: ["sidebarButton"]
 
     // Widgets with no vertical rendering — hidden from the editor while the bar is vertical.
-    readonly property var verticalUnsupported: ["activeWindow", "utilButtons", "weather", "timers", "releaseUpdates"]
+    readonly property var verticalUnsupported: ["activeWindow", "activeWindowPill", "utilButtons", "weather", "timers", "releaseUpdates"]
 
     property var dragInfo: null   // { section, gi, wi, id }
     property var dragMeta: null
@@ -551,22 +552,10 @@ Item {
         }
         }
 
-        RippleButton {
+        ConfigResetButton {
             Layout.topMargin: 2
-            implicitHeight: 30
-            implicitWidth: resetRow.implicitWidth + 18
-            buttonRadius: Appearance.rounding.small
-            colBackground: ColorUtils.transparentize(Appearance.colors.colLayer2, 1)
-            colBackgroundHover: Appearance.colors.colLayer2Hover
-            colRipple: Appearance.colors.colLayer2Active
+            buttonText: Translation.tr("Reset to default layout")
             onClicked: root.resetDefaults()
-            contentItem: RowLayout {
-                id: resetRow
-                anchors.centerIn: parent
-                spacing: 4
-                MaterialSymbol { text: "restart_alt"; iconSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-                StyledText { text: Translation.tr("Reset to default layout"); font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-            }
         }
     }
 

@@ -25,11 +25,11 @@ Item {
             rightMargin: root.vertical ? 4 : 0
         }
         readonly property color baseColor:
-            Config.options?.bar.borderless ? "transparent" : Appearance.colors.colLayer1
+            Config.options?.bar.borderless ? "transparent" : Appearance.colors.colBarWidget
         color: root.glowing
             ? ColorUtils.transparentize(Appearance.colors.colPrimary, 0.82)
             : baseColor
-        radius: Appearance.rounding.small
+        radius: Appearance.rounding.barWidget
         border.color: root.glowing ? Appearance.colors.colPrimary : "transparent"
         border.width: root.glowing ? 1.5 : 0
         Behavior on color {

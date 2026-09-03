@@ -19,11 +19,16 @@ Singleton {
     // happens to be at index 0. Translation.tr() is used on both
     // sides so non-English locales keep matching.
     function resolveAppId(toplevel) {
-        // The Spotify client reports the bare "spotify" class while the
-        // entry that launches it is spotify-launcher — group them so the
-        // running window merges with the default pin.
-        if ((toplevel.appId || "").toLowerCase() === "spotify") return "spotify-launcher";
-        if (toplevel.appId !== "org.quickshell") return toplevel.appId;
+        const appId = toplevel.appId || "";
+        if (appId === "") return "";
+        if (appId !== "org.quickshell") {
+            // Pins store desktop-entry ids while windows report compositor
+            // classes, and the two disagree for XWayland capitalization,
+            // Electron classes, and launcher/client splits such as
+            // spotify-launcher starting a client whose class is "spotify".
+            // Group by the resolved desktop identity so one app is one icon.
+            return AppSearch.resolveDesktopEntry(appId)?.id ?? appId;
+        }
         const title = toplevel.title || "";
         if (title === Translation.tr("Mainstream Settings")) return "settings";
         if (title === Translation.tr("Welcome to Mainstream")) return "welcome-tutorial";
@@ -88,6 +93,11 @@ Singleton {
     // dock model on every folder change, causing animation glitches.
     // Folder data is resolved lazily by DockAppButton via AppFolderManager.
     property list<var> apps: {
+        // resolveAppId goes through DesktopEntries.byId, a plain call that
+        // registers no dependency, and the entry database fills in lazily
+        // after startup. Windows restored at login would otherwise keep the
+        // raw-id grouping they were dealt before the scan landed.
+        DesktopEntries.applications.values;
         var map = new Map();
 
         // Pinned apps and folders
@@ -126,6 +136,9 @@ Singleton {
         // resolveAppId() so org.quickshell windows split into separate
         // entries by title instead of merging into one group.
         for (const toplevel of ToplevelManager.toplevels.values) {
+            // A window can map before its class arrives; keying it under the
+            // empty id would flash a ghost icon until the update lands.
+            if (!toplevel.appId) continue;
             if (ignoredRegexes.some(re => re.test(toplevel.appId))) continue;
             const resolvedAppId = root.resolveAppId(toplevel);
             if (!map.has(resolvedAppId.toLowerCase())) map.set(resolvedAppId.toLowerCase(), ({

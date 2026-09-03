@@ -119,9 +119,91 @@ Singleton {
         property color colLayer0Hover: ColorUtils.transparentize(ColorUtils.mix(colLayer0, colOnLayer0, 0.9, root.contentTransparency))
         property color colLayer0Active: ColorUtils.transparentize(ColorUtils.mix(colLayer0, colOnLayer0, 0.8, root.contentTransparency))
         property color colLayer0Border: ColorUtils.mix(root.m3colors.m3outlineVariant, colLayer0, 0.4)
+
+        // A themable surface is the same three ideas everywhere it appears: a
+        // color slot per mode, an opacity that may defer to the stock one, and
+        // the interface's own color when neither is set. Stated once so the
+        // next surface to become themable is two calls rather than a copy.
+        readonly property var hexColor: /^#[0-9a-fA-F]{6}$/
+        // Only a color Qt can actually paint may leave the pick: a slot that
+        // arrives malformed — a hand-edit, a bad import — reads as unpicked
+        // rather than wedging every binding downstream of it.
+        function modePick(dark, light) {
+            const v = (m3colors.darkmode ? dark : light) ?? ""
+            return colors.hexColor.test(v) ? v : ""
+        }
+        // A negative opacity means the surface never had one chosen, so it is
+        // drawn at whatever strength the interface already gave it.
+        function surfaceColor(pick, base, opacity, stockAlpha) {
+            return ColorUtils.applyAlpha(pick !== "" ? pick : base,
+                (opacity ?? -1) < 0 ? stockAlpha : opacity)
+        }
+
+        // The strip and the dock are both drawn on layer 0, so they start from
+        // one number rather than two that merely happen to agree.
+        readonly property real layer0StockAlpha: colLayer0.a
+        readonly property string barBackgroundPick: modePick(Config.options?.bar.backgroundColorDark, Config.options?.bar.backgroundColorLight)
+        // A notch reads as part of the screen edge rather than something laid
+        // over it, so it starts opaque instead of at the strip's usual alpha.
+        readonly property real barStockAlpha: root.sizes.barIsNotch ? 1 : layer0StockAlpha
+        property color colBarBackground: surfaceColor(barBackgroundPick, colLayer0, Config.options?.bar.backgroundOpacity, barStockAlpha)
+        // The float style's outline wears the strip's own alpha: a hairline
+        // that kept full strength while the strip went see-through read as a
+        // wire rectangle floating around nothing.
+        // The same surface with its alpha taken off. A shape drawn beside
+        // another and lapping it by a pixel composites that lap twice, which
+        // reads as a seam once either is see through. Painting both opaque
+        // inside a group and fading the group instead blends the lap away.
+        readonly property color colBarBackgroundOpaque: Qt.rgba(colBarBackground.r, colBarBackground.g, colBarBackground.b, 1)
+        readonly property color colDockBackgroundOpaque: Qt.rgba(colDockBackground.r, colDockBackground.g, colDockBackground.b, 1)
+        readonly property string dockGlowPick: modePick(Config.options?.dock.glowColorDark, Config.options?.dock.glowColorLight)
+        // The halo's stock is the palette's lightest tone, so it reads as
+        // light cast by the icon rather than a sticker laid behind it.
+        property color colDockGlow: dockGlowPick !== "" ? dockGlowPick : m3colors.m3primaryFixed
+        property color colBarBackgroundBorder: ColorUtils.applyAlpha(colLayer0Border, colBarBackground.a)
+        // The shadow the same way: a slab of shade around a strip that has
+        // faded from sight reads as a decoration around nothing.
+        property color colBarShadow: ColorUtils.applyAlpha(colShadow, colShadow.a * colBarBackground.a)
+        // The blur floor these surfaces are given in hypr/hyprland/rules.lua.
+        // Kept here so a transparency slider can tell where its surface stops
+        // being frosted. The two have to be changed together.
+        readonly property real blurFloor: 0.35
+        // The faintest a blurred surface can be set and still be frosted. Under
+        // this the compositor drops the blur outright rather than by degrees,
+        // so a slider running past it reads as a cliff partway along an
+        // otherwise even track. Every surface named in that rule is on layer 0
+        // and casts the same shadow beneath it, which fades with the body, so
+        // the floor is met by the two together and the answer is one number:
+        // solving a + shadow*a*(1 - a) = blurFloor for a, with a hair over the
+        // top so the end of the track is above the drop rather than on it.
+        readonly property real surfaceOpacityFloor: {
+            const s = colShadow.a
+            const f = root.colors.blurFloor
+            const a = s <= 0 ? f
+                : (1 + s - Math.sqrt((1 + s) * (1 + s) - 4 * s * f)) / (2 * s)
+            return Math.min(1, a + 0.005)
+        }
+        readonly property string dockPick: modePick(Config.options?.dock.backgroundColorDark, Config.options?.dock.backgroundColorLight)
+        property color colDockBackground: surfaceColor(dockPick, colLayer0, Config.options?.dock.backgroundOpacity, layer0StockAlpha)
+        property color colDockBackgroundBorder: ColorUtils.applyAlpha(colLayer0Border, colDockBackground.a)
+        property color colDockShadow: ColorUtils.applyAlpha(colShadow, colShadow.a * colDockBackground.a)
+        readonly property string dockBadgePick: modePick(Config.options?.dock.badgeColorDark, Config.options?.dock.badgeColorLight)
+        readonly property string dockBadgeTextPick: modePick(Config.options?.dock.badgeTextColorDark, Config.options?.dock.badgeTextColorLight)
+        // The count badge sits on the icon to be read, not on the surface to
+        // be seen through, so it keeps full strength however faint the dock
+        // behind it is set.
+        property color colDockBadge: dockBadgePick !== "" ? dockBadgePick : colPrimary
+        property color colDockBadgeText: dockBadgeTextPick !== "" ? dockBadgeTextPick : m3colors.m3onPrimary
         // Layer 1
         property color colLayer1Base: m3colors.m3surfaceContainerLow
         property color colLayer1: ColorUtils.solveOverlayColor(colLayer0Base, colLayer1Base, 1 - root.contentTransparency);
+        // colLayer1 carries only the opacity an overlay needs to look right on
+        // top of a solid layer 0 — about a tenth — which is why widget groups
+        // vanish once the strip beneath them stops being solid.
+        readonly property real barWidgetStockAlpha: colLayer1.a
+        // The slot for the mode on screen; the other waits for its mode.
+        readonly property string barWidgetPick: modePick(Config.options?.bar.widgetColorDark, Config.options?.bar.widgetColorLight)
+        property color colBarWidget: surfaceColor(barWidgetPick, colLayer1, Config.options?.bar.widgetOpacity, barWidgetStockAlpha)
         property color colOnLayer1: m3colors.m3onSurfaceVariant;
         property color colOnLayer1Inactive: ColorUtils.mix(colOnLayer1, colLayer1, 0.45);
         property color colLayer1Hover: ColorUtils.transparentize(ColorUtils.mix(colLayer1, colOnLayer1, 0.92), root.contentTransparency)
@@ -211,6 +293,45 @@ Singleton {
         property int full: 9999
         property int screenRounding: large
         property int windowRounding: 18
+        // What "the interface decides" means for the bar's two shape sliders,
+        // named so the mark on their tracks and the fallback stay one value.
+        readonly property real barWidgetStock: small
+        readonly property real barWidget: (Config.options?.bar.widgetRadius ?? -1) >= 0
+            ? Config.options.bar.widgetRadius : barWidgetStock
+        // As round as the strip's corners are allowed to get. Named so the
+        // slider and the mark on it read the same number rather than one
+        // carrying a copy.
+        readonly property real barFloatMax: 30
+        // The notch curves as far as it can by default, the way its dock
+        // does, so the two read as one shape. A floating strip keeps the
+        // roundness the rest of the interface uses.
+        readonly property real barFloatStock: root.sizes.barIsNotch
+            ? barFloatMax : windowRounding
+        readonly property real barFloat: (Config.options?.bar.floatRadius ?? -1) >= 0
+            ? Config.options.bar.floatRadius : barFloatStock
+        // The dock's roundness tracks run to this, and the marks on them are
+        // stated as a share of it so a mark can never promise a place the
+        // track does not have.
+        readonly property real dockRoundMax: 40
+        // Hugging wants a rounder body than a floating one: the curve that
+        // leaves the edge reads as part of it only if the corner above is
+        // generous enough to answer it.
+        readonly property real dockCornerStock: Config.options?.dock.cornerStyle === "hug"
+            ? dockRoundMax : large
+        readonly property real dock: (Config.options?.dock.radius ?? -1) >= 0
+            ? Config.options.dock.radius : dockCornerStock
+        // The pair facing the desktop keeps a slight roundness of its own,
+        // settled rather than derived: following the roundness above would
+        // drag this one's mark along every time that slider moved, and would
+        // leave the pair answering to a control rect has put away.
+        // The notched dock carries its roundness right up to the cap and keeps
+        // the desktop-facing pair nearly as round, so the body reads as one
+        // continuous curve between the two ends rather than a slab with corners
+        // taken off. Every other style keeps the slight roundness it had.
+        readonly property real dockTopStock: Config.options?.dock.cornerStyle === "hug"
+            ? dockRoundMax * 0.875 : dockRoundMax * 0.10
+        readonly property real dockTop: (Config.options?.dock.topRadius ?? -1) >= 0
+            ? Config.options.dock.topRadius : dockTopStock
     }
 
     font: QtObject {
@@ -388,6 +509,27 @@ Singleton {
 
     sizes: QtObject {
         property real baseBarHeight: 40
+        // A floating strip spans the whole screen unless it is told otherwise,
+        // as a percentage so one setting reads the same on every monitor
+        // rather than leaving a wide screen barely trimmed and a narrow one
+        // squeezed to a stub.
+        // The notch is set down on the edge, so at the full width its ends
+        // land in the screen's corners and the curves beside them have
+        // nowhere to go. It stops a little short of that by default, which is
+        // also as far as its slider goes.
+        readonly property bool barIsNotch: Config.options?.bar.cornerStyle === 3
+        // The styles that draw a strip of their own rather than dressing the
+        // whole window: they share the width, the split and the shadow.
+        readonly property bool barFloats: barIsNotch || Config.options?.bar.cornerStyle === 1
+        // How far the style may be asked to reach, which is also where it
+        // starts. The notch is set down on the edge, so at the whole width its
+        // ends land in the screen's corners with nowhere to put the curves
+        // beside them.
+        readonly property real barFloatWidthMax: barIsNotch ? 95 : 100
+        readonly property real barWidthKey: barIsNotch ? (Config.options?.bar.notchWidth ?? -1)
+            : (Config.options?.bar.floatWidth ?? -1)
+        readonly property real barFloatWidth: barWidthKey >= 0
+            ? Math.min(barWidthKey, barFloatWidthMax) : barFloatWidthMax
         // Which edge the bar occupies, and where the dock lands after its
         // configured edge is flipped off the bar's — shared by the dock, the
         // overview's clearance and the settings picker so they can never
@@ -403,10 +545,95 @@ Singleton {
             const want = flip[Config.options.dock.position] ? Config.options.dock.position : "bottom";
             return want === root.sizes.barEdge ? flip[want] : want;
         }
+        // Which edge each sidebar opens from. A vertical bar gathers every
+        // control onto one side of the screen, so the panels it opens belong
+        // on that side too rather than a reach across the display. A vertical
+        // bar only ever sits left or right, so these stay left/right.
+        property string sidebarLeftEdge: Config.options.bar.vertical ? root.sizes.barEdge : "left"
+        property string sidebarRightEdge: Config.options.bar.vertical ? root.sizes.barEdge : "right"
+        // Whether the two share an edge, and so cannot both be shown.
+        property bool sidebarsShareEdge: root.sizes.sidebarLeftEdge === root.sizes.sidebarRightEdge
         // The dock's visible thickness plus its screen gap. The dock sizes its
         // window from this and the overview clears the top edge by it, so the
         // two cannot drift apart.
-        property real dockExtent: (Config.options?.dock.height ?? 70) + root.sizes.elevationMargin + root.sizes.hyprlandGapsOut
+        // The dock is as thick as its icons ask: one slider drives the icon,
+        // and the surface grows around it, keeping the stock look identical
+        // at the stock icon size.
+        // The icon size the dock ships with. Whatever is sized in proportion to
+        // the icons is measured from it, so a dock left alone looks the same as
+        // it always did and everything grows together once it is changed.
+        property real dockIconStock: 35
+        // The size asked for. A dock shows this or the largest size its own
+        // screen can run edge to edge, whichever is smaller, so this stays
+        // exactly what was asked for and the slider and the file keep one
+        // meaning on every screen.
+        property real dockIconSize: (Config.options?.dock.iconSize ?? -1) >= 0
+            ? Config.options.dock.iconSize : root.sizes.dockIconStock
+        // The bottom of the settings track. A screen too short even for this
+        // has nothing left to give up, so it truncates rather than drawing
+        // icons no slider could have asked for.
+        readonly property real dockIconMin: 16
+        // Thickness, reserved extent and hover headroom as functions of an
+        // icon size rather than only of the configured one, so a dock showing
+        // smaller icons derives all three the same way and they cannot drift.
+        function dockHeightFor(iconSize) {
+            return iconSize + 25;
+        }
+        function dockExtentFor(iconSize) {
+            return root.sizes.dockHeightFor(iconSize) + root.sizes.elevationMargin + root.sizes.hyprlandGapsOut;
+        }
+        property real dockHeight: root.sizes.dockHeightFor(root.sizes.dockIconSize)
+        property real dockExtent: root.sizes.dockExtentFor(root.sizes.dockIconSize)
+        // How far a hovered icon grows, as a percentage of itself. Each
+        // effect keeps its own key, stock and ceiling, named so the track,
+        // the mark on it and the clamp all read the same numbers: the wave
+        // has room to be dramatic, the glow lifts only its one icon a shade,
+        // so the halo reads as attention rather than motion, and swapping
+        // effects swaps back to what each had. The clamp still stands
+        // between a hand-edited value and the track.
+        readonly property real dockHoverMagnifyMax: Config.options?.dock.hoverEffect === "glow" ? 100 : 200
+        readonly property real dockHoverMagnifyStock: Config.options?.dock.hoverEffect === "glow" ? 25 : 135
+        readonly property real dockHoverMagnifyKey: Config.options?.dock.hoverEffect === "glow"
+            ? (Config.options?.dock.glowMagnify ?? -1) : (Config.options?.dock.hoverMagnify ?? -1)
+        readonly property real dockHoverMagnify: dockHoverMagnifyKey >= 0
+            ? Math.min(dockHoverMagnifyKey, dockHoverMagnifyMax) : dockHoverMagnifyStock
+        // How strongly the halo blooms, as a percentage of its full reach.
+        readonly property real dockGlowIntensityStock: 35
+        readonly property real dockGlowIntensity: (Config.options?.dock.glowIntensity ?? -1) >= 0
+            ? Math.min(Config.options.dock.glowIntensity, 100) : dockGlowIntensityStock
+        // How far the halo reaches past the icon it grows from, which is the
+        // blur's own radius and nothing at all for the effects that draw none.
+        readonly property real dockGlowReachMax: 28
+        readonly property real dockGlowReach: Config.options?.dock.hoverEffect === "glow"
+            ? dockGlowReachMax * dockGlowIntensity / 100 : 0
+        // Growing nothing needs no room: off collapses the scale, and with it
+        // the headroom the dock reserves and the size its icons rasterize at.
+        property real dockMaxScale: Config.options?.dock.hoverEffect === "off" ? 1
+            : 1 + dockHoverMagnify / 100
+        // The room a magnified icon needs beyond the dock to be drawn whole.
+        // It grows away from the screen from the edge it sits on, so it climbs
+        // by its own size again over the scale, and a fixed figure that suited
+        // the stock icons cut the tops off larger ones. The window is sized by
+        // this and the hover strip is offset past it, so the two cannot drift.
+        // The room kept above the icons for what hovering can do to them: the
+        // growth, and the halo that reaches past whatever it grew to. Sized
+        // for the most the effect can be asked for rather than for what it is
+        // asked right now, because the window's size and the margin that sets
+        // the dock inside it both read this: the margin moves with the frame,
+        // the size waits on the compositor to answer, so a headroom that
+        // follows a dial walks the dock up and down under the hand turning it.
+        // Reserving the ceiling costs nothing to look at: the room is
+        // transparent, masked out of the pointer, and the space the dock
+        // claims from other windows is measured from its own height elsewhere.
+        function dockMagnifyHeadroomFor(iconSize) {
+            if (Config.options?.dock.hoverEffect === "off") return 0;
+            const peak = 1 + root.sizes.dockHoverMagnifyMax / 100;
+            return iconSize * (peak - 1) + (Config.options?.dock.hoverEffect === "glow" ? root.sizes.dockGlowReachMax * peak : 0);
+        }
+        property real dockMagnifyHeadroom: root.sizes.dockMagnifyHeadroomFor(root.sizes.dockIconSize)
+        Behavior on dockMagnifyHeadroom {
+            animation: root.animation.elementMoveFast.numberAnimation.createObject(this)
+        }
         property real barHeight: Config.options.bar.cornerStyle === 1 ? 
             (baseBarHeight + root.sizes.hyprlandGapsOut * 2) : baseBarHeight
         property real barCenterSideModuleWidth: Config.options?.bar.verbose ? 360 : 140

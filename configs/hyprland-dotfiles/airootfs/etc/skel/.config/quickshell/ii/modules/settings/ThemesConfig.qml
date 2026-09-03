@@ -100,6 +100,158 @@ ContentPage {
         onTriggered: root.statusMessage = ""
     }
 
+    // ── Rename ──────────────────────────────────────────────────────────────
+    // Which card is showing its name as a field rather than a label. Held here
+    // rather than on the card so that opening a second rename closes the first,
+    // instead of leaving two fields open at once.
+    property string renamingSlug: ""
+    function beginRename(theme) {
+        if (!theme) return
+        root.renamingSlug = theme.slug
+    }
+    function cancelRename() {
+        root.renamingSlug = ""
+    }
+    // Only the display name moves. The slug is what the last-applied marker and
+    // the Day and Night pickers store, and it is the theme's directory name, so
+    // renaming through it would strand all three.
+    function commitRename(theme, newName) {
+        const name = (newName ?? "").trim()
+        root.renamingSlug = ""
+        if (!theme || name.length === 0 || name === theme.name) return
+        renameProc.pendingName = name
+        // Serialised, with the name arriving as an argument, for the same reason
+        // the save path writes meta.json this way: a quote in a name produced a
+        // file the index rebuild could not parse, and the theme then vanished
+        // from the grid while its directory stayed on disk.
+        renameProc.command = ["python3", "-c",
+            "import json, os, sys\n" +
+            "themes_dir, slug, name = sys.argv[1], sys.argv[2], sys.argv[3]\n" +
+            "meta_path = os.path.join(themes_dir, slug, 'meta.json')\n" +
+            "meta = json.load(open(meta_path))\n" +
+            "meta['name'] = name\n" +
+            "json.dump(meta, open(meta_path, 'w'))\n" +
+            // The grid and both Day and Night pickers read the index, never the
+            // meta files, so a name that stops at meta.json is not a name anyone
+            // sees: the card reverts to the indexed one the moment it redraws.
+            // Rebuilt by re-reading every theme, the way saving and deleting
+            // already rebuild it, so one theme's rename cannot leave the index
+            // disagreeing with the rest of the library.
+            "out = []\n" +
+            "for entry in sorted(os.listdir(themes_dir)):\n" +
+            "    m = os.path.join(themes_dir, entry, 'meta.json')\n" +
+            "    if not os.path.isfile(m): continue\n" +
+            "    try: out.append(json.load(open(m)))\n" +
+            "    except Exception: pass\n" +
+            "json.dump(out, open(os.path.join(themes_dir, 'index.json'), 'w'), indent=2)\n",
+            root.themesDir, theme.slug, name]
+        renameProc.running = false
+        renameProc.running = true
+    }
+    Process {
+        id: renameProc
+        property string pendingName: ""
+        onExited: exitCode => {
+            if (exitCode === 0) {
+                ThemeLibrary.refresh()
+                root.showStatus(Translation.tr("Renamed to \"%1\".").arg(renameProc.pendingName))
+            } else {
+                root.showStatus(Translation.tr("Couldn't rename that theme."))
+            }
+            renameProc.pendingName = ""
+        }
+    }
+
+    // ── Card context menu ───────────────────────────────────────────────────
+    // One instance for the whole grid, pointed at whichever card was right
+    // clicked, drawn the way the shell draws its other context menus.
+    property var menuTheme: null
+    Popup {
+        id: cardMenu
+        padding: 0
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        parent: Overlay.overlay
+        readonly property bool onActiveTheme: root.menuTheme && root.menuTheme.slug === root.lastAppliedSlug
+
+        function openFor(theme, px, py) {
+            root.menuTheme = theme
+            cardMenu.x = px
+            cardMenu.y = py
+            cardMenu.open()
+        }
+
+        background: Item {
+            StyledRectangularShadow {
+                target: cardMenuBg
+            }
+            Rectangle {
+                id: cardMenuBg
+                anchors.fill: parent
+                color: Appearance.m3colors.m3surfaceContainer
+                radius: Appearance.rounding.normal
+            }
+        }
+
+        component MenuRow: RippleButton {
+            Layout.fillWidth: true
+            implicitHeight: 36
+            buttonRadius: Appearance.rounding.small
+            property string symbol: ""
+            property string label: ""
+            implicitWidth: Math.max(rowContent.implicitWidth + 20, 180)
+            contentItem: RowLayout {
+                id: rowContent
+                spacing: 10
+                MaterialSymbol {
+                    Layout.leftMargin: 10
+                    text: symbol
+                    iconSize: Appearance.font.pixelSize.larger
+                    color: Appearance.m3colors.m3onSurface
+                }
+                StyledText {
+                    Layout.fillWidth: true
+                    Layout.rightMargin: 10
+                    text: label
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.m3colors.m3onSurface
+                }
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            MenuRow {
+                symbol: "edit"
+                label: Translation.tr("Rename")
+                onClicked: {
+                    const theme = root.menuTheme
+                    cardMenu.close()
+                    root.beginRename(theme)
+                }
+            }
+
+            // Only on the theme already in force. On every other card this is
+            // what Apply does, and on this one Apply is an update instead, so
+            // without it there is no way to put the current theme back after
+            // something has drifted from it. It stays available while the
+            // schedule is on, because setting again what is already set cannot
+            // fight the schedule.
+            MenuRow {
+                visible: cardMenu.onActiveTheme
+                symbol: "refresh"
+                label: Translation.tr("Reapply")
+                enabled: !root.applyInFlight
+                onClicked: {
+                    const theme = root.menuTheme
+                    cardMenu.close()
+                    if (theme) root.applyTheme(theme)
+                }
+            }
+        }
+    }
+
     function slugify(name) {
         const s = (name || "theme").toString().toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
@@ -131,40 +283,6 @@ ContentPage {
         const s = Config.options.appearance.themeSchedule
         if (!s || s.mode === "off") return false
         return !root._isCurrentlyDay()
-    }
-
-    // ── Time helpers (Day/Night Themes section) ─────────────────────────────
-    // Round-trip "HH:mm" 24-hour storage <-> 12-hour display so the SpinBox
-    // pickers can show "1–12 AM/PM" without changing what we persist (Config
-    // uses 24-hour throughout). Same pattern DisplayConfig's Night Light
-    // section uses; kept inline here so this file doesn't depend on it.
-    function tsParse12(timeStr) {
-        const parts = (timeStr || "").split(":")
-        const h24 = parseInt(parts[0], 10)
-        const m   = parseInt(parts[1], 10)
-        if (isNaN(h24) || isNaN(m))
-            return { hour12: 12, minute: 0, period: "AM" }
-        if (h24 === 0)        return { hour12: 12,      minute: m, period: "AM" }
-        if (h24 < 12)         return { hour12: h24,     minute: m, period: "AM" }
-        if (h24 === 12)       return { hour12: 12,      minute: m, period: "PM" }
-        return { hour12: h24 - 12, minute: m, period: "PM" }
-    }
-    function tsTo24(hour12, minute, period) {
-        let h24 = hour12 % 12
-        if (period === "PM") h24 += 12
-        return String(h24).padStart(2, "0") + ":" + String(minute).padStart(2, "0")
-    }
-    function tsWithHour(timeStr, hour12) {
-        const p = tsParse12(timeStr)
-        return tsTo24(hour12, p.minute, p.period)
-    }
-    function tsWithMinute(timeStr, minute) {
-        const p = tsParse12(timeStr)
-        return tsTo24(p.hour12, minute, p.period)
-    }
-    function tsWithPeriod(timeStr, period) {
-        const p = tsParse12(timeStr)
-        return tsTo24(p.hour12, p.minute, period)
     }
 
     // ── Save theme (capture) ────────────────────────────────────────────────
@@ -339,7 +457,7 @@ ContentPage {
             // apply-theme.sh ALSO preserves these from the live config when
             // applying, so older themes that still carry these keys won't
             // poison the user's settings either.
-            `jq 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets) | del(.apps) | del(.updates)' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
+            `jq 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets) | del(.bar.weather) | del(.dock.pinnedApps) | del(.apps) | del(.updates)' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
             // Snapshot the four interface-look gsettings (App style / Icons /
             // Mouse cursor / cursor size) so a saved theme carries the whole
             // look. Shake-to-locate is user behavior, stripped above.
@@ -669,6 +787,7 @@ STRIP = [("appearance", "themeSchedule"), ("light", "night"), ("cursor",),
          ("screenRecord", "savePath"), ("screenSnip", "savePath"),
          ("background", "thumbnailPath"), ("background", "wallpaperPath"),
          ("background", "slideshow", "folder"),
+         ("dock", "pinnedApps"),
          # A theme file arrives from somewhere else. Every apps.* value is run
          # as a shell command by the button that owns it, and updates.* names
          # the manifest this machine trusts for release news -- neither is part
@@ -1184,32 +1303,12 @@ finally:
         // imported. Carried the same way as the Day/Night notice below so the
         // page has one voice for telling the user something, with its own icon
         // to separate a thing that has happened from a thing that is disabled.
-        Rectangle {
+        SubtleNoticeBox {
             visible: root.statusMessage.length > 0
             Layout.fillWidth: true
             Layout.topMargin: 4
             Layout.bottomMargin: 4
-            radius: Appearance.rounding.small
-            color: Qt.rgba(Appearance.m3colors.m3primary.r, Appearance.m3colors.m3primary.g, Appearance.m3colors.m3primary.b, 0.12)
-            implicitHeight: statusRow.implicitHeight + 16
-            RowLayout {
-                id: statusRow
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 8
-                MaterialSymbol {
-                    text: "info"
-                    iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.m3colors.m3primary
-                }
-                StyledText {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: Appearance.colors.colOnLayer1
-                    font.pixelSize: Appearance.font.pixelSize.small
-                    text: root.statusMessage
-                }
-            }
+            text: root.statusMessage
         }
 
         // Schedule-active lock banner. Tells the user why the Apply buttons
@@ -1217,32 +1316,13 @@ finally:
         // just silently refuse clicks and look broken. The "Off" word is
         // styled to match the Day/Night dropdown so it's obvious where
         // to go to unlock manual applies.
-        Rectangle {
+        SubtleNoticeBox {
             visible: root.scheduleActive
             Layout.fillWidth: true
             Layout.topMargin: 4
             Layout.bottomMargin: 4
-            radius: Appearance.rounding.small
-            color: Qt.rgba(Appearance.m3colors.m3primary.r, Appearance.m3colors.m3primary.g, Appearance.m3colors.m3primary.b, 0.12)
-            implicitHeight: lockRow.implicitHeight + 16
-            RowLayout {
-                id: lockRow
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 8
-                MaterialSymbol {
-                    text: "lock"
-                    iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.m3colors.m3primary
-                }
-                StyledText {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: Appearance.colors.colOnLayer1
-                    font.pixelSize: Appearance.font.pixelSize.small
-                    text: Translation.tr("Manual apply is disabled to honor your Day/Night Themes settings, but you can still save new themes and update the current theme with Day/Night Themes active. Set Day/Night Themes to \"Off\" below to apply themes manually.")
-                }
-            }
+            materialIcon: "lock"
+            text: Translation.tr("Manual apply is disabled to honor your Day/Night Themes settings, but you can still save new themes and update the current theme with Day/Night Themes active. Set Day/Night Themes to \"Off\" below to apply themes manually.")
         }
 
         // 2-column grid: first cell is the "Save new theme" card, then existing themes
@@ -1343,6 +1423,22 @@ finally:
                     radius: Appearance.rounding.normal
                     color: isActive ? Appearance.colors.colSecondaryContainer : Appearance.colors.colLayer2
 
+                    // Above the card's own controls, and deaf to everything but
+                    // the right button, so a left click still reaches Apply or
+                    // Delete underneath while a right click anywhere on the card
+                    // reaches the menu. Those buttons answer to the right button
+                    // as well, so a menu sitting below them would turn a right
+                    // click on Apply into an apply.
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 10
+                        acceptedButtons: Qt.RightButton
+                        onClicked: mouse => {
+                            const at = mapToItem(Overlay.overlay, mouse.x, mouse.y);
+                            cardMenu.openFor(themeCard.modelData, at.x, at.y);
+                        }
+                    }
+
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 10
@@ -1370,14 +1466,74 @@ finally:
                             }
                         }
 
-                        StyledText {
-                            text: themeCard.modelData.name
-                            elide: Text.ElideRight
+                        // The name, and the same line as the field that renames
+                        // it. Swapped in place rather than opened elsewhere, so
+                        // the card keeps its shape while it is being edited.
+                        Item {
                             Layout.fillWidth: true
-                            horizontalAlignment: Text.AlignHCenter
-                            font.pixelSize: Appearance.font.pixelSize.normal
-                            font.weight: Font.Medium
-                            color: themeCard.isActive ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer1
+                            implicitHeight: Math.max(cardNameLabel.implicitHeight, cardNameField.implicitHeight)
+                            readonly property bool renaming: root.renamingSlug === themeCard.modelData.slug
+
+                            StyledText {
+                                id: cardNameLabel
+                                visible: !parent.renaming
+                                anchors.fill: parent
+                                text: themeCard.modelData.name
+                                elide: Text.ElideRight
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: Appearance.font.pixelSize.normal
+                                font.weight: Font.Medium
+                                color: themeCard.isActive ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer1
+                            }
+
+                            StyledTextInput {
+                                id: cardNameField
+                                visible: parent.renaming
+                                anchors.fill: parent
+                                horizontalAlignment: TextInput.AlignHCenter
+                                verticalAlignment: TextInput.AlignVCenter
+                                selectByMouse: true
+                                font.pixelSize: Appearance.font.pixelSize.normal
+                                font.weight: Font.Medium
+                                color: themeCard.isActive ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer1
+                                // Enter and clicking away both mean the same
+                                // thing, so the first one to arrive commits and
+                                // the other finds nothing left to do. Without
+                                // that, accepting also drops focus and the name
+                                // would be written twice.
+                                property bool settled: false
+                                onVisibleChanged: {
+                                    if (!visible) return;
+                                    settled = false;
+                                    text = themeCard.modelData.name;
+                                    // After the swap rather than during it: the
+                                    // field is still being shown at this point,
+                                    // and focus given to an item mid-change does
+                                    // not always stick.
+                                    Qt.callLater(() => {
+                                        if (!cardNameField.visible) return;
+                                        cardNameField.forceActiveFocus();
+                                        cardNameField.selectAll();
+                                    });
+                                }
+                                // Fires for Enter and for losing focus alike,
+                                // which is what clicking away is, so both ways
+                                // of finishing take one path. Committing clears
+                                // the slug, which hides the field and drops
+                                // focus, so this arrives a second time; the
+                                // latch is what stops the name being written
+                                // twice.
+                                onEditingFinished: {
+                                    if (settled) return;
+                                    settled = true;
+                                    root.commitRename(themeCard.modelData, text);
+                                }
+                                Keys.onEscapePressed: {
+                                    settled = true;
+                                    root.cancelRename();
+                                }
+                            }
                         }
 
                         // Two buttons: Apply/Update + Delete — styled like the
@@ -1669,53 +1825,17 @@ finally:
                 }
 
                 // Day-start time picker, only visible in "manual" schedule mode.
-                // Mirrors the Night Light "Turn on" / "Turn off" pickers in
-                // DisplayConfig.qml — same ConfigSpinBox widget, same 70px
-                // preferred width, same equality-guarded onValueChanged
-                // round-trip — so the two pickers feel identical to the user.
-                // AM is locked because the card is the Day side — letting the
-                // user pick PM here would contradict the card's identity.
-                // Any saved-PM time gets normalised to AM the moment the user
-                // touches either spinner.
-                RowLayout {
+                // The same TimeField the Night Light schedule uses, so both
+                // pickers read on the same clock as the bar and feel identical.
+                // The morning half is pinned because the card is the Day side:
+                // letting the user pick an afternoon hour here would contradict
+                // the card's identity.
+                TimeField {
                     Layout.alignment: Qt.AlignHCenter
-                    spacing: 8
                     visible: Config.options.appearance.themeSchedule.mode === "manual"
-                    ConfigSpinBox {
-                        Layout.preferredWidth: 70
-                        from: 1
-                        to: 12
-                        value: root.tsParse12(Config.options.appearance.themeSchedule.dayFrom).hour12
-                        onValueChanged: {
-                            const m = root.tsParse12(Config.options.appearance.themeSchedule.dayFrom).minute
-                            const next = root.tsTo24(value, m, "AM")
-                            if (next !== Config.options.appearance.themeSchedule.dayFrom)
-                                Config.options.appearance.themeSchedule.dayFrom = next
-                        }
-                    }
-                    StyledText {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: ":"
-                        color: Appearance.colors.colOnLayer1
-                    }
-                    ConfigSpinBox {
-                        Layout.preferredWidth: 70
-                        from: 0
-                        to: 59
-                        value: root.tsParse12(Config.options.appearance.themeSchedule.dayFrom).minute
-                        onValueChanged: {
-                            const h = root.tsParse12(Config.options.appearance.themeSchedule.dayFrom).hour12
-                            const next = root.tsTo24(h, value, "AM")
-                            if (next !== Config.options.appearance.themeSchedule.dayFrom)
-                                Config.options.appearance.themeSchedule.dayFrom = next
-                        }
-                    }
-                    StyledText {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: "AM"
-                        color: Appearance.colors.colSubtext
-                        font.pixelSize: Appearance.font.pixelSize.normal
-                    }
+                    meridiem: "AM"
+                    value: Config.options.appearance.themeSchedule.dayFrom
+                    onEdited: next => Config.options.appearance.themeSchedule.dayFrom = next
                 }
             }
 
@@ -1839,48 +1959,15 @@ finally:
                     }
                 }
 
-                // Night-start time picker. PM is locked because the card is
-                // the Night side — same rationale as the Day picker's locked
-                // AM. See that picker for the full reasoning.
-                RowLayout {
+                // Night-start time picker. The afternoon half is pinned because
+                // the card is the Night side, same rationale as the Day
+                // picker's pinned morning. See that picker for the reasoning.
+                TimeField {
                     Layout.alignment: Qt.AlignHCenter
-                    spacing: 8
                     visible: Config.options.appearance.themeSchedule.mode === "manual"
-                    ConfigSpinBox {
-                        Layout.preferredWidth: 70
-                        from: 1
-                        to: 12
-                        value: root.tsParse12(Config.options.appearance.themeSchedule.nightFrom).hour12
-                        onValueChanged: {
-                            const m = root.tsParse12(Config.options.appearance.themeSchedule.nightFrom).minute
-                            const next = root.tsTo24(value, m, "PM")
-                            if (next !== Config.options.appearance.themeSchedule.nightFrom)
-                                Config.options.appearance.themeSchedule.nightFrom = next
-                        }
-                    }
-                    StyledText {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: ":"
-                        color: Appearance.colors.colOnLayer1
-                    }
-                    ConfigSpinBox {
-                        Layout.preferredWidth: 70
-                        from: 0
-                        to: 59
-                        value: root.tsParse12(Config.options.appearance.themeSchedule.nightFrom).minute
-                        onValueChanged: {
-                            const h = root.tsParse12(Config.options.appearance.themeSchedule.nightFrom).hour12
-                            const next = root.tsTo24(h, value, "PM")
-                            if (next !== Config.options.appearance.themeSchedule.nightFrom)
-                                Config.options.appearance.themeSchedule.nightFrom = next
-                        }
-                    }
-                    StyledText {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: "PM"
-                        color: Appearance.colors.colSubtext
-                        font.pixelSize: Appearance.font.pixelSize.normal
-                    }
+                    meridiem: "PM"
+                    value: Config.options.appearance.themeSchedule.nightFrom
+                    onEdited: next => Config.options.appearance.themeSchedule.nightFrom = next
                 }
             }
         }
@@ -1897,20 +1984,49 @@ finally:
             }
             StyledComboBox {
                 Layout.preferredWidth: 200
-                // "Follow Night Light" is only offered while Night Light
-                // itself is enabled; a stored "nightlight" mode with Night
-                // Light disabled displays as Off.
-                readonly property bool nightLightAvailable: (Config.options.light.night.mode ?? "disabled") !== "disabled"
-                model: nightLightAvailable
-                    ? [Translation.tr("Off"), Translation.tr("Follow Night Light"), Translation.tr("Set hours")]
-                    : [Translation.tr("Off"), Translation.tr("Set hours")]
-                readonly property var indexMode: nightLightAvailable
-                    ? ["off", "nightlight", "manual"]
-                    : ["off", "manual"]
+                // "Follow Night Light" keys on Hyprsunset.shouldBeOn, which is a
+                // clock-in-window test over light.night.from and .to and never
+                // consults light.night.mode, so the schedule keeps time whether
+                // or not the screen filter is switched on. Every mode the
+                // scheduler honors needs a row of its own: a stored mode with no
+                // row falls through the lookup below and reads as "Off" while
+                // ThemeManager carries on applying it.
+                model: [Translation.tr("Off"), Translation.tr("Follow Night Light"), Translation.tr("Set hours")]
+                readonly property var indexMode: ["off", "nightlight", "manual"]
                 currentIndex: Math.max(0, indexMode.indexOf(Config.options.appearance.themeSchedule.mode))
                 onActivated: index => {
                     Config.options.appearance.themeSchedule.mode = indexMode[index]
                 }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // The hours this mode keeps are Night Light's own and are edited on the
+        // Display page, so naming them here is the only thing standing between
+        // the user and a desktop that re-themes at an hour nothing on the page
+        // ever mentioned. "Set hours" needs no equivalent: its two pickers are
+        // right above, showing the times they set.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 2
+            visible: Config.options.appearance.themeSchedule.mode === "nightlight"
+            Item { Layout.fillWidth: true }
+            StyledText {
+                Layout.alignment: Qt.AlignVCenter
+                // Hyprsunset's own window rather than the stored hours, because
+                // under a schedule that follows the sun those two differ and
+                // only the first one is what the theme actually turns on.
+                text: {
+                    if (Hyprsunset.solarOverride === false)
+                        return Translation.tr("The sun does not set today");
+                    if (Hyprsunset.solarOverride === true)
+                        return Translation.tr("The sun does not rise today");
+                    return Translation.tr("Night theme from %1 to %2")
+                        .arg(DateTime.formatTimeOfDay(Hyprsunset.from))
+                        .arg(DateTime.formatTimeOfDay(Hyprsunset.to));
+                }
+                color: Appearance.colors.colSubtext
+                font.pixelSize: Appearance.font.pixelSize.smaller
             }
             Item { Layout.fillWidth: true }
         }

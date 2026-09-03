@@ -21,7 +21,8 @@ Singleton {
     // the layout now says the position the spacer used to fake.
     readonly property var defaultBarLayout: ({
         "left": [
-            { "widgets": [ {"id": "sidebarButton", "enabled": true}, {"id": "activeWindow", "enabled": true} ] }
+            { "widgets": [ {"id": "sidebarButton", "enabled": true}, {"id": "activeWindow", "enabled": true} ] },
+            { "widgets": [ {"id": "activeWindowPill", "enabled": false} ] }
         ],
         "center": [
             { "widgets": [ {"id": "resources", "enabled": false}, {"id": "media", "enabled": true} ] },
@@ -56,6 +57,12 @@ Singleton {
     // but the resulting write generates an fs-event that races concurrent
     // writers like switchwall.sh.
     property bool _reloading: false
+
+    // Set when the file is rewritten from outside while writing is held, which
+    // makes whatever is in memory older than what is on disk. The held write is
+    // then dropped rather than handed back, so an apply or a delete that edited
+    // the file directly is not undone by it.
+    property bool _writeStale: false
 
     readonly property string _applyStatePath: {
         const runtime = Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
@@ -203,6 +210,29 @@ Singleton {
         return changed
     }
 
+    // A file naming useUSCS alone predates the units key. That switch shipped
+    // on, so a stored true cannot say whether Fahrenheit was chosen or merely
+    // inherited, and handing it to the location gives a user actually in a
+    // Fahrenheit country the same answer either way. A stored false differs
+    // from what shipped, so it can only have been chosen, and it is the one
+    // worth carrying across. Nothing is written for the true case, so the great
+    // majority of machines take no startup write from this at all. The file is
+    // read rather than the adapter, because a file that already carries `units`
+    // has been migrated and must never be revisited.
+    function migrateWeatherUnits() {
+        let stored = null
+        try {
+            stored = JSON.parse(configFileView.text())
+        } catch (e) {
+            return false
+        }
+        const weather = stored?.bar?.weather
+        if (!weather || weather.units !== undefined || weather.useUSCS !== false) return false
+        if (root.options.bar.weather.units !== "auto") return false
+        root.options.bar.weather.units = "metric"
+        return true
+    }
+
     function reloadFromFile() {
         root._reloading = true
         configFileView.reload()
@@ -268,7 +298,24 @@ Singleton {
         interval: root.readWriteDelay
         repeat: false
         onTriggered: {
-            if (root.blockWrites || root.themeApplyInProgress) return
+            // Re-armed rather than dropped. A write falling inside a theme
+            // apply was discarded outright, so a setting changed in that window
+            // reverted on the next read, and a migration lost the one chance it
+            // had to record what it had already decided in memory.
+            if (root.blockWrites || root.themeApplyInProgress) {
+                fileWriteTimer.restart()
+                return
+            }
+            // Unless the file was rewritten from outside while the writing was
+            // held: applying and deleting a theme both edit this file directly,
+            // and what is in memory predates that edit. Handing it back would
+            // undo them — a deleted theme's wallpaper path, pointing into a
+            // directory that no longer exists, is how that ends up on screen.
+            // The reload those edits triggered carries the truth instead.
+            if (root._writeStale) {
+                root._writeStale = false
+                return
+            }
             configFileView.writeAdapter()
         }
     }
@@ -278,13 +325,19 @@ Singleton {
         path: root.filePath
         watchChanges: true
         blockWrites: root.blockWrites || root.themeApplyInProgress
-        onFileChanged: fileReloadTimer.restart()
+        onFileChanged: {
+            if (root.blockWrites || root.themeApplyInProgress) root._writeStale = true
+            fileReloadTimer.restart()
+        }
         onAdapterUpdated: {
             if (root._reloading) return
             fileWriteTimer.restart()
         }
         onLoaded: {
             root.ready = true
+            // Memory and disk agree again, so anything written from here on is
+            // current and must not be mistaken for the stale write above.
+            root._writeStale = false
             // The migrations run here, where _reloading may still be set and would
             // swallow the write that onAdapterUpdated would otherwise schedule, so
             // the save is asked for directly. Each only fires for a file an older
@@ -295,7 +348,8 @@ Singleton {
             // survives because it is the last one.
             const seeded = root.seedBarLayoutFromLegacySwitches()
             const scrubbed = root.scrubRetiredBarModules()
-            if (seeded || scrubbed) fileWriteTimer.restart()
+            const united = root.migrateWeatherUnits()
+            if (seeded || scrubbed || united) fileWriteTimer.restart()
         }
         onLoadFailed: error => {
             if (error == FileViewError.FileNotFound) {
@@ -517,8 +571,8 @@ Singleton {
                     }
                 }
                 property bool bottom: false // Instead of top
-                property int cornerStyle: 1 // 0: Hug | 1: Float | 2: Plain rectangle
-                property bool floatStyleShadow: true // Show shadow behind bar when cornerStyle == 1 (Float)
+                property int cornerStyle: 1 // 0: Hug | 1: Float | 2: Plain rectangle | 3: Notch
+                property bool floatStyleShadow: true // Show shadow behind bar when cornerStyle is 1 (Float) or 3 (Notch)
                 // Hot-corner-related settings. Currently only the
                 // top-left trigger uses this.
                 property JsonObject hotCorners: JsonObject {
@@ -546,6 +600,48 @@ Singleton {
                 property bool borderless: false // true for no grouping of items
                 property string topLeftIcon: "spark" // Options: "distro" or any icon name in ~/.config/quickshell/ii/assets/icons
                 property bool showBackground: true
+                // How solid each of the bar's two surfaces is, as plain opacity:
+                // 0 is gone, 1 is fully solid. Below zero means the interface
+                // decides, which is where both start — the strip lands near
+                // solid and the widget groups near a tenth, so the sliders open
+                // at different points while still meaning the same thing.
+                property real backgroundOpacity: -1
+                property real widgetOpacity: -1
+                // A filled slot is the whole decision: empty means the palette
+                // decides, anything else is the user's own. One slot per mode,
+                // because everything a color sits against flips with the mode:
+                // a pill picked against a dark palette is a dark-mode
+                // decision that goes unreadable against light surfaces.
+                property string widgetColorDark: ""
+                property string widgetColorLight: ""
+                property string backgroundColorDark: ""
+                property string backgroundColorLight: ""
+                // Shape follows the same rule as the sliders above: below zero
+                // the interface decides. The pill radius reaches every widget
+                // group on either bar; the float radius rounds the corners of
+                // whichever style draws a surface of its own, which is the
+                // floating strip and the one that hugs its widgets.
+                property real widgetRadius: -1
+                property real floatRadius: -1
+                // How much of the screen a floating strip spans, as a
+                // percentage. Below zero it reaches the whole width, which is
+                // what it has always done. Narrowing it carries the two end
+                // clusters inward with the edges they are pinned to rather
+                // than leaving them stranded out at the screen's own corners,
+                // and is honored by the floating strip and by the one that hugs
+                // its widgets alike.
+                property real floatWidth: -1
+                // Float, but as three strips rather than one: the left, middle
+                // and right clusters each get a surface of their own with the
+                // desktop showing between them. The width setting then says how
+                // far the outer two sit from the middle one instead of how far
+                // the single strip's edges come in.
+                property bool floatSplit: false
+                // The notch keeps its own width. It shares the split switch and
+                // the roundness with the floating strip, but not this: the two
+                // reach different distances and a value chosen for one read as
+                // an unasked-for change to the other.
+                property real notchWidth: -1
                 property bool verbose: true
                 property bool vertical: false
                 // Per-section widget layout. Each section is an ordered list
@@ -553,9 +649,9 @@ Singleton {
                 // of widgets ({ id, enabled }). Widgets in the same group share
                 // a pill (combined); separate groups are separate pills. In the
                 // center, the middle group is kept screen-centered. Recognized
-                // ids: sidebarButton, activeWindow, resources, media,
-                // workspaces, clock, utilButtons, battery, indicators, volume,
-                // tray, timers, weather, releaseUpdates.
+                // ids: sidebarButton, activeWindow, activeWindowPill,
+                // resources, media, workspaces, clock, utilButtons, battery,
+                // indicators, volume, tray, timers, weather, releaseUpdates.
                 property JsonObject layout: JsonObject {
                     property list<var> left: root.defaultBarLayout.left
                     property list<var> center: root.defaultBarLayout.center
@@ -647,8 +743,26 @@ Singleton {
                     property bool enable: true
                     property bool enableGPS: true // gps based location
                     property string city: "" // When 'enableGPS' is false
-                    property bool useUSCS: true // Instead of metric (SI) units
+                    // "auto" is the location's own answer and means no unit has
+                    // been named. Written from the settings page alone, so any
+                    // other value is a choice that stands.
+                    property string units: "auto" // "auto", "metric", "uscs"
+                    // Kept in step by the settings page and read by nothing, so
+                    // that a rollback to a release predating `units` still finds
+                    // the unit its owner picked.
+                    property bool useUSCS: true
                     property int fetchInterval: 10 // minutes
+                }
+                property JsonObject claudeUsage: JsonObject {
+                    property bool enable: true // Show Claude (Pro/Max) subscription usage meters in the AI sidebar
+                    property bool defaultWeekly: false // Start on the 7-day window; click the gauge to switch session <-> week
+                    property int warningThreshold: 90 // Turn the gauge red at/above this utilization (%)
+                    property int fetchInterval: 5 // minutes
+                }
+                property JsonObject codexUsage: JsonObject {
+                    property bool enable: true // Show ChatGPT subscription usage meters in the AI sidebar
+                    property int warningThreshold: 90 // Turn the gauge red at/above this utilization (%)
+                    property int fetchInterval: 5 // minutes
                 }
                 property JsonObject indicators: JsonObject {
                     property JsonObject notifications: JsonObject {
@@ -694,6 +808,18 @@ Singleton {
                 property bool restoreEnabled: true
             }
 
+            property JsonObject brightness: JsonObject {
+                // brightnessctl device to drive, e.g. "intel_backlight".
+                // Empty lets brightnessctl choose. Worth setting on machines
+                // that expose more than one backlight: hybrid-graphics laptops
+                // often register a second, non-functional one and brightnessctl
+                // may pick that, so the panel never changes.
+                // `brightnessctl -l` lists them, and Settings > Services >
+                // Brightness offers the backlight ones.
+                // Monitors driven over DDC are unaffected.
+                property string device: ""
+            }
+
             property JsonObject calendar: JsonObject {
                 property string locale: "en-GB"
             }
@@ -732,12 +858,62 @@ Singleton {
 
             property JsonObject dock: JsonObject {
                 property bool enable: true
+                // The bar's rules, worn by the dock: below zero the interface
+                // decides the opacity, and a filled color slot is the whole
+                // decision, kept once per mode because everything a color sits
+                // against flips with the mode.
+                property bool showBackground: true
+                property real backgroundOpacity: -1
+                property string backgroundColorDark: ""
+                property string backgroundColorLight: ""
+                // Shape the same way: the icon size and the corner radius sit
+                // below zero until touched, and the interface decides there.
+                property real iconSize: -1
+                property real radius: -1
+                // How the dock meets the screen edge. Float keeps its gap and
+                // rounds all four corners alike; hug sits flush on the edge,
+                // where the two corners touching it can curve outward into it
+                // instead of away, so the dock reads as part of the edge
+                // rather than a slab resting near it.
+                property string cornerStyle: "float" // "float" | "hug" | "rect"
+                // The corners facing the desktop can answer to themselves;
+                // below zero they follow the radius above. The pair on the
+                // edge takes its shape from the style instead: hug curves it
+                // outward, rect squares it off.
+                property real topRadius: -1
+                // The buttons at the dock's ends, each away on its own so a
+                // dock can keep the one it uses and drop the other. A button
+                // takes its neighboring separator with it: a divider with
+                // nothing on one side of it divides nothing.
+                property bool showOverviewButton: true
+                property bool showPinButton: true
+                // What marks a running app, in one answer because they are one
+                // choice: "none" | "dashes" | "dots" | "badge". Dashes widen
+                // while few and tighten to dots past three; dots stay dots at
+                // any count; the badge says the number outright.
+                property string indicatorStyle: "dashes"
+                // What the badge is painted in, kept per mode like every other
+                // color slot here. Empty leaves it to the accent, which is
+                // what it wears until someone decides otherwise.
+                property string badgeColorDark: ""
+                property string badgeColorLight: ""
+                property string badgeTextColorDark: ""
+                property string badgeTextColorLight: ""
                 // "bottom" | "top" | "left" | "right". The dock yields if the
                 // bar is moved onto this edge; asking for the bar's edge from
                 // the dock's own setting moves the bar across instead.
                 property string position: "bottom"
                 property bool monochromeIcons: false
-                property real height: 60
+                // "magnify" | "glow" | "off"
+                property string hoverEffect: "magnify"
+                // Percent grown on hover, one key per effect so each keeps its
+                // own setting; -1 takes the effect's own stock.
+                property real hoverMagnify: -1
+                property real glowMagnify: -1
+                // The halo's paint and reach; "" and -1 take the palette's own.
+                property string glowColorDark: ""
+                property string glowColorLight: ""
+                property real glowIntensity: -1
                 property real hoverRegionHeight: 2
                 property bool pinnedOnStartup: false
                 property bool hoverToReveal: true // When false, only reveals on empty workspace

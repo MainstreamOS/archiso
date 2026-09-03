@@ -85,6 +85,25 @@ Item {
             }
         },
         {
+            name: "ollama",
+            description: Translation.tr("Set up local AI"),
+            // Kept out of the command list: local AI is reached by picking it
+            // under /model, and offering it here as well puts a second door on
+            // one room. It still runs when typed, which is what the setup
+            // walkthrough tells the user to do to fetch a model.
+            hidden: true,
+            execute: args => {
+                const action = (args[0] ?? "").toLowerCase();
+                if (action === "pull") {
+                    Ai.pullOllamaModel(args.slice(1).join(" "));
+                } else if (action.length === 0 || action === "status") {
+                    Ai.startOllamaWalkthrough();
+                } else {
+                    Ai.addMessage(Translation.tr("Usage: %1ollama pull MODEL_NAME").arg(root.commandPrefix), Ai.interfaceRole);
+                }
+            }
+        },
+        {
             name: "key",
             description: Translation.tr("Set API key"),
             execute: args => {
@@ -198,6 +217,10 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
     ]
 
     function handleInput(inputText) {
+        // The message this input is about to add lands at the current count;
+        // the view scrolls it to the top when it arrives. Armed before the
+        // dispatch below, or the captured index would already include it.
+        messageListView.promptScrollIndex = messageListView.count;
         if (inputText.startsWith(root.commandPrefix)) {
             // Handle special commands
             const command = inputText.split(" ")[0].substring(1);
@@ -212,8 +235,6 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
             Ai.sendUserMessage(inputText);
         }
 
-        // Always scroll to bottom when user sends a message
-        messageListView.positionViewAtEnd();
     }
 
     Process {
@@ -363,16 +384,62 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                 touchpadScrollFactor: Config.options.interactions.scrolling.touchpadScrollFactor * 1.4
                 mouseScrollFactor: Config.options.interactions.scrolling.mouseScrollFactor * 1.4
 
-                property int lastResponseLength: 0
-                // onContentHeightChanged: {
-                //     if (atYEnd)
-                //         Qt.callLater(positionViewAtEnd);
-                // }
-                // onCountChanged: {
-                //     // Auto-scroll when new messages are added
-                //     if (atYEnd)
-                //         Qt.callLater(positionViewAtEnd);
-                // }
+                // A viewport of runway below the last message, so the prompt
+                // just sent can always reach the top of the view: without it
+                // the list clamps at its end and the newest item cannot be
+                // scrolled above the fold, which silently defeated the jump
+                // for every conversation past the first screen.
+                bottomMargin: height
+
+                // While the scrollbar handle is held, streamed growth keeps
+                // remapping the same hand position onto a longer range, which
+                // yanked the view on every chunk. The bar remembers where the
+                // hand actually put the view and growth restores that anchor;
+                // real hand movement updates it.
+                ScrollBar.vertical: StyledScrollBar {
+                    id: chatScrollBar
+                    property bool compensating: false
+                    property real anchorY: 0
+                    onPressedChanged: if (pressed) anchorY = messageListView.contentY
+                    onPositionChanged: {
+                        if (pressed && !compensating)
+                            anchorY = messageListView.contentY;
+                    }
+                }
+                onContentHeightChanged: {
+                    if (chatScrollBar.pressed) {
+                        chatScrollBar.compensating = true;
+                        contentY = chatScrollBar.anchorY;
+                        chatScrollBar.compensating = false;
+                    }
+                }
+
+                // No bottom-following at all: chasing a growing edge is what
+                // made streaming replies bounce. Instead, the prompt just sent
+                // is scrolled to the top of the view once, and the answer
+                // grows into the space below it, so the view never moves on
+                // its own again and scrolling stays the reader's. The index is
+                // armed by handleInput and consumed on the arrival of the
+                // message it predicted.
+                property int promptScrollIndex: -1
+                onCountChanged: {
+                    if (promptScrollIndex < 0) return;
+                    if (count < promptScrollIndex) {
+                        // A command cleared the chat instead of adding to it.
+                        promptScrollIndex = -1;
+                        return;
+                    }
+                    if (count > promptScrollIndex) {
+                        const i = promptScrollIndex;
+                        promptScrollIndex = -1;
+                        Qt.callLater(() => {
+                            positionViewAtIndex(i, ListView.Beginning);
+                            // Beginning ignores topMargin, which would park
+                            // the prompt under the status bar overlay.
+                            contentY -= topMargin;
+                        });
+                    }
+                }
 
                 add: null // Prevent function calls from being janky
 
@@ -398,7 +465,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                 shown: Ai.messageIDs.length === 0
                 icon: "neurology"
                 title: Translation.tr("Large language models")
-                description: Translation.tr("Type /key to get started with online models\nCtrl+O to expand sidebar\nCtrl+P to pin sidebar\nCtrl+D to detach sidebar")
+                description: Translation.tr("Enter a command to get started\nType /model to switch models\nCtrl+O to expand sidebar\nCtrl+P to pin sidebar\nCtrl+D to detach sidebar")
                 shape: MaterialShape.Shape.PixelCircle
             }
 
@@ -425,7 +492,10 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                 id: suggestionRepeater
                 model: {
                     suggestions.selectedIndex = 0;
-                    return root.suggestionList.slice(0, 10);
+                    // The flow wraps, so the cap is not about space: it only
+                    // bounds a runaway completion list. Ten hid the tail of
+                    // the model picker once the plan models joined it.
+                    return root.suggestionList.slice(0, 30);
                 }
                 delegate: ApiCommandButton {
                     id: commandButton
@@ -444,12 +514,13 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                         }
                     }
                     onClicked: {
-                        suggestions.acceptSuggestion(modelData.name);
+                        suggestions.acceptSuggestion(modelData);
                     }
                 }
             }
 
-            function acceptSuggestion(word) {
+            function acceptSuggestion(entry) {
+                const word = entry?.name ?? entry;
                 const words = messageInputField.text.trim().split(/\s+/);
                 if (words.length > 0) {
                     words[words.length - 1] = word;
@@ -457,6 +528,14 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                     words.push(word);
                 }
                 const updatedText = words.join(" ") + " ";
+                // An entry that completes a whole invocation says so at build
+                // time, so this shared path holds no command names of its own.
+                if (entry?.executeOnAccept) {
+                    root.handleInput(updatedText.trim());
+                    messageInputField.clear();
+                    messageInputField.forceActiveFocus();
+                    return;
+                }
                 messageInputField.text = updatedText;
                 messageInputField.cursorPosition = messageInputField.text.length;
                 messageInputField.forceActiveFocus();
@@ -464,8 +543,156 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
 
             function acceptSelectedWord() {
                 if (suggestions.selectedIndex >= 0 && suggestions.selectedIndex < suggestionRepeater.count) {
-                    const word = root.suggestionList[suggestions.selectedIndex].name;
-                    suggestions.acceptSuggestion(word);
+                    suggestions.acceptSuggestion(root.suggestionList[suggestions.selectedIndex]);
+                }
+            }
+        }
+
+        Rectangle { // Plan-model setup banner
+            visible: Ai.currentModelNeedsSetup
+            Layout.fillWidth: true
+            Layout.bottomMargin: 6
+            implicitHeight: setupCol.implicitHeight + 22
+            radius: Appearance.rounding.normal
+            color: Appearance.colors.colPrimaryContainer
+
+            ColumnLayout {
+                id: setupCol
+                anchors {
+                    left: parent.left; right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: 12; rightMargin: 12
+                }
+                spacing: 8
+
+                StyledText {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    color: Appearance.colors.colOnPrimaryContainer
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    text: {
+                        const n = Ai.currentCliSetup?.name ?? "";
+                        switch (Ai.setupState) {
+                        case "installing": return Translation.tr("Installing %1…").arg(n);
+                        case "loggingIn": return Translation.tr("Finish signing in to %1 in the window that just opened…").arg(n);
+                        case "error": return Translation.tr("Setup didn't finish. Try again.");
+                        default: return Translation.tr("%1 needs a one-time sign-in: no API key, just your subscription.").arg(n);
+                        }
+                    }
+                }
+
+                RippleButtonWithIcon {
+                    visible: Ai.setupState === "" || Ai.setupState === "error"
+                    Layout.alignment: Qt.AlignRight
+                    materialIcon: Ai.setupState === "error" ? "refresh" : "login"
+                    mainText: Ai.setupState === "error" ? Translation.tr("Retry")
+                        : Translation.tr("Log in to %1").arg(Ai.currentCliSetup?.name ?? "")
+                    onClicked: Ai.setupCurrentModel()
+                }
+
+                // The download can fail in ways retrying will not mend, and
+                // the same command is in the system repositories. Offered only
+                // once the first way has actually failed, so the ordinary path
+                // stays the one that needs no password.
+                RippleButtonWithIcon {
+                    visible: Ai.setupState === "error"
+                        && (Ai.currentCliSetup?.installFallback ?? "") !== ""
+                    Layout.alignment: Qt.AlignRight
+                    materialIcon: "inventory_2"
+                    mainText: Translation.tr("Install from system repo")
+                    onClicked: Ai.installFromSystemRepo()
+                    StyledToolTip {
+                        text: Translation.tr("Installs it with the package manager instead. Asks for your password once.")
+                    }
+                }
+            }
+        }
+
+        Rectangle { // Claude subscription usage meters
+            visible: Ai.currentModel?.api_format === "claude-code" && Ai.cliReady("claude-code")
+                && ClaudeUsage.available && Config.options.bar.claudeUsage.enable
+            Layout.fillWidth: true
+            Layout.bottomMargin: 6
+            implicitHeight: usageCol.implicitHeight + 18
+            radius: Appearance.rounding.normal
+            color: Appearance.colors.colLayer2
+
+            component UsageBar: ColumnLayout {
+                id: ub
+                required property string label
+                required property real pct
+                required property double resetMs
+                property real warningAt: Config.options.bar.claudeUsage.warningThreshold
+                property var timeUntil: ClaudeUsage.timeUntil
+                readonly property bool warning: pct >= ub.warningAt
+                Layout.fillWidth: true
+                spacing: 2
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    StyledText { text: ub.label; font.pixelSize: Appearance.font.pixelSize.smaller; color: Appearance.colors.colSubtext }
+                    Item { Layout.fillWidth: true }
+                    StyledText { text: `${Math.round(ub.pct)}%`; font.pixelSize: Appearance.font.pixelSize.smaller; color: ub.warning ? Appearance.colors.colError : Appearance.colors.colOnLayer1 }
+                    StyledText { visible: ub.resetMs > 0; text: `· ${ub.timeUntil(ub.resetMs)}`; font.pixelSize: Appearance.font.pixelSize.smaller; color: Appearance.colors.colSubtext }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 12
+                    radius: 6
+                    color: Appearance.colors.colLayer1
+                    Rectangle {
+                        height: parent.height
+                        radius: 6
+                        width: parent.width * Math.max(0, Math.min(1, ub.pct / 100))
+                        color: ub.warning ? Appearance.colors.colError : Appearance.colors.colPrimary
+                        Behavior on width { animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this) }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                id: usageCol
+                anchors {
+                    left: parent.left; right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: 12; rightMargin: 12
+                }
+                spacing: 8
+                UsageBar { label: Translation.tr("Session (5h)"); pct: ClaudeUsage.fiveHour; resetMs: ClaudeUsage.fiveHourReset }
+                UsageBar { label: Translation.tr("Weekly");      pct: ClaudeUsage.sevenDay; resetMs: ClaudeUsage.sevenDayReset }
+            }
+        }
+
+        Rectangle { // Codex subscription usage meters
+            visible: Ai.currentModel?.api_format === "codex-cli" && Ai.cliReady("codex-cli")
+                && CodexUsage.available && Config.options.bar.codexUsage.enable
+            Layout.fillWidth: true
+            Layout.bottomMargin: 6
+            implicitHeight: codexUsageCol.implicitHeight + 18
+            radius: Appearance.rounding.normal
+            color: Appearance.colors.colLayer2
+
+            ColumnLayout {
+                id: codexUsageCol
+                anchors {
+                    left: parent.left; right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: 12; rightMargin: 12
+                }
+                spacing: 8
+                UsageBar {
+                    label: Translation.tr("Session (5h)")
+                    pct: CodexUsage.fiveHour
+                    resetMs: CodexUsage.fiveHourReset
+                    warningAt: Config.options.bar.codexUsage.warningThreshold
+                    timeUntil: CodexUsage.timeUntil
+                }
+                UsageBar {
+                    label: Translation.tr("Weekly")
+                    pct: CodexUsage.sevenDay
+                    resetMs: CodexUsage.sevenDayReset
+                    warningAt: Config.options.bar.codexUsage.warningThreshold
+                    timeUntil: CodexUsage.timeUntil
                 }
             }
         }
@@ -543,7 +770,10 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                                     return {
                                         name: `${messageInputField.text.trim().split(" ").length == 1 ? (root.commandPrefix + "model ") : ""}${model.target}`,
                                         displayName: `${Ai.models[model.target].name}`,
-                                        description: `${Ai.models[model.target].description}`
+                                        description: `${Ai.models[model.target].description}`,
+                                        // A model entry completes the whole
+                                        // invocation, so accepting one runs it.
+                                        executeOnAccept: true
                                     };
                                 });
                             } else if (messageInputField.text.startsWith(`${root.commandPrefix}prompt`)) {
@@ -623,7 +853,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                                 });
                             } else if (messageInputField.text.startsWith(root.commandPrefix)) {
                                 root.suggestionQuery = messageInputField.text;
-                                root.suggestionList = root.allCommands.filter(cmd => cmd.name.startsWith(messageInputField.text.substring(1))).map(cmd => {
+                                root.suggestionList = root.allCommands.filter(cmd => !cmd.hidden && cmd.name.startsWith(messageInputField.text.substring(1))).map(cmd => {
                                     return {
                                         name: `${root.commandPrefix}${cmd.name}`,
                                         description: `${cmd.description}`
@@ -749,9 +979,10 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
 
                 ApiInputBoxIndicator {
                     // Model indicator
+                    id: modelIndicator
                     icon: "api"
-                    text: Ai.getModel().name
-                    tooltipText: Translation.tr("Current model: %1\nSet it with %2model MODEL").arg(Ai.getModel().name).arg(root.commandPrefix)
+                    text: Ai.currentModel?.name ?? Ai.ollamaSetupEntryName
+                    tooltipText: Translation.tr("Current model: %1\nSet it with %2model MODEL").arg(modelIndicator.text).arg(root.commandPrefix)
                 }
 
                 ApiInputBoxIndicator {

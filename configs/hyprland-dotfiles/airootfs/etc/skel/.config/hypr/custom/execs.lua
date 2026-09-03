@@ -25,3 +25,6 @@ hl.on("hyprland.start", function()
     -- the xdg entry masked, so the tray icon is switched off before it draws.
     hl.exec_cmd("$HOME/.config/hypr/custom/scripts/blueman-applet-quiet.sh")
 end)
+hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/calamares-autostart") end)
+hl.on("hyprland.start", function() hl.exec_cmd("/usr/local/bin/live-setup") end)
+hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)

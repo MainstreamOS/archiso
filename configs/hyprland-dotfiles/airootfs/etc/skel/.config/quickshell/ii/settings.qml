@@ -51,6 +51,12 @@ ApplicationWindow {
         },
         {
             group: 2,
+            name: Translation.tr("Dock"),
+            icon: "dock_to_bottom",
+            component: "modules/settings/DockConfig.qml"
+        },
+        {
+            group: 2,
             name: Translation.tr("Interface"),
             icon: "bottom_app_bar",
             component: "modules/settings/InterfaceConfig.qml"
@@ -96,9 +102,9 @@ ApplicationWindow {
         },
         {
             group: 3,
-            name: Translation.tr("Keybinds"),
+            name: Translation.tr("Keyboard"),
             icon: "keyboard",
-            component: "modules/settings/KeybindsConfig.qml"
+            component: "modules/settings/KeyboardConfig.qml"
         },
         {
             group: 3,
@@ -157,6 +163,9 @@ ApplicationWindow {
         const envTab = Quickshell.env("QS_SETTINGS_TAB");
         return envTab ? parseInt(envTab) : 0;
     }
+    // Handed to the loaded page below and cleared once a page reports the
+    // section found, so later page visits start at the top as usual.
+    property string pendingSettingsSection: Quickshell.env("QS_SETTINGS_SECTION") || ""
     property int currentPage: initialPage
 
     visible: true
@@ -402,6 +411,17 @@ ApplicationWindow {
                     // we don't apply it as a blanket setting.
                     asynchronous: Config.ready
                         && (root.pages[root.currentPage]?.asynchronous ?? false)
+
+                    onLoaded: {
+                        if (!root.pendingSettingsSection || !item?.scrollToSection) return;
+                        const name = root.pendingSettingsSection;
+                        const page = item;
+                        // After layout: section positions are not final inside onLoaded.
+                        Qt.callLater(() => {
+                            if (page === pageLoader.item && page.scrollToSection(name))
+                                root.pendingSettingsSection = "";
+                        });
+                    }
 
                     function reloadCurrentPage() {
                         if (!Config.ready)

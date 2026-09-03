@@ -6,6 +6,19 @@ local hyprScripts = "$HOME/.config/hypr/hyprland/scripts"
 local qsIpcCall = "qs -c $qsConfig ipc call"
 local qsIsAlive = qsIpcCall.." TEST_ALIVE"
 
+-- Guards a layoutmsg dispatch so it only fires when its target layout is
+-- actually active. hl.dsp.layout() with a message the current layout doesn't
+-- support throws a runtime error (shown as a notification popup), so this
+-- checks hl.get_active_workspace().tiled_layout before dispatching.
+local function on_layout(layout_name, msg)
+ return function()
+ local ws = hl.get_active_workspace()
+ if ws ~= nil and ws.tiled_layout == layout_name then
+ hl.dispatch(hl.dsp.layout(msg))
+ end
+ end
+end
+
 --#!
 --##! Desktop
 -- These absolutely need to be on top, or they won't work consistently
@@ -57,6 +70,14 @@ hl.bind("CTRL + SUPER + T", hl.dsp.exec_cmd(qsScripts.."/colors/switchwall.sh"),
 hl.bind("CTRL + SUPER + SHIFT + D", hl.dsp.global("quickshell:toggleLightDark"), {description = "Toggle light/dark mode"} )
 hl.bind("CTRL + SUPER + R", hl.dsp.exec_cmd("killall ydotool qs quickshell; qs -c $qsConfig &"), {description = "Restart widgets"} )
 hl.bind("CTRL + SUPER + P", hl.dsp.global("quickshell:panelFamilyCycle"), {description = "Cycle panel family"} )
+-- Cycle the layouts selected in Settings → Keyboard. `current` targets the
+-- keyboard that owns the focused input, so it also works with external boards.
+hl.bind("CTRL + SUPER + K", hl.dsp.exec_cmd("hyprctl switchxkblayout current next"), {description = "Next keyboard layout"} )
+
+-- Save the new LED state after the real Num Lock event has reached Hyprland.
+-- locked keeps state tracking active on the lock screen, while non_consuming
+-- preserves the key's normal behaviour.
+hl.bind("Num_Lock", hl.dsp.exec_cmd(hyprScripts.."/save-numlock-state.sh"), {locked = true, non_consuming = true} )
 
 --##! Media
 local mediaNextCommand = "playerctl next || playerctl position `bc <<< \"100 * $(playerctl metadata mpris:length) / 1000000 / 100\"`"
@@ -208,11 +229,11 @@ for i = 1, 4 do
 end
 
 --##! Master Layout
-hl.bind("SUPER + Return", hl.dsp.layout("swapwithmaster"), {description = "Swap master window"} )
-hl.bind("SUPER + M", hl.dsp.layout("focusmaster"), {description = "Focus master window"} )
-hl.bind("SUPER + comma", hl.dsp.layout("addmaster"), {description = "Add master window"} )
-hl.bind("SUPER + Slash", hl.dsp.layout("removemaster"), {description = "Remove master window"} )
-hl.bind("SUPER + Space", hl.dsp.layout("orientationnext"), {description = "Swap master layout orientation"} )
+hl.bind("SUPER + Return", on_layout("master", "swapwithmaster"), {description = "Swap master window"} )
+hl.bind("CTRL + SUPER + Space", on_layout("master", "focusmaster"), {description = "Focus master window"} )
+hl.bind("SUPER + comma", on_layout("master", "addmaster"), {description = "Add master window"} )
+hl.bind("SUPER + Slash", on_layout("master", "removemaster"), {description = "Remove master window"} )
+hl.bind("SUPER + Space", on_layout("master", "orientationnext"), {description = "Swap master layout orientation"} )
 
 --##! Scrolling Layout
 -- The scrolloverview:overview dispatcher's colon makes it unreachable from
@@ -228,8 +249,8 @@ hl.bind("SUPER + O", function()
 end, {description = "Toggle Scrolling overview"})
 
 --##! Monocle Layout
-hl.bind("SUPER + J", hl.dsp.layout("cyclenext"), {description = "Next window"} )
-hl.bind("SUPER + K", hl.dsp.layout("cycleprev"), {description = "Previous window"} )
+hl.bind("SUPER + J", on_layout("monocle", "cyclenext"), {description = "Next window"} )
+hl.bind("SUPER + K", on_layout("monocle", "cycleprev"), {description = "Previous window"} )
 
 --##! Screen
 --# Zoom

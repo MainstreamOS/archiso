@@ -1,3 +1,4 @@
+import qs
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
@@ -6,6 +7,7 @@ import qs.modules.common
 import qs.modules.common.functions
 import qs.modules.common.widgets
 import qs.modules.settings.bar
+import qs.modules.settings.services
 
 ContentPage {
     forceWidth: true
@@ -180,6 +182,11 @@ ContentPage {
                             displayName: Translation.tr("Rect"),
                             icon: "toolbar",
                             value: 2
+                        },
+                        {
+                            displayName: Translation.tr("Notch"),
+                            icon: "call_to_action",
+                            value: 3
                         }
                     ]
                 }
@@ -208,6 +215,244 @@ ContentPage {
                     ]
                 }
             }
+        }
+
+    }
+
+    // Each radius appears only while the style that gives it a corner to
+    // round is the one on screen — a slider for an edge the bar isn't drawing
+    // would move nothing.
+    ContentSection {
+        icon: "rounded_corner"
+        title: Translation.tr("Shape")
+        // A header over an empty room: with no style that shapes a surface
+        // active and Pills off, every control here is put away, so the section
+        // goes with them. Unless a radius still holds a non-stock value, which
+        // keeps the reset within reach of the state it exists to clear.
+        visible: Appearance.sizes.barFloats
+            || !Config.options.bar.borderless
+            || Config.options.bar.widgetRadius >= 0
+            || Config.options.bar.floatRadius >= 0
+            || Config.options.bar.floatWidth >= 0
+            || Config.options.bar.notchWidth >= 0
+
+        ConfigSwitch {
+            visible: Appearance.sizes.barFloats
+            buttonIcon: "view_column_2"
+            text: Translation.tr("Split into three")
+            checked: Config.options.bar.floatSplit
+            onCheckedChanged: Config.options.bar.floatSplit = checked
+        }
+
+
+        // How much of the screen the strip reaches across. The track stops well
+        // short of nothing: past a point the end clusters meet the middle one
+        // and the strip has nowhere left to put them.
+        ConfigSlider {
+            text: Config.options.bar.floatSplit ? Translation.tr("Spread") : Translation.tr("Width")
+            visible: Appearance.sizes.barFloats
+            stopIndicatorValues: [Appearance.sizes.barFloatWidthMax]
+            buttonIcon: "width"
+            // The floor chases the widgets, so a crowded strip can push it to
+            // the ceiling; the track keeps a step of room so it cannot invert.
+            from: Math.min(GlobalStates.barFloatMinPercent, Appearance.sizes.barFloatWidthMax - 5)
+            to: Appearance.sizes.barFloatWidthMax
+            value: Appearance.sizes.barFloatWidth
+            onMoved: {
+                const stepped = Math.round(value);
+                const key = Appearance.sizes.barIsNotch ? "notchWidth" : "floatWidth";
+                if (stepped === Config.options.bar[key])
+                    return;
+                Config.options.bar[key] = stepped;
+            }
+        }
+
+        ConfigSlider {
+            text: Translation.tr("Corner roundness")
+            visible: Appearance.sizes.barFloats
+            stopIndicatorValues: [Appearance.rounding.barFloatStock]
+            buttonIcon: "rounded_corner"
+            from: 0
+            to: Appearance.rounding.barFloatMax
+            value: Appearance.rounding.barFloat
+            onMoved: {
+                if (value === Config.options.bar.floatRadius)
+                    return;
+                Config.options.bar.floatRadius = value;
+            }
+        }
+
+        ConfigSlider {
+            text: Translation.tr("Widget pills")
+            visible: !Config.options.bar.borderless
+            stopIndicatorValues: [Appearance.rounding.barWidgetStock]
+            buttonIcon: "rounded_corner"
+            from: 0
+            to: 20
+            value: Appearance.rounding.barWidget
+            onMoved: {
+                if (value === Config.options.bar.widgetRadius)
+                    return;
+                Config.options.bar.widgetRadius = value;
+            }
+        }
+
+        // Landing a slider on its mark freezes today's stock number; this
+        // hands the radius back to the interface outright, so if what it
+        // decides ever moves, a reset bar moves with it. Checked flat rather
+        // than by the active style, because a radius set under one style
+        // waits out the others.
+        ConfigResetButton {
+            visible: Config.options.bar.widgetRadius >= 0
+                || Config.options.bar.floatRadius >= 0
+                || Config.options.bar.floatWidth >= 0
+                || Config.options.bar.notchWidth >= 0
+            Layout.leftMargin: 8
+            Layout.topMargin: 2
+            buttonText: Translation.tr("Reset to default shape")
+            onClicked: {
+                Config.options.bar.widgetRadius = -1
+                Config.options.bar.floatRadius = -1
+                Config.options.bar.floatWidth = -1
+                Config.options.bar.notchWidth = -1
+            }
+        }
+    }
+
+    ContentSection {
+        icon: "opacity"
+        title: Translation.tr("Transparency")
+
+        // The strip has always been able to go without a background, and the
+        // bar reads the setting, but nothing ever offered it. It belongs here
+        // beside the slider for the same reason it does on the dock page:
+        // wanting no strip at all is a different question from wanting a faint
+        // one, and the track below cannot answer it.
+        ConfigSwitch {
+            buttonIcon: "background_replace"
+            text: Translation.tr("Show background")
+            checked: Config.options.bar.showBackground
+            onCheckedChanged: Config.options.bar.showBackground = checked
+        }
+
+        ConfigSlider {
+            text: Translation.tr("Background")
+            visible: Config.options.bar.showBackground
+            stopIndicatorValues: [Appearance.colors.barStockAlpha]
+            buttonIcon: "wallpaper"
+            // The strip is given the same blur cutoff as the dock in
+            // hypr/hyprland/rules.lua, so its track stops in the same place.
+            // Running it to zero put a step partway down that no setting
+            // explains: past the cutoff the compositor drops the frosting
+            // outright rather than by degrees.
+            from: Appearance.colors.surfaceOpacityFloor
+            to: 1
+            value: Math.max(Appearance.colors.surfaceOpacityFloor,
+                Config.options.bar.backgroundOpacity < 0
+                    ? Appearance.colors.barStockAlpha : Config.options.bar.backgroundOpacity)
+            onMoved: {
+                if (Math.abs(value - Config.options.bar.backgroundOpacity) < 0.005)
+                    return;
+                Config.options.bar.backgroundOpacity = value;
+            }
+        }
+
+        // Line-separated groups draw nothing behind their widgets, so the pill
+        // controls have no surface to act on there and are put away entirely
+        // rather than offered in a state that could do nothing.
+        ConfigSlider {
+            text: Translation.tr("Widget pills")
+            visible: !Config.options.bar.borderless
+            // Where the pills sit before anyone touches this, read from the
+            // same value the slider falls back to, so the mark cannot promise
+            // a default the track would not actually return to.
+            stopIndicatorValues: [Appearance.colors.barWidgetStockAlpha]
+            buttonIcon: "location_chip"
+            from: 0
+            to: 1
+            value: Config.options.bar.widgetOpacity < 0
+                ? Appearance.colors.barWidgetStockAlpha : Config.options.bar.widgetOpacity
+            onMoved: {
+                if (Math.abs(value - Config.options.bar.widgetOpacity) < 0.005)
+                    return;
+                Config.options.bar.widgetOpacity = value;
+            }
+        }
+
+        // The tracks run zero to one while stock sits below zero, so this is
+        // the only road back to "the interface decides" — including for pill
+        // state a borderless bar keeps but does not show.
+        ConfigResetButton {
+            visible: Config.options.bar.backgroundOpacity >= 0
+                || Config.options.bar.widgetOpacity >= 0
+            Layout.leftMargin: 8
+            Layout.topMargin: 2
+            buttonText: Translation.tr("Reset to default transparency")
+            onClicked: {
+                Config.options.bar.backgroundOpacity = -1
+                Config.options.bar.widgetOpacity = -1
+            }
+        }
+    }
+
+    ContentSection {
+        icon: "palette"
+        title: Translation.tr("Colors")
+
+        ColorField {
+            text: Translation.tr("Background")
+            allowEmpty: true
+            buttonIcon: "wallpaper"
+            // Edits the slot for the mode on screen; the other mode keeps its
+            // own pick, or the palette where none was made.
+            value: Appearance.colors.barBackgroundPick
+            fallback: String(Appearance.colors.colLayer0)
+            onEdited: newValue => {
+                if (Appearance.m3colors.darkmode) Config.options.bar.backgroundColorDark = newValue
+                else Config.options.bar.backgroundColorLight = newValue
+            }
+        }
+
+        ColorField {
+            text: Translation.tr("Widget pills")
+            visible: !Config.options.bar.borderless
+            allowEmpty: true
+            buttonIcon: "location_chip"
+            value: Appearance.colors.barWidgetPick
+            fallback: String(Appearance.colors.colLayer1)
+            onEdited: newValue => {
+                if (Appearance.m3colors.darkmode) Config.options.bar.widgetColorDark = newValue
+                else Config.options.bar.widgetColorLight = newValue
+            }
+        }
+
+        // Hands every slot back to the palette in one press, without making
+        // someone guess that an emptied box is how you say "no color of my
+        // own". Shown whenever any slot is filled — either mode's, either
+        // surface's, borderless or not.
+        ConfigResetButton {
+            visible: Config.options.bar.backgroundColorDark !== ""
+                || Config.options.bar.backgroundColorLight !== ""
+                || Config.options.bar.widgetColorDark !== ""
+                || Config.options.bar.widgetColorLight !== ""
+            Layout.leftMargin: 8
+            Layout.topMargin: 2
+            buttonText: Translation.tr("Reset to default colors")
+            onClicked: {
+                Config.options.bar.widgetColorDark = ""
+                Config.options.bar.widgetColorLight = ""
+                Config.options.bar.backgroundColorDark = ""
+                Config.options.bar.backgroundColorLight = ""
+            }
+        }
+
+        SubtleNoticeBox {
+            Layout.fillWidth: true
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            Layout.topMargin: 4
+            Layout.bottomMargin: 4
+            text: Translation.tr("Dark mode and light mode each keep their own colors.")
         }
     }
 
@@ -379,52 +624,7 @@ ContentPage {
         }
     }
 
-    ContentSection {
-        icon: "cloud"
-        title: Translation.tr("Weather")
-        ConfigRow {
-            ConfigSwitch {
-                buttonIcon: "assistant_navigation"
-                text: Translation.tr("Enable GPS based location")
-                checked: Config.options.bar.weather.enableGPS
-                onCheckedChanged: {
-                    Config.options.bar.weather.enableGPS = checked;
-                }
-            }
-            ConfigSwitch {
-                buttonIcon: "thermometer"
-                text: Translation.tr("Fahrenheit unit")
-                checked: Config.options.bar.weather.useUSCS
-                onCheckedChanged: {
-                    Config.options.bar.weather.useUSCS = checked;
-                }
-                StyledToolTip {
-                    text: Translation.tr("It may take a few seconds to update")
-                }
-            }
-        }
-        
-        MaterialTextArea {
-            Layout.fillWidth: true
-            placeholderText: Translation.tr("City name")
-            text: Config.options.bar.weather.city
-            wrapMode: TextEdit.Wrap
-            onTextChanged: {
-                Config.options.bar.weather.city = text;
-            }
-        }
-        ConfigSpinBox {
-            icon: "av_timer"
-            text: Translation.tr("Polling interval (m)")
-            value: Config.options.bar.weather.fetchInterval
-            from: 5
-            to: 50
-            stepSize: 5
-            onValueChanged: {
-                Config.options.bar.weather.fetchInterval = value;
-            }
-        }
-    }
+    WeatherSection {}
 
     ContentSection {
         icon: "shelf_auto_hide"
