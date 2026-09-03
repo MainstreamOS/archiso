@@ -160,6 +160,20 @@ else
     warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
 fi
 
+# Apple hardware quirks. Sourced after the GPU library because it reuses
+# mkinitcpio_add_modules from it, and a no-op on everything that is not a Mac.
+MAC_LIB="/usr/local/lib/mac-config.sh"
+if [[ -r "$MAC_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$MAC_LIB"
+    if [[ "$(mac_class)" != none ]]; then
+        info "Detected Apple hardware, applying Mac quirks..."
+        mac_report | while read -r line; do info "  $line"; done || true
+        mac_apply_autoconfig
+        info "Mac configuration complete."
+    fi
+fi
+
 # Encrypted installs: install-limine puts rd.luks.name= on the kernel
 # cmdline, which only the sd-encrypt hook honors — without it the initramfs
 # cannot unlock the root volume. Insert it after sd-vconsole so plymouth

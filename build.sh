@@ -1212,6 +1212,10 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             install -Dm644 "$DOTS_WORK/sdata/lib/gpu-config.sh" \
                 "$PROFILE_DIR/airootfs/usr/local/lib/gpu-config.sh"
         fi
+        if [[ -f "$DOTS_WORK/sdata/lib/mac-config.sh" ]]; then
+            install -Dm644 "$DOTS_WORK/sdata/lib/mac-config.sh" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/mac-config.sh"
+        fi
 
         # Stamp the baked dotfiles release into the image so updatems on the
         # installed system treats it as already applied and only acts on a

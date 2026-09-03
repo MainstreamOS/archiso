@@ -33,6 +33,7 @@ file_permissions=(
   ["/usr/local/bin/post-install-overview"]="0:0:755"
   ["/usr/local/bin/post-install-proton"]="0:0:755"
   ["/usr/local/lib/mainstream-postinstall-common.sh"]="0:0:644"
+  ["/usr/local/lib/mac-config.sh"]="0:0:644"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
   ["/usr/local/bin/live-setup"]="0:0:755"
