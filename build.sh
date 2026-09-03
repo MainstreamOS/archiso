@@ -942,9 +942,11 @@ build_local_pkg() {
             success "$pkgname built successfully."
         else
             warn "$pkgname — build ran but no .pkg.tar.zst found in temp output."
+            FAILED_PKGS+=("$pkgname (no output file)")
         fi
     else
         warn "$pkgname — build failed."
+        FAILED_PKGS+=("$pkgname")
     fi
 
     rm -rf "$tmp_build_dir"
@@ -1110,9 +1112,11 @@ else
             success "$MICROTEX_PKG built successfully."
         else
             warn "$MICROTEX_PKG — build ran but no output file found."
+            FAILED_PKGS+=("$MICROTEX_PKG (no output file)")
         fi
     else
         warn "$MICROTEX_PKG — build failed."
+        FAILED_PKGS+=("$MICROTEX_PKG")
     fi
 fi
 
@@ -1501,6 +1505,32 @@ if [[ ${#FAILED_PKGS[@]} -ne 0 ]]; then
     done
     echo ""
     warn "Fix the failures and re-run — successful packages will be skipped."
+
+    # A failure only stops the image if the ISO actually installs that package.
+    # pacstrap resolves every name in packages.x86_64 from the bundled repo, so
+    # one that never built ends the run with `target not found` several minutes
+    # in, after the rest of the image has been assembled for nothing. Failures
+    # of extras no list names keep only the warning above.
+    REQUIRED_LIST="$PROFILE_DIR/packages.x86_64"
+    if [[ -f "$REQUIRED_LIST" ]]; then
+        mapfile -t ISO_WANTS < <(sed 's/#.*//' "$REQUIRED_LIST" | tr -d '[:blank:]' | grep -v '^$')
+        REQUIRED_FAILED=()
+        for pkg in "${FAILED_PKGS[@]}"; do
+            pkg_name="${pkg%% *}"
+            for wanted in "${ISO_WANTS[@]}"; do
+                if [[ "$pkg_name" == "$wanted" ]]; then
+                    REQUIRED_FAILED+=("$pkg_name")
+                    break
+                fi
+            done
+        done
+        if (( ${#REQUIRED_FAILED[@]} > 0 )); then
+            die "packages.x86_64 installs these, and they did not build: ${REQUIRED_FAILED[*]}. \
+Stopping before pacstrap, which would spend several minutes assembling the image \
+and then fail with \"target not found\". Fix the failures and re-run — packages that \
+already built are skipped, so the rebuild only retries what is listed here."
+        fi
+    fi
 fi
 
 echo ""
