@@ -870,7 +870,7 @@ for pkgname in "${METAPKGS[@]}"; do
     existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgpath' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
-        if echo "$existing" | grep -q "$pkg_ver"; then
+        if [[ -n "$pkg_ver" ]] && printf '%s\n' "$existing" | grep -qF -- "$pkg_ver"; then
             info "$pkgname — already built at current version, skipping."
             ((SUCCESS_COUNT++)) || true
             continue
@@ -1016,7 +1016,9 @@ fi
 
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
     makepkg -f --noconfirm --needed --nodeps --skippgpcheck 2>&1
+_mk=$?
 rm -rf "$WORK"
+exit $_mk
 AURSCRIPT
 chmod 755 "$AUR_SCRIPT"
 chown "$BUILD_USER":"$BUILD_USER" "$AUR_SCRIPT"
@@ -1303,7 +1305,7 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
     fi
     # DOTS_WORK cleanup deferred to after venv step (needs requirements.txt)
 else
-    warn "Failed to clone dotfiles for skel — skipping."
+    die "Failed to clone dotfiles for skel. The image would carry the previous build's desktop under a stamp claiming this release, so the build stops here."
 fi
 
 # ── Pre-bake the Python 3.12 color venv into skel ──────────────────────────
@@ -1831,7 +1833,7 @@ if [[ -n "${GPGKEY:-}" ]]; then
         --local-user "${GPGKEY}" --output "${ISO_PATH}.sig" "${ISO_PATH}"; then
         echo ">>> Signed: ${ISO_PATH}.sig (key ${GPGKEY})"
     else
-        echo ">>> WARNING: ISO signing FAILED — do not publish this build unsigned."
+        die "ISO signing FAILED. The image is built and checksummed but unsigned, so the build reports failure rather than completion."
     fi
 else
     echo ">>> GPGKEY not set — ISO left unsigned (GPGKEY=<keyid> sudo -E ./build.sh to sign a release build)."

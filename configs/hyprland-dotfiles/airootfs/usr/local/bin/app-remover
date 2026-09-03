@@ -78,7 +78,17 @@ is_bundle() {  # $1 = pkgname
 # the removable app bundles, sorted.
 protected_set() {
     {
+        # base and base-devel are packages now, not groups, so the group
+        # query returns nothing on a current system and this list protected
+        # nothing. The names themselves and what they depend on are what the
+        # group used to cover.
         pacman -Qqg base base-devel mainstream 2>/dev/null || true
+        pacman -Qq base base-devel mainstream 2>/dev/null || true
+        for _m in base base-devel mainstream; do
+            pacman -Qi "$_m" 2>/dev/null \
+                | awk -F': *' '/^Depends On/{print $2}' \
+                | tr ' ' '\n' | sed 's/[<>=].*//' | grep -v '^None$' || true
+        done
         printf '%s\n' "${DENYLIST[@]}"
     } | sort -u | grep -vxF -f <(printf '%s\n' "${APP_BUNDLES[@]}")
 }
