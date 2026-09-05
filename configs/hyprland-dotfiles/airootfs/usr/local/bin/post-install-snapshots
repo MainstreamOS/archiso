@@ -63,6 +63,10 @@ if $_root_is_btrfs; then
     # Deploy limine-snapper-sync config
     if command -v limine-snapper-sync &>/dev/null; then
         info "Configuring limine-snapper-sync..."
+        # The enroll steps around each save come from the packages' own hook
+        # scripts in /etc/boot/hooks/{pre,post}.d, which limine-snapper-sync
+        # runs itself. Naming them here as well ran them twice per save and
+        # logged a deprecation warning on every sync.
         cat > /etc/limine-snapper-sync.conf << 'LSSCONF'
 LIMIT_USAGE_PERCENT=90
 MAX_SNAPSHOT_ENTRIES=8
@@ -71,8 +75,6 @@ ROOT_SNAPSHOTS_PATH="/@/.snapshots"
 RESTORE_METHOD=replace
 SET_SNAPSHOT_AS_DEFAULT=no
 SNAPSHOT_FORMAT_CHOICE=2
-COMMANDS_BEFORE_SAVE="limine-reset-enroll"
-COMMANDS_AFTER_SAVE="limine-enroll-config"
 NOTIFICATION_ICON="/usr/share/icons/hicolor/128x128/apps/LimineSnapperSync.png"
 LSSCONF
 
