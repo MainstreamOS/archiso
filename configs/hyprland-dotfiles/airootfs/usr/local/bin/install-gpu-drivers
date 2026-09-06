@@ -329,6 +329,12 @@ nvidia_ensure_module_for_target() {
     [[ -r "/usr/lib/modules/$k/pkgbase" ]] && hdr="$(<"/usr/lib/modules/$k/pkgbase")-headers"
     pacman -S --noconfirm --needed "$hdr" dkms 2>&1 \
         || warn "could not install the DKMS toolchain ($hdr)."
+    # Fetch the replacement first: removing the prebuilt driver and then
+    # failing to install its DKMS twin leaves the target with no driver at all.
+    if ! pacman -Sw --noconfirm nvidia-open-dkms 2>&1; then
+        warn "nvidia-open-dkms is not obtainable; keeping the prebuilt driver in place."
+        return 1
+    fi
     pacman -Rdd --noconfirm nvidia-open 2>&1 \
         || warn "could not remove the prebuilt driver before the swap."
     pacman -S --noconfirm nvidia-open-dkms 2>&1 \
