@@ -1237,6 +1237,11 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             install -Dm644 "$DOTS_WORK/sdata/lib/mac-config.sh" \
                 "$PROFILE_DIR/airootfs/usr/local/lib/mac-config.sh"
         fi
+        # The scripts' translation lookup, read by the update helper.
+        if [[ -f "$DOTS_WORK/sdata/lib/tr.sh" ]]; then
+            install -Dm644 "$DOTS_WORK/sdata/lib/tr.sh" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-tr.sh"
+        fi
         # The Mac firmware fetch and the two upstream pieces it runs, so a T2
         # Mac can pull its own Wi-Fi and Bluetooth firmware from Apple.
         if [[ -f "$DOTS_WORK/sdata/mac/mainstream-mac-firmware" ]]; then

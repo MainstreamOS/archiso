@@ -62,7 +62,9 @@ cd "$REPO_DIR" || { echo "cannot cd to $REPO_DIR" >&2; exit 1; }
 # take effect, and it refreshes itself at the end — one release too late to
 # do the work it was added for. The guard variable keeps the handover from
 # looping if the install fails to change anything.
-if [[ -z "${UPDATEMS_SYSTEM_REEXEC:-}" && -f "$REPO_DIR/sdata/update/updatems-system" ]] \
+if [[ -z "${UPDATEMS_SYSTEM_REEXEC:-}" && -f "$REPO_DIR/sdata/update/updatems-system" \
+      && ! -L "$REPO_DIR/sdata/update/updatems-system" ]] \
+   && [[ $(( 8#$(stat -c %a "$REPO_DIR/sdata/update/updatems-system" 2>/dev/null || echo 777) & 8#022 )) -eq 0 ]] \
    && ! cmp -s "$REPO_DIR/sdata/update/updatems-system" "$0"; then
     if install -m755 -o root -g root "$REPO_DIR/sdata/update/updatems-system" \
             /usr/local/bin/updatems-system 2>/dev/null; then
@@ -75,11 +77,25 @@ fi
 # (return 1). We DON'T abort on the first failure — best effort, refresh
 # what we can.
 RC=0
+# Everything installed here runs as root later, and it comes out of a tree the
+# user owns. A symlink or a file others can write is how a checkout that looks
+# like a release turns into something else on the way in.
+_src_ok() {
+    local src="$1" mode
+    [[ -f "$src" && ! -L "$src" ]] || return 1
+    mode=$(stat -c %a "$src" 2>/dev/null) || return 1
+    [[ $(( 8#$mode & 8#022 )) -eq 0 ]]
+}
 _install_file() {
     # $1 mode  $2 src  $3 dst  $4 label
     local mode="$1" src="$2" dst="$3" label="$4"
-    if [[ ! -f "$src" ]]; then
+    if [[ ! -e "$src" ]]; then
         warn "$label source missing at $src — skipping"
+        return 0
+    fi
+    if ! _src_ok "$src"; then
+        warn "$label source is a symlink or writable by others ($src) — refusing to install it as root"
+        RC=1
         return 0
     fi
     if install -m "$mode" -o root -g root "$src" "$dst"; then
@@ -258,6 +274,61 @@ systemctl daemon-reload 2>/dev/null || true
 # than at the next replug; with no printer this is a quiet no-op.
 systemctl start mainstream-printer-setup.service 2>/dev/null || true
 
+# ── pacman keyring + [mainstream] repo self-healing ───────────────────────
+# This lands over git rather than over pacman, which is the only delivery path
+# left on a machine whose [mainstream] signing key never got trusted: there
+# pacman -Syu fails for every repo, core and extra included, so a fix shipped
+# as a package could never arrive.
+KEYRING_SRC="$REPO_DIR/sdata/keyring"
+
+_install_file 0644 \
+    "$REPO_DIR/sdata/dist-arch/mainstream.pub" \
+    /usr/local/share/mainstream.pub \
+    "[mainstream] signing key"
+
+_install_file 0755 \
+    "$KEYRING_SRC/mainstream-keyring-init" \
+    /usr/local/bin/mainstream-keyring-init \
+    "Keyring init"
+
+_install_file 0755 \
+    "$KEYRING_SRC/mainstream-keyring-repair" \
+    /usr/local/bin/mainstream-keyring-repair \
+    "Keyring repair command"
+
+_install_file 0644 \
+    "$KEYRING_SRC/pacman-keyring-init.service" \
+    /etc/systemd/system/pacman-keyring-init.service \
+    "Keyring init service"
+
+_install_file 0644 \
+    "$KEYRING_SRC/pacman-keyring-init.timer" \
+    /etc/systemd/system/pacman-keyring-init.timer \
+    "Keyring init timer"
+
+systemctl daemon-reload 2>/dev/null || true
+# Installs made while the unit disabled its own timer after one success have
+# no watchdog left, so enabling here is what puts a stranded machine back
+# under one.
+if systemctl enable --now pacman-keyring-init.timer 2>/dev/null; then
+    ok "Keyring check timer enabled"
+else
+    warn "Could not enable pacman-keyring-init.timer"
+    RC=1
+fi
+
+if [[ -x /usr/local/bin/mainstream-keyring-init ]] \
+   && ! /usr/local/bin/mainstream-keyring-init --check >/dev/null 2>&1; then
+    say "Repairing the pacman keyring and [mainstream] repo..."
+    /usr/local/bin/mainstream-keyring-init 2>&1 | sed 's/^/    /'
+    if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+        ok "Keyring and [mainstream] repo verified"
+    else
+        warn "Keyring repair did not complete; the timer retries on its own"
+        RC=1
+    fi
+fi
+
 # ── Update tooling (refreshes itself + updatems + helper) ──────────────────
 # Refreshing the helper while it's mid-run is safe on Linux — the
 # kernel keeps the inode open via the existing fd until the process
@@ -266,6 +337,11 @@ _install_file 0755 \
     "$REPO_DIR/sdata/update/mainstream-update-helper" \
     /usr/local/bin/mainstream-update-helper \
     "Update helper"
+
+_install_file 0644 \
+    "$REPO_DIR/sdata/lib/tr.sh" \
+    /usr/local/lib/mainstream-tr.sh \
+    "Script translations"
 
 _install_file 0755 \
     "$REPO_DIR/sdata/update/updatems" \
@@ -276,6 +352,50 @@ _install_file 0755 \
     "$REPO_DIR/sdata/update/updatems-system" \
     /usr/local/bin/updatems-system \
     "updatems-system"
+
+# ── Apple hardware ─────────────────────────────────────────────────────────
+# The Mac quirks ran at install time only, so a Mac installed before one
+# existed never gained it: the firmware fetch for the T2 chips, the wl driver
+# for the 2012-2015 Broadcom parts, the SPI and NVMe fixes. Applied here from
+# the same library the installer uses; a no-op on anything that is not a Mac.
+# The initramfs is not rebuilt here, in keeping with the rest of this script:
+# a module added to its list lands on the next kernel update.
+MAC_LIB_SRC="$REPO_DIR/sdata/lib/mac-config.sh"
+GPU_LIB_SRC="$REPO_DIR/sdata/lib/gpu-config.sh"
+if [[ -r "$MAC_LIB_SRC" && -r "$GPU_LIB_SRC" ]] && [[ "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" == Apple* ]]; then
+    # shellcheck source=/dev/null
+    source "$GPU_LIB_SRC"
+    # shellcheck source=/dev/null
+    source "$MAC_LIB_SRC"
+    say "Apple hardware: applying the Mac quirks..."
+    mac_report 2>/dev/null | sed 's/^/    /' || true
+    if mac_needs_wl_driver; then
+        # shellcheck disable=SC2046
+        if pacman -S --noconfirm --needed $(mac_wl_packages) 2>&1 | sed 's/^/    /'; then
+            ok "Broadcom wl driver installed"
+        else
+            warn "Could not install the Broadcom wl driver"
+            RC=1
+        fi
+    fi
+    if mac_needs_apple_firmware; then
+        _install_file 0755 "$REPO_DIR/sdata/mac/mainstream-mac-firmware" /usr/local/bin/mainstream-mac-firmware "Mac firmware fetch"
+        _install_file 0644 "$REPO_DIR/sdata/mac/macrecovery.py" /usr/local/lib/mainstream-mac/macrecovery.py "macrecovery"
+        _install_file 0644 "$REPO_DIR/sdata/mac/NOTICE" /usr/local/lib/mainstream-mac/NOTICE "Mac firmware notice"
+        for f in "$REPO_DIR"/sdata/mac/asahi_firmware/*.py; do
+            _install_file 0644 "$f" "/usr/local/lib/mainstream-mac/asahi_firmware/$(basename "$f")" "asahi_firmware/$(basename "$f")"
+        done
+        pacman -S --noconfirm --needed 7zip 2>&1 | sed 's/^/    /' || { warn "Could not install 7zip"; RC=1; }
+    fi
+    if mac_apply_autoconfig; then
+        ok "Mac quirks applied"
+    else
+        warn "Mac quirks did not fully apply"
+        RC=1
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+    mac_fetch_firmware_now 2>&1 | sed 's/^/    /' || true
+fi
 
 if [[ $RC -eq 0 ]]; then
     ok "System-level refresh complete."

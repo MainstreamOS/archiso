@@ -34,6 +34,7 @@ file_permissions=(
   ["/usr/local/bin/post-install-proton"]="0:0:755"
   ["/usr/local/lib/mainstream-postinstall-common.sh"]="0:0:644"
   ["/usr/local/lib/mac-config.sh"]="0:0:644"
+  ["/usr/local/lib/mainstream-tr.sh"]="0:0:644"
   ["/usr/local/bin/mainstream-mac-firmware"]="0:0:755"
   ["/usr/local/bin/live-mac-quirks"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
