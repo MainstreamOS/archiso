@@ -22,9 +22,11 @@ for _ in $(seq 1 30); do
 done
 
 count=$(wc -l < "$marker" 2>/dev/null || echo "some")
-notify-send -u critical -a "Mainstream OS" "Install health check" \
+# The marker is consumed only once the notification went out; a login where
+# the daemon never came up keeps it for the next one.
+if notify-send -u critical -a "Mainstream OS" "Install health check" \
     "$count install check(s) did not pass. Details: /var/log/mainstream-install/verify-report.txt" \
-    2>/dev/null || true
-
-rm -f "$marker"
+    2>/dev/null; then
+    rm -f "$marker"
+fi
 exit 0
