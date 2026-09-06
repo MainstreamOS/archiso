@@ -165,5 +165,5 @@ build_hyprland_plugin() {
 # 1. IDENTIFY USERS (SAFETY CHECK)
 # ---------------------------------------------------------------------------
 # Identify the actual user created by Calamares (UID 1000)
-MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vE '(liveuser|builduser|nobody|root)' | head -n 1 || true)
+MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vxE 'liveuser|builduser|nobody|root' | head -n 1 || true)
 MAIN_USER_HOME="/home/$MAIN_USER"

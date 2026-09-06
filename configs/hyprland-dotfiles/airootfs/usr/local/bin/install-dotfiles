@@ -31,7 +31,7 @@ DOTFILES_BRANCH="mainstream"
 # 2. IDENTIFY TARGET USER (UID 1000 or 1001)
 # ---------------------------------------------------------------------------
 EXCLUDE_LIST="liveuser|builduser|nobody|root"
-NEW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vE "($EXCLUDE_LIST)" | head -n 1 || true)
+NEW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vxE "$EXCLUDE_LIST" | head -n 1 || true)
 NEW_USER_HOME="/home/$NEW_USER"
 
 if [[ -z "$NEW_USER" ]]; then
