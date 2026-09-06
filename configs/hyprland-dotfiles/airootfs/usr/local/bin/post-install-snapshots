@@ -13,7 +13,8 @@ Description=Kill fprintd before sleep
 Before=sleep.target
 
 [Service]
-ExecStart=killall fprintd
+Type=oneshot
+ExecStart=-/usr/bin/pkill -x fprintd
 
 [Install]
 WantedBy=sleep.target
