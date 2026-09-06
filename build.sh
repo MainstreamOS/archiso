@@ -70,8 +70,13 @@ add_mainstream_db() {
     rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
           "$repo_dir"/mainstream.files{,.tar.gz,.tar.gz.old}
     local pkgs=()
+    # The wl driver set stays out of the DB for the same reason: it is for the
+    # few Macs whose Broadcom chip nothing in-tree drives, installed by PCI
+    # match at install time, and indexing linux-headers here would let the
+    # bundled copy shadow the sync repo's during pacstrap.
     mapfile -t pkgs < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' \
-        ! -name '*nvidia*' ! -name 'libxnvctrl*' ! -name '*-debug-*' | sort)
+        ! -name '*nvidia*' ! -name 'libxnvctrl*' ! -name '*-debug-*' \
+        ! -name 'broadcom-wl-dkms-[0-9]*' ! -name 'dkms-[0-9]*' ! -name 'linux-headers-[0-9]*' | sort)
     # Legacy-NVIDIA edition: pacstrap must resolve the live driver, so add
     # nvidia-580xx-{dkms,utils} back in. Other gens stay files-only (target-only
     # via install-gpu-drivers); excluding them avoids provide-ambiguity. The
@@ -968,6 +973,20 @@ build_local_pkg "mpris-hyprland"
 # Pull what the GitHub [mainstream] repo already provides so we don't rebuild
 # (and drift from) those versions; the loop below skips anything it supplied.
 download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
+
+# Arch's own packages for the 2012-2015 Macs whose Broadcom chip only the
+# out-of-tree wl driver serves. Those machines have no Wi-Fi until it is
+# built, so the install cannot fetch it: the files ride on the image and
+# post-install-boot installs them by PCI match. Headers come from the same
+# sync as the kernel pacstrap will install, so the DKMS build matches it.
+download_arch_repo_pkgs() {
+    local dir="$1"; shift
+    info "Staging Arch repo packages for offline install: $*"
+    rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst "$dir"/dkms-[0-9]*.pkg.tar.zst "$dir"/linux-headers-[0-9]*.pkg.tar.zst 2>/dev/null || true
+    pacman -Sw --noconfirm --cachedir "$dir" "$@" 2>&1 | grep -v "is up to date" \
+        || warn "Could not stage $*; Macs with a BCM4360 or BCM4331 will need a wired connection after install."
+}
+download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms dkms linux-headers
 
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The Mac quirks a running session can take, applied to the live image the
+# installer runs from. The installed system gets the full set from
+# post-install-boot; this covers the hour before that, when Wi-Fi on a Mac
+# would refuse a correct password on most home routers and the media keys
+# would want fn held. Nothing here outlives the session.
+set -uo pipefail
+
+MAC_LIB=/usr/local/lib/mac-config.sh
+[[ -r "$MAC_LIB" ]] || exit 0
+# shellcheck source=/dev/null
+source "$MAC_LIB"
+
+mac_is_apple || exit 0
+echo "Apple hardware: $(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown), applying the session quirks"
+mac_apply_session_quirks

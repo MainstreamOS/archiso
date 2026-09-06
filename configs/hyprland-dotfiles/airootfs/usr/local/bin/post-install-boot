@@ -169,6 +169,28 @@ if [[ -r "$MAC_LIB" ]]; then
     if [[ "$(mac_class)" != none ]]; then
         info "Detected Apple hardware, applying Mac quirks..."
         mac_report | while read -r line; do info "  $line"; done || true
+        # The wl driver for the 2012-2015 Broadcom chips rides on the image as
+        # plain package files, since a machine that needs it has no Wi-Fi to
+        # fetch it with. Its DKMS hook builds the module against the kernel
+        # installed here. The sync repos are the fallback for a wired install
+        # on an image that did not carry them.
+        if mac_needs_wl_driver; then
+            wl_files=()
+            for pat in broadcom-wl-dkms dkms linux-headers; do
+                for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
+                    [[ -f "$f" ]] && wl_files+=("$f")
+                done
+            done
+            if (( ${#wl_files[@]} > 0 )); then
+                info "Installing the Broadcom wl driver from the image: ${wl_files[*]##*/}"
+                pacman -U --noconfirm --needed "${wl_files[@]}" 2>&1 \
+                    || note_failure "wl driver install failed from the bundled packages"
+            else
+                # shellcheck disable=SC2046
+                pacman -S --noconfirm --needed $(mac_wl_packages) 2>&1 \
+                    || note_failure "wl driver install failed (no bundled packages, sync repos unreachable)"
+            fi
+        fi
         mac_apply_autoconfig
         mac_fetch_firmware_now
         info "Mac configuration complete."

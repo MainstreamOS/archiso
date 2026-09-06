@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply the Mac hardware quirks to the live session
+# Before the network comes up, so the Wi-Fi driver is reloaded with its
+# handshake option in place rather than mid-connection.
+After=systemd-udev-settle.service local-fs.target
+Before=network-pre.target NetworkManager.service
+Wants=network-pre.target
+ConditionPathExists=/run/archiso
+ConditionPathExists=/usr/local/lib/mac-config.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/live-mac-quirks
+
+[Install]
+WantedBy=multi-user.target
