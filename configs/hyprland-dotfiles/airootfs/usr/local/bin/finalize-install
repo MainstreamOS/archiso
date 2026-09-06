@@ -361,6 +361,37 @@ rm -f /etc/systemd/system/choose-mirror.service \
       /etc/systemd/system/livecd-alsa-unmuter.service
 info "Removed dangling live-only service symlinks."
 
+# ── Install baseline snapshot ────────────────────────────────────────────────
+# A baseline the machine carries from its first minute. snapper cannot run
+# inside this chroot, so its own "Fresh install" snapshot exists only after
+# first boot has done its work; everything between the installer finishing
+# and that moment, including a first boot whose setup fails, has no copy of
+# the system to fall back to. A raw read-only subvolume needs none of
+# snapper's machinery and closes that window. It is taken here, after the
+# package and cleanup steps, so it holds the system as installed. snapper
+# never touches it; restoring it is a documented recovery step.
+_root_is_btrfs=false
+if findmnt -n -o FSTYPE / 2>/dev/null | grep -q btrfs; then _root_is_btrfs=true
+elif grep -qE '^\s*[^#]\S+\s+/\s+btrfs\s' /etc/fstab 2>/dev/null; then _root_is_btrfs=true
+elif btrfs filesystem usage / &>/dev/null; then _root_is_btrfs=true
+fi
+if $_root_is_btrfs; then
+    if btrfs subvolume show /.install-baseline >/dev/null 2>&1; then
+        info "Install baseline already present at /.install-baseline"
+    # Keep whatever btrfs says. A snapshot that quietly did not happen is the
+    # one failure this block exists to prevent, and discarding the reason
+    # leaves nothing to work from afterward.
+    elif _baseline_out="$(btrfs subvolume snapshot -r / /.install-baseline 2>&1)"; then
+        if btrfs subvolume show /.install-baseline >/dev/null 2>&1; then
+            info "Install baseline created at /.install-baseline"
+        else
+            warn "btrfs reported success but /.install-baseline is not a subvolume."
+        fi
+    else
+        warn "Could not create the install-baseline snapshot: ${_baseline_out:-btrfs printed nothing}"
+    fi
+fi
+
 # ── Bootloader random seed (must be the LAST thing to touch the ESP) ─────────
 # The UKI's systemd-stub reads /boot/efi/loader/random-seed on the very first
 # boot, before any service can create it; without it the first boot prints
