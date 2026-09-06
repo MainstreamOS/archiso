@@ -1520,6 +1520,9 @@ if [[ ${#FAILED_PKGS[@]} -ne 0 ]]; then
     REQUIRED_LIST="$PROFILE_DIR/packages.x86_64"
     if [[ -f "$REQUIRED_LIST" ]]; then
         mapfile -t ISO_WANTS < <(sed 's/#.*//' "$REQUIRED_LIST" | tr -d '[:blank:]' | grep -v '^$')
+        # install-dotfiles installs every meta-package from the bundled repo on
+        # the target, so those are required by the ISO as surely as the live list.
+        ISO_WANTS+=("${METAPKGS[@]}")
         REQUIRED_FAILED=()
         for pkg in "${FAILED_PKGS[@]}"; do
             pkg_name="${pkg%% *}"
