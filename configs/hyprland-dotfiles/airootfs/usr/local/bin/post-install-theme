@@ -91,8 +91,9 @@ VENVEOF
             chown "$MAIN_USER:$MAIN_USER" "$VENV_HELPER"
 
             setup_log "scratch venv build START (uv=$UV_BIN, requirements=$REQUIREMENTS)"
-            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1
-            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            _venv_rc=0
+            su -s /bin/bash "$MAIN_USER" -c "bash $VENV_HELPER" 2>&1 || _venv_rc=$?
+            if [[ $_venv_rc -eq 0 ]]; then
                 find "$VENV_PATH/bin" -maxdepth 1 -type f -exec chmod 755 {} + 2>/dev/null || true
                 chown -R "$MAIN_USER:$MAIN_USER" "$VENV_PATH" 2>/dev/null || true
                 info "Python venv created successfully."

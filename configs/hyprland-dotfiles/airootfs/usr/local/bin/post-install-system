@@ -178,8 +178,8 @@ case "$_lang" in
     ko_*) _cjk_ime=hangul ;;
     zh_*) _cjk_ime=pinyin ;;
 esac
-_kb=$(grep -oP 'XkbLayout"?\s+"\K[^"]+' /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null | head -1)
-[[ -z "$_kb" ]] && _kb=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1)
+_kb=$(grep -oP 'XkbLayout"?\s+"\K[^"]+' /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null | head -1 || true)
+[[ -z "$_kb" ]] && { _kb=$(grep -oP '^KEYMAP=\K.*' /etc/vconsole.conf 2>/dev/null | tr -d '"' | head -1 || true); }
 if [[ -z "$_cjk_ime" ]]; then
     case "$_kb" in
         jp*) _cjk_ime=mozc ;;

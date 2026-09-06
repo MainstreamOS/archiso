@@ -62,7 +62,7 @@ if ping -c1 -W3 archlinux.org &>/dev/null; then
     fi
 
     info "Network available — syncing package databases..."
-    pacman -Sy --noconfirm
+    pacman -Sy --noconfirm || warn "database sync failed — continuing with the cached databases."
 else
     warn "No network detected — skipping database sync. Packages will use cached data."
 fi
