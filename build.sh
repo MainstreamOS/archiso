@@ -1668,6 +1668,21 @@ fi
 
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 
+# mkarchiso skips pacstrap whenever work/base._make_packages exists, with no
+# idea what the package list looked like when it was written. Switching
+# editions, or editing packages.x86_64, would otherwise reuse the previous
+# root and sign an image whose contents do not match the profile.
+_edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
+_profile_fingerprint="$_edition $(sha256sum "$PROFILE_DIR/packages.x86_64" | cut -c1-16)"
+_fingerprint_file="${WORK_DIR}/.profile-fingerprint"
+if [[ -e "${WORK_DIR}/base._make_packages" ]] \
+   && [[ "$(cat "$_fingerprint_file" 2>/dev/null)" != "$_profile_fingerprint" ]]; then
+    echo ">>> The work directory was built for '$(cut -d' ' -f1 "$_fingerprint_file" 2>/dev/null || echo unknown)' with a different package list; clearing it."
+    rm -rf -- "${WORK_DIR}"
+    mkdir -p -- "${WORK_DIR}"
+fi
+printf '%s\n' "$_profile_fingerprint" > "$_fingerprint_file"
+
 # mkarchiso caches both bootmode functions and the completed airootfs image.
 # Re-copy the profile and rebuild the image so an ISO-only rebuild picks up
 # installer-script changes without requiring the caller to remember `-c`. The
@@ -1680,6 +1695,8 @@ rm -f -- \
     "${WORK_DIR}/iso._build_iso_image" \
     "${WORK_DIR}/base._make_custom_airootfs" \
     "${WORK_DIR}/base._prepare_airootfs_image" \
+    "${WORK_DIR}/base._mkairootfs_squashfs" \
+    "${WORK_DIR}/base._mkairootfs_erofs" \
     "${WORK_DIR}/base._make_bootmode_bios.syslinux" \
     "${WORK_DIR}/base._make_bootmode_uefi.systemd-boot" \
     "${WORK_DIR}/base._make_boot_on_fat" \
