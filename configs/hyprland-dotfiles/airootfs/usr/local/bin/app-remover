@@ -60,6 +60,7 @@ DENYLIST=(
     xdg-desktop-portal xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
     polkit hyprpolkitagent seatd
     bash zsh sudo systemd dbus
+    linux linux-firmware linux-headers
 )
 
 # App bundles: mainstream-* metas that represent one user-facing app
@@ -254,7 +255,10 @@ cmd_remove() {  # $1 = pkg
     pacman -Qq -- "$pkg" >/dev/null 2>&1 || die "$pkg is not installed"
 
     local cascade bad
-    cascade="$(pacman -Rs --print --print-format '%n' -- "$pkg" 2>/dev/null || true)"
+    # An empty cascade passes the protection check below, so a dry run that
+    # failed must stop the removal rather than wave it through.
+    cascade="$(pacman -Rs --print --print-format '%n' -- "$pkg" 2>/dev/null)" \
+        || die "could not resolve what removing $pkg would take with it"
     bad="$(comm -12 <(printf '%s\n' "$cascade" | sort -u) <(protected_set))"
     [ -z "$bad" ] || die "removal would affect protected packages: $(echo $bad)"
 
