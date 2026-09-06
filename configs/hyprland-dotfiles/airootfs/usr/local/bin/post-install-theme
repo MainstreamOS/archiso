@@ -142,7 +142,7 @@ SWEOF
             rm -f "$SW_HELPER"
         else
             # Fallback: just run matugen for the basic color templates (neutral)
-            su -s /bin/bash "$MAIN_USER" -c "matugen image $DEFAULT_WALL" --mode dark --prefer less-saturation --type scheme-neutral 2>/dev/null || true
+            su -s /bin/bash "$MAIN_USER" -c "matugen image '$DEFAULT_WALL' --mode dark --prefer less-saturation --type scheme-neutral" 2>/dev/null || true
             warn "Venv not ready — terminal colors will be set on first login"
         fi
         info "Initial color scheme generated."
