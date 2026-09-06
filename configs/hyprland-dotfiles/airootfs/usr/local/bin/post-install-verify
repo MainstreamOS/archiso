@@ -293,7 +293,8 @@ if [[ -n "$MAIN_USER" && -d "$MAIN_USER_HOME" ]]; then
     # the shell pseudo-apps exempt) — the same predicate desktopcleanup prunes by.
     CONFIG_QML="$MAIN_USER_HOME/.config/quickshell/ii/modules/common/Config.qml"
     if [[ -f "$CONFIG_QML" ]] && command -v python3 &>/dev/null; then
-        unresolved=$(python3 - "$CONFIG_QML" "$MAIN_USER" <<'PYEOF' 2>/dev/null || true
+        _pin_err=$(mktemp)
+        if unresolved=$(python3 - "$CONFIG_QML" "$MAIN_USER" <<'PYEOF' 2>"$_pin_err"
 import os, re, sys
 qml, user = sys.argv[1], sys.argv[2]
 exempt = {"settings", "welcome-tutorial"}
@@ -332,12 +333,16 @@ for m in re.finditer(r'property\s+list<string>\s+pinnedApps\s*:\s*\[(.*?)\]', sr
            if not (i.startswith("folder:") or i.lower() in exempt or i.lower() in avail)]
 print(",".join(bad))
 PYEOF
-)
-        if [[ -z "$unresolved" ]]; then
-            pass "all default dock pins resolve"
+        ); then
+            if [[ -z "$unresolved" ]]; then
+                pass "all default dock pins resolve"
+            else
+                fail "dock pins with no installed app: $unresolved"
+            fi
         else
-            fail "dock pins with no installed app: $unresolved"
+            skip "dock pin check (python failed: $(head -c 160 "$_pin_err" | tr '\n' ' '))"
         fi
+        rm -f "$_pin_err"
     else
         skip "dock pin check (Config.qml or python3 unavailable)"
     fi
