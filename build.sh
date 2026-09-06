@@ -914,7 +914,7 @@ build_local_pkg() {
     existing=$(find "$PKG_OUTPUT_DIR" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
     if [[ -n "$existing" ]] && [[ "$CLEAN_BUILD" == false ]]; then
         pkg_ver=$(bash -c "cd '$pkgdir' && source PKGBUILD 2>/dev/null && echo \${pkgver}-\${pkgrel}" 2>/dev/null || true)
-        if echo "$existing" | grep -q "$pkg_ver"; then
+        if [[ -n "$pkg_ver" ]] && printf '%s\n' "$existing" | grep -qF -- "-${pkg_ver}-"; then
             info "$pkgname — already built at current version, skipping."
             return
         fi
