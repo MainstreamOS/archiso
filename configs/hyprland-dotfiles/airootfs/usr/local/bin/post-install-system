@@ -58,8 +58,6 @@ Type=oneshot
 # no-op.
 RemainAfterExit=no
 ExecStart=/usr/local/bin/mainstream-keyring-init
-Restart=on-failure
-RestartSec=120
 KEYRINGEOF
 cat > /etc/systemd/system/pacman-keyring-init.timer << 'KEYRINGTIMEREOF'
 [Unit]
