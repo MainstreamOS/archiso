@@ -170,6 +170,7 @@ if [[ -r "$MAC_LIB" ]]; then
         info "Detected Apple hardware, applying Mac quirks..."
         mac_report | while read -r line; do info "  $line"; done || true
         mac_apply_autoconfig
+        mac_fetch_firmware_now
         info "Mac configuration complete."
     fi
 fi

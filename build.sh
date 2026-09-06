@@ -1218,6 +1218,20 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             install -Dm644 "$DOTS_WORK/sdata/lib/mac-config.sh" \
                 "$PROFILE_DIR/airootfs/usr/local/lib/mac-config.sh"
         fi
+        # The Mac firmware fetch and the two upstream pieces it runs, so a T2
+        # Mac can pull its own Wi-Fi and Bluetooth firmware from Apple.
+        if [[ -f "$DOTS_WORK/sdata/mac/mainstream-mac-firmware" ]]; then
+            install -Dm755 "$DOTS_WORK/sdata/mac/mainstream-mac-firmware" \
+                "$PROFILE_DIR/airootfs/usr/local/bin/mainstream-mac-firmware"
+            install -Dm644 "$DOTS_WORK/sdata/mac/macrecovery.py" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-mac/macrecovery.py"
+            install -Dm644 "$DOTS_WORK/sdata/mac/NOTICE" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-mac/NOTICE"
+            for f in "$DOTS_WORK"/sdata/mac/asahi_firmware/*.py; do
+                install -Dm644 "$f" \
+                    "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-mac/asahi_firmware/$(basename "$f")"
+            done
+        fi
 
         # Stamp the baked dotfiles release into the image so updatems on the
         # installed system treats it as already applied and only acts on a
