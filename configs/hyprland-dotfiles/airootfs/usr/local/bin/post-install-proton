@@ -48,6 +48,10 @@ elif [[ -n "$MAIN_USER" ]]; then
 
         if [[ -z "$_GE_TAG" || "$_GE_TAG" == "null" ]]; then
             warn "GE-Proton: Could not determine latest tag — skipping."
+        elif [[ ! "$_GE_TAG" =~ ^GE-Proton[0-9A-Za-z._-]+$ ]]; then
+            # The tag names a directory and is handed to a program; a value
+            # outside its known shape is not used for either.
+            warn "GE-Proton: unexpected tag name '$_GE_TAG' — skipping."
         else
             info "GE-Proton: Latest tag is $_GE_TAG"
 
@@ -67,11 +71,11 @@ elif [[ -n "$MAIN_USER" ]]; then
                 else
                     _GE_URL=$(echo "$_GE_JSON" | python3 -c "
 import sys, json
-tag = '$_GE_TAG'
+tag = sys.argv[1]
 for a in json.load(sys.stdin)['assets']:
     if a['name'] == tag + '.tar.gz':
         print(a['browser_download_url']); break
-" 2>/dev/null) || true
+" "$_GE_TAG" 2>/dev/null) || true
                 fi
 
                 if [[ -z "$_GE_URL" ]]; then
@@ -82,9 +86,13 @@ for a in json.load(sys.stdin)['assets']:
                     info "GE-Proton: Downloading $_GE_TAG..."
                     if curl -fL --progress-bar -o "$_GE_TMP" "$_GE_URL"; then
                         info "GE-Proton: Extracting to $_GE_COMPAT_DIR..."
-                        tar -xzf "$_GE_TMP" -C "$_GE_COMPAT_DIR"
+                        if tar -xzf "$_GE_TMP" -C "$_GE_COMPAT_DIR" && [[ -d "$_GE_INSTALL_DIR" ]]; then
+                            info "GE-Proton: Installed $_GE_TAG to $_GE_INSTALL_DIR"
+                        else
+                            warn "GE-Proton: archive did not extract to $_GE_INSTALL_DIR — skipping."
+                            rm -rf "$_GE_INSTALL_DIR"
+                        fi
                         rm -f "$_GE_TMP"
-                        info "GE-Proton: Installed $_GE_TAG to $_GE_INSTALL_DIR"
                     else
                         warn "GE-Proton: Download failed — skipping."
                         rm -f "$_GE_TMP"
@@ -93,8 +101,11 @@ for a in json.load(sys.stdin)['assets']:
             fi
 
             # --- 3. Seed / patch config.vdf ---
-            mkdir -p "$_GE_CFG_DIR"
-            if [[ ! -f "$_GE_CFG" ]]; then
+            # Pointing Steam at a tool directory that is not there breaks every
+            # game launch until the user notices the setting.
+            if [[ ! -d "$_GE_INSTALL_DIR" ]]; then
+                warn "GE-Proton: $_GE_TAG is not installed — leaving config.vdf alone."
+            elif mkdir -p "$_GE_CFG_DIR" && [[ ! -f "$_GE_CFG" ]]; then
                 info "GE-Proton: Creating $_GE_CFG seeded with $_GE_TAG..."
                 cat > "$_GE_CFG" <<EOF
 "InstallConfigStore"
