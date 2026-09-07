@@ -566,6 +566,12 @@ Edition options:
                   keyboard, a trackpad and Wi-Fi. Experimental, and a separate
                   image so none of it reaches a machine that is not a Mac.
 
+Environment:
+  DOTFILES_REPO   Where the dotfiles come from (default: the GitHub remote).
+                  Give it a directory to build from a local clone, which is how
+                  a change gets tested before it is pushed. Only committed work
+                  travels; the build says so and marks the image as a test.
+
 Release options:
   --release X.Y.Z Full clean release build cut as that version: a complete
                   --clean + --cleancal rebuild, every package (calamares
@@ -592,6 +598,8 @@ Examples:
   sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
   sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
+  sudo DOTFILES_REPO=~/Documents/GitHub/dots-hyprland ./build.sh --macbook
+                                      # Test build from a local dotfiles clone
 HELPEOF
             exit 0
             ;;
@@ -638,13 +646,51 @@ fi
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/MainstreamOS/dots-hyprland.git}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
 
+# ── A local dotfiles repository ─────────────────────────────────────────────
+# A directory in DOTFILES_REPO builds the image from dotfiles work that is
+# committed but not pushed, which is the only way to test a change as the thing
+# it will ship as before it goes out. The two dotfiles clones run as
+# $BUILD_USER, and git refuses to read a repository owned by anyone else, so the
+# source is copied once into a bare mirror that user owns and DOTFILES_REPO is
+# repointed at it. The copy is made with git, so only committed work travels:
+# anything still in the working tree is not in the image.
+_DOTS_LOCAL_MIRROR="/tmp/iso-dots-src.git"
+_dots_localize() {
+    [[ -d "$DOTFILES_REPO" ]] || return 0
+    [[ "$DOTFILES_REPO" == "$_DOTS_LOCAL_MIRROR" ]] && return 0
+    local src; src="$(cd "$DOTFILES_REPO" && pwd)"
+    info "Dotfiles come from the local repository at $src."
+    rm -rf "$_DOTS_LOCAL_MIRROR"
+    # git refuses a repository owned by another user, and its one exception is
+    # root under sudo when the owner is the invoking user. Rather than rest on
+    # that, the exception is stated outright so the build works however it was
+    # elevated. Both forms are given because git matches the path of the git
+    # directory itself, which is $src/.git for a normal clone and $src for a
+    # bare one.
+    git -c safe.directory="$src" -c safe.directory="$src/.git" \
+        clone --no-hardlinks --bare "$src" "$_DOTS_LOCAL_MIRROR" \
+        || die "Could not read the local dotfiles repository at $src."
+    # Read before the handover: afterwards the mirror belongs to the build user
+    # and root would be refused it in turn.
+    local head; head="$(git -C "$_DOTS_LOCAL_MIRROR" log -1 --format='%h %s' "$DOTFILES_BRANCH" 2>/dev/null || true)"
+    [[ -n "$head" ]] && info "  $DOTFILES_BRANCH is at $head"
+    chown -R "$BUILD_USER":"$BUILD_USER" "$_DOTS_LOCAL_MIRROR"
+    DOTFILES_REPO="$_DOTS_LOCAL_MIRROR"
+    warn "This image carries dotfiles that are not on the remote. It is a test build — do not release it."
+}
+
 if [[ -n "$RELEASE_VERSION" ]]; then
     info "Release build $RELEASE_VERSION — all packages will be removed and rebuilt from scratch."
     # Cutting a release happens before its tag exists, so the branch tip is the
     # only place the code can come from. Once the tag is published the same
     # command has to keep reproducing that release rather than following the
     # branch onwards, so an existing tag wins.
-    if git ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
+    # The same ownership exception the mirror below needs, so a local repository
+    # answers the tag question rather than failing into "no tag yet" and quietly
+    # stamping a release built from the branch. Both forms cover a bare source
+    # as well as a working one.
+    if git -c safe.directory="$DOTFILES_REPO" -c safe.directory="$DOTFILES_REPO/.git" \
+        ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
         | awk -F/ '{print $NF}' | grep -qxF "$RELEASE_VERSION"; then
         DOTFILES_BRANCH="$RELEASE_VERSION"
         info "Tag $RELEASE_VERSION is published — dots-hyprland pinned to it."
@@ -929,6 +975,7 @@ rm -rf "$PKG_WORK_DIR"
 mkdir -p "$PKG_WORK_DIR"
 chown -R "$BUILD_USER":"$BUILD_USER" "$PKG_WORK_DIR"
 
+_dots_localize
 if ! su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$PKG_WORK_DIR'"; then
     die "git clone failed. Check the branch name and repo URL."
 fi
@@ -1345,6 +1392,7 @@ rm -rf "$DOTS_WORK"
 mkdir -p "$DOTS_WORK"
 chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 
+_dots_localize
 if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$DOTS_WORK'"; then
     if [[ -d "$DOTS_WORK/dots" ]]; then
         mkdir -p "$SKEL_DIR"
