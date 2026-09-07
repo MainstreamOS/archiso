@@ -41,6 +41,11 @@
 #
 # Options:
 #   -f, --force      re-apply even when already at the latest tag
+#   -e, --edge       follow the branch instead of the newest tag, so work that
+#                    is pushed but not yet released is applied. Two uses: a fix
+#                    can reach the people who hit the bug before it is tagged,
+#                    and a release can be watched landing on a real machine
+#                    without tagging one to find out what it does.
 #   -n, --dry-run    print what would happen, make no changes
 #   -h, --help       show usage
 #
@@ -73,6 +78,23 @@ ok()   { printf '%s OK%s  %s\n' "$c_green"  "$c_rst" "$*"; }
 warn() { printf '%s ! %s  %s\n' "$c_yellow" "$c_rst" "$*" >&2; }
 die()  { printf '%s X %s  %s\n' "$c_red"    "$c_rst" "$*" >&2; exit 1; }
 
+# Messages in the shell's language, through the same files it reads. The
+# installed library first, the clone's copy before that library exists,
+# and English when neither is there yet.
+if [[ -r /usr/local/lib/mainstream-tr.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/mainstream-tr.sh
+elif [[ -r "$CLONE_DIR/sdata/lib/tr.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$CLONE_DIR/sdata/lib/tr.sh"
+fi
+if declare -F tr_init >/dev/null; then
+    tr_init
+else
+    t()  { printf '%s' "$1"; }
+    tf() { local fmt="$1"; shift; printf -- "$fmt" "$@"; }
+fi
+
 # Guarantee the mainstream-system core package (the plugin-rebuild machinery)
 # is installed. --overwrite covers the one-time file handoff for machines that
 # still own those paths via the old mainstream-extras. No-op once installed.
@@ -81,16 +103,16 @@ ensure_mainstream_system() {
     pacman -Qq mainstream-system >/dev/null 2>&1 && return 0
     local d="$CLONE_DIR/sdata/dist-arch/mainstream-system"
     [[ -f "$d/PKGBUILD" ]] || return 0
-    say "Ensuring mainstream-system (core machinery) is installed..."
-    ( cd "$d" && makepkg -f --noconfirm ) || { warn "mainstream-system build failed (continuing)"; return 0; }
+    say "$(t "Ensuring mainstream-system (core machinery) is installed...")"
+    ( cd "$d" && makepkg -f --noconfirm ) || { warn "$(t "mainstream-system build failed (continuing)")"; return 0; }
     local pkg; pkg=$(ls -1t "$d"/mainstream-system-*.pkg.tar.zst 2>/dev/null | head -1)
-    [[ -n "$pkg" ]] || { warn "mainstream-system: no built package found"; return 0; }
+    [[ -n "$pkg" ]] || { warn "$(t "mainstream-system: no built package found")"; return 0; }
     if sudo pacman -U --noconfirm \
             --overwrite '/usr/*' \
             "$pkg"; then
-        ok "mainstream-system installed"
+        ok "$(t "mainstream-system installed")"
     else
-        warn "mainstream-system install failed (continuing)"
+        warn "$(t "mainstream-system install failed (continuing)")"
     fi
 }
 
@@ -98,10 +120,11 @@ ensure_mainstream_system() {
 [[ $EUID -ne 0 ]] || die "updatems must not run as root; run as your user account."
 
 # Parse args
-FORCE=0; DRY_RUN=0
+FORCE=0; DRY_RUN=0; EDGE=0
 for arg in "$@"; do
     case "$arg" in
         -f|--force)   FORCE=1 ;;
+        -e|--edge)    EDGE=1 ;;
         -n|--dry-run) DRY_RUN=1 ;;
         -h|--help)
             cat <<EOF
@@ -111,6 +134,7 @@ Update Mainstream OS dotfiles when a remote-tag bump is detected.
 
 Options:
   -f, --force      Force re-apply even when already at latest tag
+  -e, --edge       Follow the branch instead of the newest tag
   -n, --dry-run    Show what would happen, make no changes
   -h, --help       Show this help
 
@@ -128,23 +152,24 @@ done
 
 # ── 1. Bootstrap if missing ─────────────────────────────────────────────────
 if [[ ! -d "$CLONE_DIR/.git" ]]; then
-    say "No dotfiles clone at $CLONE_DIR — bootstrapping from $REPO_URL"
+    say "$(tf "No dotfiles clone at %s — bootstrapping from %s" "$CLONE_DIR" "$REPO_URL")"
     if [[ $DRY_RUN -eq 1 ]]; then
-        ok "[DRY-RUN] Would clone $REPO_URL ($REPO_BRANCH) to $CLONE_DIR"
+        ok "$(tf "[DRY-RUN] Would clone %s (%s) to %s" "$REPO_URL" "$REPO_BRANCH" "$CLONE_DIR")"
         exit 0
     fi
     mkdir -p "$(dirname "$CLONE_DIR")" || die "could not create $(dirname "$CLONE_DIR")"
     git clone --branch "$REPO_BRANCH" "$REPO_URL" "$CLONE_DIR" || die "git clone failed"
     git -C "$CLONE_DIR" submodule update --init --recursive 2>/dev/null \
         || warn "submodule init had non-zero exit (continuing)"
-    ok "Cloned dotfiles to $CLONE_DIR"
+    ok "$(tf "Cloned dotfiles to %s" "$CLONE_DIR")"
 fi
 
 cd "$CLONE_DIR" || die "cannot cd to $CLONE_DIR"
 
 # ── 2. Fetch tags from origin ───────────────────────────────────────────────
-say "Fetching tags from origin/$REPO_BRANCH..."
-git fetch --tags --force --prune origin "$REPO_BRANCH" 2>&1 | sed 's/^/    /' || die "git fetch failed"
+say "$(tf "Fetching tags from origin/%s..." "$REPO_BRANCH")"
+git fetch --tags --force --prune origin "$REPO_BRANCH" 2>&1 | sed 's/^/    /'
+[[ ${PIPESTATUS[0]} -eq 0 ]] || die "git fetch failed"
 
 # ── 3. Pick the latest release tag ─────────────────────────────────────────
 # Strip peeled-tag suffixes (^{}), keep release tags (excludes the retired
@@ -158,10 +183,27 @@ LATEST_TAG=$(git ls-remote --tags origin 2>/dev/null \
     | sort -V | tail -n1 || true)
 
 if [[ -z "$LATEST_TAG" ]]; then
-    warn "No remote tags match '$TAG_REGEX' — nothing to update."
+    warn "$(tf "No remote tags match '%s' — nothing to update." "$TAG_REGEX")"
     exit 0
 fi
-say "Latest remote tag: $LATEST_TAG"
+# What the release path applies: the tag itself.
+TARGET_REF="$LATEST_TAG"
+
+# Edge follows the branch instead. The label carries the commit so a machine
+# knows which edge it is on and a later push reads as newer, the way a new tag
+# would. Anything already released stays reachable: turning edge off puts the
+# machine back on the newest tag, which is the same comparison as always.
+if [[ $EDGE -eq 1 ]]; then
+    _edge_sha=$(git rev-parse --short "origin/$REPO_BRANCH" 2>/dev/null)
+    if [[ -z "$_edge_sha" ]]; then
+        die "$(tf "Edge asked for, but origin/%s could not be resolved." "$REPO_BRANCH")"
+    fi
+    TARGET_REF="origin/$REPO_BRANCH"
+    LATEST_TAG="edge-$_edge_sha"
+    say "$(tf "Edge: following origin/%s at %s" "$REPO_BRANCH" "$_edge_sha")"
+else
+    say "$(tf "Latest remote tag: %s" "$LATEST_TAG")"
+fi
 
 # ── 4. Compare against marker ──────────────────────────────────────────────
 APPLIED_TAG=""
@@ -171,15 +213,15 @@ APPLIED_TAG=""
 # applies when a genuinely newer release exists, instead of re-applying the
 # whole just-installed tree over the user's configs.
 [[ -z "$APPLIED_TAG" && -r /etc/mainstream-dotfiles-tag ]] && APPLIED_TAG=$(</etc/mainstream-dotfiles-tag)
-say "Last-applied:      ${APPLIED_TAG:-<none>}"
+say "$(tf "Last-applied:      %s" "${APPLIED_TAG:-$(t "<none>")}")"
 
 if [[ "$LATEST_TAG" == "$APPLIED_TAG" && $FORCE -eq 0 ]]; then
-    ok "Already at $LATEST_TAG (use --force to re-apply)."
+    ok "$(tf "Already at %s (use --force to re-apply)." "$LATEST_TAG")"
     exit 0
 fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
-    ok "[DRY-RUN] Would update '${APPLIED_TAG:-<none>}' -> '$LATEST_TAG'"
+    ok "$(tf "[DRY-RUN] Would update '%s' -> '%s'" "${APPLIED_TAG:-$(t "<none>")}" "$LATEST_TAG")"
     exit 0
 fi
 
@@ -189,7 +231,7 @@ if ! git diff --quiet || ! git diff --cached --quiet \
         || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
     DIRTY=1
     STASH_MSG="updatems auto-stash $(date -Iseconds)"
-    say "Local edits/untracked present — auto-stashing as: $STASH_MSG"
+    say "$(tf "Local edits/untracked present — auto-stashing as: %s" "$STASH_MSG")"
     git stash push --include-untracked -m "$STASH_MSG" || die "git stash failed"
 fi
 
@@ -198,7 +240,7 @@ fi
 # is a no-op rather than failing — exp-update's branch-detection block
 # tries to bounce a detached HEAD back to main/master, neither of which
 # exist in our clone.
-say "Pointing $REPO_BRANCH at $LATEST_TAG..."
+say "$(tf "Pointing %s at %s..." "$REPO_BRANCH" "$LATEST_TAG")"
 git checkout "$REPO_BRANCH" 2>/dev/null || git checkout -B "$REPO_BRANCH" "origin/$REPO_BRANCH"
 # exp-update decides which files to re-apply from the LAST reflog hop
 # (HEAD@{1}..HEAD), so that hop must span last-applied -> target. Park
@@ -208,15 +250,25 @@ git checkout "$REPO_BRANCH" 2>/dev/null || git checkout -B "$REPO_BRANCH" "origi
 # they apply the tag after it.
 BASE_REF="$APPLIED_TAG"
 case "$APPLIED_TAG" in 1.0.3|1.0.4) BASE_REF="1.0.2" ;; esac
+EXTRA_ARGS=()
 if [[ -n "$BASE_REF" ]] && git rev-parse --verify "refs/tags/$BASE_REF" >/dev/null 2>&1; then
     git reset --hard "refs/tags/$BASE_REF" >/dev/null || true
+else
+    # With no base to park on, the jump below can land exactly where the
+    # clone already sits, leaving exp-update an empty hop to read: it
+    # applies nothing, exits clean, and the marker below records the
+    # release as delivered. Comparing the whole tree costs a slower pass
+    # and cannot quietly deliver nothing.
+    warn "$(tf "No usable base ref (%s) — comparing the whole tree instead of the last hop." "${BASE_REF:-$(t "<none>")}")"
+    EXTRA_ARGS+=(--force)
 fi
-git reset --hard "$LATEST_TAG" || die "git reset --hard $LATEST_TAG failed"
+git reset --hard "$TARGET_REF" || die "git reset --hard $TARGET_REF failed"
 
-say "Running ./setup exp-update (non-interactive, backup-on-conflict, -p)..."
+say "$(t "Running ./setup exp-update (non-interactive, backup-on-conflict, -p)...")"
 # The clone is pinned to $LATEST_TAG above; a pull inside exp-update would
 # overshoot the tag to the branch tip and shrink the reflog hop.
-DOTS_SKIP_PULL=1 ./setup exp-update --skip-notice --non-interactive --default-choice backup -p
+DOTS_SKIP_PULL=1 ./setup exp-update --skip-notice --non-interactive --default-choice backup -p \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 RC=$?
 
 # Make sure the core machinery package landed, whatever exp-update's -p pass did.
@@ -225,11 +277,11 @@ ensure_mainstream_system
 # ── 7. Update marker on success ────────────────────────────────────────────
 if [[ $RC -eq 0 ]]; then
     echo "$LATEST_TAG" > "$MARKER"
-    ok "Applied $LATEST_TAG. Marker written: $MARKER"
-    [[ $DIRTY -eq 1 ]] && warn "Local edits stashed — restore with: cd '$CLONE_DIR' && git stash list"
+    ok "$(tf "Applied %s. Marker written: %s" "$LATEST_TAG" "$MARKER")"
+    [[ $DIRTY -eq 1 ]] && warn "$(tf "Local edits stashed — restore with: cd '%s' && git stash list" "$CLONE_DIR")"
     exit 0
 else
-    warn "exp-update exited with rc=$RC; marker NOT updated so next run will retry."
-    [[ $DIRTY -eq 1 ]] && warn "Local edits stashed — restore with: cd '$CLONE_DIR' && git stash list"
+    warn "$(tf "exp-update exited with rc=%s; marker NOT updated so next run will retry." "$RC")"
+    [[ $DIRTY -eq 1 ]] && warn "$(tf "Local edits stashed — restore with: cd '%s' && git stash list" "$CLONE_DIR")"
     exit "$RC"
 fi
