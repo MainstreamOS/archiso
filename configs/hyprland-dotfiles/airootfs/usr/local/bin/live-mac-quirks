@@ -15,15 +15,18 @@ mac_is_apple || exit 0
 echo "Apple hardware: $(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown), applying the session quirks"
 mac_apply_session_quirks
 
-# A machine whose built-in keyboard, trackpad and Wi-Fi all sit behind the T2
-# has none of them here, and nothing this image ships changes that. The only
-# sentence saying so used to live in the install log, which is on the far side
-# of an installer this user cannot reach. Leave it where the installer window
-# will read it instead.
+# What is missing on a Mac in this session depends on the machine and on which
+# image booted it, and the only sentence saying so used to live in the install
+# log, which is on the far side of an installer this user cannot reach. Leave it
+# where the installer window will read it instead.
 NOTICE=/run/mainstream-mac-notice
-if [ "$(mac_class)" = t2 ]; then
+if [ "$(mac_class)" = t2 ] && ! mac_has_t2_support; then
     printf '%s\n' \
-        "This Mac has Apple's T2 chip. Its built-in keyboard, trackpad and Wi-Fi need a driver Mainstream does not carry, so they will not work here or after installing. Plug in a USB keyboard and mouse, and for the internet a USB Ethernet adapter, a phone sharing its connection over USB, or a USB Wi-Fi stick. Everything else on the machine works." \
+        "This Mac has Apple's T2 chip. Its built-in keyboard, trackpad and Wi-Fi need a driver this image does not carry, so they will not work here or after installing. Plug in a USB keyboard and mouse, and for the internet a USB Ethernet adapter, a phone sharing its connection over USB, or a USB Wi-Fi stick. The MacBook edition of Mainstream carries that driver, and everything else on the machine works either way." \
+        > "$NOTICE" 2>/dev/null || true
+elif mac_needs_apple_firmware; then
+    printf '%s\n' \
+        "This Mac's Wi-Fi needs firmware only Apple may hand out, so it is downloaded during installation rather than shipped here, and there is no Wi-Fi in this live session. Connect a USB Ethernet adapter or share a phone's connection over USB to install, and Wi-Fi will work once the machine restarts." \
         > "$NOTICE" 2>/dev/null || true
 elif mac_needs_wl_driver; then
     printf '%s\n' \
