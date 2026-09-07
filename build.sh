@@ -157,6 +157,13 @@ apply_macbook_overlay() {
     sed -i -e 's/^linux$/linux-t2/' \
            -e 's/^linux-headers$/linux-t2-headers/' \
            "${PROFILE_DIR}/packages.x86_64"
+    # nvidia-open depends on `linux` by name, so leaving it in would pull
+    # Arch's kernel back into an image built around another one, land a
+    # stock-named kernel with no initramfs (its preset is removed below) and
+    # pay for two kernels. No Mac this edition serves has a GPU it drives:
+    # nvidia-open covers Turing and newer, and the newest NVIDIA in any Intel
+    # Mac is Kepler. The userspace stays, since nothing else here needs it gone.
+    sed -i -e '/^nvidia-open$/d' "${PROFILE_DIR}/packages.x86_64"
     # apple-bcm-firmware is deliberately NOT here. Putting it in the image
     # would mean shipping Apple's firmware ourselves; post-install-boot pulls
     # it from the repository during the install instead, where the licence
@@ -186,6 +193,23 @@ archiso_config='/etc/mkinitcpio.conf.d/archiso.conf'
 
 archiso_image="/boot/initramfs-linux-t2.img"
 PRESET
+
+    # Every bootloader entry names the kernel by filename, and mkarchiso copies
+    # whatever the installed kernel is called. Swapping the package without
+    # these leaves every entry pointing at a vmlinuz that is not on the image,
+    # so nothing boots at all.
+    local entry
+    for entry in "${PROFILE_DIR}"/efiboot/loader/entries/*.conf \
+                 "${PROFILE_DIR}"/syslinux/archiso_sys-linux.cfg \
+                 "${PROFILE_DIR}"/syslinux/archiso_pxe-linux.cfg \
+                 "${PROFILE_DIR}"/grub/grub.cfg; do
+        [[ -f "$entry" ]] || continue
+        _overlay_stash "${entry#"${PROFILE_DIR}"/}"
+        # Matched so a second pass over an already rewritten file is a no-op,
+        # in case a failed restore ever leaves one behind.
+        sed -i -e 's/vmlinuz-linux\([^-]\|$\)/vmlinuz-linux-t2\1/g' \
+               -e 's/initramfs-linux\.img/initramfs-linux-t2.img/g' "$entry"
+    done
 
     sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-macbook"/' \
            -e 's/^iso_label="MAINSTREAM_\(MB_\)\?/iso_label="MAINSTREAM_MB_/' \
