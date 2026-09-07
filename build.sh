@@ -141,6 +141,14 @@ _overlay_creates() {
 # standard edition. The kernel is added to both the build-time config, so
 # pacstrap can resolve it, and to the installed system's config, so a Mac can
 # take updates to it afterwards.
+# Accepted as 1, true, yes or on, because the value gets typed on a command line
+# and a build that silently ignored it would be tested for the wrong thing.
+if [[ "${MACBOOK_TEST_FIRMWARE:-}" =~ ^([1]|[Tt]rue|[Yy]es|[Oo]n)$ ]]; then
+    MACBOOK_TEST_FIRMWARE=true
+else
+    MACBOOK_TEST_FIRMWARE=false
+fi
+
 _MACBOOK_REPO_BLOCK='
 [arch-mact2]
 SigLevel = Never
@@ -172,6 +180,19 @@ apply_macbook_overlay() {
     # wire or a tethered phone, which is where Omarchy sits too.
     printf '%s\n' apple-t2-audio-config t2fanrd \
         >> "${PROFILE_DIR}/packages.x86_64"
+
+    # The exception, for testing only: a tester with no wire cannot reach the
+    # installer at all, and finding that out needs an image whose live session
+    # already has Wi-Fi. The artifact is renamed so it cannot be mistaken for a
+    # release, because that firmware is still not ours to hand out.
+    local _iso_name="mainstreamos-desktop-linux-macbook"
+    if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
+        printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
+        _iso_name="${_iso_name}-testfw"
+        warn "MACBOOK_TEST_FIRMWARE is set: Apple's Wi-Fi and Bluetooth firmware is being baked into this image."
+        warn "  That firmware is not ours to redistribute. Test on your own machines and do not publish the artifact."
+        warn "  The ISO is named ...-macbook-testfw so it cannot be mistaken for a release."
+    fi
 
     # Both configs: the first is what pacstrap reads while the image is built,
     # the second is what the installed system reads forever after.
@@ -211,10 +232,13 @@ PRESET
                -e 's/initramfs-linux\.img/initramfs-linux-t2.img/g' "$entry"
     done
 
-    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-macbook"/' \
+    # The volume label is left at MAINSTREAM_MB_ either way: mkarchiso stamps it
+    # into every boot entry, and the field is short enough that a suffix risks
+    # overrunning it.
+    sed -i -e "s/^iso_name=.*/iso_name=\"${_iso_name}\"/" \
            -e 's/^iso_label="MAINSTREAM_\(MB_\)\?/iso_label="MAINSTREAM_MB_/' \
            "${PROFILE_DIR}/profiledef.sh"
-    info "MacBook overlay applied: linux-t2 kernel + Apple firmware from arch-mact2; iso_name → mainstreamos-desktop-linux-macbook."
+    info "MacBook overlay applied: linux-t2 kernel, arch-mact2 repository; iso_name → ${_iso_name}."
 }
 
 apply_profile_overlay() {
@@ -561,16 +585,25 @@ Edition options:
   --nvidia        Build the legacy-NVIDIA edition: also includes the legacy
                   NVIDIA prebuilts for full accelerated support on pre-Turing
                   cards. Omit for the standard (slim) ISO.
-  --macbook       Build the MacBook edition: the T2 kernel and Apple firmware
-                  from the arch-mact2 repository, so an Intel Mac has a
-                  keyboard, a trackpad and Wi-Fi. Experimental, and a separate
-                  image so none of it reaches a machine that is not a Mac.
+  --macbook       Build the MacBook edition: the T2 kernel and the arch-mact2
+                  repository, so an Intel Mac has a keyboard and a trackpad.
+                  Wi-Fi firmware is fetched during the install, not shipped, so
+                  the install itself needs a wire or a tethered phone.
+                  Experimental, and a separate image so none of it reaches a
+                  machine that is not a Mac.
 
 Environment:
   DOTFILES_REPO   Where the dotfiles come from (default: the GitHub remote).
                   Give it a directory to build from a local clone, which is how
                   a change gets tested before it is pushed. Only committed work
                   travels; the build says so and marks the image as a test.
+
+  MACBOOK_TEST_FIRMWARE=true
+                  With --macbook, bake Apple's Wi-Fi and Bluetooth firmware into
+                  the image so the live session has Wi-Fi. For testing on your
+                  own machines only: that firmware is not ours to redistribute,
+                  and the ISO is named ...-macbook-testfw to keep it out of a
+                  release by accident.
 
 Release options:
   --release X.Y.Z Full clean release build cut as that version: a complete
@@ -2059,6 +2092,10 @@ if [[ -n "${DOTS_TAG:-}" ]]; then
     _REL_BASE="mainstream"
     [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-legacy-nvidia"
     [[ "${MACBOOK_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-macbook"
+    # A tagged build carrying the firmware is still a test artifact, and this is
+    # the name a release would otherwise be published under.
+    [[ "${MACBOOK_PROFILE:-false}" == true && "${MACBOOK_TEST_FIRMWARE:-false}" == true ]] \
+        && _REL_BASE="mainstream-macbook-testfw"
     _NEW_ISO_PATH="$(dirname "${ISO_PATH}")/${_REL_BASE}-${DOTS_TAG}.iso"
     if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
         mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
