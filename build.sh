@@ -108,12 +108,93 @@ add_mainstream_db() {
 # packaged kernel. Backed up + restored on ANY exit (trap) so the tree and later
 # standard builds aren't mutated.
 _OVERLAY_ARCHISO_CONF="airootfs/etc/mkinitcpio.conf.d/archiso.conf"
+
+# Everything an edition rewrites goes through here first, so restore_profile_
+# overlay can put the tree back whatever the build did afterwards. The name in
+# the backup carries the path with its separators flattened, because two of the
+# files an edition touches are both called pacman.conf.
+_overlay_stash() {
+    local rel
+    for rel in "$@"; do
+        cp -a "${PROFILE_DIR}/${rel}" "$_OVERLAY_BAK_DIR/${rel//\//__}"
+    done
+    printf '%s\n' "$@" >> "$_OVERLAY_BAK_DIR/.files"
+}
+
+# A file the overlay brings into existence has nothing to restore from, so it
+# is recorded separately and deleted instead. A preset left behind would have
+# the next standard build make an initramfs for a kernel it does not install.
+_overlay_creates() {
+    printf '%s\n' "$@" >> "$_OVERLAY_BAK_DIR/.created"
+}
+
+# ── MacBook edition overlay ─────────────────────────────────────────────────
+# --macbook: the same profile built around the T2 kernel instead of Arch's, so
+# an Intel Mac has a working built-in keyboard and trackpad in the installer
+# itself. Nothing in mainline drives the T2's input transport, and the trackpad
+# additionally needs changes to two in-tree HID drivers, so a module cannot
+# stand in for the kernel here.
+#
+# The pieces come from arch-mact2, the community repository the rest of the T2
+# ecosystem builds on. It is unsigned, which is why this is a separate image:
+# the repository is added only to a machine that is a Mac, and never to the
+# standard edition. The kernel is added to both the build-time config, so
+# pacstrap can resolve it, and to the installed system's config, so a Mac can
+# take updates to it afterwards.
+_MACBOOK_REPO_BLOCK='
+[arch-mact2]
+SigLevel = Never
+Server = https://mirror.funami.tech/arch-mact2/os/x86_64
+'
+apply_macbook_overlay() {
+    _overlay_stash packages.x86_64 profiledef.sh pacman.conf \
+        airootfs/etc/pacman.conf airootfs/etc/mkinitcpio.d/linux.preset
+
+    # The T2 kernel replaces Arch's rather than joining it: two kernels would
+    # pay for the second one three times over in the image, on every download,
+    # for a machine that only ever boots one of them. linux-firmware is left
+    # alone by the anchors.
+    sed -i -e 's/^linux$/linux-t2/' \
+           -e 's/^linux-headers$/linux-t2-headers/' \
+           "${PROFILE_DIR}/packages.x86_64"
+    printf '%s\n' apple-bcm-firmware apple-t2-audio-config t2fanrd \
+        >> "${PROFILE_DIR}/packages.x86_64"
+
+    # Both configs: the first is what pacstrap reads while the image is built,
+    # the second is what the installed system reads forever after.
+    printf '%s' "$_MACBOOK_REPO_BLOCK" >> "${PROFILE_DIR}/pacman.conf"
+    printf '%s' "$_MACBOOK_REPO_BLOCK" >> "${PROFILE_DIR}/airootfs/etc/pacman.conf"
+
+    # mkinitcpio builds from whatever presets it finds, so the stock one has to
+    # go with the stock kernel or the image build fails on a kernel that is not
+    # installed.
+    rm -f "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux.preset"
+    _overlay_creates airootfs/etc/mkinitcpio.d/linux-t2.preset
+    cat > "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux-t2.preset" <<'PRESET'
+# mkinitcpio preset file for the 'linux-t2' package on archiso
+
+PRESETS=('archiso')
+
+ALL_kver='/boot/vmlinuz-linux-t2'
+archiso_config='/etc/mkinitcpio.conf.d/archiso.conf'
+
+archiso_image="/boot/initramfs-linux-t2.img"
+PRESET
+
+    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-macbook"/' \
+           -e 's/^iso_label="MAINSTREAM_\(MB_\)\?/iso_label="MAINSTREAM_MB_/' \
+           "${PROFILE_DIR}/profiledef.sh"
+    info "MacBook overlay applied: linux-t2 kernel + Apple firmware from arch-mact2; iso_name → mainstreamos-desktop-linux-macbook."
+}
+
 apply_profile_overlay() {
-    [[ "${NVIDIA_PROFILE:-false}" == true ]] || return 0
-    _OVERLAY_BAK_DIR="$(mktemp -d /tmp/nvidia-overlay-bak-XXXXXX)"
-    cp -a "${PROFILE_DIR}/packages.x86_64" "$_OVERLAY_BAK_DIR/"
-    cp -a "${PROFILE_DIR}/profiledef.sh"   "$_OVERLAY_BAK_DIR/"
-    cp -a "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}" "$_OVERLAY_BAK_DIR/archiso.conf"
+    [[ "${NVIDIA_PROFILE:-false}" == true || "${MACBOOK_PROFILE:-false}" == true ]] || return 0
+    _OVERLAY_BAK_DIR="$(mktemp -d /tmp/edition-overlay-bak-XXXXXX)"
+    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
+        apply_macbook_overlay
+        return 0
+    fi
+    _overlay_stash packages.x86_64 profiledef.sh "$_OVERLAY_ARCHISO_CONF"
     sed -i -e 's/^nvidia-open$/nvidia-580xx-dkms/' \
            -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms\nlinux-headers/' \
            "${PROFILE_DIR}/packages.x86_64"
@@ -137,10 +218,17 @@ restore_profile_overlay() {
     [[ -n "${_OVERLAY_BAK_DIR:-}" && -d "${_OVERLAY_BAK_DIR:-}" ]] || return 0
     # Restore all three even if one fails (never leave a half-overlaid tree),
     # keep the backup on error, and always return 0 so trap cleanup continues.
-    local rc=0
-    cp -a "$_OVERLAY_BAK_DIR/packages.x86_64" "${PROFILE_DIR}/packages.x86_64" || rc=1
-    cp -a "$_OVERLAY_BAK_DIR/profiledef.sh"   "${PROFILE_DIR}/profiledef.sh"   || rc=1
-    cp -a "$_OVERLAY_BAK_DIR/archiso.conf"    "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}" || rc=1
+    local rc=0 rel
+    while read -r rel; do
+        [[ -n "$rel" ]] || continue
+        cp -a "$_OVERLAY_BAK_DIR/${rel//\//__}" "${PROFILE_DIR}/${rel}" || rc=1
+    done < "$_OVERLAY_BAK_DIR/.files"
+    if [[ -r "$_OVERLAY_BAK_DIR/.created" ]]; then
+        while read -r rel; do
+            [[ -n "$rel" ]] || continue
+            rm -f -- "${PROFILE_DIR}/${rel}" || rc=1
+        done < "$_OVERLAY_BAK_DIR/.created"
+    fi
     if (( rc == 0 )); then
         rm -rf -- "$_OVERLAY_BAK_DIR"
         _OVERLAY_BAK_DIR=""
@@ -367,6 +455,11 @@ RELEASE_VERSION=""
 # Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
 # (NVIDIA_DEPS). Standard ISO omits them to stay slim.
 NVIDIA_PROFILE=false
+# MacBook edition (--macbook): the same profile built around the T2 kernel and
+# the Apple firmware, so an Intel Mac has a keyboard, a trackpad and Wi-Fi. Kept
+# to its own image because those pieces come from a third-party repository and
+# have no business on a machine that is not a Mac.
+MACBOOK_PROFILE=false
 # Backup dir for the --nvidia profile overlay (set/cleared by apply/restore).
 _OVERLAY_BAK_DIR=""
 
@@ -403,6 +496,10 @@ for arg in "$@"; do
             NVIDIA_PROFILE=true
             info "Legacy-NVIDIA edition requested — legacy NVIDIA prebuilts will be included."
             ;;
+        --macbook)
+            MACBOOK_PROFILE=true
+            info "MacBook edition requested — the T2 kernel and Apple firmware will be included."
+            ;;
         --release)
             _WANT_RELEASE_VERSION=true
             CLEAN_BUILD=true
@@ -434,6 +531,10 @@ Edition options:
   --nvidia        Build the legacy-NVIDIA edition: also includes the legacy
                   NVIDIA prebuilts for full accelerated support on pre-Turing
                   cards. Omit for the standard (slim) ISO.
+  --macbook       Build the MacBook edition: the T2 kernel and Apple firmware
+                  from the arch-mact2 repository, so an Intel Mac has a
+                  keyboard, a trackpad and Wi-Fi. Experimental, and a separate
+                  image so none of it reaches a machine that is not a Mac.
 
 Release options:
   --release X.Y.Z Full clean release build cut as that version: a complete
@@ -460,6 +561,7 @@ Examples:
   sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
   sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
+  sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
 HELPEOF
             exit 0
             ;;
@@ -663,6 +765,13 @@ NVIDIA_DEPS=(
 # Append (not branch) so the build loop below, which iterates AUR_DEPS, builds them.
 if [[ "$NVIDIA_PROFILE" == true ]]; then
     AUR_DEPS+=("${NVIDIA_DEPS[@]}")
+fi
+
+# One image cannot be both: the two editions replace the same kernel line in
+# packages.x86_64, and the second overlay to run would sed a line the first one
+# had already taken.
+if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_PROFILE" == true ]]; then
+    die "--nvidia and --macbook build different images; pick one."
 fi
 
 # ── Preflight checks ───────────────────────────────────────────────────────
@@ -1716,6 +1825,7 @@ mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 # editions, or editing packages.x86_64, would otherwise reuse the previous
 # root and sign an image whose contents do not match the profile.
 _edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
+[[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
 _profile_fingerprint="$_edition $(sha256sum "$PROFILE_DIR/packages.x86_64" | cut -c1-16)"
 _fingerprint_file="${WORK_DIR}/.profile-fingerprint"
 if [[ -e "${WORK_DIR}/base._make_packages" ]] \
@@ -1867,6 +1977,7 @@ fi
 if [[ -n "${DOTS_TAG:-}" ]]; then
     _REL_BASE="mainstream"
     [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-legacy-nvidia"
+    [[ "${MACBOOK_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-macbook"
     _NEW_ISO_PATH="$(dirname "${ISO_PATH}")/${_REL_BASE}-${DOTS_TAG}.iso"
     if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
         mv -f -- "${ISO_PATH}" "${_NEW_ISO_PATH}"
