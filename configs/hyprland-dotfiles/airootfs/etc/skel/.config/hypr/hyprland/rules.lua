@@ -81,78 +81,120 @@ hl.window_rule({match = {class = "^(steam_app).*" }, immediate = true})
 -- No shadow for tiled windows
 hl.window_rule({match = {float = 0 }, no_shadow = true})
 
--- Open a floating window somewhere its title bar can be reached. A float's
+-- Keep a floating window somewhere its title bar can be reached. A float's
 -- title bar is the only handle it has, and a client may ask to open at an
 -- absolute position, so one can arrive with that bar beneath the bar or the
 -- dock. The panels' own reservations are already in monitor.reserved; this
--- moves a new float to the near edge of the room they leave, and moves
--- nothing else. What size a window opens at is left to it, and where a
--- window is deliberately placed is left alone unless its title bar would
--- land somewhere it cannot be grabbed.
+-- moves a float to the near edge of the room they leave, and moves nothing
+-- else. What size a window opens at is left to it, and where a window is
+-- deliberately placed is left alone unless its title bar would land
+-- somewhere it cannot be grabbed.
 --
--- `window.open` fires once the floating layout has given the window its
--- initial geometry. hyprbars draws its bar above that geometry rather than
--- inside it, so the bar's own height is part of the room the window needs.
-local function openFloatingWindowWithinReach(window)
+-- The room is what a tiled window would be handed: the monitor, less what
+-- the panels reserve on each edge, less the gap and border every tile keeps.
+-- A float is given the same room, so where it may sit does not depend on
+-- which edge the bar and the dock happen to be on. hyprbars draws its bar
+-- above the position a window reports rather than inside it, so the bar's
+-- own height comes off the top wherever the panels are. Counting it only
+-- under a top reservation is what walked the bar off screen once the panel
+-- moved to the other edge: with nothing reserved above, a window sat flush
+-- to the screen's own top and wore its title bar past it.
+local function reachableRoom(monitor)
+    local reserved = monitor and monitor.reserved
+    if not reserved then
+        return nil
+    end
+
+    -- A monitor's width and height arrive in physical pixels, while its
+    -- position, what it reserves, and every window's place and size are in
+    -- logical ones, so the room is measured in logical pixels as well. Taken
+    -- as they come, the far edges of a scaled monitor sat well past the
+    -- screen and never held anything.
+    local scale = tonumber(monitor.scale) or 1
+    if scale <= 0 then
+        scale = 1
+    end
+    local width = monitor.width / scale
+    local height = monitor.height / scale
+
+    local border = tonumber(hl.get_config("general:border_size")) or 0
+    local titleBar = tonumber(hl.get_config("plugin:hyprbars:bar_height")) or 0
+    local gapsOut = hl.get_config("general:gaps_out") or {}
+    local left = monitor.x + (reserved.left or 0) + (gapsOut.left or 0) + border
+    local top = monitor.y + (reserved.top or 0) + (gapsOut.top or 0) + border + titleBar
+    local right = monitor.x + width - (reserved.right or 0) - (gapsOut.right or 0) - border
+    local bottom = monitor.y + height - (reserved.bottom or 0) - (gapsOut.bottom or 0) - border
+    if right <= left or bottom <= top then
+        return nil
+    end
+
+    return { left = left, top = top, right = right, bottom = bottom }
+end
+
+-- Held inside the room, a window wears its title bar inside it too, however
+-- big the window is, and that bar is the one handle a float has. So moving
+-- is all it takes: what a window asked to be is its own business once it
+-- can be reached, and one larger than the room keeps that size and
+-- overhangs the far edge rather than being cut down to fit. The floors are
+-- what make this hold: without them a window too big for the room is
+-- pushed past the near edge instead of resting against it, which is the
+-- one way the title bar still gets away.
+local function withinReach(room, x, y, size)
+    return math.min(math.max(x, room.left), math.max(room.left, room.right - size.x)),
+           math.min(math.max(y, room.top), math.max(room.top, room.bottom - size.y))
+end
+
+local function keepFloatingWindowWithinReach(window)
     if not window or not window.floating or window.fullscreen ~= 0 then
         return
     end
 
-    local monitor = window.monitor
-    if not monitor then
-        return
-    end
-
-    local reserved = monitor.reserved
     local at = window.at
     local size = window.size
-    if not reserved or not at or not size then
+    local room = reachableRoom(window.monitor)
+    if not at or not size or not room then
         return
     end
 
-    -- Parenthesized: hl.get_config answers (value, err), and in the last
-    -- argument position both would reach tonumber, handing it the error
-    -- string as a numeric base. A key that is absent -- bar_height whenever
-    -- the plugin is not loaded -- would raise on every window.open.
-    local border = tonumber((hl.get_config("general:border_size"))) or 0
-    local titleBar = tonumber((hl.get_config("plugin:hyprbars:bar_height"))) or 0
-    local gapsOut = hl.get_config("general:gaps_out") or {}
-    -- The room a tiled window would be handed: the monitor, less what the
-    -- panels reserve on each edge, less the gap and border every tile keeps.
-    -- A float is given the same room, so where it may open does not depend on
-    -- which edge the bar and the dock happen to sit on.
-    local left = monitor.x + (reserved.left or 0) + (gapsOut.left or 0) + border
-    local top = monitor.y + (reserved.top or 0) + (gapsOut.top or 0) + border
-    local right = monitor.x + monitor.width - (reserved.right or 0) - (gapsOut.right or 0) - border
-    local bottom = monitor.y + monitor.height - (reserved.bottom or 0) - (gapsOut.bottom or 0) - border
-
-    -- A title bar is drawn above the position a window reports, so the room it
-    -- needs comes off the top wherever the panels are. Counting it only under
-    -- a top reservation is what walked the bar off screen once the panel moved
-    -- to the other edge: with nothing reserved above, a window opened flush to
-    -- the screen's own top and wore its title bar past it.
-    local contentTop = top + titleBar
-    if right <= left or bottom <= contentTop then
-        return
-    end
-
-    -- Held inside the room, a window wears its title bar inside it too, however
-    -- big the window is, and that bar is the one handle a float has. So moving
-    -- is all it takes: what a window asked to be is its own business once it
-    -- can be reached, and one larger than the room keeps that size and
-    -- overhangs the far edge rather than being cut down to fit. The floors are
-    -- what make this hold — without them a window too big for the room is
-    -- pushed past the near edge instead of resting against it, which is the
-    -- one way the title bar still gets away.
-    local x = math.min(math.max(at.x, left), math.max(left, right - size.x))
-    local y = math.min(math.max(at.y, contentTop), math.max(contentTop, bottom - size.y))
-
+    local x, y = withinReach(room, at.x, at.y, size)
     if x ~= at.x or y ~= at.y then
         hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
     end
 end
 
-hl.on("window.open", openFloatingWindowWithinReach)
+-- `window.open` fires once the floating layout has given the window its
+-- initial geometry.
+hl.on("window.open", keepFloatingWindowWithinReach)
+
+-- A float can end up under a panel later as well: moved to a workspace on a
+-- monitor whose panels sit elsewhere, or dropped there by an overview. Both
+-- announce the move before the window is put in its new place, so the check
+-- waits for the next turn of the loop, which is after the placement and
+-- before anything is drawn.
+hl.on("window.move_to_workspace", function(window)
+    hl.timer(function()
+        keepFloatingWindowWithinReach(window)
+    end, { timeout = 1, type = "oneshot" })
+end)
+
+-- The launcher's overview drops a floating window where the pointer let go
+-- and asks here for the move to make, so the drop lands within reach. x and
+-- y are relative to the window's monitor; the answer is the move in global
+-- coordinates, unclamped when the window cannot be found.
+function MainstreamFloatMoveWithinReach(selector, x, y)
+    local window = hl.get_window(selector)
+    local monitor = window and window.monitor
+    if not monitor then
+        return hl.dsp.window.move({ x = x, y = y, window = selector })
+    end
+
+    local gx, gy = monitor.x + x, monitor.y + y
+    local room = reachableRoom(monitor)
+    if room and window.size then
+        gx, gy = withinReach(room, gx, gy, window.size)
+    end
+    return hl.dsp.window.move({ x = gx, y = gy, window = selector })
+end
 
 -- ######## Workspace rules ########
 hl.workspace_rule({ workspace = "special:special", gaps_out = 30 })
@@ -206,6 +248,14 @@ hl.layer_rule({ match = { namespace = "osk[0-9]*" }, ignore_alpha = 0.6})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, blur_popups = true})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, blur = true})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, ignore_alpha = 0.79})
+-- The catch-all above also blurs surfaces nothing is ever seen through: the
+-- wallpaper layer itself, the corner masks and the hot-corner ripple. The
+-- wallpaper covers the whole screen, and the blur pass runs over its full
+-- extent on every damaged frame although none of it reaches the screen.
+-- Measured on a 4K desktop, that was most of what blur cost, with the bar,
+-- dock and sidebars a fraction of it. The overview's dim stays blurred: what
+-- it frosts behind the overview is very much seen.
+hl.layer_rule({ match = { namespace = "quickshell:(background|screenCorners|hotCornerRipple)" }, blur = false})
 -- Blur stops at a fixed alpha, so with the shared 0.79 the bar loses its blur
 -- between two neighboring steps of its own transparency slider, and where that
 -- lands moves with the interface's transparency setting — around 7% of the
@@ -224,11 +274,16 @@ hl.layer_rule({ match = { namespace = "quickshell:(bar|verticalBar|dock[A-Za-z]*
 -- anything but the wallpaper. Blurring the wallpaper alone punches a bright,
 -- stepped outline through the dim, because that edge is decided per pixel with
 -- nothing in between. Reading what is actually behind it puts the dim on both
--- sides of the line, and the line has nothing left to show.
-hl.layer_rule({ match = { namespace = "quickshell:dock[A-Za-z]*" }, xray = false})
+-- sides of the line, and the line has nothing left to show. The dim itself is
+-- there to obscure the apps behind the launcher; with xray it would frost the
+-- wallpaper and leave every window legible through it.
+hl.layer_rule({ match = { namespace = "quickshell:(dock[A-Za-z]*|overviewDim)" }, xray = false})
 hl.layer_rule({ match = { namespace = "quickshell:bar" }, animation = "slide"})
 hl.layer_rule({ match = { namespace = "quickshell:actionCenter" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:cheatsheet" }, animation = "slide bottom"})
+-- A menu belongs under the pointer at once. The stock layer animation
+-- scales it up from 93%, which reads as the menu arriving from somewhere.
+hl.layer_rule({ match = { namespace = "quickshell:desktopMenu" }, animation = "fade"})
 hl.layer_rule({ match = { namespace = "quickshell:dock" }, animation = "slide bottom"})
 hl.layer_rule({ match = { namespace = "quickshell:dockTop" }, animation = "slide top"})
 hl.layer_rule({ match = { namespace = "quickshell:dockLeft" }, animation = "slide left"})
@@ -245,6 +300,9 @@ hl.layer_rule({ match = { namespace = "quickshell:notificationPopup" }, animatio
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, ignore_alpha = 1})
 hl.layer_rule({ match = { namespace = "quickshell:overview" }, no_anim = true})
+-- The dim grows from a pixel to the screen on every open; animated, that
+-- reads as blur spreading outward. It appears in one step, like the launcher.
+hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:osk" }, animation = "slide bottom"})
 hl.layer_rule({ match = { namespace = "quickshell:polkit" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:popup" }, xray = false}) -- No weird color for bar tooltips (this in theory should suffice)

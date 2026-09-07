@@ -16,6 +16,27 @@ Scope {
     id: overviewScope
     property bool dontAutoCancelSearch: false
 
+    // The compositor's edge reservations come from a snapshot that layer
+    // open and close events do not refresh, and a mapped layer changing
+    // its zone (a pin, an auto-hide) sends no event at all, so the
+    // snapshot is retaken at every open. The open can move a zone itself
+    // (a bar shown for a held Super hides on the release that opens the
+    // launcher), and that reaches the compositor at the bar's next frame,
+    // after the first query, so a second query follows once it has landed.
+    Connections {
+        target: GlobalStates
+        function onOverviewOpenChanged() {
+            if (!GlobalStates.overviewOpen) return;
+            HyprlandData.updateMonitors();
+            reservationSettle.restart();
+        }
+    }
+    Timer {
+        id: reservationSettle
+        interval: 100
+        onTriggered: if (GlobalStates.overviewOpen) HyprlandData.updateMonitors()
+    }
+
     // Dismiss in-surface (dismissArea + Escape), not the shared focus grab: the
     // always-alive full-screen surface already captures outside clicks, so the
     // grab was redundant and its races broke the dock launcher button.
@@ -135,6 +156,29 @@ Scope {
             bottom: true
             left: true
             right: true
+        }
+        // While it is open the compositor sends every click to this surface,
+        // wherever the click lands, so the surface lies under every place a
+        // click can land, exclusive zones included.
+        exclusionMode: ExclusionMode.Ignore
+        // Content keeps clear of whatever holds an edge. The compositor's
+        // resolved reservation covers the bar, a pinned dock, a pinned sidebar
+        // or keyboard, and anything third party, on this screen alone and only
+        // while it is actually there. A dock reserves nothing unpinned and
+        // overhangs its zone pinned, so its share is added by hand, and a dock
+        // owner keeps the search bar at one height wherever the dock sits:
+        // with neither the dock nor the bar on top, the content starts a
+        // dock's thickness down, as it does under a top dock.
+        readonly property var monitorData: HyprlandData.monitors.find(m => m.id === panelWindow.monitor?.id)
+        function edgeClearance(edge) {
+            const index = { left: 0, top: 1, right: 2, bottom: 3 }[edge];
+            let c = panelWindow.monitorData?.reserved?.[index] ?? 0;
+            if (Config.options.dock.enable && Appearance.sizes.dockEdge === edge)
+                c += GlobalStates.dockPinned ? Appearance.sizes.elevationMargin : Appearance.sizes.dockExtent;
+            if (edge === "top" && Config.options.dock.enable
+                    && Appearance.sizes.dockEdge !== "top" && Appearance.sizes.barEdge !== "top")
+                c += Appearance.sizes.dockExtent;
+            return c;
         }
 
         Connections {
@@ -296,38 +340,73 @@ Scope {
         }
 
         // An open overview captures clicks across the whole screen, but the
-        // only thing that closes it is the dismiss area inside the flickable.
-        // The top clearance sits outside that area, so a click landing there
-        // does nothing at all — and the dock's launcher button, which the
-        // clearance is reserved for, reads as dead after opening the overview
-        // because the press that should toggle it back is swallowed.
+        // dismiss area inside the flickable stops at the clearance kept for
+        // the bar and the dock. This backdrop sits under the flickable and
+        // takes what lands outside it: a click on either band while this is
+        // open, the dock's launcher button above all, means close.
         MouseArea {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: flickable.anchors.topMargin
-            enabled: GlobalStates.overviewOpen && flickable.anchors.topMargin > 0
+            anchors.fill: parent
+            enabled: GlobalStates.overviewOpen && !contentFade.appDragging
             onClicked: GlobalStates.overviewOpen = false
+        }
+
+        // The corner that opened this cannot close it. While the overview is
+        // up the pointer stops reaching the hot corner's surface underneath,
+        // so its own close path never runs and the gesture only works one way.
+        // This answers in the same rectangle instead, on the same dwell, and
+        // fires the same ripple, so the corner behaves the same in both
+        // directions. Only while the corner is what opens this overview.
+        //
+        // Armed by leaving rather than by a timer: the pointer is already in
+        // the corner at the moment the overview opens, and closing on that
+        // would shut it again the instant it appeared.
+        MouseArea {
+            id: cornerClose
+            z: 100
+            x: 0
+            y: 0
+            width: Appearance.sizes.hotCornerWidth
+            height: Appearance.sizes.hotCornerHeight
+            hoverEnabled: true
+            acceptedButtons: Qt.NoButton
+            enabled: GlobalStates.overviewOpen
+                && (Config.options?.bar.hotCorners.trigger ?? "off") === "default"
+            // Ready the moment the overview appears, unless the pointer is
+            // still sitting in the corner, which is where it is when the corner
+            // itself just opened this. Then it waits for the pointer to leave,
+            // so the overview does not shut again the instant it is shown.
+            //
+            // Deciding this by where the pointer already is, rather than after
+            // a wait, is what makes the first return to the corner close it.
+            // The overview appears once the ripple has played, by which time
+            // the pointer has usually already moved on, and an arming rule that
+            // ignored that spent the first visit doing nothing.
+            property bool armed: false
+            onEnabledChanged: armed = enabled && !containsMouse
+            onExited: {
+                cornerCloseDwell.stop();
+                armed = true;
+            }
+            onEntered: if (armed) cornerCloseDwell.restart()
+            Timer {
+                id: cornerCloseDwell
+                interval: 50
+                onTriggered: {
+                    GlobalStates.hotCornerTriggered();
+                    GlobalStates.overviewOpen = false;
+                }
+            }
         }
 
         StyledFlickable {
             id: flickable
             anchors.fill: parent
-            // A dock owner needs clearance under the top edge wherever it sits,
-            // so the search bar keeps one height as the dock moves: an unpinned
-            // top dock reveals over the overview and a dock on another edge
-            // leaves the top bare, so both start the content a dock's thickness
-            // down. A pinned top dock displaces this window by its exclusive
-            // zone, which stops at the pill and leaves the shadow band
-            // uncovered, so only that remainder is added; a top bar displaces
-            // the window on its own. With no dock at all there is nothing to
-            // clear, and reserving a strip would only push the launcher down.
-            anchors.topMargin: {
-                if (!Config.options.dock.enable || Appearance.sizes.barEdge === "top") return 0;
-                if (Appearance.sizes.dockEdge === "top" && GlobalStates.dockPinned)
-                    return Appearance.sizes.elevationMargin;
-                return Appearance.sizes.dockExtent;
-            }
+            // Inset by whatever holds each edge, so nothing sits under the
+            // bar or the dock.
+            anchors.topMargin: panelWindow.edgeClearance("top")
+            anchors.bottomMargin: panelWindow.edgeClearance("bottom")
+            anchors.leftMargin: panelWindow.edgeClearance("left")
+            anchors.rightMargin: panelWindow.edgeClearance("right")
             contentWidth: columnLayout.implicitWidth
             contentHeight: columnLayout.implicitHeight
             clip: true
@@ -406,7 +485,6 @@ Scope {
 
                 SearchWidget {
                     id: searchWidget
-                    anchors.horizontalCenter: parent.horizontalCenter
                     Layout.alignment: Qt.AlignHCenter
                     // Hidden when the app drawer is expanded (it takes over).
                     // Also hidden when overview was opened in workspaces-only
@@ -437,7 +515,6 @@ Scope {
                 Loader {
                     id: overviewLoader
                     Layout.alignment: Qt.AlignHCenter
-                    anchors.horizontalCenter: parent.horizontalCenter
                     active: GlobalStates.overviewOpen && panelWindow.monitorIsFocused && (Config?.options.overview.enable ?? true) && !appDrawer.expanded
                     Layout.maximumHeight: appDrawer.expanded ? 0 : (item ? item.implicitHeight : 0)
                     opacity: appDrawer.expanded ? 0 : 1

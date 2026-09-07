@@ -553,9 +553,10 @@ Singleton {
         property string sidebarRightEdge: Config.options.bar.vertical ? root.sizes.barEdge : "right"
         // Whether the two share an edge, and so cannot both be shown.
         property bool sidebarsShareEdge: root.sizes.sidebarLeftEdge === root.sizes.sidebarRightEdge
-        // The dock's visible thickness plus its screen gap. The dock sizes its
-        // window from this and the overview clears the top edge by it, so the
-        // two cannot drift apart.
+        // The dock's visible thickness plus its screen gap at the configured
+        // icon size. The overview clears the dock's edge by it; a dock that has
+        // shrunk its icons to fit a short screen is thinner than this, so that
+        // clearance can only err long, never short.
         // The dock is as thick as its icons ask: one slider drives the icon,
         // and the surface grows around it, keeping the stock look identical
         // at the stock icon size.
@@ -642,6 +643,11 @@ Singleton {
         property real barShortenScreenWidthThreshold: 1200 // Shorten if screen width is at most this value
         property real barHellaShortenScreenWidthThreshold: 1000 // Shorten even more...
         property real elevationMargin: 10
+        // The top-left rectangle the hot corner answers in. Shared, because
+        // the overview has to answer in the same one: while it is open the
+        // pointer no longer reaches the corner's own surface.
+        property real hotCornerWidth: 106
+        property real hotCornerHeight: 19
         property real fabShadowRadius: 5
         property real fabHoveredShadowRadius: 7
         property real hyprlandGapsOut: 5

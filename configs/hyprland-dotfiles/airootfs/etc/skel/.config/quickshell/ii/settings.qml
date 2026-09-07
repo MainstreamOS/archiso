@@ -16,6 +16,9 @@ import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
 import qs.modules.common.functions as CF
+// The Background page previews the wallpaper transitions; pages load by path,
+// so the module has to be named here for the scanner to find it.
+import qs.modules.ii.background
 
 ApplicationWindow {
     id: root
@@ -52,7 +55,9 @@ ApplicationWindow {
         {
             group: 2,
             name: Translation.tr("Dock"),
-            icon: "dock_to_bottom",
+            // The bar's glyph the other way up, so the two entries are one
+            // shape distinguished only by which edge it sits on.
+            icon: "toast",
             component: "modules/settings/DockConfig.qml"
         },
         {
@@ -129,6 +134,12 @@ ApplicationWindow {
             name: Translation.tr("Services"),
             icon: "settings",
             component: "modules/settings/ServicesConfig.qml"
+        },
+        {
+            group: 4,
+            name: Translation.tr("Manage"),
+            icon: "apps",
+            component: "modules/settings/ManageAppsConfig.qml"
         },
         {
             group: 4,
@@ -384,6 +395,7 @@ ApplicationWindow {
                                 toggled: root.currentPage === index
                                 onPressed: root.currentPage = index
                                 buttonIcon: modelData.icon
+                                buttonIconRotation: modelData.iconRotation ?? 0
                                 buttonText: modelData.name
                             }
                         }
@@ -502,6 +514,11 @@ ApplicationWindow {
         id: navBtn
         property bool toggled: false
         property string buttonIcon
+        // A glyph that only reads correctly one way up, the bar's among them,
+        // is turned here. NavigationRailButton has carried this for its own
+        // rows all along; this one had the value passed to it and nowhere to
+        // put it, so the bar's icon sat upside down.
+        property real buttonIconRotation: 0
         property string buttonText
 
         readonly property real baseSize: 56
@@ -550,6 +567,7 @@ ApplicationWindow {
                     fill: navBtn.toggled ? 1 : 0
                     font.weight: (navBtn.toggled || navBtn.hovered) ? Font.DemiBold : Font.Normal
                     text: navBtn.buttonIcon
+                    rotation: navBtn.buttonIconRotation
                     color: navBtn.toggled ? Appearance.m3colors.m3onSecondaryContainer : Appearance.colors.colOnLayer1
 
                     Behavior on color {

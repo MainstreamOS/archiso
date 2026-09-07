@@ -29,16 +29,29 @@ Scope {
         // layer is click-through by design (empty mask), so keeping it visible
         // permanently has no input-side effect; contentFade.opacity already
         // makes it visually invisible while the overview is closed.
+        // The compositor blurs a mapped surface over its whole extent on
+        // every damaged frame, closed or not, so closed it is kept to one
+        // pixel, and only the screen that shows it spans. It stays full for
+        // a moment after the fade ends: a reopen inside that moment needs
+        // no configure at all, and a reopen can no longer land on the
+        // shrink itself, where the fade would start, drop as the one-pixel
+        // size arrived, and start again.
+        readonly property bool spanning: (GlobalStates.overviewOpen && dimWindow.monitorIsFocused) || contentFade.opacity > 0 || shrinkHold.running
+        Timer {
+            id: shrinkHold
+            interval: 500
+        }
         visible: (Config.options.overview.keepSurfaceAlive ?? true)
-            || GlobalStates.overviewOpen
-            || contentFade.opacity > 0
+            || spanning
 
         anchors {
-            top: true
-            bottom: true
-            left: true
-            right: true
+            top: dimWindow.spanning
+            bottom: dimWindow.spanning
+            left: dimWindow.spanning
+            right: dimWindow.spanning
         }
+        implicitWidth: 1
+        implicitHeight: 1
 
         // Purely visual — all input passes through
         mask: Region {}
@@ -46,7 +59,10 @@ Scope {
         Item {
             id: contentFade
             anchors.fill: parent
-            opacity: (GlobalStates.overviewOpen && dimWindow.monitorIsFocused) ? 1 : 0
+            // The surface grows before it fades in, so a slow configure from a
+            // busy compositor lands as a late fade rather than a pop partway.
+            opacity: (GlobalStates.overviewOpen && dimWindow.monitorIsFocused && dimWindow.width > 1) ? 1 : 0
+            onOpacityChanged: if (opacity === 0) shrinkHold.restart()
             Behavior on opacity {
                 NumberAnimation {
                     duration: Appearance.animation.elementMoveFast.duration
