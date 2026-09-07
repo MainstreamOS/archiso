@@ -157,7 +157,13 @@ apply_macbook_overlay() {
     sed -i -e 's/^linux$/linux-t2/' \
            -e 's/^linux-headers$/linux-t2-headers/' \
            "${PROFILE_DIR}/packages.x86_64"
-    printf '%s\n' apple-bcm-firmware apple-t2-audio-config t2fanrd \
+    # apple-bcm-firmware is deliberately NOT here. Putting it in the image
+    # would mean shipping Apple's firmware ourselves; post-install-boot pulls
+    # it from the repository during the install instead, where the licence
+    # question belongs to whoever packaged it rather than to us. The cost is
+    # that a T2 Mac has no Wi-Fi until it is installed, so the install needs a
+    # wire or a tethered phone, which is where Omarchy sits too.
+    printf '%s\n' apple-t2-audio-config t2fanrd \
         >> "${PROFILE_DIR}/packages.x86_64"
 
     # Both configs: the first is what pacstrap reads while the image is built,

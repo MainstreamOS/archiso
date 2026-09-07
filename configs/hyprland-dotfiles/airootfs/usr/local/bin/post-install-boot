@@ -176,11 +176,17 @@ if [[ -r "$MAC_LIB" ]]; then
         # on an image that did not carry them.
         if mac_needs_wl_driver; then
             wl_files=()
-            for pat in broadcom-wl-dkms dkms linux-headers pahole; do
-                for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
-                    [[ -f "$f" ]] && wl_files+=("$f")
+            # The staged headers are Arch's. On the MacBook edition the kernel
+            # is linux-t2, so building against them would build for a kernel
+            # that is not running: take the whole set from the repositories
+            # instead, where the matching headers live.
+            if mac_kernel_is_stock; then
+                for pat in broadcom-wl-dkms dkms linux-headers pahole; do
+                    for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
+                        [[ -f "$f" ]] && wl_files+=("$f")
+                    done
                 done
-            done
+            fi
             if (( ${#wl_files[@]} > 0 )); then
                 info "Installing the Broadcom wl driver from the image: ${wl_files[*]##*/}"
                 pacman -U --noconfirm --needed "${wl_files[@]}" 2>&1 \
@@ -192,6 +198,16 @@ if [[ -r "$MAC_LIB" ]]; then
             fi
         fi
         mac_apply_autoconfig
+        # The MacBook edition carries the arch-mact2 repository, which packages
+        # the Wi-Fi and Bluetooth firmware this machine needs. A few megabytes
+        # from there beats 850 MB of recovery image from Apple, so it is tried
+        # first; the fetch below still runs and does nothing if the files
+        # arrived, and is the only route on every other edition.
+        if mac_needs_apple_firmware && pacman -Sl arch-mact2 >/dev/null 2>&1; then
+            info "Installing Apple Wi-Fi and Bluetooth firmware from arch-mact2..."
+            pacman -S --noconfirm --needed apple-bcm-firmware 2>&1 \
+                || note_failure "apple-bcm-firmware install failed; falling back to the fetch from Apple"
+        fi
         mac_fetch_firmware_now
         info "Mac configuration complete."
     fi
