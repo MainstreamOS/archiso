@@ -878,11 +878,14 @@ if [[ "$CLEAN_BUILD" == true ]]; then
         if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
             info "Removing previous legacy-NVIDIA output from $OUT_DIR ..."
             find "$OUT_DIR" -maxdepth 1 -name '*legacy-nvidia*' -delete 2>/dev/null || true
+        elif [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
+            info "Removing previous MacBook output from $OUT_DIR ..."
+            find "$OUT_DIR" -maxdepth 1 -name '*macbook*' -delete 2>/dev/null || true
         else
             info "Removing previous standard-edition output from $OUT_DIR ..."
             find "$OUT_DIR" -maxdepth 1 \
                 \( -name 'mainstream-*' -o -name 'mainstreamos-desktop-linux-*' \) \
-                ! -name '*legacy-nvidia*' -delete 2>/dev/null || true
+                ! -name '*legacy-nvidia*' ! -name '*macbook*' -delete 2>/dev/null || true
         fi
     fi
     if [[ -d "$WORK_DIR" ]]; then
