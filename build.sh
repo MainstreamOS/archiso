@@ -76,7 +76,8 @@ add_mainstream_db() {
     # bundled copy shadow the sync repo's during pacstrap.
     mapfile -t pkgs < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' \
         ! -name '*nvidia*' ! -name 'libxnvctrl*' ! -name '*-debug-*' \
-        ! -name 'broadcom-wl-dkms-[0-9]*' ! -name 'dkms-[0-9]*' ! -name 'linux-headers-[0-9]*' | sort)
+        ! -name 'broadcom-wl-dkms-[0-9]*' ! -name 'dkms-[0-9]*' ! -name 'linux-headers-[0-9]*' \
+        ! -name 'pahole-[0-9]*' | sort)
     # Legacy-NVIDIA edition: pacstrap must resolve the live driver, so add
     # nvidia-580xx-{dkms,utils} back in. Other gens stay files-only (target-only
     # via install-gpu-drivers); excluding them avoids provide-ambiguity. The
@@ -982,11 +983,12 @@ download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
 download_arch_repo_pkgs() {
     local dir="$1"; shift
     info "Staging Arch repo packages for offline install: $*"
-    rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst "$dir"/dkms-[0-9]*.pkg.tar.zst "$dir"/linux-headers-[0-9]*.pkg.tar.zst 2>/dev/null || true
+    rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst "$dir"/dkms-[0-9]*.pkg.tar.zst \
+        "$dir"/linux-headers-[0-9]*.pkg.tar.zst "$dir"/pahole-[0-9]*.pkg.tar.zst 2>/dev/null || true
     pacman -Sw --noconfirm --cachedir "$dir" "$@" 2>&1 | grep -v "is up to date" \
         || warn "Could not stage $*; Macs with a BCM4360 or BCM4331 will need a wired connection after install."
 }
-download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms dkms linux-headers
+download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms dkms linux-headers pahole
 
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."

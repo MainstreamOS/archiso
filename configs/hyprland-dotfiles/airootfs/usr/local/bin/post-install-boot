@@ -176,7 +176,7 @@ if [[ -r "$MAC_LIB" ]]; then
         # on an image that did not carry them.
         if mac_needs_wl_driver; then
             wl_files=()
-            for pat in broadcom-wl-dkms dkms linux-headers; do
+            for pat in broadcom-wl-dkms dkms linux-headers pahole; do
                 for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
                     [[ -f "$f" ]] && wl_files+=("$f")
                 done
