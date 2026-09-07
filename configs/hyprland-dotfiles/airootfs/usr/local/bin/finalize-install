@@ -359,6 +359,14 @@ rmdir /etc/systemd/system/cloud-init.target.wants 2>/dev/null || true
 rm -f /etc/systemd/system/choose-mirror.service \
       /etc/systemd/system/livecd-talk.service \
       /etc/systemd/system/livecd-alsa-unmuter.service
+# Ours too. The Mac session quirks are for the hour the installer runs in;
+# the installed system gets the full set from post-install-boot. Its unit
+# only condition-skips on the target rather than failing, so it does no harm,
+# but it reports a skip on every boot for the rest of the machine's life and
+# lists itself as enabled while being unable to ever run.
+rm -f /etc/systemd/system/multi-user.target.wants/mainstream-live-mac-quirks.service \
+      /etc/systemd/system/mainstream-live-mac-quirks.service \
+      /usr/local/bin/live-mac-quirks
 info "Removed dangling live-only service symlinks."
 
 # ── Install baseline snapshot ────────────────────────────────────────────────
