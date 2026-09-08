@@ -1764,6 +1764,10 @@ if [[ -n "${SUDO_USER:-}" ]]; then
 fi
 
 rm -rf "$DOTS_WORK"
+# The mirror a local DOTFILES_REPO was copied into. Both clones have been taken
+# from it by now, and leaving a full copy of the dotfiles repository behind in
+# /tmp is a surprise on a machine where /tmp is memory.
+rm -rf "$_DOTS_LOCAL_MIRROR"
 
 # ── Package-build cleanup ──────────────────────────────────────────────────
 info "Cleaning up package-build environment..."
