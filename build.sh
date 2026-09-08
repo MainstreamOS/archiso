@@ -45,7 +45,38 @@ export COMPRESSZST=(zstd -c -z -q -T0 -)
 log()     { echo "[build] $*"; }
 info()    { log "INFO:  $*"; }
 warn()    { log "WARN:  $*"; }
-die()     { log "FATAL: $*"; exit 1; }
+# Where the outcome is written down. A build runs for hours and its last line is
+# the one most likely to be gone from the terminal by the time anyone looks, so
+# both endings record themselves here. Beside the script rather than in out/,
+# which a clean build prunes.
+# Filled in once SCRIPT_DIR is known; die() copes with it being empty, since a
+# failure can happen before that point.
+STATUS_FILE="${STATUS_FILE:-}"
+
+_notify_user() {
+    [[ -n "${SUDO_USER:-}" ]] || return 0
+    local uid; uid="$(id -u "$SUDO_USER" 2>/dev/null || true)"
+    [[ -n "$uid" ]] || return 0
+    sudo -u "$SUDO_USER" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+        notify-send -a "ISO build" -u "$1" "$2" "$3" 2>/dev/null || true
+}
+
+die() {
+    log "FATAL: $*"
+    if [[ -n "${STATUS_FILE:-}" ]]; then
+        {
+            printf 'result   : FAILED\n'
+            printf 'reason   : %s\n' "$*"
+            printf 'edition  : %s\n' "${_edition:-unknown}"
+            printf 'detail   : %s\n' "${DETAIL_LOG:-none}"
+            printf 'finished : %s\n' "$(date '+%F %T')"
+        } > "$STATUS_FILE" 2>/dev/null || true
+        [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$STATUS_FILE" 2>/dev/null || true
+    fi
+    _notify_user critical "Build FAILED" "$*"
+    exit 1
+}
 success() { log "OK:    $*"; }
 
 # Build the [mainstream] local repo DB from <repo_dir>, EXCLUDING GPU driver
@@ -490,6 +521,7 @@ sanitize_local_repo() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${STATUS_FILE:=$SCRIPT_DIR/last-build.txt}"
 PROFILE_DIR="${SCRIPT_DIR}/configs/hyprland-dotfiles"
 MKARCHISO="${SCRIPT_DIR}/archiso/mkarchiso"
 
@@ -675,6 +707,35 @@ if [[ -n "$RELEASE_VERSION" ]]; then
     fi
 fi
 
+# ── Verbose sub-build output ────────────────────────────────────────────────
+# Compiling a package is thousands of lines that say nothing at all unless it
+# fails. Left on the terminal they bury the hundred or so lines that are the
+# build's own account of itself: the last full run put 149 useful lines under
+# 7,484 of compiler output, and every terminal caps what it keeps, so a build
+# that had finished perfectly well could not be confirmed without opening a
+# file. The whole stream goes to the detail log, where a failure can still be
+# read back, and -v puts it on the terminal as before.
+DETAIL_LOG="${DETAIL_LOG:-$SCRIPT_DIR/build-detail.log}"
+
+run_quiet() {
+    local label="$1"; shift
+    local rc=0
+    # Captured on the failing command itself. An `if cmd; then ...; fi` whose
+    # condition fails and has no else leaves $? at 0, so reading it after the fi
+    # reports every failure as a success.
+    if [[ -n "$VERBOSE" ]]; then
+        "$@" || rc=$?
+        return "$rc"
+    fi
+    printf '\n===== %s =====\n' "$label" >> "$DETAIL_LOG" 2>/dev/null || true
+    "$@" >> "$DETAIL_LOG" 2>&1 || rc=$?
+    (( rc == 0 )) && return 0
+    warn "$label failed. The last 40 lines of its output:"
+    tail -n 40 "$DETAIL_LOG" 2>/dev/null | sed 's/^/      /'
+    warn "Full output: $DETAIL_LOG"
+    return "$rc"
+}
+
 # ── Root check ──────────────────────────────────────────────────────────────
 if [[ ${EUID} -ne 0 ]]; then
     echo "ERROR: ${0##*/} must be run as root (mkarchiso requires root)." >&2
@@ -683,6 +744,11 @@ fi
 
 _DOTFILES_REPO_DEFAULT="https://github.com/MainstreamOS/dots-hyprland.git"
 DOTFILES_REPO="${DOTFILES_REPO:-$_DOTFILES_REPO_DEFAULT}"
+
+: > "$DETAIL_LOG" 2>/dev/null || DETAIL_LOG=/dev/null
+if [[ -n "${SUDO_USER:-}" && "$DETAIL_LOG" != /dev/null ]]; then
+    chown "$SUDO_USER:" "$DETAIL_LOG" 2>/dev/null || true
+fi
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
 
 # ── A local dotfiles repository ─────────────────────────────────────────────
@@ -1123,7 +1189,7 @@ for pkgname in "${METAPKGS[@]}"; do
     fi
 
     info "Building $pkgname..."
-    if su "$BUILD_USER" -c "bash '$BUILD_SCRIPT' '$pkgpath' '$TEMP_OUTPUT'"; then
+    if run_quiet "$pkgname" su "$BUILD_USER" -c "bash '$BUILD_SCRIPT' '$pkgpath' '$TEMP_OUTPUT'"; then
         built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
             cp "$built" "$PKG_OUTPUT_DIR/"
@@ -1171,7 +1237,7 @@ build_local_pkg() {
     chown -R "$BUILD_USER":"$BUILD_USER" "$tmp_build_dir"
 
     info "Building local package: $pkgname..."
-    if su "$BUILD_USER" -c "
+    if run_quiet "$pkgname" su "$BUILD_USER" -c "
         cd '$tmp_build_dir'
         PACMAN=/usr/local/bin/pacman-noconfirm \
         PKGDEST='$TEMP_OUTPUT' \
@@ -1308,7 +1374,7 @@ for entry in "${AUR_DEPS[@]}"; do
     # kernel module has no separate AUR repo, so grabbing only the entry-named
     # artifact silently dropped it (the ISO shipped userspace with no driver).
     rm -f "$TEMP_OUTPUT"/*.pkg.tar.zst 2>/dev/null || true
-    if su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
+    if run_quiet "$entry" su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
         mapfile -t built < <(find "$TEMP_OUTPUT" -name "*.pkg.tar.zst" ! -name "*-debug-*")
         if [[ ${#built[@]} -gt 0 ]]; then
             cp "${built[@]}" "$PKG_OUTPUT_DIR/"
@@ -1359,7 +1425,7 @@ else
     rm -rf "$MICROTEX_BUILD"
     cp -a "$MICROTEX_SRC" "$MICROTEX_BUILD"
     chown -R "$BUILD_USER":"$BUILD_USER" "$MICROTEX_BUILD"
-    if su "$BUILD_USER" -c "
+    if run_quiet "$MICROTEX_PKG" su "$BUILD_USER" -c "
         cd '$MICROTEX_BUILD'
         PACMAN=/usr/local/bin/pacman-noconfirm \
         PKGDEST='$TEMP_OUTPUT' \
@@ -2153,8 +2219,28 @@ else
     echo ">>> GPGKEY not set — ISO left unsigned (GPGKEY=<keyid> sudo -E ./build.sh to sign a release build)."
 fi
 
+# The outcome, somewhere that does not depend on the terminal having kept it.
+# A build runs for hours and its last line is the one most likely to be gone by
+# the time anyone looks, so it is also written down and announced.
+_status_file="$STATUS_FILE"
+{
+    printf 'result   : SUCCESS\n'
+    printf 'iso      : %s\n' "${ISO_PATH}"
+    printf 'size     : %s\n' "$(du -h "${ISO_PATH}" | cut -f1)"
+    printf 'sha256   : %s\n' "$(cut -d' ' -f1 "${ISO_PATH}.sha256")"
+    printf 'edition  : %s\n' "$_edition"
+    printf 'dotfiles : %s\n' "$DOTFILES_REPO"
+    printf 'finished : %s\n' "$(date '+%F %T')"
+} > "$_status_file" 2>/dev/null || true
+[[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$_status_file" 2>/dev/null || true
+
 echo ""
 echo "Build complete."
 echo "Output: ${ISO_PATH}"
+echo "Result: $_status_file    Detail log: $DETAIL_LOG"
 echo ""
 echo "Write to USB:  dd if='${ISO_PATH}' of=/dev/sdX bs=4M status=progress"
+
+# Reaches the person who started this hours ago whether or not the terminal
+# still holds anything.
+_notify_user normal "Build complete" "$(basename "${ISO_PATH}")"
