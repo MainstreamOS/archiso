@@ -15,3 +15,5 @@ meta-data
 network-config
 man/version.rst
 build.log
+build-detail.log
+last-build.txt
