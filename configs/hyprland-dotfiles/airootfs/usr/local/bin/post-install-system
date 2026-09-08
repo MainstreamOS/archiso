@@ -409,6 +409,22 @@ AUTOSTARTEOF
     done
     info "mpv set as default video player."
 
+    # Set Papers as default document viewer. Without this a PDF opens in the
+    # browser, which is what claims the type when nothing else does.
+    DOCUMENT_TYPES=(
+        application/pdf application/x-bzpdf application/x-gzpdf application/x-xzpdf
+        application/postscript application/x-bzpostscript application/x-gzpostscript
+        image/x-eps application/x-dvi application/x-bzdvi application/x-gzdvi
+        image/vnd.djvu+multipage
+        application/oxps application/vnd.ms-xpsdocument
+        application/vnd.comicbook+zip application/vnd.comicbook-rar
+        application/x-cbz application/x-cbr application/x-cb7 application/x-cbt
+    )
+    for mime in "${DOCUMENT_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Papers.desktop $mime" || true
+    done
+    info "Papers set as default document viewer."
+
     # Compile dconf system database so dark mode is default before first login
     dconf update 2>/dev/null || true
 
