@@ -2162,7 +2162,13 @@ success "Verified the ISO carries a hybrid MBR with both a bootable and an EFI e
 # mkarchiso composes the output as ${iso_name}-${iso_version}-${arch}.iso and
 # offers no setting to suppress the -${arch} segment. Rename in place once every
 # check that reads the ISO by its mkarchiso name has run.
-_ARCH_SUFFIX="-$(awk -F= '/^arch=/{gsub(/"/,"",$2); print $2}' "${PROFILE_DIR}/profiledef.sh")"
+# Read the way mkarchiso reads it: profiledef's arch if it sets one, and
+# otherwise uname -m, which is the fallback at mkarchiso:1555. This profile sets
+# none, so the awk alone came back empty and the rename never ran, which is why
+# every untagged build kept the -x86_64 its name was supposed to lose.
+_ARCH_SUFFIX="$(awk -F= '/^arch=/{gsub(/"/,"",$2); print $2}' "${PROFILE_DIR}/profiledef.sh")"
+[[ -n "${_ARCH_SUFFIX}" ]] || _ARCH_SUFFIX="$(uname -m)"
+_ARCH_SUFFIX="-${_ARCH_SUFFIX}"
 if [[ -n "${_ARCH_SUFFIX}" && "${_ARCH_SUFFIX}" != "-" ]]; then
     _NEW_ISO_PATH="${ISO_PATH/${_ARCH_SUFFIX}.iso/.iso}"
     if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then
@@ -2223,6 +2229,13 @@ elif [[ -n "${GPGKEY:-}" ]]; then
         die "ISO signing FAILED. The image is built and checksummed but unsigned, so the build reports failure rather than completion."
     fi
 else
+    # A signature names the bytes it was made over. Left beside a rebuilt image
+    # of the same name it verifies nothing and says the opposite, so it goes
+    # with the image it belonged to.
+    if [[ -e "${ISO_PATH}.sig" ]]; then
+        rm -f "${ISO_PATH}.sig"
+        warn "Removed a signature left from an earlier build: it did not cover this image."
+    fi
     echo ">>> GPGKEY not set — ISO left unsigned (GPGKEY=<keyid> sudo -E ./build.sh to sign a release build)."
 fi
 
@@ -2245,6 +2258,12 @@ echo ""
 echo "Build complete."
 echo "Output: ${ISO_PATH}"
 echo "Result: $_status_file    Detail log: $DETAIL_LOG"
+# Said again at the end because the warning at clone time is thousands of lines
+# back by now, and a release name on an image nobody else can reproduce is the
+# one thing worth reading twice.
+if [[ "$DOTFILES_REPO" == "$_DOTS_LOCAL_MIRROR" ]]; then
+    warn "These dotfiles came from a local clone, so this image cannot be reproduced from the remote. Test build."
+fi
 echo ""
 echo "Write to USB:  dd if='${ISO_PATH}' of=/dev/sdX bs=4M status=progress"
 
