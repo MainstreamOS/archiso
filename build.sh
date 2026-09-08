@@ -212,10 +212,15 @@ apply_macbook_overlay() {
     printf '%s\n' apple-t2-audio-config t2fanrd \
         >> "${PROFILE_DIR}/packages.x86_64"
 
-    # The exception, for testing only: a tester with no wire cannot reach the
-    # installer at all, and finding that out needs an image whose live session
-    # already has Wi-Fi. The artifact is renamed so it cannot be mistaken for a
-    # release, because that firmware is still not ours to hand out.
+    # The exception, for testing only, and deliberately not in --help: a
+    # published recipe for building an image full of firmware we may not pass on
+    # reads as an invitation, whoever it was written for. Set
+    # MACBOOK_TEST_FIRMWARE=1 to take it. It exists because a tester with no
+    # wire cannot reach the installer at all, and finding out whether the
+    # machine works past that point needs an image whose live session already
+    # has Wi-Fi. The artifact is renamed so it cannot be mistaken for a release,
+    # the work directory is fingerprinted apart so its root is never reused
+    # under a release name, and the build refuses to sign it.
     local _iso_name="mainstreamos-desktop-linux-macbook"
     if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
         printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
@@ -632,13 +637,6 @@ Environment:
                   as a test. Requires --refresh or --clean, because the dotfiles
                   are only cloned during a package phase.
 
-  MACBOOK_TEST_FIRMWARE=true
-                  With --macbook, bake Apple's Wi-Fi and Bluetooth firmware into
-                  the image so the live session has Wi-Fi. For testing on your
-                  own machines only: that firmware is not ours to redistribute,
-                  and the ISO is named ...-macbook-testfw to keep it out of a
-                  release by accident.
-
 Release options:
   --release X.Y.Z Full clean release build cut as that version: a complete
                   --clean + --cleancal rebuild, every package (calamares
@@ -666,9 +664,9 @@ Examples:
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
   sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
   sudo DOTFILES_REPO=/home/you/dots-hyprland ./build.sh --refresh --macbook
-                                      # Test build from a local dotfiles clone.
-                                      # Needs a package phase, and the path must
-                                      # be absolute: a leading ~ is not expanded
+                                      # Build from a local dotfiles clone. Needs
+                                      # a package phase, and the path must be
+                                      # absolute: a leading ~ is not expanded
                                       # inside an assignment passed to sudo.
 HELPEOF
             exit 0
@@ -2206,7 +2204,16 @@ echo ">>> SHA256: $(cat "${ISO_PATH}.sha256")"
 if [[ -n "${SUDO_USER:-}" ]]; then
     chown "${SUDO_USER}:" "${ISO_DIR}" "${ISO_PATH}" "${ISO_PATH}.sha256"
 fi
-if [[ -n "${GPGKEY:-}" ]]; then
+if [[ -n "${GPGKEY:-}" && "$MACBOOK_TEST_FIRMWARE" == true ]]; then
+    # A signature is what makes an image look like ours to hand out, and this
+    # one carries firmware that is not ours to hand out. Refused rather than
+    # warned about: the whole point of the name and the warnings is that this
+    # artifact cannot be mistaken for a release, and a release signature undoes
+    # all of it. Build it without the firmware to sign it.
+    rm -f "${ISO_PATH}.sig"
+    warn "GPGKEY is set and so is MACBOOK_TEST_FIRMWARE. Refusing to sign a test image that carries Apple's firmware."
+    warn "  The ISO and its checksum are here; there is no signature and there should not be one."
+elif [[ -n "${GPGKEY:-}" ]]; then
     _sign_user="${SUDO_USER:-root}"
     rm -f "${ISO_PATH}.sig"
     if sudo -u "${_sign_user}" gpg --batch --yes --detach-sign \
