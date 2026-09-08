@@ -298,7 +298,10 @@ apply_profile_overlay() {
     # MODULES= add would otherwise bundle (580xx is GSP-free at runtime), so the
     # init stays small. Both seds are idempotent (whole-line MODULES; optional
     # ` nvidia-gsp-strip` after modconf).
-    sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 radeon nvidia nvidia_modeset nvidia_drm)/' \
+    # This replaces the whole line, so the virtual adapters the base config
+    # carries have to be repeated here or this edition alone loses them and
+    # stops booting in a guest.
+    sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 radeon nvidia nvidia_modeset nvidia_drm vmwgfx vboxvideo virtio-gpu hyperv_drm qxl bochs)/' \
            -e 's/modconf\( nvidia-gsp-strip\)\?/modconf nvidia-gsp-strip/' \
            "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}"
     info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver + early KMS; iso_name → mainstreamos-desktop-linux-legacy-nvidia."
