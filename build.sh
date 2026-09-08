@@ -594,9 +594,11 @@ Edition options:
 
 Environment:
   DOTFILES_REPO   Where the dotfiles come from (default: the GitHub remote).
-                  Give it a directory to build from a local clone, which is how
-                  a change gets tested before it is pushed. Only committed work
-                  travels; the build says so and marks the image as a test.
+                  Give it an absolute directory to build from a local clone,
+                  which is how a change gets tested before it is pushed. Only
+                  committed work travels; the build says so and marks the image
+                  as a test. Requires --refresh or --clean, because the dotfiles
+                  are only cloned during a package phase.
 
   MACBOOK_TEST_FIRMWARE=true
                   With --macbook, bake Apple's Wi-Fi and Bluetooth firmware into
@@ -631,8 +633,11 @@ Examples:
   sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
   sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
-  sudo DOTFILES_REPO=~/Documents/GitHub/dots-hyprland ./build.sh --macbook
-                                      # Test build from a local dotfiles clone
+  sudo DOTFILES_REPO=/home/you/dots-hyprland ./build.sh --refresh --macbook
+                                      # Test build from a local dotfiles clone.
+                                      # Needs a package phase, and the path must
+                                      # be absolute: a leading ~ is not expanded
+                                      # inside an assignment passed to sudo.
 HELPEOF
             exit 0
             ;;
@@ -676,7 +681,8 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
-DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/MainstreamOS/dots-hyprland.git}"
+_DOTFILES_REPO_DEFAULT="https://github.com/MainstreamOS/dots-hyprland.git"
+DOTFILES_REPO="${DOTFILES_REPO:-$_DOTFILES_REPO_DEFAULT}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-mainstream}"
 
 # ── A local dotfiles repository ─────────────────────────────────────────────
@@ -741,6 +747,15 @@ fi
 # which run whether or not packages were rebuilt, so it cannot live inside the
 # phase-1 block below.
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
+
+# The dotfiles are cloned and the skel redeployed inside the package phase, so
+# without it DOTFILES_REPO is read and then quietly ignored and the ISO is built
+# from the skel already committed to this repository. Someone who set it meant
+# to build from somewhere else, and silently not doing that is the one outcome
+# they cannot detect from the log.
+if [[ "$DOTFILES_REPO" != "$_DOTFILES_REPO_DEFAULT" && "$REFRESH_PKGS" != true ]]; then
+    die "DOTFILES_REPO is set but no package phase was requested, so the dotfiles would not be cloned at all. Add --refresh (or --clean) to build from $DOTFILES_REPO."
+fi
 
 if [[ "$REFRESH_PKGS" == true ]]; then
 
@@ -1938,8 +1953,14 @@ mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
 # idea what the package list looked like when it was written. Switching
 # editions, or editing packages.x86_64, would otherwise reuse the previous
 # root and sign an image whose contents do not match the profile.
+# The hash is of the list BEFORE the edition overlay runs, which happens much
+# further down, so the edition label is what has to carry every input the
+# overlay reads. Anything new that changes the overlaid package list has to be
+# named here too, or two builds that install different things will agree on
+# their fingerprint and the second will reuse the first one's root.
 _edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
 [[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
+[[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
 _profile_fingerprint="$_edition $(sha256sum "$PROFILE_DIR/packages.x86_64" | cut -c1-16)"
 _fingerprint_file="${WORK_DIR}/.profile-fingerprint"
 if [[ -e "${WORK_DIR}/base._make_packages" ]] \
