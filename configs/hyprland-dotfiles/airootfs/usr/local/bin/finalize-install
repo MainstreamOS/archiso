@@ -215,8 +215,13 @@ else
 fi
 
 if ! lspci -nn 2>/dev/null | grep -iE "Network controller|Wireless" | grep -q "\[14e4:"; then
-    info "No Broadcom wifi — removing broadcom-wl."
-    remove_pkgs broadcom-wl
+    # Arch dropped the prebuilt broadcom-wl on 2026-09-02; the driver is
+    # broadcom-wl-dkms now, and that is the name a machine can actually have
+    # installed. remove_pkgs filters to what is present, so naming a package
+    # that cannot exist was inert rather than harmful, but it was also the only
+    # name this ever looked for.
+    info "No Broadcom wifi — removing the Broadcom driver."
+    remove_pkgs broadcom-wl-dkms broadcom-wl
 fi
 
 # The legacy-NVIDIA ISO carries linux-headers so its 580xx DKMS module can build
