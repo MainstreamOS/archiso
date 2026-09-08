@@ -240,26 +240,43 @@ fi
 
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
 # also emit UKIs that Limine can chainload from the ESP.
+# Which kernel this image carries. Editions differ: the MacBook one ships
+# linux-t2 in place of Arch's linux, and the preset below names the kernel in
+# three separate filenames. pkgbase is what pacman recorded for the package that
+# owns the modules; uname would report the live ISO's kernel instead.
+KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
+    [[ -r "$d/pkgbase" ]] || continue
+    printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
+done | sort -V | tail -n1 | cut -d' ' -f2)"
+[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
+# The UKI keeps one name across every edition, because limine.conf.template and
+# the checks below look for it by name.
 if mountpoint -q /boot/efi; then
     mkdir -p /boot/efi/EFI/Linux
     # UEFI: build only the default UKI; no fallback entry means no fallback in menu
-    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+    cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
 PRESETS=('default')
-ALL_kver='/boot/vmlinuz-linux'
+ALL_kver='/boot/vmlinuz-${KERNEL_PKG}'
 default_config='/etc/mkinitcpio.conf'
-default_image='/boot/initramfs-linux.img'
+default_image='/boot/initramfs-${KERNEL_PKG}.img'
 default_uki='/boot/efi/EFI/Linux/mainstream_linux.efi'
 PRESET
 else
-    cat > /etc/mkinitcpio.d/linux.preset << 'PRESET'
+    cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
 PRESETS=('default' 'fallback')
-ALL_kver='/boot/vmlinuz-linux'
+ALL_kver='/boot/vmlinuz-${KERNEL_PKG}'
 default_config='/etc/mkinitcpio.conf'
-default_image='/boot/initramfs-linux.img'
+default_image='/boot/initramfs-${KERNEL_PKG}.img'
 fallback_config='/etc/mkinitcpio.conf'
 fallback_options='-S autodetect'
 PRESET
 fi
+# A preset for a kernel that is not installed fails mkinitcpio -P and takes the
+# whole install down with it, so nothing but this one is left in place.
+for _p in /etc/mkinitcpio.d/*.preset; do
+    [[ -e "$_p" ]] || continue
+    [[ "$_p" == "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" ]] || rm -f "$_p"
+done
 
 # ---------------------------------------------------------------------------
 # ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
@@ -337,7 +354,7 @@ pacman -S --noconfirm --needed snapper snap-pac limine-snapper-sync \
 # reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
 # small shared ESP they can fill it and make the UKI write fail.
 if mountpoint -q /boot/efi; then
-    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img
+    rm -f "/boot/efi/vmlinuz-${KERNEL_PKG}" "/boot/efi/initramfs-${KERNEL_PKG}.img"
 fi
 
 info "Regenerating initramfs..."
@@ -395,7 +412,7 @@ fi
 # supersedes them and limine-mkinitcpio will only generate entries for files it
 # finds, so remove them to prevent a stale non-UKI menu entry.
 if mountpoint -q /boot/efi && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
-    rm -f /boot/efi/vmlinuz-linux /boot/efi/initramfs-linux.img || true
+    rm -f "/boot/efi/vmlinuz-${KERNEL_PKG}" "/boot/efi/initramfs-${KERNEL_PKG}.img" || true
 fi
 
 # ---------------------------------------------------------------------------

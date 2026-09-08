@@ -237,10 +237,16 @@ if [[ -d /sys/firmware/efi ]]; then
         fail "no UKI found under /boot/efi/EFI/Linux/"
     fi
 else
-    if [[ -f /boot/vmlinuz-linux && -f /boot/limine-bios.sys ]]; then
+    # Named for the kernel the edition actually carries, not for Arch's.
+    _kpkg="$(for d in /usr/lib/modules/*/; do
+        [[ -r "$d/pkgbase" ]] || continue
+        printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
+    done | sort -V | tail -n1 | cut -d' ' -f2)"
+    [[ -n "$_kpkg" ]] || _kpkg=linux
+    if [[ -f "/boot/vmlinuz-${_kpkg}" && -f /boot/limine-bios.sys ]]; then
         pass "BIOS boot files present in /boot"
     else
-        fail "BIOS boot files missing from /boot (vmlinuz-linux / limine-bios.sys)"
+        fail "BIOS boot files missing from /boot (vmlinuz-${_kpkg} / limine-bios.sys)"
     fi
 fi
 if [[ -s /boot/efi/limine.conf || -s /boot/limine.conf ]]; then

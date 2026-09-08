@@ -15,9 +15,28 @@ _ms_health() {
 }
 
 # --- 0. Kernel & Environment Setup ---
+# Which kernel this image carries. Editions differ: the MacBook one ships
+# linux-t2 in place of Arch's linux, and every path below puts the kernel's name
+# in a filename, so the name is read rather than assumed. pkgbase is what pacman
+# recorded for the package owning the modules, which is the only source that
+# tells the truth in here — uname reports the live ISO's kernel, not the
+# target's. Highest version wins if an image somehow carries two.
+KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
+    [[ -r "$d/pkgbase" ]] || continue
+    printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
+done | sort -V | tail -n1 | cut -d' ' -f2)"
+[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
+info "Target kernel package: $KERNEL_PKG"
+
 info "Removing archiso mkinitcpio configs..."
 rm -f /etc/mkinitcpio.conf.d/archiso.conf || true
-rm -f /etc/mkinitcpio.d/linux.preset || true
+# Every preset, not just the stock name: the archiso preset is named for the
+# kernel the image carries, and one left behind points at an archiso config
+# that is being deleted on this line and at a kernel image that mkarchiso
+# emptied out of /boot. mkinitcpio -P walks the whole directory and fails on it,
+# which stops the install. The kernel package restores its own preset when it is
+# reinstalled below, and post-install-boot writes the final one either way.
+rm -f /etc/mkinitcpio.d/*.preset || true
 
 # With a network connection the kernel MUST come from the repos, not the
 # squashfs: install-gpu-drivers runs next and upgrades kernel-locked driver
@@ -27,10 +46,10 @@ rm -f /etc/mkinitcpio.d/linux.preset || true
 # boot that every check still reports as clean. Reinstalling linux here keeps
 # the kernel in lockstep with whatever the driver step installs minutes later.
 if ping -c1 -W3 archlinux.org &>/dev/null; then
-    info "Network available — reinstalling linux kernel..."
+    info "Network available — reinstalling the $KERNEL_PKG kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
-    if ! pacman -S --noconfirm --overwrite "*" linux; then
-        log "ERROR: the linux package could not be reinstalled — the system would not boot."
+    if ! pacman -S --noconfirm --overwrite "*" "$KERNEL_PKG"; then
+        log "ERROR: the $KERNEL_PKG package could not be reinstalled — the system would not boot."
         exit 1
     fi
 else
@@ -42,13 +61,13 @@ else
     # modules unpacked beside it and as every driver already baked in.
     KVER=$(for d in /usr/lib/modules/*/; do
         [[ -f "$d/vmlinuz" && -r "$d/pkgbase" ]] || continue
-        [[ "$(<"$d/pkgbase")" == "linux" ]] || continue
+        [[ "$(<"$d/pkgbase")" == "$KERNEL_PKG" ]] || continue
         basename "$d"
     done | sort -V | tail -n1)
 
     if [[ -n "$KVER" ]]; then
-        info "No network — restoring /boot/vmlinuz-linux from the squashfs (kernel $KVER)..."
-        install -Dm644 "/usr/lib/modules/$KVER/vmlinuz" /boot/vmlinuz-linux
+        info "No network — restoring /boot/vmlinuz-$KERNEL_PKG from the squashfs (kernel $KVER)..."
+        install -Dm644 "/usr/lib/modules/$KVER/vmlinuz" "/boot/vmlinuz-$KERNEL_PKG"
     else
         log "ERROR: no kernel image under /usr/lib/modules and no network to fetch one — the system would not boot."
         exit 1
