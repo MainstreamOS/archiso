@@ -409,6 +409,46 @@ AUTOSTARTEOF
     done
     info "mpv set as default video player."
 
+    # Audio too. Left unset the type falls to whatever desktop entry claims it,
+    # which on a machine with Spotify installed is a streaming client being
+    # handed a local file it cannot really play.
+    AUDIO_TYPES=(
+        audio/aac audio/ac3 audio/flac audio/mp4 audio/mpeg audio/ogg
+        audio/opus audio/vorbis audio/wav audio/webm audio/x-aac audio/x-aiff
+        audio/x-ape audio/x-flac audio/x-m4a audio/x-matroska audio/x-mp3
+        audio/x-mpeg audio/x-ms-wma audio/x-musepack audio/x-opus+ogg
+        audio/x-scpls audio/x-vorbis+ogg audio/x-wav audio/x-wavpack
+    )
+    for mime in "${AUDIO_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default mpv.desktop $mime" || true
+    done
+    info "mpv set as default audio player."
+
+    # The setup run has always done this one and the installed system never did,
+    # so a text file opened in whatever had claimed it.
+    TEXT_TYPES=(
+        text/plain text/markdown text/csv text/x-log text/x-readme
+        text/x-changelog text/x-copying text/x-makefile text/x-patch
+        text/x-diff text/x-qml text/xml application/xml application/json
+    )
+    for mime in "${TEXT_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.TextEditor.desktop $mime" || true
+    done
+    info "GNOME Text Editor set as default text editor."
+
+    # Nothing set a browser on either install path, so https and mailto went to
+    # whichever entry registered them first, and whatever browser that was
+    # became the mail client too.
+    WEB_TYPES=(
+        x-scheme-handler/http x-scheme-handler/https
+        text/html application/xhtml+xml
+    )
+    su -s /bin/bash "$MAIN_USER" -c "xdg-settings set default-web-browser chromium.desktop" || true
+    for mime in "${WEB_TYPES[@]}"; do
+        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default chromium.desktop $mime" || true
+    done
+    info "Chromium set as default browser."
+
     # Set Papers as default document viewer. Without this a PDF opens in the
     # browser, which is what claims the type when nothing else does.
     DOCUMENT_TYPES=(
