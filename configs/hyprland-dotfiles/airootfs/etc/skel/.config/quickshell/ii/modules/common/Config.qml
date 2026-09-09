@@ -19,19 +19,27 @@ Singleton {
     // the spacer that used to divide the right section. Without it the right
     // section packs to the screen edge and they would ride against the tray, so
     // the layout now says the position the spacer used to fake.
+    //
+    // Workspaces open the left section, where a workspace strip is read for on
+    // every other desktop, and media moves across to the right so the two sides
+    // carry a similar weight instead of the left holding both.
     readonly property var defaultBarLayout: ({
         "left": [
-            { "widgets": [ {"id": "sidebarButton", "enabled": true}, {"id": "activeWindow", "enabled": true} ] },
-            { "widgets": [ {"id": "activeWindowPill", "enabled": false} ] }
+            { "widgets": [ {"id": "resources", "enabled": false} ] },
+            { "widgets": [ {"id": "workspaces", "enabled": true} ] },
+            { "widgets": [ {"id": "tray", "enabled": true} ] },
+            { "widgets": [ {"id": "activeWindowPill", "enabled": false}, {"id": "activeWindow", "enabled": false} ] },
+            { "widgets": [ {"id": "sidebarButton", "enabled": true} ] }
         ],
         "center": [
-            { "widgets": [ {"id": "resources", "enabled": false}, {"id": "media", "enabled": true} ] },
-            { "widgets": [ {"id": "workspaces", "enabled": true} ] },
-            { "widgets": [ {"id": "clock", "enabled": true}, {"id": "utilButtons", "enabled": true}, {"id": "battery", "enabled": true} ] },
-            { "widgets": [ {"id": "weather", "enabled": true}, {"id": "releaseUpdates", "enabled": true} ] }
+            { "widgets": [ {"id": "utilButtons", "enabled": true} ] },
+            { "widgets": [ {"id": "clock", "enabled": true} ] },
+            { "widgets": [ {"id": "battery", "enabled": true}, {"id": "weather", "enabled": true}, {"id": "releaseUpdates", "enabled": true} ] }
         ],
         "right": [
-            { "widgets": [ {"id": "timers", "enabled": true}, {"id": "tray", "enabled": true}, {"id": "volume", "enabled": true}, {"id": "indicators", "enabled": true} ] }
+            { "widgets": [ {"id": "timers", "enabled": true} ] },
+            { "widgets": [ {"id": "media", "enabled": true} ] },
+            { "widgets": [ {"id": "volume", "enabled": true}, {"id": "indicators", "enabled": true} ] }
         ]
     })
     property bool ready: false
@@ -486,6 +494,13 @@ Singleton {
             property JsonObject background: JsonObject {
                 // x and y put a widget's center across the screen, 0 to 1, so a theme lays them out alike on every monitor.
                 property JsonObject widgets: JsonObject {
+                    // Frosted glass behind every widget card. Off as it ships,
+                    // and reached through a Loader, so a machine that leaves it
+                    // off never builds the sampler, the blur or the mask.
+                    property JsonObject blur: JsonObject {
+                        property bool enable: false
+                        property real radius: 24
+                    }
                     property JsonObject clock: JsonObject {
                         property bool enable: true
                         property bool showOnlyWhenLocked: false
@@ -606,7 +621,7 @@ Singleton {
                 property bool widgetsLocked: false
                 property string wallpaperPath: ""
                 property string thumbnailPath: ""
-                // How one wallpaper gives way to the next: a name from the
+                // How one wallpaper transitions to the next: a name from the
                 // TransitionEffects catalog, or "random".
                 property string wallpaperTransition: "fade"
                 property bool hideWhenFullscreen: true

@@ -1,9 +1,10 @@
 import QtQuick
+import qs.modules.common
 
 Text {
     id: root
 
-    renderType: Text.NativeRendering
+    renderType: ScreenScale.renderTypeFor(Screen.name, font.pixelSize)
     verticalAlignment: Text.AlignVCenter
     color: Looks.colors.fg
 

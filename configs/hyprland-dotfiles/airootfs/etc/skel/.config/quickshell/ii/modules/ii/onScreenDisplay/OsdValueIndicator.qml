@@ -56,6 +56,10 @@ Item {
                         alignWhenCentered: !root.rotateIcon
                     }
                     color: Appearance.colors.colOnLayer0
+                    // Distance field whatever the screen does, and not the pin
+                    // MaterialSymbol carries. This icon is rotated through 180
+                    // degrees and scaled while it animates, and a hinted glyph
+                    // under a transform is pixelated at any scale.
                     renderType: Text.QtRendering
 
                     text: root.icon

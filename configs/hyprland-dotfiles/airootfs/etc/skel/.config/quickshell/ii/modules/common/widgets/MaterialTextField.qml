@@ -17,6 +17,9 @@ TextField {
     Material.background: Appearance.m3colors.m3surface
     Material.foreground: Appearance.m3colors.m3onSurface
     Material.containerStyle: Material.Outlined
+    // Distance field whatever the screen does. Hinting onto whole pixels was
+    // rejected here upstream because it makes the small placeholder text look
+    // wrong, and that is true at every scale.
     renderType: Text.QtRendering
 
     selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
