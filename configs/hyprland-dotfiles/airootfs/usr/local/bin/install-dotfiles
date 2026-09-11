@@ -57,11 +57,27 @@ info "Found $PKG_COUNT pre-built packages in $PKG_DIR."
 # ---------------------------------------------------------------------------
 # 4. NETWORK CHECK
 # ---------------------------------------------------------------------------
-info "Checking network connectivity..."
-if ! ping -c1 -W5 github.com &>/dev/null; then
-    die "No network connectivity. Cannot clone dotfiles. Aborting."
+# The image already carries the desktop: build.sh mirrors dots/ into /etc/skel
+# at build time, and the useradd Calamares ran has already copied that into the
+# new home before this script starts. The clone below was fetching a second copy
+# of files that are on the stick, which made github.com a hard requirement for
+# finishing an install and stopped anyone who could not reach it.
+#
+# Skel is also the closer source. It is the tree this image was built and tested
+# against, where the branch may have moved since.
+SKEL_DOTS=""
+if [[ -d /etc/skel ]] && [[ -n "$(ls -A /etc/skel 2>/dev/null)" ]]; then
+    SKEL_DOTS="/etc/skel"
+    info "Deploying the dotfiles baked into this image. No network needed."
 fi
-info "Network OK."
+
+if [[ -z "$SKEL_DOTS" ]]; then
+    info "No dotfiles in /etc/skel. Checking network connectivity..."
+    if ! ping -c1 -W5 github.com &>/dev/null; then
+        die "No dotfiles in /etc/skel and no network to clone them. Aborting."
+    fi
+    info "Network OK."
+fi
 
 # ---------------------------------------------------------------------------
 # 5. ENSURE BUILDUSER EXISTS FOR GIT CLONE
@@ -103,43 +119,45 @@ fi
 # ---------------------------------------------------------------------------
 # 7. CLONE DOTFILES FOR ASSET DEPLOYMENT
 # ---------------------------------------------------------------------------
-USER_DOTFILES="/tmp/dotfiles-setup"
-rm -rf "$USER_DOTFILES"
-mkdir -p "$USER_DOTFILES"
-chown builduser:builduser "$USER_DOTFILES"
+if [[ -z "$SKEL_DOTS" ]]; then
+    USER_DOTFILES="/tmp/dotfiles-setup"
+    rm -rf "$USER_DOTFILES"
+    mkdir -p "$USER_DOTFILES"
+    chown builduser:builduser "$USER_DOTFILES"
 
-# Take the release this ISO was built from, not whatever the branch has moved
-# on to since. The build stamps its tag into /etc/mainstream-dotfiles-tag and
-# unpackfs has already placed that on the target; updatems reads the same file
-# to decide what is installed. Cloning the branch instead put configs newer
-# than the stamp on disk, so the ISO delivered code it had never been tested
-# with, against packages and a venv baked for the older tree, and updatems then
-# measured its next update from a version the user was already past.
-# A build off a tag leaves no stamp, and those keep following the branch.
-DOTFILES_REF="$DOTFILES_BRANCH"
-if [[ -r /etc/mainstream-dotfiles-tag ]]; then
-    ISO_TAG=$(</etc/mainstream-dotfiles-tag)
-    [[ -n "$ISO_TAG" ]] && DOTFILES_REF="$ISO_TAG"
-fi
-
-info "Cloning dotfiles repository (ref: $DOTFILES_REF)..."
-if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_REF' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
-    # A stamped tag that will not clone means the release was removed or renamed
-    # upstream. The branch still carries the files, so say what happened and use
-    # it rather than failing an install over a naming problem.
-    if [[ "$DOTFILES_REF" != "$DOTFILES_BRANCH" ]]; then
-        warn "Could not clone tag '$DOTFILES_REF' — falling back to branch '$DOTFILES_BRANCH'."
-        rm -rf "$USER_DOTFILES"; mkdir -p "$USER_DOTFILES"; chown builduser:builduser "$USER_DOTFILES"
-        su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'" \
-            || die "git clone failed for both tag and branch. Aborting."
-    else
-        die "git clone failed. Check the branch name and repo URL. Aborting."
+    # Take the release this ISO was built from, not whatever the branch has moved
+    # on to since. The build stamps its tag into /etc/mainstream-dotfiles-tag and
+    # unpackfs has already placed that on the target; updatems reads the same file
+    # to decide what is installed. Cloning the branch instead put configs newer
+    # than the stamp on disk, so the ISO delivered code it had never been tested
+    # with, against packages and a venv baked for the older tree, and updatems then
+    # measured its next update from a version the user was already past.
+    # A build off a tag leaves no stamp, and those keep following the branch.
+    DOTFILES_REF="$DOTFILES_BRANCH"
+    if [[ -r /etc/mainstream-dotfiles-tag ]]; then
+        ISO_TAG=$(</etc/mainstream-dotfiles-tag)
+        [[ -n "$ISO_TAG" ]] && DOTFILES_REF="$ISO_TAG"
     fi
+
+    info "Cloning dotfiles repository (ref: $DOTFILES_REF)..."
+    if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_REF' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
+        # A stamped tag that will not clone means the release was removed or renamed
+        # upstream. The branch still carries the files, so say what happened and use
+        # it rather than failing an install over a naming problem.
+        if [[ "$DOTFILES_REF" != "$DOTFILES_BRANCH" ]]; then
+            warn "Could not clone tag '$DOTFILES_REF' — falling back to branch '$DOTFILES_BRANCH'."
+            rm -rf "$USER_DOTFILES"; mkdir -p "$USER_DOTFILES"; chown builduser:builduser "$USER_DOTFILES"
+            su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'" \
+                || die "git clone failed for both tag and branch. Aborting."
+        else
+            die "git clone failed. Check the branch name and repo URL. Aborting."
+        fi
+    fi
+    if [[ -z "$(ls -A "$USER_DOTFILES")" ]]; then
+        die "Clone directory is empty after git clone. Aborting."
+    fi
+    info "Clone successful."
 fi
-if [[ -z "$(ls -A "$USER_DOTFILES")" ]]; then
-    die "Clone directory is empty after git clone. Aborting."
-fi
-info "Clone successful."
 
 # ---------------------------------------------------------------------------
 # 8. INSTALL PRE-BUILT META-PACKAGES
@@ -193,11 +211,15 @@ done
 info "Deploying dotfiles to $NEW_USER_HOME..."
 
 DOTS_SOURCE=""
+if [[ -n "$SKEL_DOTS" ]]; then
+    DOTS_SOURCE="$SKEL_DOTS"
+fi
 for candidate in \
     "$USER_DOTFILES/dots" \
     "$USER_DOTFILES/.config" \
     "$USER_DOTFILES/home" \
     "$USER_DOTFILES"; do
+    [[ -n "$DOTS_SOURCE" ]] && break
     if [[ -d "$candidate" ]] && [[ -n "$(ls -A "$candidate")" ]]; then
         if [[ "$candidate" != "$USER_DOTFILES" ]]; then
             DOTS_SOURCE="$candidate"
