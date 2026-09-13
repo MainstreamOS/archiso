@@ -1501,6 +1501,11 @@ fi
 
 rm -rf "$DOTS_WORK"
 mkdir -p "$DOTS_WORK"
+# The install unpacks this archive instead of cloning GitHub. Removed before
+# the clone so a build whose clone fails ships no stale copy; the installer
+# then falls back to cloning.
+DOTS_ARCHIVE="$PROFILE_DIR/airootfs/usr/local/share/dots-hyprland.tar.zst"
+rm -f "$DOTS_ARCHIVE"
 chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 
 _dots_localize
@@ -1534,6 +1539,17 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             --exclude='/.local/state/quickshell/.venv/' \
             --exclude='/.local/state/quickshell/user/first_run.txt' \
             "$DOTS_WORK/dots/" "$SKEL_DIR/"
+
+            # The whole clone, submodule included, travels on the image as one archive
+            # and is unpacked at install: a checkout keeps the modes the scripts need,
+            # where the image's own file copy drops them, and every later install step
+            # already looks in /tmp/dotfiles-setup, which is what the archive unpacks to.
+            mkdir -p "$(dirname "$DOTS_ARCHIVE")"
+            tar --zstd -C "$(dirname "$DOTS_WORK")" \
+                --transform "s|^$(basename "$DOTS_WORK")|dotfiles-setup|S" \
+                -cf "$DOTS_ARCHIVE" "$(basename "$DOTS_WORK")" \
+                || die "Could not archive the dotfiles for the install"
+            info "Dotfiles archived for the install ($(du -h "$DOTS_ARCHIVE" | cut -f1))"
 
         # Bake the shared GPU library into the ISO from this build-time clone so
         # the installed-system GPU steps source a trusted in-image copy instead

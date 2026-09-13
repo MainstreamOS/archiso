@@ -55,13 +55,29 @@ fi
 info "Found $PKG_COUNT pre-built packages in $PKG_DIR."
 
 # ---------------------------------------------------------------------------
-# 4. NETWORK CHECK
+# 4. DOTFILES SOURCE
 # ---------------------------------------------------------------------------
-info "Checking network connectivity..."
-if ! ping -c1 -W5 github.com &>/dev/null; then
-    die "No network connectivity. Cannot clone dotfiles. Aborting."
+# The image carries the dotfiles it was built from as one archive, so the
+# install unpacks that rather than cloning GitHub: no network is needed, and
+# what lands on disk is the tree the image was tested with. The clone stays as
+# the fallback for an image built without the archive. Either way the tree
+# ends up at /tmp/dotfiles-setup, where every later step looks for it.
+DOTS_ARCHIVE="/usr/local/share/dots-hyprland.tar.zst"
+USER_DOTFILES="/tmp/dotfiles-setup"
+rm -rf "$USER_DOTFILES"
+NEED_CLONE=false
+if [[ -f "$DOTS_ARCHIVE" ]]; then
+    info "Unpacking the dotfiles shipped with this image..."
+    tar --zstd -C /tmp --no-same-owner -xf "$DOTS_ARCHIVE" || die "Could not unpack $DOTS_ARCHIVE. Aborting."
+    [[ -d "$USER_DOTFILES/dots" ]] || die "The dotfiles archive holds no dots directory. Aborting."
+else
+    NEED_CLONE=true
+    info "No dotfiles archive on this image. Checking network connectivity..."
+    if ! ping -c1 -W5 github.com &>/dev/null; then
+        die "No network connectivity. Cannot clone dotfiles. Aborting."
+    fi
+    info "Network OK."
 fi
-info "Network OK."
 
 # ---------------------------------------------------------------------------
 # 5. ENSURE BUILDUSER EXISTS FOR GIT CLONE
@@ -75,7 +91,7 @@ cleanup_builduser() {
 }
 trap cleanup_builduser EXIT
 
-if ! id "builduser" &>/dev/null; then
+if [[ "$NEED_CLONE" == true ]] && ! id "builduser" &>/dev/null; then
     info "Creating builduser for git clone..."
     useradd -m builduser
 fi
@@ -101,45 +117,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. CLONE DOTFILES FOR ASSET DEPLOYMENT
+# 7. CLONE DOTFILES (only for an image without the archive)
 # ---------------------------------------------------------------------------
-USER_DOTFILES="/tmp/dotfiles-setup"
-rm -rf "$USER_DOTFILES"
-mkdir -p "$USER_DOTFILES"
-chown builduser:builduser "$USER_DOTFILES"
+if [[ "$NEED_CLONE" == true ]]; then
+    mkdir -p "$USER_DOTFILES"
+    chown builduser:builduser "$USER_DOTFILES"
 
-# Take the release this ISO was built from, not whatever the branch has moved
-# on to since. The build stamps its tag into /etc/mainstream-dotfiles-tag and
-# unpackfs has already placed that on the target; updatems reads the same file
-# to decide what is installed. Cloning the branch instead put configs newer
-# than the stamp on disk, so the ISO delivered code it had never been tested
-# with, against packages and a venv baked for the older tree, and updatems then
-# measured its next update from a version the user was already past.
-# A build off a tag leaves no stamp, and those keep following the branch.
-DOTFILES_REF="$DOTFILES_BRANCH"
-if [[ -r /etc/mainstream-dotfiles-tag ]]; then
-    ISO_TAG=$(</etc/mainstream-dotfiles-tag)
-    [[ -n "$ISO_TAG" ]] && DOTFILES_REF="$ISO_TAG"
-fi
-
-info "Cloning dotfiles repository (ref: $DOTFILES_REF)..."
-if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_REF' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
-    # A stamped tag that will not clone means the release was removed or renamed
-    # upstream. The branch still carries the files, so say what happened and use
-    # it rather than failing an install over a naming problem.
-    if [[ "$DOTFILES_REF" != "$DOTFILES_BRANCH" ]]; then
-        warn "Could not clone tag '$DOTFILES_REF' — falling back to branch '$DOTFILES_BRANCH'."
-        rm -rf "$USER_DOTFILES"; mkdir -p "$USER_DOTFILES"; chown builduser:builduser "$USER_DOTFILES"
-        su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'" \
-            || die "git clone failed for both tag and branch. Aborting."
-    else
-        die "git clone failed. Check the branch name and repo URL. Aborting."
+    # Take the release this ISO was built from, not whatever the branch has moved
+    # on to since. The build stamps its tag into /etc/mainstream-dotfiles-tag and
+    # unpackfs has already placed that on the target; updatems reads the same file
+    # to decide what is installed. Cloning the branch instead put configs newer
+    # than the stamp on disk, so the ISO delivered code it had never been tested
+    # with, against packages and a venv baked for the older tree, and updatems then
+    # measured its next update from a version the user was already past.
+    # A build off a tag leaves no stamp, and those keep following the branch.
+    DOTFILES_REF="$DOTFILES_BRANCH"
+    if [[ -r /etc/mainstream-dotfiles-tag ]]; then
+        ISO_TAG=$(</etc/mainstream-dotfiles-tag)
+        [[ -n "$ISO_TAG" ]] && DOTFILES_REF="$ISO_TAG"
     fi
+
+    info "Cloning dotfiles repository (ref: $DOTFILES_REF)..."
+    if ! su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_REF' '$DOTFILES_REPO' '$USER_DOTFILES'"; then
+        # A stamped tag that will not clone means the release was removed or renamed
+        # upstream. The branch still carries the files, so say what happened and use
+        # it rather than failing an install over a naming problem.
+        if [[ "$DOTFILES_REF" != "$DOTFILES_BRANCH" ]]; then
+            warn "Could not clone tag '$DOTFILES_REF' — falling back to branch '$DOTFILES_BRANCH'."
+            rm -rf "$USER_DOTFILES"; mkdir -p "$USER_DOTFILES"; chown builduser:builduser "$USER_DOTFILES"
+            su builduser -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$USER_DOTFILES'" \
+                || die "git clone failed for both tag and branch. Aborting."
+        else
+            die "git clone failed. Check the branch name and repo URL. Aborting."
+        fi
+    fi
+    if [[ -z "$(ls -A "$USER_DOTFILES")" ]]; then
+        die "Clone directory is empty after git clone. Aborting."
+    fi
+    info "Clone successful."
 fi
-if [[ -z "$(ls -A "$USER_DOTFILES")" ]]; then
-    die "Clone directory is empty after git clone. Aborting."
-fi
-info "Clone successful."
 
 # ---------------------------------------------------------------------------
 # 8. INSTALL PRE-BUILT META-PACKAGES
