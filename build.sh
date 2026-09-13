@@ -1506,6 +1506,12 @@ chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 _dots_localize
 if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$DOTS_WORK'"; then
     if [[ -d "$DOTS_WORK/dots" ]]; then
+        # The installer no longer seeds the session's keyboard layout; the
+        # dotfiles read it from localed themselves. A ref from before that read
+        # would give a desktop that ignores the installer's keyboard page.
+        if ! grep -q '00-keyboard.conf' "$DOTS_WORK/dots/.config/hypr/hyprland/general.lua" 2>/dev/null; then
+            die "dots $DOTFILES_BRANCH predates the session keyboard read; pin a newer ref"
+        fi
         mkdir -p "$SKEL_DIR"
         # Mirror dots into the skel WITH deletions, so files removed from the
         # dotfiles repo don't live on in the skel and every fresh install

@@ -64,6 +64,7 @@ file_permissions=(
   ["/usr/local/bin/mainstream-steam-seed-live"]="0:0:755"
   ["/usr/local/bin/updatems"]="0:0:755"
   ["/usr/local/bin/updatems-system"]="0:0:755"
+  ["/usr/local/bin/pixie-sddm-keyboard-bridge.sh"]="0:0:755"
   ["/usr/share/polkit-1/actions/org.mainstreamos.disk-mounter.policy"]="0:0:644"
   ["/usr/share/polkit-1/actions/org.mainstreamos.app-remover.policy"]="0:0:644"
   ["/usr/share/polkit-1/actions/org.mainstreamos.ollama-setup.policy"]="0:0:644"
