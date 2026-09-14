@@ -1,0 +1,72 @@
+From: MainstreamOS <maintainers@mainstreamos.org>
+Subject: [PATCH] luks2: select a sector size compatible with the partition
+
+KPMCore previously forced a 4096-byte LUKS encryption sector for every
+LUKS2 container.  Calamares' Alongside layout can legitimately create a
+partition whose size is not divisible by 4096 bytes (for example, after
+resizing an NTFS partition).  cryptsetup then refuses to format it with
+"Device size is not aligned to requested sector size".
+
+Use 4096 only when the complete partition size supports it; otherwise use
+512, which is valid for all block devices KPMCore can partition.  Also add
+cryptsetup's captured error output to the KPMCore report so Calamares shows
+the actual cause if formatting or opening a LUKS container fails.
+
+---
+ src/fs/luks2.cpp | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/src/fs/luks2.cpp b/src/fs/luks2.cpp
+index 8993f18..7f793cd 100644
+--- a/src/fs/luks2.cpp
++++ b/src/fs/luks2.cpp
+@@ -39,8 +39,15 @@ bool luks2::create(Report& report, const QString& deviceNode)
+     Q_ASSERT(m_innerFs);
+     Q_ASSERT(!m_passphrase.isEmpty());
+ 
++    // cryptsetup requires the whole LUKS device to be a multiple of its
++    // encryption sector size. Alongside installs can leave an odd number of
++    // 512-byte sectors after an NTFS resize, so only use 4 KiB when it fits.
++    constexpr qint64 preferredSectorSize = 4096;
++    const qint64 deviceSize = length() * sectorSize();
++    const qint64 luksSectorSize = deviceSize % preferredSectorSize == 0 ? preferredSectorSize : 512;
++
+     QStringList createCmdArgs = { QStringLiteral("--use-random"),
+-                                  QStringLiteral("--sector-size"), QStringLiteral("4096"),
++                                  QStringLiteral("--sector-size"), QString::number(luksSectorSize),
+                                   QStringLiteral("--key-size"), QStringLiteral("512"),
+                                   QStringLiteral("--hash"), QStringLiteral("sha512"),
+                                   QStringLiteral("--batch-mode"),
+@@ -58,16 +65,29 @@ bool luks2::create(Report& report, const QString& deviceNode)
+     if (!( createCmd.write(m_passphrase.toLocal8Bit() + '\n') &&
+                 createCmd.start(-1) && createCmd.exitCode() == 0))
+     {
++        report.line() << xi18nc("@info:progress",
++                                "Creating the LUKS2 container on partition <filename>%1</filename> failed "
++                                "(cryptsetup exit code %2): %3",
++                                deviceNode,
++                                createCmd.exitCode(),
++                                createCmd.output().trimmed());
+         return false;
+     }
+ 
+     ExternalCommand openCmd(report, QStringLiteral("cryptsetup"),
+                               { QStringLiteral("open"),
+                                 deviceNode,
+                                 suggestedMapperName(deviceNode) });
+ 
+-    if (!( openCmd.write(m_passphrase.toLocal8Bit() + '\n') && openCmd.start(-1)))
++    if (!( openCmd.write(m_passphrase.toLocal8Bit() + '\n') && openCmd.start(-1) && openCmd.exitCode() == 0)) {
++        report.line() << xi18nc("@info:progress",
++                                "Opening the LUKS2 container on partition <filename>%1</filename> failed "
++                                "(cryptsetup exit code %2): %3",
++                                deviceNode,
++                                openCmd.exitCode(),
++                                openCmd.output().trimmed());
+         return false;
++    }
+ 
+     setPayloadSize();
+     scan(deviceNode);
+-- 
+2.51.0
