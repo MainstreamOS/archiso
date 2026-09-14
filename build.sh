@@ -1586,6 +1586,29 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             done
         fi
 
+        # Every script under usr/local/bin that dots-hyprland owns, refreshed
+        # from the clone the way skel already is. Committed copies stay in the
+        # profile as the fallback for a build whose clone did not land, but a
+        # clone that did land always wins, so a dots commit cannot leave the
+        # image running a script several versions behind its own skel.
+        for _rel in \
+            sdata/update/updatems \
+            sdata/update/updatems-system \
+            sdata/update/mainstream-update-helper \
+            sdata/keyring/mainstream-keyring-init \
+            sdata/keyring/mainstream-keyring-repair \
+            sdata/boot/mainstream-limine-windows \
+            sdata/sddm/pixie-sddm-keyboard-bridge.sh \
+            sdata/polkit/app-remover \
+            sdata/polkit/disk-mounter \
+            sdata/polkit/ai-cli-install \
+            sdata/polkit/ollama-setup; do
+            _src="$DOTS_WORK/$_rel"
+            [[ -f "$_src" ]] || continue
+            install -Dm755 "$_src" \
+                "$PROFILE_DIR/airootfs/usr/local/bin/$(basename "$_rel")"
+        done
+
         # Stamp the baked dotfiles release into the image so updatems on the
         # installed system treats it as already applied and only acts on a
         # real version bump. Only written when the build is exactly at a
