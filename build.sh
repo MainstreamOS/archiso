@@ -1695,6 +1695,23 @@ fi
 if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
     set +e
     info "Pre-baking Python 3.12 color venv into skel..."
+    # sudo keeps the caller's HOME, so a bare uv here resolves its cache to the
+    # operator's ~/.cache/uv and fills it with root-owned files. The operator's
+    # own uv then cannot prune them, which surfaces much later as a failed
+    # update. Root gets a cache of its own instead, persistent so a clean
+    # rebuild still does not re-download the index.
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-/var/cache/mainstream-iso/uv}"
+    mkdir -p "$UV_CACHE_DIR"
+    # Machines that built an ISO before the line above already carry the
+    # root-owned tree; hand it back rather than leaving the operator to find it.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        _uv_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+        if [[ -n "$_uv_home" && -d "$_uv_home/.cache/uv" ]] \
+            && find "$_uv_home/.cache/uv" ! -user "$SUDO_USER" -print -quit 2>/dev/null | grep -q .; then
+            info "Reclaiming $_uv_home/.cache/uv for $SUDO_USER (left by an earlier build)."
+            chown -R "$SUDO_USER":"$SUDO_USER" "$_uv_home/.cache/uv" 2>/dev/null || true
+        fi
+    fi
     mkdir -p "$(dirname "$VENV_SKEL_PATH")"
     uv venv --prompt .venv --clear -p 3.12 "$VENV_SKEL_PATH"; _venv_rc=$?
     uv pip install --python "$VENV_SKEL_PATH/bin/python" -r "$REQUIREMENTS"; _pip_rc=$?
