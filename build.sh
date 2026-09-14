@@ -1138,6 +1138,10 @@ info "Clone successful."
 
 # ── Write per-package build script ──────────────────────────────────────────
 TEMP_OUTPUT="/tmp/iso-pkg-output"
+# An interrupted run leaves its half-copied packages here, and makepkg refuses
+# to write a file it already sees, so a leftover reads as a build failure for a
+# package that is fine.
+rm -rf "$TEMP_OUTPUT"
 mkdir -p "$TEMP_OUTPUT"
 chown "$BUILD_USER":"$BUILD_USER" "$TEMP_OUTPUT"
 
@@ -1155,7 +1159,7 @@ if [[ -n "$DEPS" ]]; then
 fi
 
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
-    makepkg --noconfirm --needed --nodeps 2>&1
+    makepkg -f --noconfirm --needed --nodeps 2>&1
 BUILDSCRIPT
 chmod 755 "$BUILD_SCRIPT"
 chown "$BUILD_USER":"$BUILD_USER" "$BUILD_SCRIPT"
@@ -1242,7 +1246,7 @@ build_local_pkg() {
         cd '$tmp_build_dir'
         PACMAN=/usr/local/bin/pacman-noconfirm \
         PKGDEST='$TEMP_OUTPUT' \
-        makepkg -s --noconfirm --skippgpcheck 2>&1
+        makepkg -sf --noconfirm --skippgpcheck 2>&1
     "; then
         built=$(find "$TEMP_OUTPUT" -name "${pkgname}-[0-9]*.pkg.tar.zst" ! -name "*-debug-*" | head -1)
         if [[ -n "$built" ]]; then
