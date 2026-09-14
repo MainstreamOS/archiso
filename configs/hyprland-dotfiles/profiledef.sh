@@ -25,6 +25,7 @@ file_permissions=(
   ["/usr/local/bin/gpu-drivers"]="0:0:755"
   ["/usr/local/bin/install-limine"]="0:0:755"
   ["/usr/local/bin/post-install-boot"]="0:0:755"
+  ["/usr/local/bin/mainstream-limine-windows"]="0:0:755"
   ["/usr/local/bin/post-install-login"]="0:0:755"
   ["/usr/local/bin/post-install-system"]="0:0:755"
   ["/usr/local/bin/post-install-theme"]="0:0:755"
