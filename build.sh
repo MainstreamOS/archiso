@@ -1609,6 +1609,25 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
                 "$PROFILE_DIR/airootfs/usr/local/bin/$(basename "$_rel")"
         done
 
+        # The same for the dots-owned pieces that are not plain bin scripts.
+        for _pair in \
+            "sdata/polkit/power-key-helper.sh:755:usr/local/bin/power-key-helper" \
+            "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml"; do
+            _src="$DOTS_WORK/${_pair%%:*}"; _rest="${_pair#*:}"
+            [[ -f "$_src" ]] || continue
+            install -D -m"${_rest%%:*}" "$_src" "$PROFILE_DIR/airootfs/${_rest#*:}"
+        done
+        # Driven off what the profile already ships rather than off what the
+        # dotfiles hold, so this refreshes the image and never adds a rule or an
+        # action to it. Anything genuinely new is still a deliberate addition.
+        for _dst in "$PROFILE_DIR"/airootfs/usr/share/polkit-1/actions/*.policy \
+                    "$PROFILE_DIR"/airootfs/usr/share/polkit-1/rules.d/*.rules; do
+            [[ -f "$_dst" ]] || continue
+            _from="$DOTS_WORK/sdata/polkit/$(basename "$_dst")"
+            [[ -f "$_from" ]] || continue
+            install -Dm644 "$_from" "$_dst"
+        done
+
         # Stamp the baked dotfiles release into the image so updatems on the
         # installed system treats it as already applied and only acts on a
         # real version bump. Only written when the build is exactly at a
