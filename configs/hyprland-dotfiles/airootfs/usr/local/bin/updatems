@@ -141,7 +141,7 @@ Options:
 Environment overrides:
   MAINSTREAM_DOTFILES_REPO         (default: $REPO_URL)
   MAINSTREAM_DOTFILES_BRANCH       (default: $REPO_BRANCH)
-  MAINSTREAM_DOTFILES_TAG_PATTERN  (default: $TAG_PATTERN)
+  MAINSTREAM_DOTFILES_TAG_PATTERN  (default: $TAG_REGEX)
   MAINSTREAM_DOTFILES_DIR          (default: $CLONE_DIR)
 EOF
             exit 0
@@ -166,10 +166,47 @@ fi
 
 cd "$CLONE_DIR" || die "cannot cd to $CLONE_DIR"
 
+# A clone that has lost an object cannot be fetched into, and every later run
+# dies on the same fetch, so the update path stays closed until somebody deletes
+# the directory by hand. The clone is a cache: nothing in it cannot be cloned
+# again, except the applied-tag marker and whatever an auto-stash holds. The
+# marker is carried across. The stash points at objects that may be the damaged
+# ones, so the old tree is set aside rather than deleted and its path is said.
+_recover_corrupt_clone() {
+    local aside="${CLONE_DIR}.corrupt-$(date +%Y%m%d-%H%M%S)"
+    # Guarded here rather than at the call site so no later caller can skip it:
+    # rebuilding the clone is the largest change this script makes.
+    if [[ $DRY_RUN -eq 1 ]]; then
+        warn "$(tf "[DRY-RUN] The dotfiles clone at %s is damaged; would set it aside as %s and clone again." "$CLONE_DIR" "$aside")"
+        exit 0
+    fi
+    local saved_marker=""
+    [[ -f "$MARKER" ]] && saved_marker=$(<"$MARKER")
+    warn "$(tf "The dotfiles clone at %s is damaged. Setting it aside as %s and cloning again." "$CLONE_DIR" "$aside")"
+    cd / || die "cannot leave $CLONE_DIR"
+    mv "$CLONE_DIR" "$aside" || die "$(t "could not move the damaged clone aside")"
+    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$CLONE_DIR" || die "git clone failed"
+    git -C "$CLONE_DIR" submodule update --init --recursive 2>/dev/null \
+        || warn "submodule init had non-zero exit (continuing)"
+    [[ -n "$saved_marker" ]] && printf '%s\n' "$saved_marker" > "$MARKER"
+    cd "$CLONE_DIR" || die "cannot cd to $CLONE_DIR"
+    ok "$(tf "Fresh clone in place. Any local edits are still in %s." "$aside")"
+}
+
 # ── 2. Fetch tags from origin ───────────────────────────────────────────────
 say "$(tf "Fetching tags from origin/%s..." "$REPO_BRANCH")"
-git fetch --tags --force --prune origin "$REPO_BRANCH" 2>&1 | sed 's/^/    /'
-[[ ${PIPESTATUS[0]} -eq 0 ]] || die "git fetch failed"
+_fetch_out=$(git fetch --tags --force --prune origin "$REPO_BRANCH" 2>&1); _fetch_rc=$?
+[[ -n "$_fetch_out" ]] && printf '%s\n' "$_fetch_out" | sed 's/^/    /'
+if [[ $_fetch_rc -ne 0 ]]; then
+    # Only a damaged clone is rebuilt. A fetch that failed for want of a network
+    # is no reason to throw the clone away, so anything else still dies here.
+    if grep -qE 'is empty|bad object|did not send all necessary objects|corrupt|unable to read|could not read' <<<"$_fetch_out"; then
+        _recover_corrupt_clone
+        _fetch_out=$(git fetch --tags --force --prune origin "$REPO_BRANCH" 2>&1); _fetch_rc=$?
+        [[ -n "$_fetch_out" ]] && printf '%s\n' "$_fetch_out" | sed 's/^/    /'
+    fi
+    [[ $_fetch_rc -eq 0 ]] || die "git fetch failed"
+fi
 
 # ── 3. Pick the latest release tag ─────────────────────────────────────────
 # Strip peeled-tag suffixes (^{}), keep release tags (excludes the retired
@@ -263,6 +300,39 @@ else
     EXTRA_ARGS+=(--force)
 fi
 git reset --hard "$TARGET_REF" || die "git reset --hard $TARGET_REF failed"
+
+# exp-update already holds Quickshell's watchFiles and Hyprland's
+# autoreload during the file copy (see 0.run.sh), but only if qs/hyprctl
+# can reach their sockets — which they can't under runuser's stripped env.
+# Recover what's needed so that hold logic actually engages.
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+: "${WAYLAND_DISPLAY:=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p')}"
+export WAYLAND_DISPLAY
+# Newest first, but taking the first one that actually answers rather than the
+# first one listed. Hyprland leaves an instance directory behind when it exits
+# uncleanly, and mtime order alone would hand us a dead socket.
+if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    for _sig in $(ls -t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null); do
+        [[ -d "$XDG_RUNTIME_DIR/hypr/$_sig" ]] || continue
+        if HYPRLAND_INSTANCE_SIGNATURE="$_sig" hyprctl -j version >/dev/null 2>&1; then
+            HYPRLAND_INSTANCE_SIGNATURE="$_sig"
+            break
+        fi
+    done
+    unset _sig
+fi
+export HYPRLAND_INSTANCE_SIGNATURE
+
+# The bug this recovery exists for was invisible: the hold was skipped and the
+# update carried on looking fine. Say so if the recovery did not take, rather
+# than leaving the next person to find it the same way.
+if ! qs -c ii ipc show >/dev/null 2>&1; then
+    warn "$(t "Quickshell is not reachable; its reload hold will be skipped during the file sync.")"
+fi
+if ! hyprctl -j version >/dev/null 2>&1; then
+    warn "$(t "Hyprland is not reachable; its autoreload hold will be skipped during the file sync.")"
+fi
 
 say "$(t "Running ./setup exp-update (non-interactive, backup-on-conflict, -p)...")"
 # The clone is pinned to $LATEST_TAG above; a pull inside exp-update would
