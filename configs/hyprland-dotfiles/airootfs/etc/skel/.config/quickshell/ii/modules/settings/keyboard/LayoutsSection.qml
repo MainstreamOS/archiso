@@ -72,14 +72,10 @@ ContentSection {
         if (!layouts)
             return
 
-        // Apply now, then store an update-safe override loaded after the base
-        // Hyprland configuration. Layout identifiers come from XKB's base.lst,
-        // but the writer validates them again before writing Lua.
-        Quickshell.execDetached([
-            "hyprctl", "eval",
-            'hl.config({ input = { kb_layout = "' + layouts + '", kb_variant = "' + variants + '" } })'
-        ])
-        layoutWriter.command = ["python3", Quickshell.shellPath("scripts/keyboard/write-layouts.py"), root.customGeneralConf, layouts, variants]
+        // Stored as an update-safe override loaded after the base Hyprland
+        // configuration, applied to the running compositor, and handed to
+        // localed for the login screen, all by the one tool that owns the list.
+        layoutWriter.command = ["python3", Quickshell.shellPath("scripts/keyboard/write-layouts.py"), "--apply", root.customGeneralConf, layouts, variants]
         layoutWriter.running = false
         layoutWriter.running = true
     }
@@ -154,9 +150,10 @@ ContentSection {
         }
     }
 
-    // Hyprland's devices JSON reports the comma-separated layouts but not
-    // their variants. Prefer the managed override when it exists so an entry
-    // such as US Dvorak survives reopening Settings with its variant intact.
+    // Prefer the managed override when it exists: it is the list this page
+    // wrote, in the order it wrote it. Without one, ask Hyprland, whose
+    // devices JSON carries the layouts and their variants; on a fresh install
+    // that is the list the installer recorded.
     Process {
         id: persistedLayoutsProc
         command: ["cat", root.customGeneralConf]
@@ -192,7 +189,8 @@ ContentSection {
                     const keyboards = JSON.parse(text).keyboards || []
                     const mainKeyboard = keyboards.find(keyboard => keyboard.main) || keyboards[0]
                     const layouts = mainKeyboard?.layout?.split(",").filter(Boolean) || []
-                    const removedCustom = root.setSelectedLayouts(layouts.length > 0 ? layouts : ["us"], [])
+                    const variants = mainKeyboard?.variant?.split(",") || []
+                    const removedCustom = root.setSelectedLayouts(layouts.length > 0 ? layouts : ["us"], variants)
                     if (removedCustom)
                         root.applyLayouts()
                 } catch (error) {
@@ -247,7 +245,7 @@ ContentSection {
 
         StyledText {
             Layout.fillWidth: true
-            text: Translation.tr("The selected layouts are available immediately and persist across restarts.")
+            text: Translation.tr("The selected layouts are available immediately and persist across restarts. The one you last switched to is what the login screen and your next session start in.")
             wrapMode: Text.WordWrap
             color: Appearance.colors.colSubtext
             font.pixelSize: Appearance.font.pixelSize.smaller

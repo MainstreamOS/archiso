@@ -73,6 +73,21 @@ set_sddm_background() {
         pkexec sddm-bg-helper "$tmpfile" "$dest" 2>/dev/null
     fi
     rm -f "$tmpfile"
+
+    # A moving wallpaper travels too, so the login screen moves the way the
+    # desktop does. The still stays beside it: the greeter shows it until there
+    # is a frame to cover it, and reads the accent colour from it either way.
+    local video_dest="$sddm_bg_dir/${username}.mp4"
+    if is_video "$1"; then
+        if cp "$1" "$video_dest" 2>/dev/null; then
+            chmod 644 "$video_dest" 2>/dev/null
+        elif command -v sddm-bg-helper &>/dev/null; then
+            pkexec sddm-bg-helper "$1" "$video_dest" 2>/dev/null
+        fi
+    elif [[ -e "$video_dest" ]]; then
+        rm -f "$video_dest" 2>/dev/null \
+            || { command -v sddm-bg-helper &>/dev/null && pkexec sddm-bg-helper --clear "$video_dest" 2>/dev/null; }
+    fi
 }
 
 post_process() {
@@ -130,7 +145,24 @@ CUSTOM_DIR="$XDG_CONFIG_HOME/hypr/custom"
 RESTORE_SCRIPT_DIR="$CUSTOM_DIR/scripts"
 RESTORE_SCRIPT="$RESTORE_SCRIPT_DIR/__restore_video_wallpaper.sh"
 THUMBNAIL_DIR="$RESTORE_SCRIPT_DIR/mpvpaper_thumbnails"
+# -p -a FULL on the mpvpaper calls below: pause playback whenever the wallpaper
+# is covered, including by a fullscreen window, so a video wallpaper costs
+# nothing while nobody can see it. Pause rather than stop keeps the decoder
+# warm, so uncovering resumes instantly instead of re-opening the file.
+# A capped wallpaper draws fewer frames, which is the whole cost of a video
+# wallpaper once it is decoded. 0 means the file's own rate.
+# Settings passes the rate on the command line because its own write of
+# config.json is deferred, so reading the file here would return the rate the
+# user just replaced.
+VIDEO_FPS_CAP="${VIDEO_FPS_CAP_OVERRIDE:-$(jq -r '.background.videoFrameRate // 0' "$SHELL_CONFIG_FILE" 2>/dev/null || echo 0)}"
+[[ "$VIDEO_FPS_CAP" =~ ^[0-9]+$ ]] || VIDEO_FPS_CAP=0
 VIDEO_OPTS="no-audio loop hwdec=auto scale=bilinear interpolation=no video-sync=display-resample panscan=1.0 video-scale-x=1.0 video-scale-y=1.0 video-align-x=0.5 video-align-y=0.5 load-scripts=no"
+if [[ "$VIDEO_FPS_CAP" -gt 0 ]]; then
+    # display-resample exists to match the monitor, which is the opposite of a
+    # cap, so a capped wallpaper is timed off the clock instead.
+    VIDEO_OPTS="${VIDEO_OPTS/video-sync=display-resample/video-sync=audio}"
+    VIDEO_OPTS="$VIDEO_OPTS vf=fps=$VIDEO_FPS_CAP"
+fi
 
 is_video() {
     local extension="${1##*.}"
@@ -223,7 +255,7 @@ for p in /proc/[0-9]*; do
 done
 
 for monitor in \$(hyprctl monitors -j | jq -r '.[] | .name'); do
-    mpvpaper -o "$VIDEO_OPTS" "\$monitor" "$video_path" &
+    mpvpaper -p -a FULL -o "$VIDEO_OPTS" "\$monitor" "$video_path" &
     sleep 0.1
 done
 EOF
@@ -500,7 +532,7 @@ switch() {
             local video_path="$imgpath"
             monitors=$(hyprctl monitors -j | jq -r '.[] | .name')
             for monitor in $monitors; do
-                nohup mpvpaper -o "$VIDEO_OPTS" "$monitor" "$video_path" >/dev/null 2>&1 &
+                nohup mpvpaper -p -a FULL -o "$VIDEO_OPTS" "$monitor" "$video_path" >/dev/null 2>&1 &
                 sleep 0.1
             done
 

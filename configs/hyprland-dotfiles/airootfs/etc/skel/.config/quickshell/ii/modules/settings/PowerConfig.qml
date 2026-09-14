@@ -18,7 +18,6 @@ ContentPage {
     property bool autoSuspendEnabled: true
     property int autoSuspendSecs: 900
     property bool _readersFinished: false
-    property string suspendGate: ""
 
     readonly property string hyprIdleConf: `${CF.FileUtils.trimFileProtocol(Directories.config)}/hypr/hypridle.conf`
 
@@ -27,7 +26,6 @@ ContentPage {
         logindReader.running = true
         screenBlankReader.running = true
         autoSuspendReader.running = true
-        suspendGateReader.running = true
     }
 
     // ── Readers ──────────────────────────────────────────────────────────────
@@ -111,20 +109,6 @@ ContentPage {
             }
             if (!screenBlankReader.running) _readersFinished = true
         }
-    }
-
-    // Hardware where idle suspend stays off whatever the delay says. Mirrors the
-    // test in hypridle.conf's $suspend_cmd, so the page can say so instead of
-    // showing a delay that never fires.
-    Process {
-        id: suspendGateReader
-        command: ["bash", "-c",
-            "if grep -qE '^(580|470|390)[.]' /sys/module/nvidia/version 2>/dev/null; then echo legacy-nvidia; fi"
-        ]
-        property string buf: ""
-        onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => suspendGateReader.buf += data }
-        onExited: (code) => { suspendGate = suspendGateReader.buf.trim() }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -290,7 +274,6 @@ ContentPage {
                     Layout.fillWidth: true
                     buttonIcon: "bedtime"
                     text: Translation.tr("Automatic Suspend")
-                    enabled: suspendGate === ""
                     checked: autoSuspendEnabled
                     onCheckedChanged: {
                         autoSuspendEnabled = checked
@@ -298,7 +281,7 @@ ContentPage {
                     }
                 }
                 ConfigRow {
-                    enabled: autoSuspendEnabled && suspendGate === ""
+                    enabled: autoSuspendEnabled
                     StyledText {
                         text: Translation.tr("Delay")
                         font.pixelSize: Appearance.font.pixelSize.normal
@@ -328,15 +311,57 @@ ContentPage {
             }
         }
 
-        // Why suspend is off, across the whole section under both delays.
-        SubtleNoticeBox {
-            visible: suspendGate !== ""
+        RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 8
-            Layout.topMargin: 4
-            Layout.bottomMargin: 4
-            text: Translation.tr("Automatic suspend stays off on the legacy NVIDIA driver: the desktop does not reliably come back from sleep on it. Suspending by hand still works, but the session may need a fresh login afterward.")
+            // Matches ConfigSwitch's vertical padding so the selector sits with
+            // the same breathing room as the switches above it.
+            Layout.topMargin: 8
+            Layout.bottomMargin: 8
+            OptionalMaterialSymbol {
+                icon: "motion_photos_on"
+                Layout.alignment: Qt.AlignVCenter
+            }
+            StyledText {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 6
+                text: Translation.tr("Live wallpaper")
+                color: Appearance.colors.colOnSecondaryContainer
+                MouseArea {
+                    id: videoFrameRateInfo
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.WhatsThisCursor
+                    StyledToolTip {
+                        extraVisibleCondition: false
+                        alternativeVisibleCondition: videoFrameRateInfo.containsMouse
+                        text: Translation.tr("How often a video wallpaper is redrawn, on the desktop and on the lock and login screens. A lower rate costs less power.")
+                    }
+                }
+            }
+            ConfigSelectionArray {
+                Layout.fillWidth: false
+                Layout.alignment: Qt.AlignVCenter
+                currentValue: Config.options.background.videoFrameRate
+                onSelected: newValue => {
+                    Config.options.background.videoFrameRate = newValue;
+                    // The desktop's player reads its options once, when it starts,
+                    // so the wallpaper goes back up for a new rate to take hold.
+                    // The lock and the login screen read the number itself.
+                    Quickshell.execDetached(["bash", "-c",
+                        `command -v pixie-sddm-set-state >/dev/null 2>&1 && pixie-sddm-set-state videoFrameRate ${JSON.stringify(String(newValue))}; :`]);
+                    if (Wallpapers.isVideoFile(Config.options.background.wallpaperPath))
+                        Quickshell.execDetached(["bash", "-c",
+                            `VIDEO_FPS_CAP_OVERRIDE=${newValue} "$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh" --noswitch --picture-only --keep-slideshow`]);
+                }
+                options: [
+                    { displayName: Translation.tr("15 fps"),    value: 15 },
+                    { displayName: Translation.tr("30 fps"),    value: 30 },
+                    { displayName: Translation.tr("Unlimited"), value: 0 },
+                ]
+            }
         }
     }
 

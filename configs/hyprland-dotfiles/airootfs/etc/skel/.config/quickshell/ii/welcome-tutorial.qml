@@ -50,7 +50,8 @@ ApplicationWindow {
 
     // Install page (card 1): which apps the user ticked to install in the background.
     readonly property int installCardIndex: 1
-    property var installSelections: ({ "gaming": false, "gamescope": false, "resolve": false, "resolve-studio": false, "obs": false })
+    property var installSelections: ({ "gaming": false, "gamescope": false, "resolve": false, "resolve-studio": false, "obs": false,
+                                        "gimp": false, "krita": false, "libreoffice": false, "onlyoffice": false, "sunshine": false, "moonlight": false, "blender": false })
     readonly property int installCount: {
         var n = 0; for (var k in installSelections) if (installSelections[k]) n++; return n;
     }
@@ -380,6 +381,7 @@ ApplicationWindow {
         property string optKey
         property string optTitle
         property string optDesc
+        // An icon theme name, or a file path for an app the theme has no icon for.
         property string optIcon
         // Already installed and current: nothing to do, so the row reports state
         // instead of offering an install that would be a no-op.
@@ -409,10 +411,10 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.margins: 12
             spacing: 12
-            MaterialSymbol {
-                text: optRoot.optIcon
-                iconSize: 26
-                color: optRoot.selected ? Appearance.m3colors.m3primary : Appearance.colors.colOnLayer0
+            AppIcon {
+                source: optRoot.optIcon
+                fallback: "application-x-executable"
+                implicitSize: 32
             }
             ColumnLayout {
                 spacing: 1
@@ -455,91 +457,199 @@ ApplicationWindow {
 
     component Card1Install : Item {
         id: installCard
-        ColumnLayout {
+        // Six categories outgrow the fixed window, so the list scrolls, and a
+        // pill over the bottom edge says so until the end is reached.
+        StyledFlickable {
+            id: installFlick
             anchors.fill: parent
             anchors.margins: 28
-            spacing: 8
+            clip: true
+            contentWidth: width
+            contentHeight: installColumn.implicitHeight
+            ColumnLayout {
+                id: installColumn
+                width: installFlick.width
+                spacing: 8
 
-            StyledText {
-                text: Translation.tr("Set up your apps")
-                font.pixelSize: Appearance.font.pixelSize.huge
-                font.weight: Font.Medium
-                color: Appearance.colors.colOnLayer0
-            }
-            StyledText {
-                text: Translation.tr("Pick anything you'd like installed — you can always add these later.")
-                font.pixelSize: Appearance.font.pixelSize.normal
-                color: Appearance.colors.colSubtext
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
+                StyledText {
+                    text: Translation.tr("Set up your apps")
+                    font.pixelSize: Appearance.font.pixelSize.huge
+                    font.weight: Font.Medium
+                    color: Appearance.colors.colOnLayer0
+                }
+                StyledText {
+                    text: Translation.tr("Pick anything you'd like installed — you can always add these later.")
+                    font.pixelSize: Appearance.font.pixelSize.normal
+                    color: Appearance.colors.colSubtext
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
 
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: noteRow.implicitHeight + 18
-                radius: Appearance.rounding.normal
-                color: ColorUtils.transparentize(Appearance.m3colors.m3primary, 0.9)
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: noteRow.implicitHeight + 18
+                    radius: Appearance.rounding.normal
+                    color: ColorUtils.transparentize(Appearance.m3colors.m3primary, 0.9)
+                    RowLayout {
+                        id: noteRow
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 10
+                        MaterialSymbol { text: "info"; iconSize: 22; color: Appearance.m3colors.m3primary; Layout.alignment: Qt.AlignTop }
+                        StyledText {
+                            text: Translation.tr("These install in the background — feel free to keep going through the tour. You'll get a notification when each one finishes.")
+                            font.pixelSize: Appearance.font.pixelSize.smaller
+                            color: Appearance.colors.colOnLayer0
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Gaming") }
                 RowLayout {
-                    id: noteRow
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 10
-                    MaterialSymbol { text: "info"; iconSize: 22; color: Appearance.m3colors.m3primary; Layout.alignment: Qt.AlignTop }
-                    StyledText {
-                        text: Translation.tr("These install in the background — feel free to keep going through the tour. You'll get a notification when each one finishes.")
-                        font.pixelSize: Appearance.font.pixelSize.smaller
-                        color: Appearance.colors.colOnLayer0
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "gaming"; optIcon: "steam"
+                        optTitle: Translation.tr("Desktop Gaming")
+                        optDesc: Translation.tr("Steam, Proton and GPU drivers — play on your desktop.")
+                    }
+                    InstallOption {
+                        optKey: "gamescope"; optIcon: "steamdeck-gaming-return"
+                        optTitle: Translation.tr("Desktop + Big Picture")
+                        optDesc: Translation.tr("Includes everything in Desktop Gaming but adds a Console style gamescope session on pressing Super <font face='JetBrains Mono NF'>(󰖳)</font> + G.")
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Video Editing") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "resolve"; optIcon: "davinci-resolve"
+                        optTitle: Translation.tr("DaVinci Resolve")
+                        optDesc: Translation.tr("Free edition. Large download.")
+                    }
+                    InstallOption {
+                        optKey: "resolve-studio"; optIcon: "davinci-resolve"
+                        optTitle: Translation.tr("DaVinci Resolve Studio")
+                        optDesc: Translation.tr("Paid edition (needs your license). Large download.")
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Content Creation") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "obs"; optIcon: "com.obsproject.Studio"
+                        optTitle: Translation.tr("OBS Studio")
+                        optDesc: Translation.tr("mainstream-obs — record and stream.")
+                    }
+                    InstallOption {
+                        optKey: "blender"; optIcon: "blender"
+                        optTitle: Translation.tr("Blender")
+                        optDesc: Translation.tr("3D modeling, animation and video editing.")
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Office") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "libreoffice"; optIcon: "libreoffice-startcenter"
+                        optTitle: Translation.tr("LibreOffice")
+                        optDesc: Translation.tr("Writer, Calc and Impress. Opens Word, Excel and PowerPoint files.")
+                    }
+                    InstallOption {
+                        optKey: "onlyoffice"; optIcon: "org.onlyoffice.desktopeditors"
+                        optTitle: Translation.tr("OnlyOffice")
+                        optDesc: Translation.tr("Editors with a familiar Microsoft Office look. Installs from Flathub.")
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Image Editing") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "gimp"; optIcon: "gimp"
+                        optTitle: Translation.tr("GIMP")
+                        optDesc: Translation.tr("Photo editing and retouching.")
+                    }
+                    InstallOption {
+                        optKey: "krita"; optIcon: "org.kde.krita"
+                        optTitle: Translation.tr("Krita")
+                        optDesc: Translation.tr("Digital painting and illustration.")
+                    }
+                }
+
+                InstallCategory { text: Translation.tr("Game Streaming") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    InstallOption {
+                        optKey: "sunshine"; optIcon: root.imageDir + "/sunshine.svg"
+                        optTitle: Translation.tr("Sunshine")
+                        optDesc: Translation.tr("Stream this PC's games to your other devices.")
+                    }
+                    InstallOption {
+                        optKey: "moonlight"; optIcon: "com.moonlight_stream.Moonlight"
+                        optTitle: Translation.tr("Moonlight")
+                        optDesc: Translation.tr("Play games streamed from another PC.")
                     }
                 }
             }
-
-            InstallCategory { text: Translation.tr("Gaming") }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-                InstallOption {
-                    optKey: "gaming"; optIcon: "sports_esports"
-                    optTitle: Translation.tr("Desktop Gaming")
-                    optDesc: Translation.tr("Steam, Proton and GPU drivers — play on your desktop.")
+        }
+        ScrollEdgeFade {
+            target: installFlick
+            color: Appearance.m3colors.m3surfaceContainerLow
+        }
+        RippleButton {
+            id: moreBelow
+            readonly property bool atEnd: installFlick.contentHeight <= installFlick.height || installFlick.atYEnd
+            anchors { bottom: installFlick.bottom; horizontalCenter: parent.horizontalCenter; bottomMargin: 10 }
+            z: 100
+            opacity: atEnd ? 0 : 1
+            scale: atEnd ? 0.7 : 1
+            visible: opacity > 0
+            Behavior on opacity { animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this) }
+            Behavior on scale { animation: Appearance.animation.elementResize.numberAnimation.createObject(this) }
+            implicitWidth: moreBelowRow.implicitWidth + 12 * 2
+            implicitHeight: moreBelowRow.implicitHeight + 5 * 2
+            colBackground: Appearance.colors.colSecondary
+            colBackgroundHover: Appearance.colors.colSecondaryHover
+            colRipple: Appearance.colors.colSecondaryActive
+            buttonRadius: Appearance.rounding.full
+            downAction: () => {
+                pageDown.to = Math.min(installFlick.contentY + installFlick.height * 0.8, installFlick.contentHeight - installFlick.height);
+                pageDown.restart();
+            }
+            NumberAnimation {
+                id: pageDown
+                target: installFlick
+                property: "contentY"
+                duration: 300
+                easing.type: Easing.OutCubic
+            }
+            contentItem: Row {
+                id: moreBelowRow
+                spacing: 4
+                MaterialSymbol {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "keyboard_arrow_down"
+                    iconSize: Appearance.font.pixelSize.larger
+                    color: Appearance.colors.colOnSecondary
                 }
-                InstallOption {
-                    optKey: "gamescope"; optIcon: "stadia_controller"
-                    optTitle: Translation.tr("Desktop + Big Picture")
-                    optDesc: Translation.tr("Includes everything in Desktop Gaming but adds a Console style gamescope session on pressing Super <font face='JetBrains Mono NF'>(󰖳)</font> + G.")
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Translation.tr("More apps below")
+                    font.pixelSize: Appearance.font.pixelSize.smallie
+                    color: Appearance.colors.colOnSecondary
                 }
             }
-
-            InstallCategory { text: Translation.tr("Video Editing") }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-                InstallOption {
-                    optKey: "resolve"; optIcon: "movie"
-                    optTitle: Translation.tr("DaVinci Resolve")
-                    optDesc: Translation.tr("Free edition. Large download.")
-                }
-                InstallOption {
-                    optKey: "resolve-studio"; optIcon: "video_settings"
-                    optTitle: Translation.tr("DaVinci Resolve Studio")
-                    optDesc: Translation.tr("Paid edition (needs your license). Large download.")
-                }
-            }
-
-            InstallCategory { text: Translation.tr("Content Creation") }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-                InstallOption {
-                    optKey: "obs"; optIcon: "videocam"
-                    optTitle: Translation.tr("OBS Studio")
-                    optDesc: Translation.tr("mainstream-obs — record and stream.")
-                }
-                Item { Layout.fillWidth: true }
-            }
-
-            Item { Layout.fillHeight: true }
         }
     }
 

@@ -9,6 +9,7 @@ import qs.modules.common.functions as CF
 import QtQuick
 import QtQuick.Layouts
 import Qt5Compat.GraphicalEffects
+import QtMultimedia
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -58,7 +59,7 @@ Variants {
         property int workspaceChunkSize: Config?.options.bar.workspaces.shown ?? 10
         property int totalWorkspaces: Math.ceil(lastWorkspaceId / workspaceChunkSize) * workspaceChunkSize
         // Wallpaper
-        property bool wallpaperIsVideo: Config.options.background.wallpaperPath.endsWith(".mp4") || Config.options.background.wallpaperPath.endsWith(".webm") || Config.options.background.wallpaperPath.endsWith(".mkv") || Config.options.background.wallpaperPath.endsWith(".avi") || Config.options.background.wallpaperPath.endsWith(".mov")
+        property bool wallpaperIsVideo: Wallpapers.isVideoFile(Config.options.background.wallpaperPath)
         property string wallpaperPath: wallpaperIsVideo ? Config.options.background.thumbnailPath : Config.options.background.wallpaperPath
         property bool wallpaperSafetyTriggered: {
             const enabled = Config.options.workSafety.enable.wallpaper;
@@ -488,6 +489,38 @@ Variants {
                 height: bgRoot.scaledWallpaperHeight
             }
 
+            // mpvpaper draws a video wallpaper on its own surface, which this
+            // panel cannot sample and which the compositor hides once a session
+            // lock is up, leaving the lock nothing live to blur.
+            Loader {
+                id: lockVideo
+                anchors.fill: wallpaper
+                active: bgRoot.wallpaperIsVideo && !bgRoot.wallpaperSafetyTriggered
+                    && (GlobalStates.screenLocked || scaleAnim.running)
+                visible: !blurLoader.active
+                sourceComponent: VideoOutput {
+                    // Named rather than reached through `parent`: the player
+                    // still drives a VideoOutput found that way, but the frames
+                    // never reach an effect reading the same item, which is why
+                    // the lock blurred a still of the video instead of the video.
+                    id: lockVideoOutput
+                    readonly property bool showing: lockVideoPlayer.playbackState === MediaPlayer.PlayingState
+                    fillMode: VideoOutput.PreserveAspectCrop
+                    MediaPlayer {
+                        id: lockVideoPlayer
+                        videoOutput: lockVideoOutput
+                        source: Config.options.background.wallpaperPath
+                        loops: MediaPlayer.Infinite
+                        Component.onCompleted: play()
+                        // A wallpaper swapped while the screen is locked arrives
+                        // after construction, so it needs starting the same way
+                        // the first one did.
+                        onSourceChanged: if (source != "") play()
+                        onErrorOccurred: stop()
+                    }
+                }
+            }
+
             // The picture being replaced, over the new one until the effect
             // has carried it off, and empty the rest of the time. It keeps
             // the place the old picture had when the change came, so nothing
@@ -558,7 +591,32 @@ Variants {
                     }
                 }
                 sourceComponent: GaussianBlur {
-                    source: wallpaper
+                    id: lockBlur
+                    // The still until the video is really running, so a file
+                    // the decoder cannot open leaves the blur something to read.
+                    readonly property Item liveSource: (lockVideo.item?.showing ?? false) ? lockVideo.item : wallpaper
+                    readonly property bool capped: (lockVideo.item?.showing ?? false)
+                        && Config.options.background.videoFrameRate > 0
+                    // A still only changes when it is replaced, so the blur costs
+                    // nothing between wallpapers. A video would have it redrawing
+                    // on every frame, which is the whole bill on a locked machine,
+                    // so a capped one is read through a copy taken on a timer.
+                    ShaderEffectSource {
+                        id: lockBlurThrottle
+                        anchors.fill: parent
+                        visible: false
+                        sourceItem: lockBlur.liveSource
+                        hideSource: false
+                        live: false
+                    }
+                    Timer {
+                        running: lockBlur.capped
+                        interval: Math.max(16, Math.round(1000 / Config.options.background.videoFrameRate))
+                        repeat: true
+                        triggeredOnStart: true
+                        onTriggered: lockBlurThrottle.scheduleUpdate()
+                    }
+                    source: lockBlur.capped ? lockBlurThrottle : lockBlur.liveSource
                     // Full lock radius when locked; slightly lighter blur for overview
                     radius: GlobalStates.screenLocked
                         ? Config.options.lock.blur.radius
