@@ -292,6 +292,13 @@ LOOSE_FILES=(
     /etc/systemd/resolved.conf.d/archiso.conf
     /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
     /etc/initcpio/install/nvidia-gsp-strip
+    # The dotfiles the image was built from, unpacked by install-dotfiles into
+    # /tmp/dotfiles-setup earlier in this run. Nothing after the install reads
+    # either one: updatems keeps its own clone under the user's cache.
+    /usr/local/share/dots-hyprland.tar.zst
+    # archiso stamps the image's build date here. It says nothing true about an
+    # installed system, where os-release carries the version.
+    /version
 )
 for f in "${LOOSE_FILES[@]}"; do
     if [[ -e "$f" ]]; then
@@ -311,6 +318,10 @@ fi
 
 # ── Live-only directories ───────────────────────────────────────────────────
 LOOSE_DIRS=(
+    # The unpacked copy of the archive above. /tmp is a tmpfs on the installed
+    # system, so this is invisible at runtime while still occupying the
+    # subvolume and every snapshot taken of it.
+    /tmp/dotfiles-setup
     # /home/liveuser is the home directory for the live ISO's
     # liveuser account. Calamares' removeuser module deletes the
     # account from /etc/passwd but invokes `userdel` without `-r`,
