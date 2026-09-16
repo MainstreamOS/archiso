@@ -57,6 +57,7 @@ memtest86+-efi
 livecd-sounds
 edk2-shell
 reflector
+pacman-contrib
 pv
 # gpm removed — libnewt dependency, cannot be removed via packages.conf
 
