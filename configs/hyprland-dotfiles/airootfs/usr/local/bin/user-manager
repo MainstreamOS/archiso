@@ -70,27 +70,40 @@ last_admin() {  # $1 = user
     [[ "$admins" -le 1 ]] && id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx wheel
 }
 
+# A uid above the login floor is not enough to make an account a person: a
+# daemon handed one would otherwise render as a card with Delete and a working
+# Make-administrator switch. A shell that cannot log in says it is not.
+_no_login_shell() {  # $1 = shell
+    case "${1##*/}" in
+        nologin|false|halt|shutdown|sync|""|sync) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 cmd_list() {
-    local first=1
-    echo -n '['
+    local first=1 rows=()
     while IFS=: read -r name _ uid _ gecos home shell; do
         (( uid >= 1000 && uid < 65534 )) || continue
-        (( first )) || echo -n ','
-        first=0
+        _no_login_shell "$shell" && continue
         local admin=false
         id -nG "$name" 2>/dev/null | tr ' ' '\n' | grep -qx wheel && admin=true
-        printf '{"name":%s,"fullName":%s,"home":%s,"shell":%s,"admin":%s}' \
-            "$(printf '%s' "$name"          | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "${gecos%%,*}"   | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$home"          | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$shell"         | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" \
-            "$admin"
+        rows+=("$(jq -nc --arg name "$name" --arg fullName "${gecos%%,*}" \
+                        --arg home "$home" --arg shell "$shell" --argjson admin "$admin" \
+                   '{name:$name, fullName:$fullName, home:$home, shell:$shell, admin:$admin}')") \
+            || die "could not build the account list"
     done < <(getent passwd)
+    echo -n '['
+    local row
+    for row in ${rows[@]+"${rows[@]}"}; do
+        (( first )) || echo -n ','
+        first=0
+        printf '%s' "$row"
+    done
     echo ']'
 }
 
-cmd_create() {  # $1 = user  $2 = full name (optional)
-    local u="${1:-}" full="${2:-}" pw
+cmd_create() {  # $1 = user  $2 = full name (optional)  $3 = "admin" to grant wheel
+    local u="${1:-}" full="${2:-}" admin="${3:-}" pw
     valid_name "$u" || die "not a valid user name: $u"
     id "$u" >/dev/null 2>&1 && die "user already exists: $u"
     [[ -r "$PROVISION_LIB" ]] || die "provisioning library missing at $PROVISION_LIB"
@@ -105,6 +118,13 @@ cmd_create() {  # $1 = user  $2 = full name (optional)
 
     # shellcheck source=/dev/null
     source "$PROVISION_LIB"
+    # Asked for here rather than by a second authenticated call afterwards: a
+    # prompt the user dismisses at that point leaves an account that can already
+    # be logged into as a standard user, whatever the switch said.
+    if [[ "$admin" == admin ]]; then
+        PROVISION_ADMIN=1
+        log "$u will be an administrator"
+    fi
     # No password has been set yet, so nothing can reach this account, and it
     # holds nothing anyone typed. Removing it leaves the machine as it was
     # rather than leaving a broken entry on the Accounts page.
@@ -130,10 +150,36 @@ cmd_provision() {  # $1 = user
     log "$u provisioned"
 }
 
-cmd_set_password() {  # $1 = user
-    local u="${1:-}" pw
+# The stored hash is checked with the same crypt(3) the login stack uses, so
+# whatever scheme /etc/login.defs picked (yescrypt here) is handled by libcrypt
+# rather than reimplemented.
+_password_matches() {  # $1 = user  $2 = password
+    local hash
+    hash="$(getent shadow "$1" 2>/dev/null | cut -d: -f2)"
+    # A locked or empty entry has no password to match, so nothing can verify.
+    case "$hash" in ''|'!'*|'*'*) return 1 ;; esac
+    HASH="$hash" PW="$2" python3 -c '
+import ctypes, os, sys
+lib = ctypes.CDLL("libcrypt.so.2")
+lib.crypt.restype = ctypes.c_char_p
+lib.crypt.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+h = os.environ["HASH"].encode()
+got = lib.crypt(os.environ["PW"].encode(), h)
+sys.exit(0 if got and got == h else 1)
+' 2>/dev/null
+}
+
+cmd_set_password() {  # $1 = user  $2 = "verify" to require the current password first
+    local u="${1:-}" mode="${2:-}" old="" pw
     require_human_user "$u"
+    if [[ "$mode" == verify ]]; then
+        # Two lines on stdin, current then new, so neither ever reaches argv.
+        IFS= read -r old || true
+        [[ -n "$old" ]] || die "no current password supplied"
+        _password_matches "$u" "$old" || die "the current password is not correct"
+    fi
     pw="$(cat)"
+    pw="${pw%$'\n'}"
     [[ -n "$pw" ]] || die "no password supplied on stdin"
     printf '%s:%s\n' "$u" "$pw" | chpasswd || die "could not set the password for $u"
     log "password changed for $u"
@@ -191,7 +237,11 @@ cmd_set_avatar() {  # $1 = user  $2 = source image
     # ImageMagick copies a selected frame to a temporary file with no
     # extension and then cannot work out how to read it back, whatever the
     # format, so every picture fell through to an unresized copy.
-    edge="$(identify -format '%[fx:min(w,h)]\n' "$src" 2>/dev/null | head -n1 || echo 0)"
+    # Read whole, then take the first line. Piping into head lets identify die
+    # on SIGPIPE, and under pipefail the `|| echo 0` then APPENDS to what it had
+    # already printed, giving a two-line value that falls through to a plain copy.
+    edge="$(identify -format '%[fx:min(w,h)]\n' "$src" 2>/dev/null || true)"
+    edge="${edge%%$'\n'*}"
     case "$edge" in ''|*[!0-9]*) edge=0 ;; esac
     if [[ "$edge" -gt 0 ]]; then
         (( edge > 512 )) && edge=512

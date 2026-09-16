@@ -271,16 +271,13 @@ STUB_EOF
             else
                 echo "[first-login] skipped seed (already set, or jq/wallpaper missing)"
             fi
-            # Whether the shell puts the empty string back is the whole question,
-            # so read it again once its write timers have had time to fire.
-            for _k in 1 2 5 15; do
-                sleep "$_k"
-                echo "[first-login] wallpaperPath +${_k}s: '$(jq -r '.background.wallpaperPath // "<absent>"' "$CFG" 2>/dev/null)'"
-            done
+            # One settle before applycolor, because the shell's own write
+            # timers can still be holding the value this just wrote.
+            sleep 2
             [[ -f "$APPLYCOLOR" ]] && nice -n 19 ionice -c 3 bash "$APPLYCOLOR" </dev/null >/dev/null 2>&1
             qs -c ii ipc call theme reload >/dev/null 2>&1 || true
             echo "[first-login] wallpaperPath after applycolor+reload: '$(jq -r '.background.wallpaperPath // "<absent>"' "$CFG" 2>/dev/null)'"
-        ) &
+        ) >> "$LOG" 2>&1 &
         disown
     fi
 

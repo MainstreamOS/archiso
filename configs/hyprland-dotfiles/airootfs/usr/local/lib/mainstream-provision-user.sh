@@ -77,6 +77,10 @@ provision_home_of() {  # $1 = user
 # screen appears. build.sh leaves the same set out when it seeds the image.
 PROVISION_SKEL_EXCLUDES=(
     '/.bash_profile'
+    '/.bashrc'
+    '/.bash_logout'
+    '/.zshrc'
+    '/.profile'
     '/.config/gtk-3.0/settings.ini'
     '/.config/gtk-4.0/settings.ini'
     '/.local/share/hyprland/plugins/'
@@ -268,7 +272,13 @@ provision_venv() {  # $1 = user
     # rebuilds it rather than leaving a subtly broken one in place.
     target_ver="$(/usr/bin/python3.12 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
     baked_ver="$(cat "$venv/.python-version" 2>/dev/null || true)"
-    if [[ -n "$target_ver" && -n "$baked_ver" && "$baked_ver" != "$target_ver" ]]; then
+    # An interpreter that is not there at all is the other way this venv goes
+    # stale, and it reads as an empty version rather than a different one.
+    if [[ -z "$target_ver" ]]; then
+        _pu_warn "venv: /usr/bin/python3.12 is missing, rebuilding $venv from the system python"
+        rm -rf "$venv"
+        return 0
+    elif [[ -n "$baked_ver" && "$baked_ver" != "$target_ver" ]]; then
         rm -rf "$venv"
         return 0
     fi
@@ -284,6 +294,14 @@ provision_first_run() {  # $1 = user
     local u="$1" home
     home="$(provision_home_of "$u")"
     [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    # Only an account that has never logged in gets the marker. Re-arming it on
+    # an established home makes the next login run first-login setup again,
+    # which ends by deleting the dotfiles directory it thinks it created, and
+    # that is $HOME/dots-hyprland for anyone who followed upstream's README.
+    if provision_has_logged_in "$u"; then
+        _pu_log "first run: $u has logged in before, leaving the marker alone"
+        return 0
+    fi
     rm -f "$home/.local/state/quickshell/user/first_run.txt"
     touch "$home/.dotfiles-pending-user-setup"
     chown "$u:$u" "$home/.dotfiles-pending-user-setup"
@@ -538,15 +556,15 @@ su -s /bin/bash "$u" -c "xdg-user-dirs-update --force" || true
 # Set Nautilus as default file manager
 su -s /bin/bash "$u" -c "xdg-mime default org.gnome.Nautilus.desktop inode/directory" || true
 
-# Set Loupe as default image viewer for all common image types
+# Set Loupe as default image viewer for all common image types.
+# xdg-mime takes a list, and one call per type meant a hundred-odd forks of su,
+# a login shell and xdg-mime's own shell-outs for every account created.
 IMAGE_TYPES=(
     image/png image/jpeg image/gif image/bmp image/webp image/tiff
     image/svg+xml image/svg+xml-compressed image/x-icon image/vnd.microsoft.icon
     image/avif image/heif image/heic image/jxl
 )
-for mime in "${IMAGE_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default org.gnome.Loupe.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default org.gnome.Loupe.desktop ${IMAGE_TYPES[*]}" || true
 _pu_log "Loupe set as default image viewer."
 
 # Set mpv as default video player for all the video types it handles
@@ -563,9 +581,7 @@ VIDEO_TYPES=(
     application/x-matroska application/x-ogm application/x-ogm-video
     application/vnd.rn-realmedia application/vnd.rn-realmedia-vbr
 )
-for mime in "${VIDEO_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default mpv.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default mpv.desktop ${VIDEO_TYPES[*]}" || true
 _pu_log "mpv set as default video player."
 
 # Audio too. Left unset the type falls to whatever desktop entry claims it,
@@ -578,9 +594,7 @@ AUDIO_TYPES=(
     audio/x-mpeg audio/x-ms-wma audio/x-musepack audio/x-opus+ogg
     audio/x-scpls audio/x-vorbis+ogg audio/x-wav audio/x-wavpack
 )
-for mime in "${AUDIO_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default mpv.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default mpv.desktop ${AUDIO_TYPES[*]}" || true
 _pu_log "mpv set as default audio player."
 
 # The setup run has always done this one and the installed system never did,
@@ -590,9 +604,7 @@ TEXT_TYPES=(
     text/x-changelog text/x-copying text/x-makefile text/x-patch
     text/x-diff text/x-qml text/xml application/xml application/json
 )
-for mime in "${TEXT_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default org.gnome.TextEditor.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default org.gnome.TextEditor.desktop ${TEXT_TYPES[*]}" || true
 _pu_log "GNOME Text Editor set as default text editor."
 
 # Nothing set a browser on either install path, so https and mailto went to
@@ -603,9 +615,7 @@ WEB_TYPES=(
     text/html application/xhtml+xml
 )
 su -s /bin/bash "$u" -c "xdg-settings set default-web-browser chromium.desktop" || true
-for mime in "${WEB_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default chromium.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default chromium.desktop ${WEB_TYPES[*]}" || true
 _pu_log "Chromium set as default browser."
 
 # Set Papers as default document viewer. Without this a PDF opens in the
@@ -619,28 +629,38 @@ DOCUMENT_TYPES=(
     application/vnd.comicbook+zip application/vnd.comicbook-rar
     application/x-cbz application/x-cbr application/x-cb7 application/x-cbt
 )
-for mime in "${DOCUMENT_TYPES[@]}"; do
-    su -s /bin/bash "$u" -c "xdg-mime default org.gnome.Papers.desktop $mime" || true
-done
+su -s /bin/bash "$u" -c "xdg-mime default org.gnome.Papers.desktop ${DOCUMENT_TYPES[*]}" || true
 _pu_log "Papers set as default document viewer."
 
 # Compile dconf system database so dark mode is default before first login
 dconf update 2>/dev/null || true
 
-# Set gsettings defaults — dark mode + Nautilus preferences
-su -s /bin/bash "$u" -c "
-    export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u '$u')/bus
-    gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
-    gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view' 2>/dev/null || true
-    gsettings set org.gnome.nautilus.preferences show-hidden-files false 2>/dev/null || true
-" || true
+# Set gsettings defaults — dark mode + Nautilus preferences.
+# /run/user/<uid> does not exist for an account that has never logged in, so a
+# session bus address pointing there leaves dconf unable to commit and every
+# write below silently lost. dbus-run-session gives the batch a bus of its own;
+# the keys land in the user's own dconf database either way. The batch goes
+# through a file so the quoting survives two levels of shell.
+_gs_script="$(mktemp)"
+cat > "$_gs_script" << 'GSETTINGSEOF'
+gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark'
+gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark'
+gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500'
+gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11'
+gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11'
+gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic'
+gsettings set org.gnome.desktop.interface cursor-size 24
+gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view'
+gsettings set org.gnome.nautilus.preferences show-hidden-files false
+GSETTINGSEOF
+chmod 0644 "$_gs_script"
+if su -s /bin/bash "$u" -c "dbus-run-session -- bash '$_gs_script'" 2>/dev/null; then
+    _pu_log "desktop settings written for $u"
+else
+    _pu_warn "desktop settings could not be written for $u"
+fi
+rm -f "$_gs_script"
 }
 
 # The order matters. Groups and the venv first because they are cheap and
