@@ -1531,22 +1531,29 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # (the old cp -a copy-over shipped deleted QML/scripts for weeks).
         # Excluded paths are skel content that does not come from dots/:
         #  - build-deposited artifacts added by later phases of this script
-        #    (python venv, prebuilt hyprland plugins, uv sdata, init-qs.sh)
+        #    (python venv, prebuilt hyprland plugins, uv sdata)
         #  - deliberate ISO-only extras (.bash_profile, gtk settings.ini
         #    defaults, first_run marker, auto-drive-mount icon)
         # rsync does not delete excluded destination paths, so these survive
         # builds without being re-created each time.
-        rsync -a --delete \
-            --exclude='/.bash_profile' \
-            --exclude='/.config/gtk-3.0/settings.ini' \
-            --exclude='/.config/gtk-4.0/settings.ini' \
-            --exclude='/.config/hypr/scripts/' \
-            --exclude='/.local/share/hyprland/plugins/' \
-            --exclude='/.local/share/icons/hicolor/scalable/apps/auto-drive-mount.svg' \
-            --exclude='/.local/share/quickshell/sdata/uv/' \
-            --exclude='/.local/state/quickshell/.venv/' \
-            --exclude='/.local/state/quickshell/user/first_run.txt' \
-            "$DOTS_WORK/dots/" "$SKEL_DIR/"
+        # The list itself comes from the provisioning library, which seeds a
+        # home from the same tree on a machine that already exists. Kept in one
+        # place so the image and a new account cannot disagree about what is
+        # built per machine.
+        _skel_ex=()
+        [[ -r "$DOTS_WORK/sdata/lib/provision-user.sh" ]] \
+            || die "provision-user.sh missing from the clone; refusing to seed skel without its exclusion list"
+        # shellcheck source=/dev/null
+        source "$DOTS_WORK/sdata/lib/provision-user.sh"
+        for _ex in "${PROVISION_SKEL_EXCLUDES[@]+"${PROVISION_SKEL_EXCLUDES[@]}"}"; do
+            _skel_ex+=( --exclude="$_ex" )
+        done
+        # An empty list mirrors the dotfiles over skel with deletions and
+        # nothing held back, which would take the pre-baked virtualenv and the
+        # plugin binaries later phases deposit there.
+        [[ ${#_skel_ex[@]} -gt 0 ]] \
+            || die "provision-user.sh carries no exclusion list; refusing to seed skel"
+        rsync -a --delete "${_skel_ex[@]}" "$DOTS_WORK/dots/" "$SKEL_DIR/"
 
             # The whole clone, submodule included, travels on the image as one archive
             # and is unpacked at install: a checkout keeps the modes the scripts need,
@@ -1605,6 +1612,8 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             sdata/sddm/pixie-sddm-keyboard-bridge.sh \
             sdata/polkit/app-remover \
             sdata/polkit/disk-mounter \
+            sdata/polkit/user-manager \
+            sdata/provision/dotfiles-first-login \
             sdata/polkit/ai-cli-install \
             sdata/polkit/ollama-setup; do
             _src="$DOTS_WORK/$_rel"
@@ -1616,6 +1625,9 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # The same for the dots-owned pieces that are not plain bin scripts.
         for _pair in \
             "sdata/polkit/power-key-helper.sh:755:usr/local/bin/power-key-helper" \
+            "sdata/lib/provision-user.sh:644:usr/local/lib/mainstream-provision-user.sh" \
+            "sdata/lib/venv-common.sh:644:usr/local/lib/mainstream-venv-common.sh" \
+            "sdata/polkit/org.mainstreamos.user-manager.policy:644:usr/share/polkit-1/actions/org.mainstreamos.user-manager.policy" \
             "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml"; do
             _src="$DOTS_WORK/${_pair%%:*}"; _rest="${_pair#*:}"
             [[ -f "$_src" ]] || continue
@@ -1675,14 +1687,6 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             # (printf %q would also work but echo -e + backslash is the same shape
             # used elsewhere in this script).
             echo 'hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)' >> "$EXECS_LUA"
-        fi
-
-        SCRIPTS_DIR="$SKEL_DIR/.config/hypr/scripts"
-        mkdir -p "$SCRIPTS_DIR"
-        if [[ -f "$PROFILE_DIR/../airootfs/etc/skel/.config/hypr/scripts/init-qs.sh" ]]; then
-            cp "$PROFILE_DIR/../airootfs/etc/skel/.config/hypr/scripts/init-qs.sh" "$SCRIPTS_DIR/"
-            chmod 755 "$SCRIPTS_DIR/init-qs.sh"
-            info "init-qs.sh deployed to skel."
         fi
 
         # Deploy Mainstream Plymouth theme into the live ISO airootfs so the

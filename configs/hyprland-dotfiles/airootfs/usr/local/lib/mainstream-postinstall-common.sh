@@ -166,4 +166,12 @@ build_hyprland_plugin() {
 # ---------------------------------------------------------------------------
 # Identify the actual user created by Calamares (UID 1000)
 MAIN_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 <= 1001 {print $1}' | grep -vxE 'liveuser|builduser|nobody|root' | head -n 1 || true)
-MAIN_USER_HOME="/home/$MAIN_USER"
+# Read from the account rather than assumed from its name: /home/<user> is
+# where Calamares puts it, but the passwd field is what every other tool uses,
+# and an empty answer must stay empty rather than becoming /home/.
+if [[ -n "$MAIN_USER" ]]; then
+    MAIN_USER_HOME=$(getent passwd "$MAIN_USER" 2>/dev/null | cut -d: -f6)
+    [[ -n "$MAIN_USER_HOME" ]] || MAIN_USER_HOME="/home/$MAIN_USER"
+else
+    MAIN_USER_HOME=""
+fi

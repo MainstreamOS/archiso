@@ -218,269 +218,41 @@ if command -v firewall-offline-cmd &>/dev/null && [[ -f /etc/firewalld/zones/Mai
         || warn "Could not enable firewalld; firewall will not start at boot."
 fi
 
+# ---------------------------------------------------------------------------
+# 8. THE USER'S HOME
+# ---------------------------------------------------------------------------
+# The same code that builds an account made later from Settings, so the two
+# cannot drift: this script used to carry its own copy of it, and a second
+# account ended up with a desktop this one would never have produced.
+#
+# Only the steps this script owns are called. postdesktop runs before
+# postfinalize, so post-install-theme has already built the virtualenv and
+# generated the colors, and post-install-hyprbars has already compiled and
+# stamped the plugins. Laying the dotfiles over the home is skipped too: skel
+# was seeded from this release when the image was built, and a machine this
+# new has no clone to read anyway.
 if [[ -n "$MAIN_USER" ]]; then
-    # Add to essential groups. i2c + the i2c-dev module are needed for ddcutil
-    # external-monitor brightness (mainstream-backlight); input drives the
-    # uinput virtual-input devices.
-    groupadd -f render
-    groupadd -f video
-    groupadd -f i2c
-    usermod -aG video,render,wheel,i2c,input "$MAIN_USER"
-    # Load i2c-dev at boot so ddcutil can reach the monitor's DDC/CI bus.
-    echo i2c-dev > /etc/modules-load.d/i2c-dev.conf
+    if [[ -r /usr/local/lib/mainstream-provision-user.sh ]]; then
+        # shellcheck source=/dev/null
+        source /usr/local/lib/mainstream-provision-user.sh
 
-    # Change user shell to Zsh if installed
-    if [ -f /usr/bin/zsh ]; then
-        info "Setting default shell to Zsh for $MAIN_USER..."
-        chsh -s /usr/bin/zsh "$MAIN_USER" || true
-    fi
+        # The account Calamares made is this machine's owner, and the input
+        # method was chosen from the locale further up.
+        PROVISION_ADMIN=1
+        PROVISION_CJK_IME="$_cjk_ime"
+        PROVISION_FAILED=""
 
-    # Remove quickshell first-run sentinel copied from skel so the installed
-    # user sees the welcome message on their first login.
-    rm -f "$MAIN_USER_HOME/.local/state/quickshell/user/first_run.txt"
+        _pu_step groups   provision_groups    "$MAIN_USER"
+        _pu_step desktop  provision_desktop   "$MAIN_USER"
+        _pu_step own      chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
+        _pu_step firstrun provision_first_run "$MAIN_USER"
 
-    # Final ownership guarantee
-    chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
-
-    # The CJK input method chosen above only helps if the session loads it.
-    # Env vars follow the fcitx5 Wayland guidance: no GTK_IM_MODULE, since
-    # GTK talks text-input-v3 natively and the module causes the blinking
-    # candidate window; X11 GTK apps get the module through settings.ini.
-    # GLFW speaks only the ibus protocol, which fcitx5 serves, and the
-    # wrong value there is a documented way to break input entirely.
-    if [[ -n "$_cjk_ime" ]]; then
-        info "Configuring the $_cjk_ime input method for $MAIN_USER..."
-        _ime_env="$MAIN_USER_HOME/.config/hypr/custom/env.lua"
-        if [[ -f "$_ime_env" ]] && ! grep -q 'im=fcitx' "$_ime_env"; then
-            cat >> "$_ime_env" << 'IMEENVEOF'
-hl.env({ name = "XMODIFIERS", value = "@im=fcitx" })
-hl.env({ name = "QT_IM_MODULE", value = "fcitx" })
-hl.env({ name = "QT_IM_MODULES", value = "wayland;fcitx" })
-hl.env({ name = "SDL_IM_MODULE", value = "fcitx" })
-hl.env({ name = "GLFW_IM_MODULE", value = "ibus" })
-IMEENVEOF
-            chown "$MAIN_USER:$MAIN_USER" "$_ime_env"
+        if [[ -n "$PROVISION_FAILED" ]]; then
+            warn "Setting up $MAIN_USER's home did not finish:$PROVISION_FAILED (see $PROVISION_LOG)"
+        else
+            info "Home set up for $MAIN_USER."
         fi
-        _ime_execs="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
-        if [[ -f "$_ime_execs" ]] && ! grep -q 'fcitx5' "$_ime_execs"; then
-            echo 'hl.on("hyprland.start", function() hl.exec_cmd("fcitx5 -d") end)' >> "$_ime_execs"
-            chown "$MAIN_USER:$MAIN_USER" "$_ime_execs"
-        fi
-        for _gtkv in gtk-3.0 gtk-4.0; do
-            _gtkini="$MAIN_USER_HOME/.config/$_gtkv/settings.ini"
-            if [[ -f "$_gtkini" ]]; then
-                grep -q '^gtk-im-module=' "$_gtkini" || sed -i '/^\[Settings\]/a gtk-im-module=fcitx' "$_gtkini"
-            else
-                printf '[Settings]\ngtk-im-module=fcitx\n' > "$_gtkini"
-            fi
-            chown "$MAIN_USER:$MAIN_USER" "$_gtkini"
-        done
-        # A profile with the engine already in the group is the difference
-        # between typing at first boot and a trip through the config tool.
-        _ime_profile="$MAIN_USER_HOME/.config/fcitx5/profile"
-        _ime_layout=us
-        case "$_kb" in jp*) _ime_layout=jp ;; kr*) _ime_layout=kr ;; esac
-        if [[ ! -f "$_ime_profile" ]]; then
-            install -d -o "$MAIN_USER" -g "$MAIN_USER" "$MAIN_USER_HOME/.config/fcitx5"
-            cat > "$_ime_profile" << IMEPROFEOF
-[Groups/0]
-Name=Default
-Default Layout=$_ime_layout
-DefaultIM=$_cjk_ime
-
-[Groups/0/Items/0]
-Name=keyboard-$_ime_layout
-Layout=
-
-[Groups/0/Items/1]
-Name=$_cjk_ime
-Layout=
-
-[GroupOrder]
-0=Default
-IMEPROFEOF
-            chown "$MAIN_USER:$MAIN_USER" "$_ime_profile"
-        fi
-    fi
-
-    # Add hyprpolkitagent autostart if not already present in dotfiles
-    EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
-    if [[ -f "$EXECS_LUA" ]] && ! grep -q "hyprpolkitagent" "$EXECS_LUA"; then
-        info "Adding hyprpolkitagent to Hyprland autostart..."
-        echo 'hl.on("hyprland.start", function() hl.exec_cmd("hyprpolkitagent") end)' >> "$EXECS_LUA"
-    elif [[ ! -f "$EXECS_LUA" ]]; then
-        warn "Could not find $EXECS_LUA — hyprpolkitagent will not autostart."
-    fi
-
-    # ---------------------------------------------------------------------------
-    # Deploy dotfiles-first-login using Hyprland + user systemd.
-    # XDG autostart depends on a session helper being present and running; the
-    # one thing we know the installed desktop will parse is Hyprland's exec-once.
-    # Hyprland starts the user service so the setup has journal visibility, and
-    # falls back to the script directly if the user systemd manager is not ready.
-    # ---------------------------------------------------------------------------
-    if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
-        info "Deploying dotfiles-first-login first-session triggers..."
-        SYSTEMD_USER_DIR="$MAIN_USER_HOME/.config/systemd/user"
-        mkdir -p "$SYSTEMD_USER_DIR"
-        cat > "$SYSTEMD_USER_DIR/dotfiles-first-login.service" << 'SERVICEEOF'
-[Unit]
-Description=Dotfiles first graphical login setup
-Documentation=man:systemd.service(5)
-ConditionPathExists=%h/.dotfiles-pending-user-setup
-After=graphical-session.target
-
-[Service]
-Type=oneshot
-KillMode=process
-Environment=DOTFILES_FIRST_LOGIN_FOREGROUND=1
-ExecStart=/usr/local/bin/dotfiles-first-login
-SERVICEEOF
-        chown -R "$MAIN_USER:$MAIN_USER" "$SYSTEMD_USER_DIR"
-
-        EXECS_LUA="$MAIN_USER_HOME/.config/hypr/custom/execs.lua"
-        mkdir -p "$(dirname "$EXECS_LUA")"
-        touch "$EXECS_LUA"
-        sed -i \
-            -e '\|dotfiles-first-login.service|d' \
-            -e '\|/usr/local/bin/dotfiles-first-login|d' \
-            "$EXECS_LUA" 2>/dev/null || true
-        cat >> "$EXECS_LUA" << 'EXECSEOF'
-hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)
-EXECSEOF
-        chown "$MAIN_USER:$MAIN_USER" "$EXECS_LUA"
-
-        # Keep an XDG autostart entry as a harmless backup for sessions that do
-        # run an autostart helper.
-        AUTOSTART_DIR="$MAIN_USER_HOME/.config/autostart"
-        mkdir -p "$AUTOSTART_DIR"
-        cat > "$AUTOSTART_DIR/dotfiles-first-login.desktop" << 'AUTOSTARTEOF'
-[Desktop Entry]
-Type=Application
-Name=Dotfiles First-Login Setup
-Exec=sh -c 'dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login'
-X-GNOME-Autostart-enabled=true
-NoDisplay=true
-AUTOSTARTEOF
-        chown -R "$MAIN_USER:$MAIN_USER" "$AUTOSTART_DIR"
     else
-        warn "dotfiles-first-login not found in /usr/local/bin — skipping first-session trigger deploy."
+        warn "The provisioning library is missing; $MAIN_USER's home has not been set up."
     fi
-
-    # ---------------------------------------------------------------------------
-    # Fix Nautilus home directory and set as default file manager
-    # ---------------------------------------------------------------------------
-    info "Configuring Nautilus as default file manager..."
-
-    # Generate XDG user directories (creates ~/Downloads, ~/Documents etc.)
-    # Run as the real user so paths resolve correctly
-    su -s /bin/bash "$MAIN_USER" -c "xdg-user-dirs-update --force" || true
-
-    # Set Nautilus as default file manager
-    su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Nautilus.desktop inode/directory" || true
-
-    # Set Loupe as default image viewer for all common image types
-    IMAGE_TYPES=(
-        image/png image/jpeg image/gif image/bmp image/webp image/tiff
-        image/svg+xml image/svg+xml-compressed image/x-icon image/vnd.microsoft.icon
-        image/avif image/heif image/heic image/jxl
-    )
-    for mime in "${IMAGE_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Loupe.desktop $mime" || true
-    done
-    info "Loupe set as default image viewer."
-
-    # Set mpv as default video player for all the video types it handles
-    VIDEO_TYPES=(
-        video/3gp video/3gpp video/3gpp2 video/avi video/divx video/dv
-        video/fli video/flv video/mkv video/mp2t video/mp4 video/mp4v-es
-        video/mpeg video/msvideo video/ogg video/quicktime video/vnd.avi
-        video/vnd.divx video/vnd.mpegurl video/vnd.rn-realvideo video/webm
-        video/x-avi video/x-flc video/x-flic video/x-flv video/x-m4v
-        video/x-matroska video/x-mpeg2 video/x-mpeg3 video/x-ms-afs
-        video/x-ms-asf video/x-msvideo video/x-ms-wmv video/x-ms-wmx
-        video/x-ms-wvxvideo video/x-ogm video/x-ogm+ogg video/x-theora
-        video/x-theora+ogg
-        application/x-matroska application/x-ogm application/x-ogm-video
-        application/vnd.rn-realmedia application/vnd.rn-realmedia-vbr
-    )
-    for mime in "${VIDEO_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default mpv.desktop $mime" || true
-    done
-    info "mpv set as default video player."
-
-    # Audio too. Left unset the type falls to whatever desktop entry claims it,
-    # which on a machine with Spotify installed is a streaming client being
-    # handed a local file it cannot really play.
-    AUDIO_TYPES=(
-        audio/aac audio/ac3 audio/flac audio/mp4 audio/mpeg audio/ogg
-        audio/opus audio/vorbis audio/wav audio/webm audio/x-aac audio/x-aiff
-        audio/x-ape audio/x-flac audio/x-m4a audio/x-matroska audio/x-mp3
-        audio/x-mpeg audio/x-ms-wma audio/x-musepack audio/x-opus+ogg
-        audio/x-scpls audio/x-vorbis+ogg audio/x-wav audio/x-wavpack
-    )
-    for mime in "${AUDIO_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default mpv.desktop $mime" || true
-    done
-    info "mpv set as default audio player."
-
-    # The setup run has always done this one and the installed system never did,
-    # so a text file opened in whatever had claimed it.
-    TEXT_TYPES=(
-        text/plain text/markdown text/csv text/x-log text/x-readme
-        text/x-changelog text/x-copying text/x-makefile text/x-patch
-        text/x-diff text/x-qml text/xml application/xml application/json
-    )
-    for mime in "${TEXT_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.TextEditor.desktop $mime" || true
-    done
-    info "GNOME Text Editor set as default text editor."
-
-    # Nothing set a browser on either install path, so https and mailto went to
-    # whichever entry registered them first, and whatever browser that was
-    # became the mail client too.
-    WEB_TYPES=(
-        x-scheme-handler/http x-scheme-handler/https
-        text/html application/xhtml+xml
-    )
-    su -s /bin/bash "$MAIN_USER" -c "xdg-settings set default-web-browser chromium.desktop" || true
-    for mime in "${WEB_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default chromium.desktop $mime" || true
-    done
-    info "Chromium set as default browser."
-
-    # Set Papers as default document viewer. Without this a PDF opens in the
-    # browser, which is what claims the type when nothing else does.
-    DOCUMENT_TYPES=(
-        application/pdf application/x-bzpdf application/x-gzpdf application/x-xzpdf
-        application/postscript application/x-bzpostscript application/x-gzpostscript
-        image/x-eps application/x-dvi application/x-bzdvi application/x-gzdvi
-        image/vnd.djvu+multipage
-        application/oxps application/vnd.ms-xpsdocument
-        application/vnd.comicbook+zip application/vnd.comicbook-rar
-        application/x-cbz application/x-cbr application/x-cb7 application/x-cbt
-    )
-    for mime in "${DOCUMENT_TYPES[@]}"; do
-        su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.gnome.Papers.desktop $mime" || true
-    done
-    info "Papers set as default document viewer."
-
-    # Compile dconf system database so dark mode is default before first login
-    dconf update 2>/dev/null || true
-
-    # Set gsettings defaults — dark mode + Nautilus preferences
-    su -s /bin/bash "$MAIN_USER" -c "
-        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u '$MAIN_USER')/bus
-        gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface font-name 'Google Sans Flex Medium 11 @opsz=11,wght=500' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface document-font-name 'Readex Pro 11' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono NF 11' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic' 2>/dev/null || true
-        gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
-        gsettings set org.gnome.nautilus.preferences default-folder-viewer 'icon-view' 2>/dev/null || true
-        gsettings set org.gnome.nautilus.preferences show-hidden-files false 2>/dev/null || true
-    " || true
-
-fi  # close per-user settings guard (continues in post-install-theme)
+fi  # per-user color and theme setup continues in post-install-theme
