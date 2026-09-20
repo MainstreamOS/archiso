@@ -67,6 +67,7 @@ pv
 networkmanager
 wpa_supplicant
 wireless-regdb
+qrencode
 avahi
 nss-mdns
 firewalld
