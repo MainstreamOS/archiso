@@ -60,8 +60,14 @@ if $_root_is_btrfs; then
         btrfs subvolume delete /.snapshots 2>/dev/null || true
     fi
 
-    # Deploy limine-snapper-sync config
-    if command -v limine-snapper-sync &>/dev/null; then
+    # The boot-menu snapshot entries are written for a root on the @
+    # subvolume, which is what the installer creates. A Btrfs root mounted
+    # from somewhere else still gets snapper; it does not get boot entries
+    # that would point at the wrong subvolume.
+    _root_subvol="$(findmnt -n -o SOURCE / 2>/dev/null | sed -n 's/.*\[\(.*\)\]$/\1/p')"
+    if [[ -n "$_root_subvol" && "$_root_subvol" != "/@" ]]; then
+        warn "Root is on Btrfs subvolume $_root_subvol rather than /@ — snapshots are kept, but boot-menu entries for them are not set up."
+    elif command -v limine-snapper-sync &>/dev/null; then
         info "Configuring limine-snapper-sync..."
         # The enroll steps around each save come from the packages' own hook
         # scripts in /etc/boot/hooks/{pre,post}.d, which limine-snapper-sync

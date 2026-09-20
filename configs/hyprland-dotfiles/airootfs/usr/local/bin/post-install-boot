@@ -238,6 +238,14 @@ if findmnt -n -o SOURCE / 2>/dev/null | grep -q '^/dev/mapper/'; then
     fi
 fi
 
+# The boot image goes onto the EFI system partition at /boot/efi, and every
+# path below names it there. install-limine refuses a UEFI layout without it,
+# so this only fires if that check was bypassed.
+if [[ -d /sys/firmware/efi ]] && ! mountpoint -q /boot/efi; then
+    log "ERROR: this machine starts with UEFI but no EFI system partition is mounted at /boot/efi; the system would not boot."
+    exit 1
+fi
+
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
 # also emit UKIs that Limine can chainload from the ESP.
 # Which kernel this image carries. Editions differ: the MacBook one ships

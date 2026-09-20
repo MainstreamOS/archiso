@@ -79,59 +79,84 @@ fi
 # so it owns the final mkinitcpio -P call to avoid building the initramfs twice.
 
 # --- 1. Hardware Detection ---
-# Get the real root partition. For an encrypted install findmnt returns the
-# LUKS mapper (e.g. /dev/mapper/luks-<uuid>) — the underlying partition is
-# what owns the LUKS UUID we need on the kernel cmdline.
-ROOT_PART_DEV=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
-
-# ROOT_SPEC is what gets substituted into the cmdline. For plain installs
-# this is `root=PARTUUID=<partuuid>`; for LUKS installs it is
-# `rd.luks.name=<luksuuid>=<mapper> root=/dev/mapper/<mapper>` so that
-# sd-encrypt unlocks the partition before the kernel mounts root.
-# DISK_HOST_DEV is the partition we hand to lsblk PKNAME to learn which
-# whole disk hosts the install (used when there is no separate ESP).
-if [[ "$ROOT_PART_DEV" == /dev/mapper/* ]]; then
-    LUKS_MAPPER_NAME=$(basename "$ROOT_PART_DEV")
-    LUKS_BACKING_DEV=$(cryptsetup status "$LUKS_MAPPER_NAME" 2>/dev/null \
-        | awk '/^[[:space:]]*device:/ {print $2; exit}')
-    if [[ -z "$LUKS_BACKING_DEV" ]]; then
-        log "ERROR: cannot resolve LUKS backing device for $LUKS_MAPPER_NAME"
+# The shared library looks at what the partitioning step built and refuses,
+# in words the person can act on, a layout the boot loader cannot start. It is
+# baked into the image beside gpu-config.sh. The block after it is the
+# detection this script carried before the partitioning page was opened up,
+# kept whole so an image built without the library installs exactly as it
+# always did.
+BOOT_LIB="/usr/local/lib/boot-layout.sh"
+if [[ -r "$BOOT_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$BOOT_LIB"
+    if ! boot_layout_detect; then
+        log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
         exit 1
     fi
-    LUKS_UUID=$(cryptsetup luksUUID "$LUKS_BACKING_DEV")
-    if [[ -z "$LUKS_UUID" ]]; then
-        log "ERROR: cannot read LUKS UUID from $LUKS_BACKING_DEV"
-        exit 1
+    if [[ -n "$LUKS_UUID" ]]; then
+        info "Encrypted root: $LUKS_BACKING_DEV (LUKS UUID=$LUKS_UUID) → mapper=$LUKS_MAPPER_NAME"
+    else
+        info "Plaintext root: $ROOT_PART_DEV (PARTUUID=$ROOT_PARTUUID)"
     fi
-    ROOT_SPEC="rd.luks.name=${LUKS_UUID}=${LUKS_MAPPER_NAME} root=/dev/mapper/${LUKS_MAPPER_NAME}"
-    DISK_HOST_DEV="$LUKS_BACKING_DEV"
-    info "Encrypted root: $LUKS_BACKING_DEV (LUKS UUID=$LUKS_UUID) → mapper=$LUKS_MAPPER_NAME"
+    info "Root filesystem: $ROOT_FSTYPE (subvolume: $ROOT_SUBVOL)"
 else
-    ROOT_PARTUUID=$(lsblk -dno PARTUUID "$ROOT_PART_DEV")
-    if [[ -z "$ROOT_PARTUUID" ]]; then
-        log "ERROR: cannot resolve PARTUUID for $ROOT_PART_DEV"
-        exit 1
+    warn "Shared boot layout library not found at $BOOT_LIB — assuming the fixed Btrfs layout."
+    ROOT_FSTYPE=btrfs
+    ROOT_SUBVOL="@"
+    # Get the real root partition. For an encrypted install findmnt returns the
+    # LUKS mapper (e.g. /dev/mapper/luks-<uuid>) — the underlying partition is
+    # what owns the LUKS UUID we need on the kernel cmdline.
+    ROOT_PART_DEV=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
+
+    # ROOT_SPEC is what gets substituted into the cmdline. For plain installs
+    # this is `root=PARTUUID=<partuuid>`; for LUKS installs it is
+    # `rd.luks.name=<luksuuid>=<mapper> root=/dev/mapper/<mapper>` so that
+    # sd-encrypt unlocks the partition before the kernel mounts root.
+    # DISK_HOST_DEV is the partition we hand to lsblk PKNAME to learn which
+    # whole disk hosts the install (used when there is no separate ESP).
+    if [[ "$ROOT_PART_DEV" == /dev/mapper/* ]]; then
+        LUKS_MAPPER_NAME=$(basename "$ROOT_PART_DEV")
+        LUKS_BACKING_DEV=$(cryptsetup status "$LUKS_MAPPER_NAME" 2>/dev/null \
+            | awk '/^[[:space:]]*device:/ {print $2; exit}')
+        if [[ -z "$LUKS_BACKING_DEV" ]]; then
+            log "ERROR: cannot resolve LUKS backing device for $LUKS_MAPPER_NAME"
+            exit 1
+        fi
+        LUKS_UUID=$(cryptsetup luksUUID "$LUKS_BACKING_DEV")
+        if [[ -z "$LUKS_UUID" ]]; then
+            log "ERROR: cannot read LUKS UUID from $LUKS_BACKING_DEV"
+            exit 1
+        fi
+        ROOT_SPEC="rd.luks.name=${LUKS_UUID}=${LUKS_MAPPER_NAME} root=/dev/mapper/${LUKS_MAPPER_NAME}"
+        DISK_HOST_DEV="$LUKS_BACKING_DEV"
+        info "Encrypted root: $LUKS_BACKING_DEV (LUKS UUID=$LUKS_UUID) → mapper=$LUKS_MAPPER_NAME"
+    else
+        ROOT_PARTUUID=$(lsblk -dno PARTUUID "$ROOT_PART_DEV")
+        if [[ -z "$ROOT_PARTUUID" ]]; then
+            log "ERROR: cannot resolve PARTUUID for $ROOT_PART_DEV"
+            exit 1
+        fi
+        ROOT_SPEC="root=PARTUUID=${ROOT_PARTUUID}"
+        DISK_HOST_DEV="$ROOT_PART_DEV"
+        info "Plaintext root: $ROOT_PART_DEV (PARTUUID=$ROOT_PARTUUID)"
     fi
-    ROOT_SPEC="root=PARTUUID=${ROOT_PARTUUID}"
-    DISK_HOST_DEV="$ROOT_PART_DEV"
-    info "Plaintext root: $ROOT_PART_DEV (PARTUUID=$ROOT_PARTUUID)"
-fi
 
-if mountpoint -q /boot/efi; then
-    BOOT_PATH="/boot/efi"
-    IS_UEFI=true
-    EFI_DEV=$(findmnt -n -o SOURCE /boot/efi)
-    TARGET_DISK=$(lsblk -dno PKNAME "$EFI_DEV")
-else
-    BOOT_PATH="/boot"
-    IS_UEFI=false
-    # -d (nodeps): a LUKS-backing partition also reports its open mapper's
-    # PKNAME, and the multi-line value would corrupt TARGET_DISK.
-    TARGET_DISK=$(lsblk -dno PKNAME "$DISK_HOST_DEV")
-fi
+    if mountpoint -q /boot/efi; then
+        BOOT_PATH="/boot/efi"
+        IS_UEFI=true
+        EFI_DEV=$(findmnt -n -o SOURCE /boot/efi)
+        TARGET_DISK=$(lsblk -dno PKNAME "$EFI_DEV")
+    else
+        BOOT_PATH="/boot"
+        IS_UEFI=false
+        # -d (nodeps): a LUKS-backing partition also reports its open mapper's
+        # PKNAME, and the multi-line value would corrupt TARGET_DISK.
+        TARGET_DISK=$(lsblk -dno PKNAME "$DISK_HOST_DEV")
+    fi
 
-# Ensure TARGET_DISK has the /dev/ prefix
-[[ "$TARGET_DISK" != /* ]] && TARGET_DISK="/dev/$TARGET_DISK"
+    # Ensure TARGET_DISK has the /dev/ prefix
+    [[ "$TARGET_DISK" != /* ]] && TARGET_DISK="/dev/$TARGET_DISK"
+fi
 
 info "Target Disk: $TARGET_DISK"
 info "Root spec: $ROOT_SPEC"
@@ -144,10 +169,15 @@ GPU_LIB="/usr/local/lib/gpu-config.sh"
 if [[ -r "$GPU_LIB" ]]; then
     # shellcheck source=/dev/null
     source "$GPU_LIB"
-    KERNEL_CMDLINE="$(gpu_base_cmdline_tokens "$ROOT_SPEC" "@")"
+    KERNEL_CMDLINE="$(gpu_base_cmdline_tokens "$ROOT_SPEC" "$ROOT_SUBVOL" "$ROOT_FSTYPE")"
 else
     warn "Shared GPU library not found at $GPU_LIB — using the inline canonical base."
-    KERNEL_CMDLINE="$ROOT_SPEC rootflags=subvol=@ rw rootfstype=btrfs zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0 audit=0"
+    if [[ "$ROOT_FSTYPE" == btrfs && "$ROOT_SUBVOL" != "/" ]]; then
+        FS_TOKENS="rootflags=subvol=${ROOT_SUBVOL#/} rw rootfstype=btrfs"
+    else
+        FS_TOKENS="rw rootfstype=$ROOT_FSTYPE"
+    fi
+    KERNEL_CMDLINE="$ROOT_SPEC $FS_TOKENS zswap.enabled=0 quiet splash rd.udev.log_level=3 vt.global_cursor_default=0 consoleblank=0 nowatchdog nmi_watchdog=0"
 fi
 mkdir -p /etc/kernel
 printf '%s\n' "$KERNEL_CMDLINE" > /etc/kernel/cmdline

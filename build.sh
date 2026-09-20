@@ -1577,6 +1577,11 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             install -Dm644 "$DOTS_WORK/sdata/lib/mac-config.sh" \
                 "$PROFILE_DIR/airootfs/usr/local/lib/mac-config.sh"
         fi
+        # What the partitioning step built, read by the boot steps.
+        if [[ -f "$DOTS_WORK/sdata/lib/boot-layout.sh" ]]; then
+            install -Dm644 "$DOTS_WORK/sdata/lib/boot-layout.sh" \
+                "$PROFILE_DIR/airootfs/usr/local/lib/boot-layout.sh"
+        fi
         # The scripts' translation lookup, read by the update helper.
         if [[ -f "$DOTS_WORK/sdata/lib/tr.sh" ]]; then
             install -Dm644 "$DOTS_WORK/sdata/lib/tr.sh" \
