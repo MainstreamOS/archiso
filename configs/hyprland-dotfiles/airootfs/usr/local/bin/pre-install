@@ -107,6 +107,10 @@ LIVE_PKGS=(
     # netinstall (pre-checked) is the sole arbiter of whether the installed
     # system keeps chromium (re-added by pacman -S if left checked).
     chromium
+    # Same arrangement for the file manager: the live session keeps its copy
+    # for the whole install, and the target only gets one back if Files stays
+    # checked, which pulls it in as mainstream-nautilus with the extensions.
+    nautilus
 )
 
 info "Removing live-only packages..."

@@ -255,6 +255,15 @@ flatpak
 chromium
 
 # ==============================================================================
+# File manager
+# ==============================================================================
+# Shipped on the live ISO so someone installing can browse their disks. Removed
+# from the target in pre-install and re-added by netinstall (pre-checked, as
+# mainstream-nautilus) if the user keeps Files — so unchecking it in the
+# installer cleanly omits it.
+nautilus
+
+# ==============================================================================
 # Live environment extras (live only — removed by packages.conf on install)
 # ==============================================================================
 nano
