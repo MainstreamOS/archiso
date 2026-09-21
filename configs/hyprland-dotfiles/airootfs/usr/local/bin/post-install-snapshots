@@ -64,9 +64,11 @@ if $_root_is_btrfs; then
     # subvolume, which is what the installer creates. A Btrfs root mounted
     # from somewhere else still gets snapper; it does not get boot entries
     # that would point at the wrong subvolume.
-    _root_subvol="$(findmnt -n -o SOURCE / 2>/dev/null | sed -n 's/.*\[\(.*\)\]$/\1/p')"
-    if [[ -n "$_root_subvol" && "$_root_subvol" != "/@" ]]; then
-        warn "Root is on Btrfs subvolume $_root_subvol rather than /@ — snapshots are kept, but boot-menu entries for them are not set up."
+    # FSROOT is the subvolume on its own; a root at the top of the filesystem
+    # reports "/" and has no @ either.
+    _root_subvol="$(findmnt -n -o FSROOT / 2>/dev/null)"
+    if [[ "$_root_subvol" != "/@" ]]; then
+        warn "Root is on Btrfs ${_root_subvol:-/} rather than /@ — snapshots are kept, but boot-menu entries for them are not set up."
     elif command -v limine-snapper-sync &>/dev/null; then
         info "Configuring limine-snapper-sync..."
         # The enroll steps around each save come from the packages' own hook
@@ -87,7 +89,7 @@ LSSCONF
         # Tell limine-snapper-sync which snapper config to use, so it never
         # tries to auto-create one via "snapper create-config" (which deletes
         # existing configs as a side effect).
-        write_limine_defaults
+        write_limine_defaults "${BOOT_PATH:-}"
         info "limine-snapper-sync config deployed."
     else
         warn "limine-snapper-sync not found — skipping Limine snapshot integration."
@@ -199,7 +201,14 @@ systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
 # enabling it without starting it left the entry empty until some later package
 # transaction happened to wake it: a machine with a perfectly good snapshot
 # offered nothing to boot into, and choosing the empty entry panics.
-systemctl enable --now limine-snapper-sync.service 2>/dev/null || true
+# Only where the boot-menu entries were set up: without the config written at
+# install time the service falls back to the package's own, which names the @
+# subvolume and would write entries pointing at the wrong place.
+if [[ -f /etc/limine-snapper-sync.conf ]]; then
+    systemctl enable --now limine-snapper-sync.service 2>/dev/null || true
+else
+    log "No limine-snapper-sync config — leaving the boot-menu snapshot service off."
+fi
 # The snapshot above was made after that service read the snapshot list, so ask
 # for one more pass rather than waiting on the next transaction to trigger it.
 if command -v limine-snapper-sync &>/dev/null; then

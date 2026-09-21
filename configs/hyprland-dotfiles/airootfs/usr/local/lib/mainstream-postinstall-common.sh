@@ -26,7 +26,7 @@ _ms_health() {
 }
 
 
-write_limine_defaults() {
+write_limine_defaults() {  # $1 = the boot partition to pin, optional
     mkdir -p /etc/default
     # Probing is on so another system sharing the disk shows up on its own.
     # It finds systemd-boot and rEFInd; Windows it never looks for, which is why
@@ -42,6 +42,13 @@ SNAPPER_CONFIG_NAME=root
 ENABLE_UKI=yes
 CUSTOM_UKI_NAME="mainstream"
 LIMINEDEF
+    # Left to itself the boot tooling takes the first FAT filesystem among
+    # /efi, /boot and /boot/efi, which on a layout that has its own FAT /boot
+    # beside the EFI system partition is the wrong one, and the boot image
+    # would be written where the firmware never looks.
+    if [[ -n "${1:-}" ]]; then
+        printf 'ESP_PATH=%s\n' "$1" >> /etc/default/limine
+    fi
 }
 
 # The version both halves of the ABI guard are stamped with. pacman first
