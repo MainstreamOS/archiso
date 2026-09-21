@@ -238,11 +238,17 @@ if findmnt -n -o SOURCE / 2>/dev/null | grep -q '^/dev/mapper/'; then
     fi
 fi
 
-# The boot image goes onto the EFI system partition at /boot/efi, and every
-# path below names it there. install-limine refuses a UEFI layout without it,
-# so this only fires if that check was bypassed.
-if [[ -d /sys/firmware/efi ]] && ! mountpoint -q /boot/efi; then
-    log "ERROR: this machine starts with UEFI but no EFI system partition is mounted at /boot/efi; the system would not boot."
+# The same reading of the disks install-limine used, rather than a second set
+# of tests that could disagree with it.
+BOOT_LIB="/usr/local/lib/boot-layout.sh"
+if [[ ! -r "$BOOT_LIB" ]]; then
+    log "ERROR: the boot layout library is missing from $BOOT_LIB; this image is incomplete."
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$BOOT_LIB"
+if ! boot_layout_detect; then
+    log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
     exit 1
 fi
 
@@ -259,7 +265,7 @@ done | sort -V | tail -n1 | cut -d' ' -f2)"
 [[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
 # The UKI keeps one name across every edition, because limine.conf.template and
 # the checks below look for it by name.
-if mountpoint -q /boot/efi; then
+if [[ "$IS_UEFI" == true ]]; then
     mkdir -p /boot/efi/EFI/Linux
     # UEFI: build only the default UKI; no fallback entry means no fallback in menu
     cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
@@ -306,7 +312,7 @@ fi
 # pacman transaction, so the config must already be in place — otherwise the
 # entry is created unbranded ("Mainstream OS", not "Mainstream OS\\") and a
 # stray "EFI fallback" entry gets added.
-write_limine_defaults
+write_limine_defaults "$BOOT_PATH"
 
 # ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
@@ -361,7 +367,7 @@ pacman -S --noconfirm --needed snapper snap-pac limine-snapper-sync \
 # initramfs left on the ESP root (e.g. from an earlier failed attempt on a
 # reused dual-boot ESP). UEFI boots the UKI, so these aren't needed, and on a
 # small shared ESP they can fill it and make the UKI write fail.
-if mountpoint -q /boot/efi; then
+if [[ "$IS_UEFI" == true ]]; then
     rm -f "/boot/efi/vmlinuz-${KERNEL_PKG}" "/boot/efi/initramfs-${KERNEL_PKG}.img"
 fi
 
@@ -376,7 +382,7 @@ if ! limine-mkinitcpio; then
     log "ERROR: limine-mkinitcpio failed; refusing to install an unbootable system."
     exit 1
 fi
-if mountpoint -q /boot/efi && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
+if [[ "$IS_UEFI" == true ]] && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
     esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
     log "ERROR: UKI missing after Limine build (free ESP space: ${esp_free:-?} MiB)."
     exit 1
@@ -416,7 +422,7 @@ fi
 # These stale files can be left by an earlier install attempt. The UKI
 # supersedes them and limine-mkinitcpio will only generate entries for files it
 # finds, so remove them to prevent a stale non-UKI menu entry.
-if mountpoint -q /boot/efi && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+if [[ "$IS_UEFI" == true ]] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
     rm -f "/boot/efi/vmlinuz-${KERNEL_PKG}" "/boot/efi/initramfs-${KERNEL_PKG}.img" || true
 fi
 
