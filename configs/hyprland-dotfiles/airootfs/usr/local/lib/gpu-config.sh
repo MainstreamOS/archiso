@@ -227,9 +227,9 @@ _gpu_write_file() {
 # rd.udev.log_level=3, subvol normalized (leading slash stripped so /@ -> @).
 # Caller word-splits the output into cmdline_upsert.
 # Two arguments mean a btrfs root on the named subvolume, defaulting to @. A
-# third argument names another filesystem, which gets no subvolume flag, and
-# an empty subvolume means the root of the filesystem rather than @, so it
-# gets none either.
+# third argument names the filesystem; anything other than btrfs gets no
+# subvolume flag, and an empty subvolume means the root of the filesystem
+# rather than @, so it gets none either.
 gpu_base_cmdline_tokens() {
     local root_spec="$1" subvol="${2-@}" fstype="${3:-btrfs}" fs_tokens
     subvol="${subvol#/}"
