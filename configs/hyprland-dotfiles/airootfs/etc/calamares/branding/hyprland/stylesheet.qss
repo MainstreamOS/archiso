@@ -899,6 +899,41 @@ QMenu::separator {
 /* ─────────────────────────────────────────────────────────────────────────────
  * MESSAGE BOX (warnings, partition confirmations)
  * ──────────────────────────────────────────────────────────────────────────── */
+/* ──────────────────────────────────────────────────────────────────────────────
+ * DIALOGS
+ *
+ * The base rule leaves every QWidget transparent so the rounded #contentFrame
+ * shows through it. A dialog is its own top-level window with nothing of ours
+ * behind it, so transparent leaves it bare: light text and pale controls over
+ * whatever the compositor has underneath, which is how the partitioning dialogs
+ * came up unreadable. Every dialog paints the popup surface instead, the one
+ * QMessageBox below already had to ask for on its own.
+ * ──────────────────────────────────────────────────────────────────────────── */
+QDialog {
+    background-color: #201f20;                     /* m3surfaceContainer */
+}
+
+/* A dialog's own buttons take a tick and a cross from the icon theme, drawn in
+ * that theme's light ink. The filled pill above is light too, so the pair
+ * arrived nearly invisible on it. These wear the tonal variant instead, which
+ * is the M3 treatment for a dialog's actions anyway, and which the icons were
+ * already drawn for. */
+QDialogButtonBox QPushButton {
+    background-color: #4d4b4d;                     /* m3secondaryContainer */
+    color:            #ece6e9;                     /* m3onSecondaryContainer */
+    min-width:        80px;
+}
+QDialogButtonBox QPushButton:hover {
+    background-color: #5a585a;
+}
+QDialogButtonBox QPushButton:pressed {
+    background-color: #666366;
+}
+QDialogButtonBox QPushButton:disabled {
+    background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
+    color:            #6d6a6d;
+}
+
 QMessageBox {
     background-color: #201f20;                     /* m3surfaceContainer */
 }
