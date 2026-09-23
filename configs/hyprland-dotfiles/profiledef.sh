@@ -12,6 +12,10 @@ bootmodes=('bios.syslinux' 'uefi.systemd-boot')
 pacman_conf="pacman.conf"
 airootfs_image_type="erofs"
 airootfs_image_tool_options=('-zlzma,level=109' '-E' 'ztailpacking,fragments' '-C' '1048576')
+# Every live boot entry, syslinux and systemd-boot alike, takes these through
+# %KERNEL_PARAMS%, so the entries cannot drift apart and an edition adds its own
+# in one place. The PXE entries keep theirs.
+kernel_params_x86_64="copytoram=n cow_spacesize=1G"
 bootstrap_tarball_compression=('zstd' '-c' '-T0' '--auto-threads=logical' '--long' '-19')
 file_permissions=(
   ["/etc/shadow"]="0:0:400"
