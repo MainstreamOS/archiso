@@ -39,7 +39,7 @@ rm -f /etc/mkinitcpio.conf.d/archiso.conf || true
 rm -f /etc/mkinitcpio.d/*.preset || true
 
 # With a network connection the kernel MUST come from the repos, not the
-# squashfs: install-gpu-drivers runs next and upgrades kernel-locked driver
+# live image: install-gpu-drivers runs next and upgrades kernel-locked driver
 # packages (nvidia-open's dependency on linux is unversioned), so a target
 # left on the ISO's baked kernel would have its only matching NVIDIA modules
 # replaced by ones built for a kernel it does not have — a driverless first
@@ -53,7 +53,7 @@ if ping -c1 -W3 archlinux.org &>/dev/null; then
         exit 1
     fi
 else
-    # Offline, the squashfs itself is the kernel source. The ISO build empties
+    # Offline, the live image itself is the kernel source. The ISO build empties
     # /boot before squashing and the linux package ships no /boot files — the
     # image there is produced by the mkinitcpio hook during a pacman
     # transaction — but the package's own copy at /usr/lib/modules/<kver>/vmlinuz
@@ -66,7 +66,7 @@ else
     done | sort -V | tail -n1)
 
     if [[ -n "$KVER" ]]; then
-        info "No network — restoring /boot/vmlinuz-$KERNEL_PKG from the squashfs (kernel $KVER)..."
+        info "No network — restoring /boot/vmlinuz-$KERNEL_PKG from the live image (kernel $KVER)..."
         install -Dm644 "/usr/lib/modules/$KVER/vmlinuz" "/boot/vmlinuz-$KERNEL_PKG"
     else
         log "ERROR: no kernel image under /usr/lib/modules and no network to fetch one — the system would not boot."

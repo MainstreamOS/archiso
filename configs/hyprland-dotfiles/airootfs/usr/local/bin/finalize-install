@@ -267,7 +267,7 @@ LOOSE_FILES=(
     # lingers on disk pointing at a non-existent user.
     /etc/sudoers.d/liveuser
     # Storage=volatile keeps the live ISO from writing journals to the
-    # squashfs overlay, but on an installed system it means every boot's
+    # live image's overlay, but on an installed system it means every boot's
     # logs vanish at shutdown — undebuggable. Remove it; journald's
     # default Storage=auto persists once /var/log/journal exists (created
     # below).
