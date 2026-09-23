@@ -125,6 +125,13 @@ add_mainstream_db() {
     # copies an earlier build left behind so they are never re-indexed.
     rm -f "$repo_dir"/ttf-google-sans-*.pkg.tar.zst \
           "$repo_dir"/mainstream-google-sans-flex-*.pkg.tar.zst 2>/dev/null || true
+    # A signature outlives its package when a newer version replaces it.
+    local sig
+    for sig in "$repo_dir"/*.pkg.tar.zst.sig; do
+        if [[ -e "$sig" && ! -e "${sig%.sig}" ]]; then
+            rm -f "$sig"
+        fi
+    done
     # repo-add only ADDS — start from a clean DB so any previously-indexed
     # (and now-excluded) GPU driver entries are dropped, not carried forward.
     rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
@@ -1423,8 +1430,8 @@ download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
 download_arch_repo_pkgs() {
     local dir="$1"; shift
     info "Staging Arch repo packages for offline install: $*"
-    rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst "$dir"/dkms-[0-9]*.pkg.tar.zst \
-        "$dir"/linux-headers-[0-9]*.pkg.tar.zst "$dir"/pahole-[0-9]*.pkg.tar.zst 2>/dev/null || true
+    rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst* "$dir"/dkms-[0-9]*.pkg.tar.zst* \
+        "$dir"/linux-headers-[0-9]*.pkg.tar.zst* "$dir"/pahole-[0-9]*.pkg.tar.zst* 2>/dev/null || true
     pacman -Sw --noconfirm --cachedir "$dir" "$@" 2>&1 | grep -v "is up to date" \
         || warn "Could not stage $*; Macs with a BCM4360 or BCM4331 will need a wired connection after install."
 }

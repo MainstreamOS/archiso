@@ -1,0 +1,14 @@
+# remove from airootfs!
+# The slide masters and their render script are for editing the installer
+# slides; Calamares only loads the PNGs rendered from them.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Removing the installer slide sources from the image...
+When = PostTransaction
+Exec = /usr/bin/rm -rf /etc/calamares/branding/hyprland/sources
