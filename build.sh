@@ -478,7 +478,7 @@ download_mainstream_repo_pkgs() {
     local current dbtmp unneeded="" unneeded_dirs="" uname
     dbtmp=$(mktemp)
     if curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused -o "$dbtmp" "$rel/mainstream.db" 2>/dev/null; then
-        current=$(tar tzf "$dbtmp" 2>/dev/null | grep -oE '^[^/]+/' | tr -d '/' | sort -u)
+        current=$(tar tzf "$dbtmp" 2>/dev/null | grep -oE '^[^/]+/' | tr -d '/' | sort -u) || current=""
         unneeded=$(mainstream_unneeded_pkgs "$dbtmp") || unneeded=""
     fi
     rm -f "$dbtmp"
@@ -493,9 +493,11 @@ download_mainstream_repo_pkgs() {
         done <<< "$unneeded"
     fi
     local urls
-    urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused "$api" 2>/dev/null \
+    # A failed listing has to reach the fallback below rather than end the
+    # build under set -e, and a reset HTTP/2 stream is worth retrying too.
+    urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused --retry-all-errors "$api" 2>/dev/null \
         | grep -oE '"browser_download_url":[[:space:]]*"[^"]+\.pkg\.tar\.zst"' \
-        | sed -E 's/.*"(https[^"]+)".*/\1/')
+        | sed -E 's/.*"(https[^"]+)".*/\1/') || urls=""
     if [[ -z "$urls" ]]; then
         warn "Could not list [mainstream] release assets — building every AUR package locally (versions may drift)."
         return 0
