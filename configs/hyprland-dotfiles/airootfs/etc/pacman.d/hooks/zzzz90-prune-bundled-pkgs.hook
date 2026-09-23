@@ -1,0 +1,18 @@
+# remove from airootfs!
+# Calamares copies the live root onto the target, so a bundled package the live
+# root already has installed reaches every install without its file, and the
+# ISO would otherwise carry it twice. The wl driver set goes too on an image
+# whose kernel it was not built for.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Dropping bundled packages the live root already has installed...
+When = PostTransaction
+Depends = bash
+Depends = pacman
+Exec = /bin/bash /etc/pacman.d/hooks/zzzz90-prune-bundled-pkgs.sh

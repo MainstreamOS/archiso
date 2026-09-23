@@ -188,6 +188,13 @@ for pkgname in "${METAPKGS[@]}"; do
     pkgfile=$(find "$PKG_DIR" -name "${pkgname}-*.pkg.tar.zst" | head -1)
 
     if [[ -z "$pkgfile" ]]; then
+        # The ISO build drops the file of any package the live root already
+        # has, since this system was copied from that root.
+        if pacman -Q "$pkgname" &>/dev/null; then
+            info "$pkgname is already installed from the live image."
+            ((SUCCESS_COUNT++)) || true
+            continue
+        fi
         warn "No pre-built package found for $pkgname in $PKG_DIR"
         FAILED_PKGS+=("$pkgname (missing pkg file)")
         continue
