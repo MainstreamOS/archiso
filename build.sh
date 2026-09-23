@@ -79,6 +79,35 @@ die() {
 }
 success() { log "OK:    $*"; }
 
+# Published packages that leave real space on the table, recompressed with a
+# long window before they are baked in. 2^27 is the largest window libzstd
+# decodes without being told to, so pacman still reads the result. The window
+# size is the marker, so a package already done is not redone on the next build.
+RECOMPRESS_PKGS=(zen-browser-bin)
+recompress_bundled_pkgs() {
+    local repo_dir="$1" name f win tmp
+    for name in "${RECOMPRESS_PKGS[@]}"; do
+        for f in "$repo_dir/$name"-[0-9]*.pkg.tar.zst; do
+            [[ -f "$f" ]] || continue
+            win=$(zstd -lv "$f" 2>/dev/null | sed -nE 's/^Window Size:.*\(([0-9]+) B\)$/\1/p' | head -1)
+            if [[ -n "$win" ]] && (( win >= 134217728 )); then
+                continue
+            fi
+            tmp="$f.recompress"
+            info "Recompressing ${f##*/} with a long window..."
+            if zstd -dcq "$f" | zstd -qf --ultra -20 --long=27 -T0 -o "$tmp" \
+                && [[ "$(pacman -Qp "$tmp" 2>/dev/null)" == "$(pacman -Qp "$f" 2>/dev/null)" ]]; then
+                mv -f "$tmp" "$f"
+                # The bytes changed, and pacman -U checks a signature it finds.
+                rm -f "$f.sig"
+            else
+                rm -f "$tmp"
+                warn "Could not recompress ${f##*/}; bundling it as published."
+            fi
+        done
+    done
+}
+
 # Build the [mainstream] local repo DB from <repo_dir>, EXCLUDING GPU driver
 # packages. The nvidia / opencl-nvidia / lib32-nvidia / libxnvctrl packages
 # still ship as plain files in the airootfs — install-gpu-drivers pacman -U's
@@ -1663,7 +1692,10 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             # where the image's own file copy drops them, and every later install step
             # already looks in /tmp/dotfiles-setup, which is what the archive unpacks to.
             mkdir -p "$(dirname "$DOTS_ARCHIVE")"
+            # Nothing at install time runs git in the unpacked tree, so the
+            # history and the README's images would only be carried along.
             tar --zstd -C "$(dirname "$DOTS_WORK")" \
+                --exclude=.git --exclude=.github \
                 --transform "s|^$(basename "$DOTS_WORK")|dotfiles-setup|S" \
                 -cf "$DOTS_ARCHIVE" "$(basename "$DOTS_WORK")" \
                 || die "Could not archive the dotfiles for the install"
@@ -2276,6 +2308,7 @@ echo ">>> Building ISO (this takes several minutes)..."
 _LOCAL_REPO="${PROFILE_DIR}/airootfs/usr/local/share/pkgs"
 if [[ -d "$_LOCAL_REPO" ]]; then
     sanitize_local_repo "$_LOCAL_REPO"
+    recompress_bundled_pkgs "$_LOCAL_REPO"
     # Rebuild the DB here (not just PHASE 1) so an ISO-only build whose edition
     # differs from the last --refresh still matches: post-prune for standard,
     # 580xx-included for --nvidia.
