@@ -7,7 +7,7 @@
 #
 # Options:
 #   -v              Verbose output from mkarchiso
-#   -c              Clear the work directory before building
+#   -c              Clear the work directory before building (always done)
 #   -o <dir>        Output directory  (default: ./out)
 #   -w <dir>        Work directory    (default: ./work)
 #   --refresh       Rebuild packages (skip unchanged), then build ISO
@@ -219,8 +219,8 @@ apply_macbook_overlay() {
     # wire cannot reach the installer at all, and finding out whether the
     # machine works past that point needs an image whose live session already
     # has Wi-Fi. The artifact is renamed so it cannot be mistaken for a release,
-    # the work directory is fingerprinted apart so its root is never reused
-    # under a release name, and the build refuses to sign it.
+    # the live root is rebuilt on every build so it is never reused under a
+    # release name, and the build refuses to sign it.
     local _iso_name="mainstreamos-desktop-linux-macbook"
     if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
         printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
@@ -622,7 +622,7 @@ Usage: sudo ./build.sh [options]
 
 ISO build options:
   -v              Verbose output from mkarchiso
-  -c              Clear the work directory before building
+  -c              Clear the work directory before building (always done)
   -o <dir>        Output directory  (default: ./out)
   -w <dir>        Work directory    (default: ./work)
 
@@ -702,6 +702,11 @@ while getopts 'vco:w:' opt; do
         *) echo "Usage: sudo $0 [-v] [-c] [-o out_dir] [-w work_dir] [--refresh|--clean|--cleancal]" >&2; exit 1 ;;
     esac
 done
+
+# Names the image in the status file, whether the build succeeds or fails.
+_edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
+[[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
+[[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
 
 # A mistyped version should not cost a sudo prompt and a wait, so these run
 # before the root check rather than with the rest of the release setup.
@@ -1058,10 +1063,6 @@ if [[ "$CLEAN_BUILD" == true ]]; then
                 \( -name 'mainstream-*' -o -name 'mainstreamos-desktop-linux-*' \) \
                 ! -name '*legacy-nvidia*' ! -name '*macbook*' -delete 2>/dev/null || true
         fi
-    fi
-    if [[ -d "$WORK_DIR" ]]; then
-        info "Removing $WORK_DIR ..."
-        rm -rf "$WORK_DIR"
     fi
 fi
 
@@ -2117,57 +2118,30 @@ done
 trap 'restore_profile_overlay' EXIT
 
 # ── Work directory ─────────────────────────────────────────────────────────
-if (( CLEAR_WORK )) && [[ -d "${WORK_DIR}" ]]; then
+# The live root is built fresh every time. mkarchiso skips every step it has
+# already stamped in the work directory, pacstrap included, so a reused root
+# would keep the last build's package list, NoExtract rules and build-only hook
+# results whatever the profile now says. A fresh pacstrap from the package
+# cache takes about a minute.
+if [[ -d "${WORK_DIR}" ]]; then
+    _work_real="$(realpath -- "${WORK_DIR}")"
+    # A killed pacstrap can leave the host's /dev and /run bound in here, and
+    # clearing through them would empty the host's own.
+    if findmnt -lno TARGET | awk -v p="${_work_real}/" 'index($0, p) == 1 { found = 1 } END { exit !found }'; then
+        die "Something is still mounted under ${WORK_DIR} (left by a build that was killed?). Unmount it, then build again."
+    fi
+    # -w can point anywhere, so a directory given there is only cleared when it
+    # is empty or mkarchiso has worked in it.
+    if [[ "${_work_real}" != "$(realpath -m -- "${SCRIPT_DIR}/work")" \
+          && -n "$(ls -A -- "${_work_real}")" && ! -e "${_work_real}/base._make_work_dir" ]]; then
+        die "${WORK_DIR} is not empty and is not an mkarchiso work directory; refusing to clear it."
+    fi
     echo ">>> Clearing work directory: ${WORK_DIR}"
-    rm -rf -- "${WORK_DIR}"
+    find "${_work_real}" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
+    unset _work_real
 fi
 
 mkdir -p -- "${OUT_DIR}" "${WORK_DIR}"
-
-# mkarchiso skips pacstrap whenever work/base._make_packages exists, with no
-# idea what the package list looked like when it was written. Switching
-# editions, or editing packages.x86_64, would otherwise reuse the previous
-# root and sign an image whose contents do not match the profile.
-# The hash is of the list BEFORE the edition overlay runs, which happens much
-# further down, so the edition label is what has to carry every input the
-# overlay reads. Anything new that changes the overlaid package list has to be
-# named here too, or two builds that install different things will agree on
-# their fingerprint and the second will reuse the first one's root.
-_edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
-[[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
-[[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
-_profile_fingerprint="$_edition $(sha256sum "$PROFILE_DIR/packages.x86_64" | cut -c1-16)"
-_fingerprint_file="${WORK_DIR}/.profile-fingerprint"
-if [[ -e "${WORK_DIR}/base._make_packages" ]] \
-   && [[ "$(cat "$_fingerprint_file" 2>/dev/null)" != "$_profile_fingerprint" ]]; then
-    echo ">>> The work directory was built for '$(cut -d' ' -f1 "$_fingerprint_file" 2>/dev/null || echo unknown)' with a different package list; clearing it."
-    rm -rf -- "${WORK_DIR}"
-    mkdir -p -- "${WORK_DIR}"
-fi
-printf '%s\n' "$_profile_fingerprint" > "$_fingerprint_file"
-
-# mkarchiso caches both bootmode functions and the completed airootfs image.
-# Re-copy the profile and rebuild the image so an ISO-only rebuild picks up
-# installer-script changes without requiring the caller to remember `-c`. The
-# stamps have to match the bootmodes in profiledef.sh: a stale stamp from a
-# previous set means mkarchiso skips the step and the ISO keeps boot files the
-# profile no longer asks for.
-info "Invalidating cached boot artifacts and airootfs image..."
-rm -f -- \
-    "${WORK_DIR}/build._build_buildmode_iso" \
-    "${WORK_DIR}/iso._build_iso_image" \
-    "${WORK_DIR}/base._make_custom_airootfs" \
-    "${WORK_DIR}/base._prepare_airootfs_image" \
-    "${WORK_DIR}/base._mkairootfs_squashfs" \
-    "${WORK_DIR}/base._mkairootfs_erofs" \
-    "${WORK_DIR}/base._make_bootmode_bios.syslinux" \
-    "${WORK_DIR}/base._make_bootmode_uefi.systemd-boot" \
-    "${WORK_DIR}/base._make_boot_on_fat" \
-    "${WORK_DIR}/efiboot.img" \
-    "${WORK_DIR}/iso/limine-bios-cd.bin" \
-    "${WORK_DIR}/iso/limine-bios.sys" \
-    "${WORK_DIR}/iso/limine.conf" \
-    "${WORK_DIR}/iso/EFI/BOOT/BOOTX64.EFI"
 
 # mkarchiso implements syslinux and systemd-boot itself, so it runs unpatched.
 # Limine is deliberately not among the ISO's bootmodes: Ventoy boots a stick by
