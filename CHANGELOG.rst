@@ -8,6 +8,44 @@ Changelog
 Added
 -----
 
+- Add support for architecture-specific kernel parameters in all boot loaders.
+- Support compressing the bootstrap tarball with ``lz4``.
+- Support using ``pzstd`` to create ``.zst`` bootstrap tarballs.
+
+Changed
+-------
+
+- Document the use of ``unshare`` in the man page.
+- Warn when running ``mkarchiso`` as root via sudo, run0 or a similar tool since it is fully supported to run it as a
+  regular user instead.
+- Simplify UEFI shell menu entries in GRUB configuration.
+- Do not fail if a boot loader for mixed mode booting (for x86_64 systems with IA32 UEFI) cannot be found. Instead,
+  simply skip support for mixed mode booting.
+
+Deprecated
+----------
+
+Fixed
+-----
+
+- Do not use reStructuredText line blocks in the man page to avoid them being shown as monospace code blocks in HTML.
+- Prevent failure if ``bootstrap_tarball_compression`` is not set in ``profiledef.sh``.
+
+Removed
+-------
+
+- Remove ``buildmodes`` from both profile's ``profiledef.sh`` since it does not differ from the default (i.e. ``iso``).
+- Remove leftover ``/etc/modprobe.d/broadcom-wl.conf`` from the releng profile. Its only purpose was to override
+  ``/usr/lib/modprobe.d/broadcom-wl.conf`` that was shipped with the (removed) ``broadcom-wl`` package.
+- Remove custom ``/etc/mkinitcpio.d/linux.preset`` from both profiles. The default preset is good enough and this
+  reduces the number of files to change when customizing archiso profiles.
+
+[90] - 2026-09-01
+=================
+
+Added
+-----
+
 - Support the ``i486`` and ``pentium4`` architectures in the ``run_archiso`` script.
 
 Changed
@@ -18,9 +56,6 @@ Changed
 - Use xz's ``arm64`` BCJ filter, in addition to ``x86``, to better compress the releng profile's squashfs image on
   AArch64.
 
-Deprecated
-----------
-
 Fixed
 -----
 
@@ -30,6 +65,8 @@ Fixed
 
 Removed
 -------
+
+- Removed ``broadcom-wl`` from releng packages since the package has been removed from the official repositories.
 
 [89] - 2026-07-25
 =================
