@@ -341,6 +341,83 @@ restore_profile_overlay() {
     return 0
 }
 
+# The [mainstream] repo also carries packages nothing on the ISO asks for (the
+# themes only other distributions' installs pull in, say), so the image takes
+# only what it needs: whatever the live root, the installer's own steps, the
+# netinstall list and the Welcome app ask for, plus everything those depend on
+# inside [mainstream]; split siblings come along with their base. Prints
+# "name dir" for each package in <db> outside that set, where dir is the db
+# entry's name-ver-rel.
+#
+# The Welcome app's own picks ride along so an install never waits on first
+# boot's switch to the online repo; they are the [mainstream] targets of pac in
+# dots' mainstream-welcome-install, and belong here when it gains one.
+WELCOME_PKGS=(sunshine wivrn-server wivrn-dashboard xrizer lib32-xrizer xr-hardware wayvr)
+declare -a LOCAL_BUILT_PKGS=()
+mainstream_unneeded_pkgs() {
+    local db="$1" dir d n b f line section
+    local -A deps=() base=() by_provide=() needed=() entry_dir=()
+    local -a queue=() seeds=() dl=() pl=()
+    dir=$(mktemp -d)
+    if ! tar xzf "$db" -C "$dir" 2>/dev/null; then
+        rm -rf "$dir"
+        return 1
+    fi
+    for d in "$dir"/*/; do
+        [[ -r "$d/desc" ]] || continue
+        n="" b="" section="" dl=() pl=()
+        while IFS= read -r line; do
+            case "$line" in
+                %*%) section=$line ;;
+                "") section="" ;;
+                *) case "$section" in
+                       %NAME%) n=$line ;;
+                       %BASE%) b=$line ;;
+                       %DEPENDS%) dl+=("${line%%[<>=]*}") ;;
+                       %PROVIDES%) pl+=("${line%%[<>=]*}") ;;
+                   esac ;;
+            esac
+        done < "$d/desc"
+        [[ -n "$n" ]] || continue
+        deps[$n]="${dl[*]}"
+        base[$n]=${b:-$n}
+        entry_dir[$n]=$(basename "$d")
+        by_provide[$n]=$n
+        for f in "${pl[@]}"; do by_provide[$f]=$n; done
+    done
+    rm -rf "$dir"
+
+    seeds=("${METAPKGS[@]}" "${AUR_DEPS[@]%%::*}" "${LOCAL_BUILT_PKGS[@]}" "${WELCOME_PKGS[@]}")
+    mapfile -t -O "${#seeds[@]}" seeds < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' \
+        "$PROFILE_DIR/packages.x86_64")
+    mapfile -t -O "${#seeds[@]}" seeds < <(sed -nE \
+        's/^[[:space:]]*- name:[[:space:]]*([A-Za-z0-9@._+-]+)[[:space:]]*$/\1/p' \
+        "$PROFILE_DIR/airootfs/etc/calamares/modules/netinstall.conf")
+    for f in "${seeds[@]}"; do
+        [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
+    done
+    while (( ${#queue[@]} )); do
+        n=${queue[0]}
+        queue=("${queue[@]:1}")
+        [[ -n "${needed[$n]:-}" ]] && continue
+        needed[$n]=1
+        for f in ${deps[$n]}; do
+            [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
+        done
+        for f in "${!base[@]}"; do
+            [[ "${base[$f]}" == "${base[$n]}" ]] && queue+=("$f")
+        done
+    done
+    # A db this check could not read a single seed from means the seeds are
+    # wrong, not that the ISO needs nothing; skipping everything would ship an
+    # image with no [mainstream] packages at all.
+    (( ${#needed[@]} > 0 )) || return 1
+    for n in "${!base[@]}"; do
+        [[ -n "${needed[$n]:-}" ]] || printf '%s %s\n' "$n" "${entry_dir[$n]}"
+    done
+    return 0
+}
+
 # Pull the packages the GitHub [mainstream] repo already provides into the local
 # repo, instead of rebuilding them here. The MainstreamOS/packages CI builds the
 # FOSS packages (topgrade, the fonts, nautilus/mpv extensions, limine hooks, …)
@@ -362,12 +439,23 @@ download_mainstream_repo_pkgs() {
     # The release only ever ADDS assets, so it accumulates stale builds (dropped
     # or superseded packages). Trust the db, not the raw asset list: collect the
     # pkgname-ver-rel stems the current db indexes and pull only those.
-    local current dbtmp
+    local current dbtmp unneeded="" unneeded_dirs="" uname
     dbtmp=$(mktemp)
     if curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused -o "$dbtmp" "$rel/mainstream.db" 2>/dev/null; then
         current=$(tar tzf "$dbtmp" 2>/dev/null | grep -oE '^[^/]+/' | tr -d '/' | sort -u)
+        unneeded=$(mainstream_unneeded_pkgs "$dbtmp") || unneeded=""
     fi
     rm -f "$dbtmp"
+    if [[ -n "$unneeded" ]]; then
+        info "Not bundling what nothing on the ISO installs: $(cut -d' ' -f1 <<< "$unneeded" | sort | paste -sd' ')"
+        unneeded_dirs=$(cut -d' ' -f2 <<< "$unneeded" | tr ':' '_')
+        # This folder outlives the build, so a copy an earlier build downloaded
+        # would otherwise stay on the image.
+        while read -r uname _; do
+            [[ -n "$uname" ]] || continue
+            rm -f "$repo_dir/$uname"-[0-9]*.pkg.tar.zst{,.sig}
+        done <<< "$unneeded"
+    fi
     local urls
     urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused "$api" 2>/dev/null \
         | grep -oE '"browser_download_url":[[:space:]]*"[^"]+\.pkg\.tar\.zst"' \
@@ -391,6 +479,9 @@ download_mainstream_repo_pkgs() {
             # drift-prone local build.
             if ! grep -qxF "$stem" <<< "${current//:/_}"; then
                 info "$base — not in current db, skipping stale asset."
+                continue
+            fi
+            if grep -qxF "$stem" <<< "$unneeded_dirs"; then
                 continue
             fi
         fi
@@ -1230,6 +1321,7 @@ LOCAL_PKGBUILDS_DIR="$PROFILE_DIR/pkgbuilds"
 build_local_pkg() {
     local pkgname="$1"
     local pkgdir="$LOCAL_PKGBUILDS_DIR/$pkgname"
+    LOCAL_BUILT_PKGS+=("$pkgname")
 
     if [[ ! -d "$pkgdir" ]]; then
         warn "$pkgname — local PKGBUILD directory not found at $pkgdir, skipping."
