@@ -135,6 +135,9 @@ build_hyprland_plugin() {
                 warn "$name make failed — build log: $_BUILD_LOG"
                 rm -rf "$_SRC_DIR"
             else
+                # The plugin Makefiles build with -g; Hyprland never reads the
+                # debug info.
+                strip --strip-debug "$_make_dir/$so_filename" 2>/dev/null || true
                 cp -f "$_make_dir/$so_filename" "$_PLUGIN_PATH"
                 printf '%s\n' "$(hyprland_stamp_version)" > "$_PLUGIN_PATH.builtfor"
                 info "Installed $so_filename to $_PLUGIN_PATH"

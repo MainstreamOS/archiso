@@ -1896,6 +1896,18 @@ if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
             sed -i -E "s|^(python_path[[:space:]]*=[[:space:]]*).*|\1${TARGET_PY}|" "$VENV_SKEL_PATH/pyvenv.cfg"
         fi
 
+        # Wheels ship their extension modules with debug sections nothing on the
+        # target reads. Each file is written anew and moved over the old one,
+        # because uv hardlinks the venv to its cache and strip would otherwise
+        # rewrite the cached copy too.
+        while IFS= read -r -d '' _so; do
+            if strip --strip-debug -o "$_so.stripped" "$_so" 2>/dev/null; then
+                mv -f "$_so.stripped" "$_so"
+            else
+                rm -f "$_so.stripped"
+            fi
+        done < <(find "$VENV_SKEL_PATH" -type f -name '*.so*' ! -name '*.stripped' -print0)
+
         printf '3.12\n' > "$VENV_SKEL_PATH/.python-version"
         info "Pre-baked Python 3.12 venv into skel (interpreter: $TARGET_PY)."
     else
@@ -1992,6 +2004,9 @@ prebuild_hyprland_plugin() {
         rm -rf "$work"
         return 0
     fi
+
+    # The plugin Makefiles build with -g; Hyprland never reads the debug info.
+    strip --strip-debug "$build_dir/$so_filename" 2>/dev/null || true
 
     local skel_plugins="$SKEL_DIR/.local/share/hyprland/plugins"
     mkdir -p "$skel_plugins"
@@ -2161,6 +2176,19 @@ verify_bundled_deps() {
     fi
     info "Bundled-repo dependency check passed — every dependency resolves (${#provided[@]} names bundled)."
 }
+# Debug sections in the shell binary add about 180 MiB to the ISO and to every
+# install, and nothing else in the build would notice them.
+check_quickshell_stripped() {
+    local f verdict
+    f=$(find "$PKG_OUTPUT_DIR" -maxdepth 1 -name 'mainstream-quickshell-git-[0-9]*.pkg.tar.zst' \
+        ! -name '*-debug-*' 2>/dev/null | head -1)
+    [[ -n "$f" ]] || return 0
+    verdict=$(bsdtar -xOf "$f" usr/bin/quickshell 2>/dev/null | file -b - 2>/dev/null) || true
+    if [[ "$verdict" == *"with debug_info"* ]]; then
+        warn "${f##*/} ships /usr/bin/quickshell with debug info; check options= and package() in its PKGBUILD."
+    fi
+    return 0
+}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -2259,6 +2287,7 @@ fi
 # exact bytes mkarchiso is about to bake in. Checking any earlier would verify a
 # repo that still changes afterwards.
 verify_bundled_deps
+check_quickshell_stripped
 
 # no-op unless --nvidia; the EXIT trap restores the profile on any exit.
 apply_profile_overlay
