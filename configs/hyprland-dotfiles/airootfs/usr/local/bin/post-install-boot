@@ -100,6 +100,20 @@ fi
 info "Removing archiso-specific mkinitcpio config..."
 rm -f /etc/mkinitcpio.conf.d/archiso.conf
 
+# The same reading of the disks install-limine used, rather than a second set
+# of tests that could disagree with it. The swap probe and the encryption
+# hooks below read their answers from it too.
+BOOT_LIB="/usr/local/lib/boot-layout.sh"
+if [[ ! -r "$BOOT_LIB" ]]; then
+    log "ERROR: the boot layout library is missing from $BOOT_LIB; this image is incomplete."
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$BOOT_LIB"
+if ! boot_layout_detect; then
+    log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 4c. GPU DETECTION & CONFIGURATION (shared library)
@@ -118,27 +132,10 @@ if [[ -r "$GPU_LIB" ]]; then
     source "$GPU_LIB"
     GPU_SUDO=''
 
-    # Override the swap probe with the install-aware version: pick the swap
-    # partition on the SAME DISK as root (multi-drive safe), resolving a
-    # LUKS-on-root mapper back to its real GPT entry first. The library's
-    # generic blkid probe cannot tell which disk is the install target.
-    _gpu_swap_partuuid() {
-        local root_dev root_disk
-        root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//') || true
-        [[ -n "$root_dev" ]] || return 0
-        if [[ "$root_dev" == /dev/mapper/* ]]; then
-            root_dev=$(cryptsetup status "$(basename "$root_dev")" 2>/dev/null \
-                | awk '/^[[:space:]]*device:/ {print $2; exit}') || true
-            [[ -n "$root_dev" ]] || return 0
-        fi
-        # -d (nodeps) is load-bearing: without it a partition that hosts an
-        # open LUKS mapper reports its own PKNAME plus its child's, and the
-        # multi-line value poisons the /dev/ path below with exit 32.
-        root_disk=$(lsblk -dno PKNAME "$root_dev" 2>/dev/null) || true
-        [[ -n "$root_disk" ]] || return 0
-        lsblk -nlpo NAME,FSTYPE,PARTUUID "/dev/$root_disk" 2>/dev/null \
-            | awk '$2 == "swap" {print $3; exit}' || true
-    }
+    # resume= is decided after this block, on every install, GPU or none. The
+    # library's own probe sees every swap on every attached disk and cannot
+    # tell which one the installed system turns on, so it adds nothing here.
+    _gpu_swap_partuuid() { :; }
 
     info "Detecting GPU hardware..."
     if gpu_detect; then
@@ -159,6 +156,181 @@ if [[ -r "$GPU_LIB" ]]; then
 else
     warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
 fi
+
+# Holding back resume= alone does not stop hibernation: on UEFI, systemd
+# records where the image went in the HibernateLocation EFI variable and
+# resumes from that. This turns hibernation off outright, so logind stops
+# offering it.
+_block_hibernation() {
+    mkdir -p /etc/systemd/sleep.conf.d \
+        && printf '%s\n' '[Sleep]' AllowHibernation=no \
+            AllowSuspendThenHibernate=no AllowHybridSleep=no \
+            > /etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf \
+        || warn "Could not write /etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf; hibernation stays on."
+}
+
+# The swap partitions systemd-gpt-auto-generator may turn on by itself when
+# /etc/fstab names no swap, in partition order: those of the swap type on the
+# root's disk, less any carrying the GPT no-auto attribute (bit 63, which lsblk
+# prints in hex). Both partition configs require GPT. It turns on only the
+# first it finds and passes over one labeled "_empty" as well, but its manual
+# promises every one, and the first it takes need not be the first listed
+# here, so anything judged for safety below is judged for any of them.
+_gpt_auto_swaps() {
+    local disk name ptype flags
+    disk=$(lsblk -dno PKNAME "$DISK_HOST_DEV" 2>/dev/null) || disk=""
+    [[ -n "$disk" ]] || return 0
+    [[ "$disk" == /* ]] || disk="/dev/$disk"
+    while read -r name ptype flags; do
+        [[ "${ptype,,}" == 0657fd6d-a4ab-43c4-84e5-0933c84b4f4f ]] || continue
+        if [[ "$flags" =~ ^0x[0-9a-fA-F]{1,16}$ ]] && (( flags & (1 << 63) )); then
+            continue
+        fi
+        printf '%s\n' "$name"
+    done < <(lsblk -nlpo NAME,PARTTYPE,PARTFLAGS "$disk" 2>/dev/null | sort -V)
+}
+
+# Only the root is unlocked in the initramfs. An encrypted swap is opened once
+# the root is up, from /etc/crypttab or by the generator above, too late for
+# the kernel to resume from it.
+_swap_is_encrypted() {
+    local dtype="" fstype=""
+    [[ "$1" == /dev/mapper/* ]] && return 0
+    read -r dtype fstype < <(lsblk -dno TYPE,FSTYPE "$1" 2>/dev/null) || true
+    [[ "$dtype" == crypt || "$fstype" == crypto_LUKS ]]
+}
+
+# Any swap line in /etc/fstab, noauto included, stops the generator from
+# turning on a swap partition by its type, and noauto keeps the ones named off.
+# Left to the generator, a swap this install did not set up would take memory
+# unencrypted beside an encrypted root, ask at every boot for the passphrase of
+# one that is LUKS, and lose any hibernation image another system left in it,
+# since turning a swap on rewrites its signature. It fails when fstab still
+# names none of them, because the generator then turns one on after all.
+_fstab_keep_swaps_off() {
+    local fstab=/etc/fstab dev partuuid lead="" named=0
+    local -a notes=(
+        "# Swap partitions on this disk that this install did not set up, kept off."
+        "# Any swap line here stops systemd from turning one on by its GPT type."
+    ) lines=() devs=()
+    (( $# > 0 )) || return 0
+    if [[ ! -f "$fstab" ]]; then
+        warn "No $fstab to name swap partitions $* in, so systemd will still turn one on by its GPT type at boot."
+        return 1
+    fi
+    for dev in "$@"; do
+        partuuid=$(lsblk -dno PARTUUID "$dev" 2>/dev/null) || partuuid=""
+        if [[ -z "$partuuid" ]]; then
+            warn "Could not read the PARTUUID of swap partition $dev, so $fstab cannot name it."
+            continue
+        fi
+        named=$((named + 1))
+        # A rerun finds the line it wrote before.
+        if awk -v s="partuuid=${partuuid,,}" \
+            'tolower($1) == s && $3 == "swap" { found = 1 } END { exit !found }' "$fstab"; then
+            continue
+        fi
+        lines+=("PARTUUID=$partuuid none swap noauto 0 0")
+        devs+=("$dev")
+    done
+    if (( named == 0 )); then
+        warn "No swap partition could be named in $fstab, so systemd will still turn one on by its GPT type at boot."
+        return 1
+    fi
+    (( ${#lines[@]} > 0 )) || return 0
+    [[ -n "$(tail -c1 "$fstab")" ]] && lead=$'\n'
+    grep -qxF "${notes[0]}" "$fstab" || lead+=$'\n'"$(printf '%s\n' "${notes[@]}")"$'\n'
+    if { printf '%s' "$lead"; printf '%s\n' "${lines[@]}"; } >> "$fstab"; then
+        info "Kept swap partitions ${devs[*]} off with noauto lines in $fstab."
+    else
+        warn "Could not write $fstab, so systemd will still turn one of the swap partitions ${devs[*]} on by its GPT type at boot."
+        return 1
+    fi
+}
+
+# Where hibernation may write memory has nothing to do with the graphics, so
+# this runs whether or not a GPU was found. /etc/fstab, which the fstab step
+# has already written, decides which swap the installed system turns on only
+# when it names one. When it names none, as in the default zram layout or when
+# Calamares leaves out a swap partition it did not format, systemd turns on a
+# swap partition it finds on the root's disk, another system's included.
+_apply_hibernation_policy() {
+    local src swap_dev partuuid kept_off=0 kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
+    local -a fstab_swaps=() swaps=()
+    # UUID= and PARTUUID= come back as device paths, and an entry that matches
+    # no device as an empty line. Any swap line at all, a swap file's or a
+    # noauto one's too, keeps the generator from turning on a partition.
+    mapfile -t fstab_swaps < <(findmnt --fstab -n -e -t swap -o SOURCE 2>/dev/null)
+    if (( ${#fstab_swaps[@]} > 0 )); then
+        # Only a swap that fstab turns on can take a hibernation image. A
+        # noauto line keeps its swap off, and the ones this install writes
+        # name another system's partitions: resuming from one would restore
+        # or throw away that system's hibernation. With none turned on,
+        # hibernation stays as an earlier run of this step left it.
+        mapfile -t fstab_swaps < <(findmnt --fstab -n -e -t swap -O nonoauto -o SOURCE 2>/dev/null)
+        # The first swap entry on a partition. A swap file has no PARTUUID to
+        # resume from.
+        for src in "${fstab_swaps[@]}"; do
+            # Calamares names an encrypted swap by its /dev/mapper path, which
+            # exists only while the installer holds the container open.
+            if [[ -b "$src" || "$src" == /dev/mapper/* ]]; then
+                swaps=("$src")
+                break
+            fi
+        done
+    else
+        mapfile -t swaps < <(_gpt_auto_swaps)
+        if (( ${#swaps[@]} > 0 )); then
+            info "No swap in /etc/fstab, so systemd would turn on a swap partition of the root's disk by its GPT type: ${swaps[*]}."
+        fi
+        # A plain swap beside a plain root stays with systemd, so hibernation
+        # still has somewhere to go. Once one swap line is written systemd
+        # turns on none of them, so they are all named then, and fstab says
+        # which partitions are off.
+        for swap_dev in "${swaps[@]}"; do
+            if [[ -n "$LUKS_UUID" ]] || _swap_is_encrypted "$swap_dev"; then
+                _fstab_keep_swaps_off "${swaps[@]}" && kept_off=1
+                break
+            fi
+        done
+    fi
+    (( ${#swaps[@]} > 0 )) || return 0
+    for swap_dev in "${swaps[@]}"; do
+        if _swap_is_encrypted "$swap_dev"; then
+            if (( kept_off )); then
+                info "Swap $swap_dev is encrypted, so it is kept off and hibernation is turned off."
+            else
+                info "Swap $swap_dev is encrypted and opens only after the root, too late to resume from, so hibernation is turned off."
+            fi
+            _block_hibernation
+            return 0
+        fi
+        if [[ -n "$LUKS_UUID" ]]; then
+            if (( kept_off )); then
+                info "Root is encrypted and swap partition $swap_dev is not, so it is kept off and hibernation is turned off."
+            else
+                warn "Root is encrypted but swap partition $swap_dev is not, so hibernation is turned off: it would write memory, encryption keys included, to that partition unencrypted."
+            fi
+            _block_hibernation
+            return 0
+        fi
+    done
+    swap_dev=${swaps[0]}
+    partuuid=$(lsblk -dno PARTUUID "$swap_dev" 2>/dev/null) || partuuid=""
+    [[ -n "$partuuid" ]] || return 0
+    if grep -Eq '(^|[[:space:]])resume=' "$kc" 2>/dev/null; then
+        return 0
+    fi
+    # The one cmdline writer lives in the GPU library, and install-limine
+    # refuses an image without it, so this branch is only a guard.
+    if ! declare -F cmdline_upsert >/dev/null; then
+        warn "No resume= for swap $swap_dev: the GPU library that writes the kernel command line is missing."
+        return 0
+    fi
+    cmdline_upsert "resume=PARTUUID=$partuuid"
+    info "Hibernation resumes from swap partition $swap_dev."
+}
+_apply_hibernation_policy
 
 # Apple hardware quirks. Sourced after the GPU library because it reuses
 # mkinitcpio_add_modules from it, and a no-op on everything that is not a Mac.
@@ -227,7 +399,7 @@ fi
 # cmdline, which only the sd-encrypt hook honors — without it the initramfs
 # cannot unlock the root volume. Insert it after sd-vconsole so plymouth
 # still owns the passphrase prompt.
-if findmnt -n -o SOURCE / 2>/dev/null | grep -q '^/dev/mapper/'; then
+if [[ -n "$LUKS_UUID" ]]; then
     if ! grep -qE '^HOOKS=.*sd-encrypt' /etc/mkinitcpio.conf; then
         sed -i 's/\(^HOOKS=.*sd-vconsole\)/\1 sd-encrypt/' /etc/mkinitcpio.conf
         if grep -qE '^HOOKS=.*sd-encrypt' /etc/mkinitcpio.conf; then
@@ -238,18 +410,24 @@ if findmnt -n -o SOURCE / 2>/dev/null | grep -q '^/dev/mapper/'; then
     fi
 fi
 
-# The same reading of the disks install-limine used, rather than a second set
-# of tests that could disagree with it.
-BOOT_LIB="/usr/local/lib/boot-layout.sh"
-if [[ ! -r "$BOOT_LIB" ]]; then
-    log "ERROR: the boot layout library is missing from $BOOT_LIB; this image is incomplete."
-    exit 1
-fi
-# shellcheck source=/dev/null
-source "$BOOT_LIB"
-if ! boot_layout_detect; then
-    log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
-    exit 1
+# initcpiocfg adds /crypto_keyfile.bin to FILES for an encrypted root when that
+# file exists on the target and /boot is not a partition of its own. No install
+# step creates one, since sd-encrypt unlocks the root from the passphrase, so
+# this is a backstop: every boot image lands on an unencrypted partition (the
+# UKI on the EFI system partition, the initramfs on BIOS's FAT /boot), where a
+# key that unlocks the root would sit in the clear.
+if grep -qE '^FILES=.*crypto_keyfile\.bin' /etc/mkinitcpio.conf; then
+    sed -i -E '/^FILES=/{
+        s#(\(|[[:space:]])"?/crypto_keyfile\.bin"?([[:space:]]|\))#\1\2#g
+        s#[[:space:]]+# #g
+        s#\( #(#
+        s# \)#)#
+    }' /etc/mkinitcpio.conf
+    if grep -qE '^FILES=.*crypto_keyfile\.bin' /etc/mkinitcpio.conf; then
+        warn "/crypto_keyfile.bin could not be taken out of FILES in /etc/mkinitcpio.conf; the boot image will carry the root's key unencrypted. Remove it there and run mkinitcpio -P."
+    else
+        info "Kept /crypto_keyfile.bin out of the boot image."
+    fi
 fi
 
 # Restore a standard installed-system mkinitcpio preset. On UEFI installs,
