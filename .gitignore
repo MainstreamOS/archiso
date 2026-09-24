@@ -16,3 +16,4 @@ network-config
 man/version.rst
 build*.log
 last-build.txt
+__pycache__/

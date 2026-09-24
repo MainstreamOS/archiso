@@ -14,6 +14,24 @@ _ms_health() {
         >> /var/log/mainstream-install/health.log 2>/dev/null || true
 }
 
+# --- Boot Layout Check ---
+# The shared library reads what the partitioning step built and refuses, in
+# words the person can act on, a layout the boot loader cannot start. It is a
+# file of the image, beside gpu-config.sh, so a missing one means the image is
+# incomplete rather than that this should guess. It runs before anything below
+# writes to the target, so a refused layout leaves the target as it was.
+BOOT_LIB="/usr/local/lib/boot-layout.sh"
+if [[ ! -r "$BOOT_LIB" ]]; then
+    log "ERROR: the boot layout library is missing from $BOOT_LIB; this image is incomplete."
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$BOOT_LIB"
+if ! boot_layout_detect; then
+    log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
+    exit 1
+fi
+
 # --- 0. Kernel & Environment Setup ---
 # Which kernel this image carries. Editions differ: the MacBook one ships
 # linux-t2 in place of Arch's linux, and every path below puts the kernel's name
@@ -78,22 +96,7 @@ fi
 # post-install runs after this and modifies mkinitcpio.conf (GPU modules, resume hook),
 # so it owns the final mkinitcpio -P call to avoid building the initramfs twice.
 
-# --- 1. Hardware Detection ---
-# The shared library reads what the partitioning step built and refuses, in
-# words the person can act on, a layout the boot loader cannot start. It is a
-# file of the image, beside gpu-config.sh, so a missing one means the image is
-# incomplete rather than that this should guess.
-BOOT_LIB="/usr/local/lib/boot-layout.sh"
-if [[ ! -r "$BOOT_LIB" ]]; then
-    log "ERROR: the boot layout library is missing from $BOOT_LIB; this image is incomplete."
-    exit 1
-fi
-# shellcheck source=/dev/null
-source "$BOOT_LIB"
-if ! boot_layout_detect; then
-    log "ERROR: this layout cannot be booted: ${BOOT_LAYOUT_ERROR}."
-    exit 1
-fi
+# --- 1. Layout Summary & Kernel Command Line ---
 if [[ -n "$LUKS_UUID" ]]; then
     info "Encrypted root: $LUKS_BACKING_DEV (LUKS UUID=$LUKS_UUID) → mapper=$LUKS_MAPPER_NAME"
 else
