@@ -16,7 +16,7 @@ Item {
     property Item targetButton
     property alias isOpen: menuLoader.active
     readonly property bool isFolder: appToplevel?.isFolder === true
-    readonly property var desktopEntry: (!isFolder && appToplevel) ? DesktopEntries.heuristicLookup(appToplevel.appId) : null
+    readonly property var desktopEntry: (!isFolder && appToplevel) ? AppSearch.recordFor(DesktopEntries.heuristicLookup(appToplevel.appId)) : null
     readonly property bool hasWindows: (appToplevel?.toplevels.length ?? 0) > 0
     readonly property bool hasDesktopActions: (!isFolder && desktopEntry?.actions.length) ?? false
     readonly property bool volumeFeatureEnabled: Config.options.dock.contextMenuVolume.enable
@@ -40,6 +40,18 @@ Item {
 
     function close() {
         menuLoader.active = false;
+    }
+
+    // Every window of the app, whichever row of the menu named the workspace.
+    function moveWindowsTo(ws) {
+        // 0.55 Lua dispatch; follow = false keeps "silent" semantics.
+        for (const toplevel of root.appToplevel.toplevels) {
+            const addr = `0x${toplevel.HyprlandToplevel?.address}`;
+            Hyprland.dispatch(
+                `hl.dsp.window.move({workspace = ${ws}, follow = false, window = "address:${addr}"})`
+            );
+        }
+        root.close();
     }
 
     Loader {
@@ -69,20 +81,13 @@ Item {
             implicitWidth: menuBackground.implicitWidth + Appearance.sizes.elevationMargin * 2
             implicitHeight: menuBackground.implicitHeight + Appearance.sizes.elevationMargin * 2
 
-            StyledRectangularShadow {
-                target: menuBackground
-            }
-
-            Rectangle {
+            ContextMenuCard {
                 id: menuBackground
-                property real padding: 4
 
                 // The window is the background plus a shadow margin on every
                 // side, so centring insets it evenly and the breathing room
                 // sits between popup and dock.
                 anchors.centerIn: parent
-                color: Appearance.m3colors.m3surfaceContainer
-                radius: Appearance.rounding.normal
                 implicitWidth: menuColumn.implicitWidth + padding * 2
                 implicitHeight: menuColumn.implicitHeight + padding * 2
 
@@ -234,6 +239,7 @@ Item {
                                 required property var modelData
                                 width: volList.width
                                 nodes: modelData
+                                rowRadius: menuBackground.rowRadius
                             }
                         }
                     }
@@ -261,6 +267,14 @@ Item {
                             readonly property int workspacesShown: Config.options.bar.workspaces.shown
                             readonly property int activeWorkspaceId: Hyprland.monitorFor(root.QsWindow.window?.screen)?.activeWorkspace?.id ?? 1
                             readonly property int workspaceBase: Math.max(0, Math.floor((activeWorkspaceId - 1) / workspacesShown)) * workspacesShown
+                            // Whether some window of the app is on a workspace other than the one on
+                            // screen. Only then is this workspace somewhere to move it to.
+                            readonly property bool appElsewhere: (root.appToplevel?.toplevels ?? []).some(t =>
+                                HyprlandData.clientForToplevel(t)?.workspace?.id !== moveToWorkspaceBlock.activeWorkspaceId)
+                            // The named workspaces worth offering: all of them, except the one on screen
+                            // while the app is already all there.
+                            readonly property var namedEntries: WorkspaceNames.entries.filter(entry =>
+                                entry.id !== moveToWorkspaceBlock.activeWorkspaceId || moveToWorkspaceBlock.appElsewhere)
 
                             ContextMenuItem {
                                 Layout.fillWidth: true
@@ -287,13 +301,15 @@ Item {
                                         readonly property bool isCurrent: wsButton.workspaceValue === moveToWorkspaceBlock.activeWorkspaceId
                                         implicitWidth: 28
                                         implicitHeight: 28
-                                        buttonRadius: Appearance.rounding.small
+                                        buttonRadius: menuBackground.rowRadius
                                         colBackground: wsButton.isCurrent ? Appearance.colors.colSecondaryContainer
                                             : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
+                                        // The same state layer as the menu's rows, which the
+                                        // layer colors are too faint to show on this surface.
                                         colBackgroundHover: wsButton.isCurrent ? Appearance.colors.colSecondaryContainerHover
-                                            : Appearance.colors.colLayer1Hover
+                                            : Appearance.colors.colMenuItemHover
                                         colRipple: wsButton.isCurrent ? Appearance.colors.colSecondaryContainerActive
-                                            : Appearance.colors.colLayer1Active
+                                            : Appearance.colors.colMenuItemActive
                                         contentItem: StyledText {
                                             anchors.centerIn: parent
                                             text: String(wsButton.workspaceValue)
@@ -306,18 +322,100 @@ Item {
                                             extraVisibleCondition: wsButton.isCurrent
                                             text: Translation.tr("Current workspace")
                                         }
-                                        onClicked: {
-                                            // 0.55 Lua dispatch; follow = false keeps "silent" semantics.
-                                            const ws = wsButton.workspaceValue;
-                                            for (const toplevel of root.appToplevel.toplevels) {
-                                                const addr = `0x${toplevel.HyprlandToplevel?.address}`;
-                                                Hyprland.dispatch(
-                                                    `hl.dsp.window.move({workspace = ${ws}, follow = false, window = "address:${addr}"})`
-                                                );
+                                        onClicked: root.moveWindowsTo(wsButton.workspaceValue)
+                                    }
+                                }
+                            }
+
+                            // The workspaces given a name from the bar, wherever
+                            // they fall in the numbering, set apart from the row
+                            // above so they read as the user's own.
+                            ContextMenuSeparator {
+                                visible: moveToWorkspaceBlock.namedEntries.length > 0
+                            }
+
+                            StyledText {
+                                visible: moveToWorkspaceBlock.namedEntries.length > 0
+                                Layout.leftMargin: 10
+                                Layout.bottomMargin: 2
+                                text: Translation.tr("Named workspaces")
+                                font.pixelSize: Appearance.font.pixelSize.smaller
+                                color: Appearance.m3colors.m3outline
+                            }
+
+                            // Five at once; with more, the sixth shows mostly cut
+                            // and the list scrolls, as the volume list above does,
+                            // so a long list cannot run the menu off the screen.
+                            StyledListView {
+                                id: namedList
+                                readonly property int maxVisible: 5
+                                visible: count > 0
+                                Layout.fillWidth: true
+                                Layout.bottomMargin: 4
+                                clip: true
+                                spacing: 0
+                                implicitWidth: 200
+                                implicitHeight: {
+                                    if (count === 0) return 0;
+                                    const per = (contentHeight + spacing) / count;
+                                    const rows = count > maxVisible ? maxVisible + 0.7 : count;
+                                    return Math.round(rows * per - spacing);
+                                }
+                                ScrollBar.vertical: StyledScrollBar {
+                                    policy: namedList.count > namedList.maxVisible ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                                }
+                                model: ScriptModel { values: moveToWorkspaceBlock.namedEntries }
+                                // The number drawn as that workspace's button in the
+                                // row above, the one on screen filled as it is there,
+                                // with the name beside it.
+                                delegate: RippleButton {
+                                    id: namedButton
+                                    required property var modelData
+                                    readonly property bool isCurrent: namedButton.modelData.id === moveToWorkspaceBlock.activeWorkspaceId
+                                    width: namedList.width
+                                    implicitHeight: 32
+                                    buttonRadius: menuBackground.rowRadius
+                                    colBackground: ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
+                                    colBackgroundHover: Appearance.colors.colMenuItemHover
+                                    colRipple: Appearance.colors.colMenuItemActive
+                                    contentItem: RowLayout {
+                                        anchors {
+                                            fill: parent
+                                            leftMargin: 10
+                                            rightMargin: 14
+                                        }
+                                        spacing: 8
+                                        Rectangle {
+                                            implicitWidth: Math.max(28, namedNumber.implicitWidth + 12)
+                                            implicitHeight: 28
+                                            radius: menuBackground.rowRadius
+                                            color: namedButton.isCurrent ? Appearance.colors.colSecondaryContainer
+                                                : "transparent"
+                                            StyledText {
+                                                id: namedNumber
+                                                anchors.centerIn: parent
+                                                text: String(namedButton.modelData.id)
+                                                font.pixelSize: Appearance.font.pixelSize.small
+                                                font.variableAxes: namedButton.isCurrent ? Appearance.font.variableAxes.title : Appearance.font.variableAxes.main
+                                                color: namedButton.isCurrent ? Appearance.colors.colOnSecondaryContainer
+                                                    : Appearance.m3colors.m3onSurface
                                             }
-                                            root.close();
+                                        }
+                                        StyledText {
+                                            Layout.fillWidth: true
+                                            text: namedButton.modelData.name
+                                            horizontalAlignment: Text.AlignLeft
+                                            font.pixelSize: Appearance.font.pixelSize.small
+                                            font.variableAxes: namedButton.isCurrent ? Appearance.font.variableAxes.title : Appearance.font.variableAxes.main
+                                            color: Appearance.m3colors.m3onSurface
+                                            elide: Text.ElideRight
                                         }
                                     }
+                                    StyledToolTip {
+                                        extraVisibleCondition: namedButton.isCurrent
+                                        text: Translation.tr("Current workspace")
+                                    }
+                                    onClicked: root.moveWindowsTo(namedButton.modelData.id)
                                 }
                             }
                         }
@@ -362,45 +460,11 @@ Item {
         }
     }
 
-    component ContextMenuItem: RippleButton {
-        id: menuItemRoot
-        property string iconName
-        property string label
-        implicitHeight: 36
-        implicitWidth: Math.max(itemRow.implicitWidth + 20, 180)
-        buttonRadius: Appearance.rounding.small
-
-        contentItem: RowLayout {
-            id: itemRow
-            anchors {
-                fill: parent
-                leftMargin: 10
-                rightMargin: 14
-            }
-            spacing: 8
-
-            MaterialSymbol {
-                text: menuItemRoot.iconName
-                iconSize: Appearance.font.pixelSize.normal
-                color: menuItemRoot.enabled ? Appearance.m3colors.m3onSurface : Appearance.m3colors.m3outline
-                visible: menuItemRoot.iconName !== ""
-                Layout.alignment: Qt.AlignVCenter
-            }
-
-            StyledText {
-                Layout.fillWidth: true
-                text: menuItemRoot.label
-                horizontalAlignment: Text.AlignLeft
-                font.pixelSize: Appearance.font.pixelSize.small
-                color: menuItemRoot.enabled ? Appearance.m3colors.m3onSurface : Appearance.m3colors.m3outline
-                elide: Text.ElideRight
-            }
-        }
-    }
-
     component ContextMenuVolumeRow: Item {
         id: volRow
         required property var nodes
+        // The card's, handed in: this row is declared outside the menu.
+        property real rowRadius: 0
         readonly property var primaryNode: (nodes && nodes.length > 0) ? nodes[0] : null
         readonly property bool allMuted: {
             if (!nodes || nodes.length === 0) return false;
@@ -471,7 +535,9 @@ Item {
                 id: muteBtn
                 implicitWidth: 30
                 implicitHeight: 30
-                buttonRadius: Appearance.rounding.small
+                buttonRadius: volRow.rowRadius
+                colBackgroundHover: Appearance.colors.colMenuItemHover
+                colRipple: Appearance.colors.colMenuItemActive
                 Layout.alignment: Qt.AlignVCenter
                 onClicked: volRow.setMutedAll(!volRow.allMuted)
                 contentItem: MaterialSymbol {

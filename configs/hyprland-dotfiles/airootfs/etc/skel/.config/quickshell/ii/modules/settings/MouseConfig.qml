@@ -12,6 +12,26 @@ ContentPage {
     id: root
     forceWidth: true
 
+    component CardCaption: RowLayout {
+        id: caption
+        property bool selected
+        property string title
+        property string subtitle
+        spacing: 6; Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
+        Rectangle {
+            width: 16; height: 16; radius: 8; border.width: 2
+            border.color: caption.selected ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+            color: caption.selected ? Appearance.colors.colPrimary : "transparent"
+            Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: Appearance.colors.colOnPrimary; visible: caption.selected }
+        }
+        ColumnLayout {
+            spacing: 1
+            Layout.fillWidth: true
+            StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: caption.title; font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colOnLayer1 }
+            StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: caption.subtitle; font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
+        }
+    }
+
     property bool ready:           false
     property bool leftHanded:      false
     property bool accelEnabled:    true
@@ -19,6 +39,9 @@ ContentPage {
     property bool naturalScrollTP: true
     property bool touchpadEnabled: true
     property string touchpadDeviceName: ""
+    property bool touchpadInternal: false
+    property bool disableWhileTyping: true
+    property bool disableWithMouse: false
     property real sensitivity:     0.0
 
     // 2 cards * 150px + 16px gap
@@ -28,12 +51,16 @@ ContentPage {
         Quickshell.env("HOME") + "/.config/hypr/custom/env.lua"
     readonly property string hyprGeneralConf:
         Quickshell.env("HOME") + "/.config/hypr/hyprland/general.lua"
+    // Read by the main shell's TouchpadAutoDisable, which does the switching.
+    readonly property string disableWithMouseFlag:
+        Quickshell.env("HOME") + "/.config/hypr/custom/touchpad.disableWithMouse"
 
     Component.onCompleted: {
         mouseProc.running     = false; mouseProc.running     = true
         tpProc.running        = false; tpProc.running        = true
         tpNameProc.running    = false; tpNameProc.running    = true
         tpEnabledProc.running = false; tpEnabledProc.running = true
+        tpDwtProc.running     = false; tpDwtProc.running     = true
         root.applyGestures()
     }
 
@@ -41,69 +68,22 @@ ContentPage {
     // Each slot in Config.options.gestures maps to one hl.gesture() block.
     // Hyprland rejects re-defining a fingers+direction pair ("overshadowed"),
     // so changes rewrite the whole marker-fenced block in hyprland/general.lua
-    // and take effect via a full hyprctl reload.
-    function gestureBlock() {
-        const g = Config.options.gestures
-        const lua = {
-            swipe3: {
-                move:      '{\n    fingers = 3,\n    direction = "swipe",\n    action = "move"\n}',
-                workspace: '{\n    fingers = 3,\n    direction = "horizontal",\n    action = "workspace"\n}',
-                resize:    '{\n    fingers = 3,\n    direction = "swipe",\n    action = "resize"\n}'
-            },
-            pinch3: {
-                float:      '{\n    fingers = 3,\n    direction = "pinch",\n    action = "float"\n}',
-                fullscreen: '{\n    fingers = 3,\n    direction = "pinch",\n    action = "fullscreen"\n}',
-                close:      '{\n    fingers = 3,\n    direction = "pinch",\n    action = "close"\n}'
-            },
-            horizontal4: {
-                workspace: '{\n    fingers = 4,\n    direction = "horizontal",\n    action = "workspace"\n}',
-                special:   '{\n    fingers = 4,\n    direction = "horizontal",\n    action = "special"\n}'
-            },
-            up4: {
-                overviewOpen: '{\n    fingers = 4,\n    direction = "up",\n    action = function()\n        hl.dispatch(hl.dsp.global("quickshell:overviewWorkspacesToggle"))\n    end\n}',
-                fullscreen:   '{\n    fingers = 4,\n    direction = "up",\n    action = "fullscreen"\n}',
-                special:      '{\n    fingers = 4,\n    direction = "up",\n    action = "special"\n}'
-            },
-            down4: {
-                overviewClose: '{\n    fingers = 4,\n    direction = "down",\n    action = function()\n        hl.dispatch(hl.dsp.global("quickshell:overviewWorkspacesClose"))\n    end\n}',
-                close:         '{\n    fingers = 4,\n    direction = "down",\n    action = "close"\n}'
-            }
-        }
-        const lines = []
-        for (const slot of ["swipe3", "pinch3", "horizontal4", "up4", "down4"]) {
-            // Unknown values (hand-edited config.json) fall back to the slot's
-            // default — the first key — so the file always matches what the
-            // combo's index-0 fallback displays. The own-property guard keeps
-            // Object.prototype members ("constructor") out of the Lua.
-            let val = g[slot]
-            if (val !== "none" && !Object.prototype.hasOwnProperty.call(lua[slot], val))
-                val = Object.keys(lua[slot])[0]
-            const body = lua[slot][val]
-            if (body) lines.push("hl.gesture(" + body + ")")
-        }
-        return lines.join("\n")
-    }
+    // and take effect via a full hyprctl reload. gestures.py holds the mapping,
+    // which the updater also runs to put the block back after a release
+    // replaces general.lua.
+    readonly property string gesturesScript: CF.FileUtils.trimFileProtocol(`${Directories.scriptPath}/hyprland/gestures.py`)
 
     // Exit codes: 0 = rewritten (reload), 1 = marker block missing (surface
     // an error), 2 = file already matches (no-op — lets Component.onCompleted
     // run this as a cheap self-heal after dots updates reset general.lua).
+    // The values go along as arguments: a choice just made may not have
+    // reached config.json yet.
     function applyGestures() {
-        const py =
-            "import sys, re, os\n" +
-            "path, block = sys.argv[1], sys.argv[2]\n" +
-            "text = open(path).read()\n" +
-            "pat = re.compile(r'(?s)(-- BEGIN gestures[^\\n]*\\n).*?(-- END gestures)')\n" +
-            "new, n = pat.subn(lambda m: m.group(1) + block + ('\\n' if block else '') + m.group(2), text, count=1)\n" +
-            "if n == 0:\n" +
-            "    sys.exit(1)\n" +
-            "if new == text:\n" +
-            "    sys.exit(2)\n" +
-            "tmp = path + '.tmp'\n" +
-            "f = open(tmp, 'w')\n" +
-            "f.write(new)\n" +
-            "f.close()\n" +
-            "os.replace(tmp, path)\n"
-        gestureWriter.command = ["python3", "-c", py, root.hyprGeneralConf, gestureBlock()]
+        const g = Config.options.gestures
+        const cmd = ["python3", root.gesturesScript, "apply", "--general", root.hyprGeneralConf]
+        for (const slot of ["swipe3", "pinch3", "horizontal4", "up4", "down4"])
+            cmd.push("--slot", slot + "=" + g[slot])
+        gestureWriter.command = cmd
         gestureWriter.running = false
         gestureWriter.running = true
     }
@@ -181,19 +161,46 @@ ContentPage {
         }
     }
 
-    // Touchpads are listed with pointer devices by hyprctl. Keep the actual
-    // libinput name so the per-device enabled setting can be updated.
+    // The touchpad under the name Hyprland gives it, so the per-device enabled
+    // setting can be updated. A built-in one comes first: udev's integration
+    // flag picks it out, so a game controller's or a drawing tablet's touch
+    // surface is not taken for it, and only it gets the typing and external
+    // mouse switches, which are about a laptop's own touchpad. Without one, a
+    // device named like a touchpad still gets the on/off row.
     Process {
         id: tpNameProc
-        command: ["bash", "-c",
-            "hyprctl devices -j | python3 -c \"import sys, json; d = json.load(sys.stdin); n = [m['name'] for m in d.get('mice', []) if 'touchpad' in m['name'].lower()]; print(n[0] if n else '')\""
-        ]
+        command: ["python3", Quickshell.shellPath("scripts/hypr/touchpad_auto_disable.py"), "touchpads"]
         stdout: SplitParser {
             onRead: data => {
-                const name = data.trim()
-                if (name) root.touchpadDeviceName = name
+                const tab = data.indexOf("\t")
+                if (tab < 0) return
+                const name = data.slice(tab + 1).trim()
+                if (!name) return
+                if (!root.touchpadDeviceName) root.touchpadDeviceName = name
+                if (data.slice(0, tab) === "internal") root.touchpadInternal = true
             }
         }
+    }
+
+    // Read through the script that writes it, so the page and Hyprland agree
+    // on which line counts. With no line the setting is Hyprland's default, on.
+    Process {
+        id: tpDwtProc
+        command: ["python3", Quickshell.shellPath("scripts/hypr/touchpad_option.py"),
+            root.envConf, "disable_while_typing"]
+        stdout: SplitParser {
+            onRead: data => {
+                const value = data.trim()
+                if (value) root.disableWhileTyping = value !== "false" && value !== "0"
+            }
+        }
+    }
+
+    FileView {
+        id: disableWithMouseFile
+        path: root.disableWithMouseFlag
+        printErrors: false
+        onLoaded: root.disableWithMouse = disableWithMouseFile.text().trim() === "1"
     }
 
     // If no saved device setting exists, touchpadEnabled remains true.
@@ -350,6 +357,27 @@ ContentPage {
             "python3", Quickshell.shellPath("scripts/hypr/managed_block.py"),
             root.envConf, "touchpad-enable", stmt
         ])
+    }
+
+    // A boolean under input.touchpad, applied now and kept in env.lua's
+    // touchpad table. The writer adds the line when the table has none, as
+    // it does on installs from before the setting was offered.
+    function applyTouchpadOption(key, value) {
+        if (!root.ready) return
+        const luaVal = value ? "true" : "false"
+        Quickshell.execDetached([
+            "hyprctl", "eval",
+            'hl.config({ input = { touchpad = { ' + key + ' = ' + luaVal + ' } } })'
+        ])
+        Quickshell.execDetached([
+            "python3", Quickshell.shellPath("scripts/hypr/touchpad_option.py"),
+            root.envConf, key, luaVal
+        ])
+    }
+
+    function applyDisableWithMouse(value) {
+        Quickshell.execDetached(["bash", "-c", 'printf "%s" "$1" > "$0"',
+            root.disableWithMouseFlag, value ? "1" : "0"])
     }
 
     // ── General ───────────────────────────────────────────────────────────────
@@ -534,21 +562,7 @@ ContentPage {
                                 }
                             }
                         }
-                        RowLayout {
-                            spacing: 6; Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
-                            Rectangle {
-                                width: 16; height: 16; radius: 8; border.width: 2
-                                border.color: !root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                color: !root.naturalScroll ? Appearance.colors.colPrimary : "transparent"
-                                Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: Appearance.colors.colOnPrimary; visible: !root.naturalScroll }
-                            }
-                            ColumnLayout {
-                                spacing: 1
-                                Layout.fillWidth: true
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Traditional"); font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colOnLayer1 }
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Scrolling moves the view"); font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-                            }
-                        }
+                        CardCaption { selected: !root.naturalScroll; title: Translation.tr("Traditional"); subtitle: Translation.tr("Scrolling moves the view") }
                     }
                 }
                  MouseArea {
@@ -622,21 +636,7 @@ ContentPage {
                                 }
                             }
                         }
-                        RowLayout {
-                            spacing: 6; Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
-                            Rectangle {
-                                width: 16; height: 16; radius: 8; border.width: 2
-                                border.color: root.naturalScroll ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                color: root.naturalScroll ? Appearance.colors.colPrimary : "transparent"
-                                Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: Appearance.colors.colOnPrimary; visible: root.naturalScroll }
-                            }
-                            ColumnLayout {
-                                spacing: 1
-                                Layout.fillWidth: true
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Natural"); font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colOnLayer1 }
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Scrolling moves the content"); font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-                            }
-                        }
+                        CardCaption { selected: root.naturalScroll; title: Translation.tr("Natural"); subtitle: Translation.tr("Scrolling moves the content") }
                     }
                 }
             }
@@ -674,6 +674,38 @@ ContentPage {
                     const enabled = model[index].value
                     root.touchpadEnabled = enabled
                     root.applyTouchpadEnabled(enabled)
+                }
+            }
+        }
+
+        ConfigRow {
+            visible: root.touchpadInternal
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "keyboard"
+                text: Translation.tr("Disable While Typing")
+                tooltipText: Translation.tr("Ignores the touchpad for a moment after each key press, so a resting palm can't move the pointer")
+                checked: root.disableWhileTyping
+                onCheckedChanged: {
+                    if (checked === root.disableWhileTyping) return
+                    root.disableWhileTyping = checked
+                    root.applyTouchpadOption("disable_while_typing", checked)
+                }
+            }
+        }
+
+        ConfigRow {
+            visible: root.touchpadInternal
+            ConfigSwitch {
+                Layout.fillWidth: true
+                buttonIcon: "mouse"
+                text: Translation.tr("Disable While Using an External Mouse")
+                tooltipText: Translation.tr("Turns the touchpad off once a USB or Bluetooth mouse is used, and back to the setting above when the mouse is disconnected")
+                checked: root.disableWithMouse
+                onCheckedChanged: {
+                    if (checked === root.disableWithMouse) return
+                    root.disableWithMouse = checked
+                    root.applyDisableWithMouse(checked)
                 }
             }
         }
@@ -753,21 +785,7 @@ ContentPage {
                                 }
                             }
                         }
-                        RowLayout {
-                            spacing: 6; Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
-                            Rectangle {
-                                width: 16; height: 16; radius: 8; border.width: 2
-                                border.color: !root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                color: !root.naturalScrollTP ? Appearance.colors.colPrimary : "transparent"
-                                Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: Appearance.colors.colOnPrimary; visible: !root.naturalScrollTP }
-                            }
-                            ColumnLayout {
-                                spacing: 1
-                                Layout.fillWidth: true
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Traditional"); font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colOnLayer1 }
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Scrolling moves the view"); font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-                            }
-                        }
+                        CardCaption { selected: !root.naturalScrollTP; title: Translation.tr("Traditional"); subtitle: Translation.tr("Scrolling moves the view") }
                     }
                 }
                 MouseArea {
@@ -838,21 +856,7 @@ ContentPage {
                                 }
                             }
                         }
-                        RowLayout {
-                            spacing: 6; Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
-                            Rectangle {
-                                width: 16; height: 16; radius: 8; border.width: 2
-                                border.color: root.naturalScrollTP ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                                color: root.naturalScrollTP ? Appearance.colors.colPrimary : "transparent"
-                                Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: Appearance.colors.colOnPrimary; visible: root.naturalScrollTP }
-                            }
-                            ColumnLayout {
-                                spacing: 1
-                                Layout.fillWidth: true
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Natural"); font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colOnLayer1 }
-                                StyledText { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: Translation.tr("Scrolling moves the content"); font.pixelSize: Appearance.font.pixelSize.small; color: Appearance.colors.colSubtext }
-                            }
-                        }
+                        CardCaption { selected: root.naturalScrollTP; title: Translation.tr("Natural"); subtitle: Translation.tr("Scrolling moves the content") }
                     }
                 }
             }

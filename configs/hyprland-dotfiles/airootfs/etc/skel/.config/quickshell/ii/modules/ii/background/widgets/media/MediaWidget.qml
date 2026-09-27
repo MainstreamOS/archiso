@@ -82,15 +82,22 @@ AbstractBackgroundWidget {
         animation: Appearance.animation.elementResize.numberAnimation.createObject(this)
     }
 
-    property bool downloaded: false
+    // The cached copy is shown straight away, so art fetched before appears
+    // at once instead of after the downloader has looked for it. Art that is
+    // not there yet fails to load, which shows the placeholder, and comes in
+    // once the download lands.
+    property bool artMissing: false
+    readonly property bool artShown: root.displayedArtFilePath !== "" && !root.artMissing
+    property bool artReloading: false
     // The widget's own lyrics button and the Background page flip the same key.
     property bool showLyrics: Config.options.background.widgets.media.showLyrics
 
     property string displayedArtFilePath: {
-        if (!root.downloaded) return ""
-        if (root.artUrl && root.artUrl.startsWith("file://")) return root.artUrl
-        return root.downloaded ? Qt.resolvedUrl(artFilePath) : ""
+        if (!root.artUrl || root.artReloading) return ""
+        if (root.artUrl.startsWith("file://")) return root.artUrl
+        return Qt.resolvedUrl(artFilePath)
     }
+    onDisplayedArtFilePathChanged: root.artMissing = false
 
     implicitHeight: card.implicitHeight
     implicitWidth: card.implicitWidth
@@ -98,17 +105,10 @@ AbstractBackgroundWidget {
     onArtFilePathChanged: updateArt()
 
     function updateArt() {
-        if (!root.artUrl || root.artUrl.length === 0) {
-            root.downloaded = false
+        if (!root.artUrl || root.artUrl.length === 0 || root.artUrl.startsWith("file://"))
             return
-        }
-        if (root.artUrl.startsWith("file://")) {
-            root.downloaded = true
-            return
-        }
         coverArtDownloader.targetFile = root.artUrl
         coverArtDownloader.artFilePath = root.artFilePath
-        root.downloaded = false
         coverArtDownloader.running = true
     }
 
@@ -116,8 +116,33 @@ AbstractBackgroundWidget {
         id: coverArtDownloader
         property string targetFile: root.artUrl ?? ""
         property string artFilePath: root.artFilePath
-        command: ["bash", "-c", `[ -f ${artFilePath} ] || curl -sSL '${targetFile}' -o '${artFilePath}'`]
-        onExited: { root.downloaded = true }
+        command: ["bash", Quickshell.shellPath("scripts/mpris/fetch-cover-art.sh"), coverArtDownloader.artFilePath, coverArtDownloader.targetFile, "http,https"]
+        // Art that was missing when the images looked is loaded again once it
+        // has arrived; a failed download leaves the placeholder.
+        onExited: (exitCode, exitStatus) => {
+            if (exitCode === 0 && root.artMissing) {
+                root.artReloading = true
+                Qt.callLater(() => root.artReloading = false)
+            }
+        }
+    }
+
+    component ArtImage: StyledImage {
+        anchors.fill: parent
+        source: root.displayedArtFilePath
+        onStatusChanged: if (status === Image.Error) root.artMissing = true
+        fillMode: Image.PreserveAspectCrop
+        cache: false
+        antialiasing: true
+        visible: root.artShown
+    }
+
+    component ArtPlaceholder: MaterialSymbol {
+        anchors.centerIn: parent
+        fill: 1
+        text: "music_note"
+        color: Appearance.colors.colOnSecondaryContainer
+        visible: !root.artShown
     }
 
     StyledRectangularShadow {
@@ -179,24 +204,13 @@ AbstractBackgroundWidget {
                     }
                 }
 
-                StyledImage {
-                    anchors.fill: parent
-                    source: root.displayedArtFilePath
-                    fillMode: Image.PreserveAspectCrop
-                    cache: false
-                    antialiasing: true
+                ArtImage {
                     sourceSize.width: root.singleWidth * 2
                     sourceSize.height: root.cardHeight * 2
-                    visible: root.displayedArtFilePath !== ""
                 }
 
-                MaterialSymbol {
-                    anchors.centerIn: parent
-                    fill: 1
-                    text: "music_note"
+                ArtPlaceholder {
                     iconSize: root.cardHeight / 3
-                    color: Appearance.colors.colOnSecondaryContainer
-                    visible: root.displayedArtFilePath === ""
                 }
 
                 Rectangle {
@@ -300,24 +314,13 @@ AbstractBackgroundWidget {
                         }
                     }
 
-                    StyledImage {
-                        anchors.fill: parent
-                        source: root.displayedArtFilePath
-                        fillMode: Image.PreserveAspectCrop
-                        cache: false
-                        antialiasing: true
+                    ArtImage {
                         sourceSize.width: artBlock.width * 2
                         sourceSize.height: artBlock.height * 2
-                        visible: root.displayedArtFilePath !== ""
                     }
 
-                    MaterialSymbol {
-                        anchors.centerIn: parent
-                        fill: 1
-                        text: "music_note"
+                    ArtPlaceholder {
                         iconSize: root.cardHeight / 3
-                        color: Appearance.colors.colOnSecondaryContainer
-                        visible: root.displayedArtFilePath === ""
                     }
                 }
 
@@ -337,6 +340,7 @@ AbstractBackgroundWidget {
                         StyledText {
                             Layout.fillWidth: true
                             text: root.currentPlayer?.trackArtist ?? "Play"
+                            textFormat: Text.PlainText
                             font.pixelSize: Appearance.font.pixelSize.small
                             font.weight: Font.DemiBold
                             color: Appearance.colors.colOnPrimaryContainer
@@ -345,6 +349,7 @@ AbstractBackgroundWidget {
                         StyledText {
                             Layout.fillWidth: true
                             text: root.currentPlayer?.trackTitle ?? Translation.tr("Something")
+                            textFormat: Text.PlainText
                             font.pixelSize: Appearance.font.pixelSize.smaller
                             color: Appearance.colors.colOnPrimaryContainer
                             opacity: 0.6
@@ -444,24 +449,13 @@ AbstractBackgroundWidget {
                         }
                     }
 
-                    StyledImage {
-                        anchors.fill: parent
-                        source: root.displayedArtFilePath
-                        fillMode: Image.PreserveAspectCrop
-                        cache: false
-                        antialiasing: true
+                    ArtImage {
                         sourceSize.width: bigArt.width * 2
                         sourceSize.height: bigArt.height * 2
-                        visible: root.displayedArtFilePath !== ""
                     }
 
-                    MaterialSymbol {
-                        anchors.centerIn: parent
-                        fill: 1
-                        text: "music_note"
+                    ArtPlaceholder {
                         iconSize: root.cardHeight / 2.5
-                        color: Appearance.colors.colOnSecondaryContainer
-                        visible: root.displayedArtFilePath === ""
                     }
                 }
 
@@ -476,6 +470,7 @@ AbstractBackgroundWidget {
                     StyledText {
                         Layout.fillWidth: true
                         text: root.currentPlayer?.trackArtist ?? "Play"
+                        textFormat: Text.PlainText
                         font.pixelSize: Appearance.font.pixelSize.normal
                         font.weight: Font.DemiBold
                         color: Appearance.colors.colOnPrimaryContainer
@@ -484,6 +479,7 @@ AbstractBackgroundWidget {
                     StyledText {
                         Layout.fillWidth: true
                         text: root.currentPlayer?.trackTitle ?? Translation.tr("Something")
+                        textFormat: Text.PlainText
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: Appearance.colors.colOnPrimaryContainer
                         opacity: 0.65
@@ -589,24 +585,13 @@ AbstractBackgroundWidget {
                             }
                         }
 
-                        StyledImage {
-                            anchors.fill: parent
-                            source: root.displayedArtFilePath
-                            fillMode: Image.PreserveAspectCrop
-                            cache: false
-                            antialiasing: true
+                        ArtImage {
                             sourceSize.width: artRect.width * 2
                             sourceSize.height: artRect.height * 2
-                            visible: root.displayedArtFilePath !== ""
                         }
 
-                        MaterialSymbol {
-                            anchors.centerIn: parent
-                            fill: 1
-                            text: "music_note"
+                        ArtPlaceholder {
                             iconSize: root.cardHeight / 3
-                            color: Appearance.colors.colOnSecondaryContainer
-                            visible: root.displayedArtFilePath === ""
                         }
                     }
 
@@ -630,6 +615,7 @@ AbstractBackgroundWidget {
                             StyledText {
                                 Layout.fillWidth: true
                                 text: root.currentPlayer?.trackArtist ?? "Play"
+                                textFormat: Text.PlainText
                                 font.pixelSize: Appearance.font.pixelSize.normal
                                 font.weight: Font.DemiBold
                                 color: Appearance.colors.colOnPrimaryContainer
@@ -639,6 +625,7 @@ AbstractBackgroundWidget {
                             StyledText {
                                 Layout.fillWidth: true
                                 text: root.currentPlayer?.trackTitle ?? Translation.tr("Something")
+                                textFormat: Text.PlainText
                                 font.pixelSize: Appearance.font.pixelSize.small
                                 color: Appearance.colors.colOnPrimaryContainer
                                 opacity: 0.65
@@ -806,24 +793,14 @@ AbstractBackgroundWidget {
                                 }
                             }
 
-                            StyledImage {
-                                anchors.fill: parent
-                                source: root.displayedArtFilePath
-                                fillMode: Image.PreserveAspectCrop
-                                cache: false
-                                antialiasing: true
+                            ArtImage {
                                 sourceSize.width: labelArt.width * 2
                                 sourceSize.height: labelArt.height * 2
-                                visible: root.displayedArtFilePath !== ""
                             }
 
-                            MaterialSymbol {
-                                anchors.centerIn: parent
-                                fill: 1
-                                text: "music_note"
+                            ArtPlaceholder {
                                 iconSize: 22
                                 color: Appearance.colors.colOnPrimaryContainer
-                                visible: root.displayedArtFilePath === ""
                             }
                         }
 
@@ -835,6 +812,7 @@ AbstractBackgroundWidget {
                             StyledText {
                                 Layout.fillWidth: true
                                 text: root.currentPlayer?.trackTitle ?? Translation.tr("Something")
+                                textFormat: Text.PlainText
                                 font.pixelSize: Appearance.font.pixelSize.small
                                 font.weight: Font.DemiBold
                                 font.italic: true
@@ -844,6 +822,7 @@ AbstractBackgroundWidget {
                             StyledText {
                                 Layout.fillWidth: true
                                 text: root.currentPlayer?.trackArtist ?? "Play"
+                                textFormat: Text.PlainText
                                 font.pixelSize: Appearance.font.pixelSize.smaller
                                 color: Appearance.colors.colOnPrimaryContainer
                                 opacity: 0.65
@@ -854,6 +833,30 @@ AbstractBackgroundWidget {
                         // Controls
                         RowLayout { 
                             spacing: 2 // There were buttons here but I removed them.
+
+                            // This size is made for lyrics, but they still
+                            // only show once asked for, as in the 1x3 size.
+                            RippleButton {
+                                implicitWidth: root.buttonSize
+                                implicitHeight: root.buttonSize
+                                buttonRadius: Appearance.rounding?.full ?? 999
+                                colBackground: root.showLyrics
+                                    ? Appearance.colors.colPrimary
+                                    : "transparent"
+                                colBackgroundHover: Appearance.colors.colPrimaryContainerHover
+                                colRipple: Appearance.colors.colPrimaryContainerActive
+                                downAction: () => { Config.options.background.widgets.media.showLyrics = !Config.options.background.widgets.media.showLyrics }
+
+                                MaterialSymbol {
+                                    anchors.centerIn: parent
+                                    text: "lyrics"
+                                    iconSize: root.buttonIconSize
+                                    fill: root.showLyrics ? 1 : 0
+                                    color: root.showLyrics
+                                        ? Appearance.colors.colOnPrimary
+                                        : Appearance.colors.colOnPrimaryContainer
+                                }
+                            }
 
                             MaterialShapeWrappedMaterialSymbol {
                                 shape: MaterialShape.Shape.Cookie12Sided
@@ -893,12 +896,23 @@ AbstractBackgroundWidget {
                     Lyrics {
                         anchors.fill: parent
                         anchors.margins: 10
+                        visible: root.showLyrics
                         textAlignment: Text.AlignHCenter
                         textColor: Appearance.colors.colOnPrimaryContainer
                         activeColor: Appearance.colors.colPrimary
                         dimColor: Appearance.colors.colSubtext
                         indicatorColor: Appearance.colors.colPrimary
                         indicatorShapeColor: Appearance.colors.colOnPrimary
+                    }
+
+                    MaterialSymbol {
+                        anchors.centerIn: parent
+                        visible: !root.showLyrics
+                        fill: 1
+                        text: "lyrics"
+                        iconSize: 40
+                        color: Appearance.colors.colOnPrimaryContainer
+                        opacity: 0.35
                     }
                 }
             }

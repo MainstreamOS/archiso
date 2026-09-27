@@ -45,7 +45,24 @@ Item {
                 root.showAudioInputDialog = false;
             }
         }
+        function onSidebarRightWifiRequestedChanged() {
+            root.takeWifiRequest();
+        }
     }
+
+    // Asked for by the bar's network widget. Checked on load too, so the
+    // request holds whether these contents already existed or were made by
+    // the sidebar opening. Clicking the widget means wanting a network, so
+    // Wi-Fi that is off comes on rather than showing an empty list.
+    function takeWifiRequest() {
+        if (!GlobalStates.sidebarRightWifiRequested)
+            return;
+        GlobalStates.sidebarRightWifiRequested = false;
+        if (!Network.wifiEnabled)
+            Network.enableWifi(true);
+        root.showWifiDialog = true;
+    }
+    Component.onCompleted: root.takeWifiRequest()
 
     implicitHeight: sidebarRightBackground.implicitHeight
     implicitWidth: sidebarRightBackground.implicitWidth
@@ -62,7 +79,7 @@ Item {
         color: Appearance.colors.colLayer0
         border.width: 1
         border.color: Appearance.colors.colLayer0Border
-        radius: Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1
+        radius: RoundedCorners.on ? Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1 : 0
 
         ColumnLayout {
             anchors.fill: parent

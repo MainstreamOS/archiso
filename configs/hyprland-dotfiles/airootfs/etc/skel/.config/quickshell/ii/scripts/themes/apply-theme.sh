@@ -80,6 +80,7 @@ BACKUP=""
 STAGED=0
 SUCCESS=0
 CHILD_PID=""
+DECO_STAGED=""
 
 cleanup() {
     if [ "$SUCCESS" != "1" ]; then
@@ -94,6 +95,7 @@ cleanup() {
         write_last_applied "$PREV_APPLIED"
     fi
     [ -n "$BACKUP" ] && [ -f "$BACKUP" ] && rm -f "$BACKUP" 2>/dev/null
+    if [ -n "$DECO_STAGED" ]; then rm -f "$DECO_STAGED" 2>/dev/null || true; fi
     write_apply_state "idle"
 }
 trap cleanup EXIT
@@ -102,11 +104,34 @@ on_signal() {
     trap - TERM INT
     # Cancelled to start a different theme. Bash doesn't pass the signal on to
     # what it is waiting for, so the colour run has to be taken down by hand or
-    # it keeps writing the cancelled theme's palette over the incoming one.
-    [ -n "$CHILD_PID" ] && kill -TERM "$CHILD_PID" 2>/dev/null
+    # it keeps writing the cancelled theme's palette over the incoming one. The
+    # whole group goes, since matugen, its hooks and the stylesheet generator
+    # would otherwise carry on writing after switchwall itself has gone.
+    if [ -n "$CHILD_PID" ]; then
+        kill -TERM -- "-$CHILD_PID" 2>/dev/null || kill -TERM "$CHILD_PID" 2>/dev/null
+    fi
     exit 143
 }
 trap on_signal TERM INT
+
+# Runs switchwall in a session of its own, so everything it starts shares one
+# process group that on_signal can take down together. Backgrounded and waited
+# on, because bash holds trapped signals until a foreground child finishes and
+# a cancellation has to be acted on now. Descriptor 9 carries this run's lock
+# and is closed for the whole colour run: switchwall starts things that outlive
+# it — mpvpaper for a video wallpaper lasts the session — and an inherited lock
+# is never given back.
+run_switchwall() {
+    SW_RC=0
+    if command -v setsid >/dev/null 2>&1; then
+        setsid -w bash "$SWITCHWALL" "$@" 9>&- &
+    else
+        bash "$SWITCHWALL" "$@" 9>&- &
+    fi
+    CHILD_PID=$!
+    wait "$CHILD_PID" || SW_RC=$?
+    CHILD_PID=""
+}
 
 write_apply_state "applying"
 
@@ -121,8 +146,7 @@ write_last_applied "$SLUG"
 WP_FILE=""
 MODE=""
 if [ -f "$THEME_DIR/meta.json" ]; then
-    WP_FILE=$(jq -r '.wallpaperFile // ""' "$THEME_DIR/meta.json" 2>/dev/null || echo "")
-    MODE=$(jq -r '.mode // ""' "$THEME_DIR/meta.json" 2>/dev/null || echo "")
+    { IFS= read -r WP_FILE; IFS= read -r MODE; } < <(jq -r '(.wallpaperFile // "" | tostring | gsub("\n"; " ")), (.mode // "" | tostring)' "$THEME_DIR/meta.json" 2>/dev/null || true) || true
 fi
 WP_ABS=""
 [ -n "$WP_FILE" ] && [ -f "$THEME_DIR/$WP_FILE" ] && WP_ABS="$THEME_DIR/$WP_FILE"
@@ -134,6 +158,21 @@ if [ -f "$SHELL_CONFIG" ]; then
     cp -f "$SHELL_CONFIG" "$BACKUP"
 fi
 
+# The mode the desktop is in before this run, for a rollback to go back to:
+# switchwall flips the colour scheme, the widget theme and the colormode flag
+# before it builds the palette, so by the time it fails they already name the
+# theme that is being given up on.
+PREV_MODE=$(cat "$XDG_CONFIG_HOME/hypr/custom/colormode" 2>/dev/null || true)
+case "$PREV_MODE" in
+    dark|light) ;;
+    *) case "$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" in
+           *prefer-dark*) PREV_MODE=dark ;;
+           *prefer-light*) PREV_MODE=light ;;
+           *) PREV_MODE="" ;;
+       esac ;;
+esac
+COLORS_TOUCHED=0
+
 rollback() {
     local reason="$1"
     dlog "rollback: $reason"
@@ -142,6 +181,16 @@ rollback() {
         mv -f "$BACKUP" "$SHELL_CONFIG"
         BACKUP=""
         dlog "rollback: restored backup over $SHELL_CONFIG"
+    fi
+    # A colour run that failed partway can already have written the new
+    # palette, the GTK and Hyprland colours and the icons, and flipped the
+    # mode. Putting config.json back alone would leave all of that on screen
+    # under the previous theme's name, so the colours are built again from the
+    # config just restored.
+    if [ "$COLORS_TOUCHED" = "1" ]; then
+        COLORS_TOUCHED=0
+        run_switchwall --noswitch ${PREV_MODE:+--mode "$PREV_MODE"}
+        [ "$SW_RC" -eq 0 ] || dlog "rollback: previous colours could not be rebuilt (rc=$SW_RC)"
     fi
     write_last_applied "$PREV_APPLIED"
     exit 5
@@ -165,6 +214,14 @@ PRESERVE_DOCK_PINS=""
 PRESERVE_UPDATES=""
 PRESERVE_WEATHER=""
 PRESERVE_WIDGETS_KNOWN=""
+PRESERVE_NOTIF_POS=""
+PRESERVE_LIVE_BAR=""
+PRESERVE_USER=""
+# This person's own settings (search, AI, lock security, language, battery,
+# pins, time, gestures and the like), listed once for save, apply and sharing.
+# An unreadable list reads as empty so the pass below still runs for the rest.
+USER_PATHS='[]'
+[ -r "$SCRIPT_DIR/user-settings.json" ] && USER_PATHS="$(<"$SCRIPT_DIR/user-settings.json")"
 if [ -f "$SHELL_CONFIG" ]; then
     # What the live config keeps regardless of what a theme carries, read in
     # one pass. Each of these was its own jq, so the file was forked over and
@@ -192,14 +249,24 @@ if [ -f "$SHELL_CONFIG" ]; then
     #   background.widgets        read for its names only: every desktop widget
     #                             this build knows, so the ones a snapshot never
     #                             heard of can be switched off further down.
+    #   notifications.position    the live spot, written in further down when a
+    #                             snapshot names none. Read with `?` so a
+    #                             notifications value that is not an object
+    #                             reads as unset instead of failing the pass.
+    #   bar.bottom, bar.vertical  the live bar's edge, which the Hug dock further
+    #                             down has to face.
+    #   user-settings.json        every path it lists, with its live value or
+    #                             null where the live config has none.
     #
     # One value per line, which is safe because tojson escapes any newline
     # inside a value rather than emitting it. Reading them tab separated would
     # not be: that escapes backslashes too, and apps.* holds shell commands.
     # `// empty` also treats false as absent, so that is matched here.
-    mapfile -t _PRESERVED < <(jq -r '
+    mapfile -t _PRESERVED < <(jq -r --argjson userpaths "$USER_PATHS" '
         [.appearance.themeSchedule, .light.night, .cursor, .bar.seededWidgets,
-         .dock.pinnedApps, .apps, .updates, .bar.weather, .background.widgets]
+         .dock.pinnedApps, .apps, .updates, .bar.weather, .background.widgets,
+         (.notifications.position? // null), {bottom: (.bar.bottom // false), vertical: (.bar.vertical // false)},
+         (. as $cfg | [$userpaths[] | select(type == "array" and length > 0) as $p | {p: $p, v: ($cfg | try getpath($p) catch null)}])]
         | map(if . == null or . == false then "" else tojson end) | .[]' \
         "$SHELL_CONFIG" 2>/dev/null || true)
     PRESERVE_THEME_SCHED="${_PRESERVED[0]:-}"
@@ -211,9 +278,18 @@ if [ -f "$SHELL_CONFIG" ]; then
     PRESERVE_UPDATES="${_PRESERVED[6]:-}"
     PRESERVE_WEATHER="${_PRESERVED[7]:-}"
     PRESERVE_WIDGETS_KNOWN="${_PRESERVED[8]:-}"
+    PRESERVE_NOTIF_POS="${_PRESERVED[9]:-}"
+    PRESERVE_LIVE_BAR="${_PRESERVED[10]:-}"
+    PRESERVE_USER="${_PRESERVED[11]:-}"
 fi
 JQ_FILTER='.'
 JQ_ARGS=()
+# What the snapshot says about itself, asked in one pass rather than a jq each.
+THEME_HAS_SLIDESHOW=""; THEME_HAS_FOLDER=""; THEME_HAS_DOCK_POS=""
+{ IFS= read -r THEME_HAS_SLIDESHOW; IFS= read -r THEME_HAS_FOLDER; IFS= read -r THEME_HAS_DOCK_POS; } < <(jq -r '
+    ((.background.slideshow // false) != false),
+    ((try (.background.slideshow | has("folder")) catch false) == true),
+    ((try (.dock | has("position")) catch false) == true)' "$THEME_DIR/config.json" 2>/dev/null || true) || true
 [ -n "$WP_ABS" ]                  && { JQ_FILTER+=' | .background.wallpaperPath = $p';            JQ_ARGS+=(--arg p "$WP_ABS"); }
 # The wallpaper slideshow belongs to whichever theme is on, so a theme saved
 # with a single wallpaper has to stop one the previous theme started. A key
@@ -221,12 +297,12 @@ JQ_ARGS=()
 # adapter keeps the value it already has when a key disappears from the file —
 # so say it outright. Themes saved before the slideshow existed land here too,
 # which is what makes them turn it off rather than inherit it.
-jq -e '.background.slideshow' "$THEME_DIR/config.json" >/dev/null 2>&1 \
+[ "$THEME_HAS_SLIDESHOW" = true ] \
     || JQ_FILTER+=' | .background.slideshow.enable = false'
 # An imported theme has had the folder stripped out of it, since it named a
 # directory in someone else's home. Empty rather than missing, so it resolves
 # to the local wallpaper directory instead of whatever this machine last used.
-jq -e '.background.slideshow | has("folder")' "$THEME_DIR/config.json" >/dev/null 2>&1 \
+[ "$THEME_HAS_FOLDER" = true ] \
     || JQ_FILTER+=' | .background.slideshow.folder = ""'
 # How see-through the bar is and what color its pills take belong to the theme,
 # so a snapshot naming none of it means stock rather than whatever the last theme
@@ -242,16 +318,61 @@ jq -e '.background.slideshow | has("folder")' "$THEME_DIR/config.json" >/dev/nul
 # it keeps the buttons at its ends belong to the look as much as its colors do,
 # so they ride along with the rest of its dress. A theme that names none of them
 # was saved wearing stock and reads as stock, the same as one naming no color.
+# The roundness each dock style remembers goes with them, or switching styles
+# after an older theme would bring back what the theme before it remembered.
 JQ_FILTER+=' | .bar = ({backgroundOpacity: -1, widgetOpacity: -1, widgetRadius: -1, floatRadius: -1, floatWidth: -1, notchWidth: -1, floatSplit: false, widgetColorDark: "", widgetColorLight: "", backgroundColorDark: "", backgroundColorLight: "", floatStyleShadow: true} + (.bar // {}))'
-JQ_FILTER+=' | .dock = ({showBackground: true, backgroundOpacity: -1, backgroundColorDark: "", backgroundColorLight: "", badgeColorDark: "", badgeColorLight: "", badgeTextColorDark: "", badgeTextColorLight: "", radius: -1, cornerStyle: "float", topRadius: -1, iconSize: -1, indicatorStyle: "dashes", hoverEffect: "magnify", hoverMagnify: -1, glowMagnify: -1, glowColorDark: "", glowColorLight: "", glowIntensity: -1, showOverviewButton: true, showPinButton: true} + (.dock // {}))'
+# Magnify's stock strength came down from 135 to 100 percent in 3.0.0, so a
+# theme saved before then with the stock strength (-1) was wearing 135. So was
+# one naming no effect at all, saved when Magnify was the only one. Such a
+# snapshot is known by what it lacks: every config.json written since names
+# appearance.roundCornersRestore, which the filler further down adds.
+JQ_FILTER+=' | if ((.appearance | type) == "object" and (.appearance | has("roundCornersRestore"))) then .
+    elif ((.dock == null or (.dock | type) == "object")
+          and ((.dock.hoverEffect // "magnify") == "magnify")
+          and ((.dock.hoverMagnify // -1) | type == "number" and . < 0))
+    then .dock.hoverEffect = "magnify" | .dock.hoverMagnify = 135
+    else . end'
+JQ_FILTER+=' | .dock = ({showBackground: true, radiusFloat: -2, radiusNotch: -2, topRadiusRect: -2, topRadiusNotch: -2, backgroundOpacity: -1, backgroundColorDark: "", backgroundColorLight: "", badgeColorDark: "", badgeColorLight: "", badgeTextColorDark: "", badgeTextColorLight: "", radius: -1, cornerStyle: "float", topRadius: -1, iconSize: -1, indicatorStyle: "dashes", hoverEffect: "glow", hoverMagnify: -1, glowMagnify: -1, glowColorDark: "", glowColorLight: "", glowIntensity: -1, showOverviewButton: true, showPinButton: true} + (.dock // {}))'
+# Whether the content on the bar, the dock and the launcher answers to what it
+# sits on goes with the colors that decide it, and a theme saved before the
+# switch existed was saved with it on.
+JQ_FILTER+=' | .appearance = ({autoIconContrast: true} + (.appearance // {}))'
+# What Rounded Corners turns back on to goes with the squared look it was saved
+# beside. A theme saved before that memory existed remembers nothing, and an
+# absent key would leave the adapter holding the live memory from before, as
+# would a value it cannot read, so only whole numbers are kept.
+JQ_FILTER+=' | .appearance.roundCornersRestore = ({barCornerStyle: -1, fakeScreenRounding: -1, windowRounding: -1} + (.appearance.roundCornersRestore | if type == "object" then with_entries(select(.value | type == "number" and . == floor)) else {} end))'
 # Which edge the dock sits on belongs to the theme, but only when the theme has
 # an opinion. A snapshot taken before the setting existed names no edge, and an
 # absent key is the worst of both: the adapter keeps showing the dock where it
 # is while the file says nothing, so the next start moves it somewhere the user
 # never chose. Write the live edge in instead, so the screen and the file agree.
-if ! jq -e '.dock | has("position")' "$THEME_DIR/config.json" >/dev/null 2>&1; then
+if [ "$THEME_HAS_DOCK_POS" != true ]; then
     PRESERVE_DOCK_POS=$(jq -c '.dock.position // empty' "$SHELL_CONFIG" 2>/dev/null || true)
     [ -n "$PRESERVE_DOCK_POS" ] && { JQ_FILTER+=' | .dock.position = $dockpos'; JQ_ARGS+=(--argjson dockpos "$PRESERVE_DOCK_POS"); }
+fi
+# Where notifications appear belongs to the theme when it names a spot. A
+# snapshot from before the setting existed names none, and the adapter would
+# keep the live spot while the file lost it, so the next start would move
+# them. Write the live spot in so the screen and the file agree.
+[ -n "$PRESERVE_NOTIF_POS" ] && { JQ_FILTER+=' | if ((.notifications // {}) | has("position")) then . else .notifications.position = $notifpos end'; JQ_ARGS+=(--argjson notifpos "$PRESERVE_NOTIF_POS"); }
+# The Hug dock (span) runs the whole length of its edge, so it only sits on the
+# one facing the bar, and the shell holds it there whatever the file says. The
+# edge above may have come from the live config rather than the theme, so it is
+# brought into line here, where the file and the screen can still agree. A bar
+# key the snapshot lacks keeps its live value, since the adapter keeps a key the
+# file stops naming, so the live one is what the dock has to face. While the
+# shell has its bar put away any edge will do, as it does for the pickers, and
+# the theme's own edge stands.
+if [ "$(cat "$XDG_RUNTIME_DIR/quickshell-bar.state" 2>/dev/null)" != "hidden" ]; then
+    LIVE_BAR="${PRESERVE_LIVE_BAR:-}"
+    [ -n "$LIVE_BAR" ] || LIVE_BAR='{"bottom": false, "vertical": false}'
+    JQ_FILTER+=' | if .dock.cornerStyle == "span" then
+        ((if (.bar | has("bottom")) then .bar.bottom else $livebar.bottom end) == true) as $b
+        | ((if (.bar | has("vertical")) then .bar.vertical else $livebar.vertical end) == true) as $v
+        | .dock.position = (if $v then (if $b then "left" else "right" end) else (if $b then "top" else "bottom" end) end)
+      else . end'
+    JQ_ARGS+=(--argjson livebar "$LIVE_BAR")
 fi
 # Which desktop widgets are on, and where each sits, is part of the look, and a
 # snapshot taken before a widget existed says nothing about it. Silence would
@@ -281,13 +402,26 @@ else                                JQ_FILTER+=' | del(.updates)'; fi
 # at all, so an inherited copy would answer it on this machine's behalf.
 if [ -n "$PRESERVE_WEATHER" ]; then JQ_FILTER+=' | .bar.weather = $weather'; JQ_ARGS+=(--argjson weather "$PRESERVE_WEATHER");
 else                                JQ_FILTER+=' | del(.bar.weather)'; fi
+# This person's own settings are whatever they are now, never what a theme
+# carries: a theme saved before they changed, or one from someone else, would
+# otherwise quietly set them back or hand over the other machine's. One the
+# live config lacks is dropped, the same as apps and updates.
+[ -n "$PRESERVE_USER" ] && { JQ_FILTER+=' | reduce $user[] as $u (.; if $u.v == null then delpaths([$u.p]) else setpath($u.p; $u.v) end)'; JQ_ARGS+=(--argjson user "$PRESERVE_USER"); }
 if [ "$JQ_FILTER" = '.' ]; then
     cp -f "$THEME_DIR/config.json" "$TMP" || { rm -f "$TMP"; rollback "failed to copy config.json"; }
 else
     jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$THEME_DIR/config.json" > "$TMP" \
         || { rm -f "$TMP"; rollback "failed to stage config.json"; }
 fi
+# Swapped in under the lock switchwall's own edits of config.json take, so an
+# edit that read the previous file cannot land on top of this one. Let go
+# straight away, since switchwall takes it again below.
+CONFIG_WRITE_LOCK="$XDG_RUNTIME_DIR/quickshell-config-write.${UID:-0}.lock"
+if command -v flock >/dev/null 2>&1 && { exec 6>"$CONFIG_WRITE_LOCK"; } 2>/dev/null; then
+    flock -w 5 6 2>/dev/null || true
+fi
 mv -f "$TMP" "$SHELL_CONFIG"
+exec 6>&-
 STAGED=1
 
 # switchwall gives up with a success code when there is no image to read, and
@@ -303,16 +437,8 @@ EFFECTIVE_WP=$(jq -r '.background.wallpaperPath // ""' "$SHELL_CONFIG" 2>/dev/nu
 SWITCHWALL_ARGS=(--noswitch --config-staged)
 [ -n "$MODE" ] && SWITCHWALL_ARGS+=(--mode "$MODE")
 if [ -x "$SWITCHWALL" ] || [ -f "$SWITCHWALL" ]; then
-    # Backgrounded and waited on, because bash holds trapped signals until a
-    # foreground child finishes and a cancellation has to be acted on now.
-    # Descriptor 9 carries this run's lock and is closed for the whole colour
-    # run: switchwall starts things that outlive it — mpvpaper for a video
-    # wallpaper lasts the session — and an inherited lock is never given back.
-    SW_RC=0
-    bash "$SWITCHWALL" "${SWITCHWALL_ARGS[@]}" 9>&- &
-    CHILD_PID=$!
-    wait "$CHILD_PID" || SW_RC=$?
-    CHILD_PID=""
+    COLORS_TOUCHED=1
+    run_switchwall "${SWITCHWALL_ARGS[@]}"
     [ "$SW_RC" -eq 0 ] || rollback "switchwall.sh exited non-zero (rc=$SW_RC)"
 else
     rollback "switchwall.sh not found at $SWITCHWALL"
@@ -342,6 +468,26 @@ DECORATIONS_PY="$SCRIPT_DIR/decorations.py"
 # not how the stock set updates.
 ANIM_SRC="$THEME_DIR/animations"
 ANIM_DST="$XDG_CONFIG_HOME/hypr/hyprland/animations"
+# The steps from here to the reload each touch something of their own — the
+# decorations, the interface settings, the fonts and the window rules — and none
+# reads what another writes, so they run side by side and are waited on
+# together before the reload. Each keeps the apply lock on descriptor 9 until it
+# is done, so the next apply still waits for all of them.
+DECO_SRC=""
+if [ -f "$DECO_JSON" ] && [ -f "$DECORATIONS_PY" ]; then
+    DECO_SRC="$DECO_JSON"
+    if jq -e '(has("titleBarColorLight") | not) and ((.titleBarColor // "") | type == "string" and test("^#?[0-9A-Fa-f]{6}$"))' \
+            "$DECO_JSON" >/dev/null 2>&1; then
+        DECO_STAGED=$(mktemp --tmpdir="$XDG_RUNTIME_DIR" decorations.XXXXXX.json 2>/dev/null) || DECO_STAGED=""
+        if [ -n "$DECO_STAGED" ] \
+           && jq '.titleBarColorLight = .titleBarColor
+                  | if has("titleBarOpacityLight") then . else .titleBarOpacityLight = (.titleBarOpacity // 0.5333) end' \
+                  "$DECO_JSON" > "$DECO_STAGED" 2>/dev/null; then
+            DECO_SRC="$DECO_STAGED"
+        fi
+    fi
+fi
+(
 if [ -d "$ANIM_SRC" ] && [ -f "$DECORATIONS_PY" ]; then
     SHIPPED=$(python3 "$DECORATIONS_PY" shipped "$GENERAL_CONF" 2>/dev/null | tr '\n' ' ')
     mkdir -p "$ANIM_DST"
@@ -357,36 +503,55 @@ fi
 # restore rather than write: keys the snapshot doesn't name go to their stock
 # values, because they didn't exist as settings when the theme was saved —
 # leaving them alone kept the previous theme's look bleeding into this one.
+# The corner curve is the exception (restoreFill in the schema): a snapshot
+# without it keeps the live curve, which the Hug style may have set.
 # --push hands the same completed set to the compositor from inside the one
 # interpreter, so the change shows before the reload at the end gets there.
-if [ -f "$DECO_JSON" ] && [ -f "$DECORATIONS_PY" ]; then
-    python3 "$DECORATIONS_PY" restore "$GENERAL_CONF" "$DECO_JSON" \
+#
+# A snapshot from before Title Bars kept a set for each mode had one color and
+# opacity for both, so a color it picked goes on the light bar too instead of
+# the stock light one. Without a color it is left to stock: the settings page
+# of that time saved the stock opacity beside every color change, so an
+# opacity alone was rarely a choice. The copy is staged outside the theme
+# folder, which stays as it was saved (above, so cleanup still removes it).
+if [ -n "$DECO_SRC" ]; then
+    python3 "$DECORATIONS_PY" restore "$GENERAL_CONF" "$DECO_SRC" \
         --flag-dir "$(dirname "$CUSTOM_CONF")" --push >/dev/null 2>&1 \
         || dlog "decoration restore failed"
 fi
+) &
 
 # ── 5b. Restore interface look (gsettings) if the theme snapshotted it ──────
 # Themes saved before this feature have no interface.json → live gsettings are
 # left alone. Applied AFTER switchwall so the saved App style / Icons / Mouse
 # cursor / cursor size win over matugen's icon-theme recolor.
 IFACE_JSON="$THEME_DIR/interface.json"
-if [ -f "$IFACE_JSON" ] && command -v gsettings >/dev/null 2>&1; then
-    GTK_THEME=$(jq -r '.gtkTheme // empty' "$IFACE_JSON" 2>/dev/null || true)
-    ICON_THEME=$(jq -r '.iconTheme // empty' "$IFACE_JSON" 2>/dev/null || true)
-    CURSOR_THEME=$(jq -r '.cursorTheme // empty' "$IFACE_JSON" 2>/dev/null || true)
-    CURSOR_SIZE=$(jq -r '.cursorSize // empty' "$IFACE_JSON" 2>/dev/null || true)
-    [ -n "$GTK_THEME" ]    && gsettings set org.gnome.desktop.interface gtk-theme    "$GTK_THEME"    2>/dev/null || true
-    [ -n "$ICON_THEME" ]   && gsettings set org.gnome.desktop.interface icon-theme   "$ICON_THEME"   2>/dev/null || true
-    [ -n "$CURSOR_THEME" ] && gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_THEME" 2>/dev/null || true
-    [ -n "$CURSOR_SIZE" ]  && gsettings set org.gnome.desktop.interface cursor-size  "$CURSOR_SIZE"  2>/dev/null || true
+if [ -f "$IFACE_JSON" ] && command -v gsettings >/dev/null 2>&1; then (
+    GTK_THEME=""; ICON_THEME=""; CURSOR_THEME=""; CURSOR_SIZE=""
+    { IFS= read -r GTK_THEME; IFS= read -r ICON_THEME; IFS= read -r CURSOR_THEME; IFS= read -r CURSOR_SIZE; } < <(jq -r '
+        (.gtkTheme, .iconTheme, .cursorTheme, .cursorSize)
+        | if . == null or . == false then "" else tostring | gsub("\n"; " ") end' "$IFACE_JSON" 2>/dev/null || true) || true
+    # Only what differs is written: every write reaches dconf and each app
+    # watching it, the same value included.
+    IFACE_NOW=$(gsettings list-recursively org.gnome.desktop.interface 2>/dev/null || true)
+    iface_set() {
+        local shown="'$2'"
+        [ "${3:-}" = raw ] && shown="$2"
+        case $'\n'"$IFACE_NOW"$'\n' in *$'\n'"org.gnome.desktop.interface $1 $shown"$'\n'*) return 0 ;; esac
+        gsettings set org.gnome.desktop.interface "$1" "$2" 2>/dev/null || true
+    }
+    [ -n "$GTK_THEME" ]    && iface_set gtk-theme    "$GTK_THEME"
+    [ -n "$ICON_THEME" ]   && iface_set icon-theme   "$ICON_THEME"
+    [ -n "$CURSOR_THEME" ] && iface_set cursor-theme "$CURSOR_THEME"
+    [ -n "$CURSOR_SIZE" ]  && iface_set cursor-size  "$CURSOR_SIZE" raw
     # gsettings alone doesn't repaint the Hyprland cursor — push it live.
     [ -n "$CURSOR_THEME" ] && [ -n "$CURSOR_SIZE" ] && command -v hyprctl >/dev/null 2>&1 \
         && hyprctl setcursor "$CURSOR_THEME" "$CURSOR_SIZE" >/dev/null 2>&1 || true
-fi
+) & fi
 
 # ── 5c. Mirror the theme's shell fonts into the GTK/Qt interface fonts ──────
 # Reads the just-restored config.json; no-op if apply-gtk-font.sh is absent.
-[ -x "$SCRIPT_DIR/apply-gtk-font.sh" ] && bash "$SCRIPT_DIR/apply-gtk-font.sh" 2>/dev/null || true
+[ -x "$SCRIPT_DIR/apply-gtk-font.sh" ] && { bash "$SCRIPT_DIR/apply-gtk-font.sh" 2>/dev/null & }
 
 # ── 5d. Restore window rules if the theme snapshotted them ──────────────────
 # Same contract as decorations: a theme saved before rules existed has no
@@ -398,11 +563,12 @@ fi
 WR_JSON="$THEME_DIR/windowrules.json"
 WINDOWRULES_PY="$XDG_CONFIG_HOME/quickshell/ii/scripts/hyprland/windowrules.py"
 if [ -f "$WR_JSON" ] && [ -f "$WINDOWRULES_PY" ]; then
-    python3 "$WINDOWRULES_PY" write \
+    { python3 "$WINDOWRULES_PY" write \
         "$XDG_CONFIG_HOME/hypr/hyprland/userrules.json" \
         "$XDG_CONFIG_HOME/hypr/hyprland/userrules.lua" --no-reload \
-        < "$WR_JSON" >/dev/null 2>&1 || dlog "window rules restore failed"
+        < "$WR_JSON" >/dev/null 2>&1 || dlog "window rules restore failed"; } &
 fi
+wait
 
 # ── 6. Re-assert last-applied (recorded up front; see write_last_applied) ──
 write_last_applied "$SLUG"

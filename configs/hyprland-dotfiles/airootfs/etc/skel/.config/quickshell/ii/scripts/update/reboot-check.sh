@@ -5,7 +5,9 @@
 #                                       loaded, one per line
 #   reboot-check.sh predict             pending updates, from checkupdates when
 #                                       it is installed, else the last sync
-#   reboot-check.sh plan < names        package names on stdin, one per line
+#   reboot-check.sh plan [F] < names    package names on stdin, one per line,
+#                                       judged against the session list in F
+#                                       when it holds one
 #   reboot-check.sh verdict SINCE [F]   what pacman.log says was installed since
 #                                       SINCE (its own timestamp format), judged
 #                                       against the session list in F
@@ -66,8 +68,11 @@ session_packages() {
 # Whether anything the session loaded has already been replaced on disk. The
 # packages behind it usually cannot be named any more, so this answers yes or
 # no and leaves the naming to the caller's own list.
+# Only code counts. The session also maps icon caches, compiled schemas and
+# fonts under /usr/share, which most updates regenerate, and a stale copy of
+# those cannot break a reload the way a replaced library can.
 session_has_replaced() {
-    _session_maps | grep -q '^gone '
+    _session_maps | grep -qE '^gone /usr/(lib|lib64|bin)/'
 }
 
 # names on stdin -> the ones that matter, on stdout. $1 is a file holding the
@@ -124,7 +129,8 @@ case "$mode" in
         fi
         ;;
     plan)
-        judge | emit
+        # The list the caller took before anything changed, when it holds one.
+        if [[ -s "${1:-}" ]]; then judge "$1"; else judge; fi | emit
         ;;
     verdict)
         since="${1:-}"; session_file="${2:-}"
@@ -142,7 +148,7 @@ case "$mode" in
         } | emit
         ;;
     *)
-        echo "usage: reboot-check.sh session | predict | plan < names | verdict SINCE [session-file]" >&2
+        echo "usage: reboot-check.sh session | predict | plan [session-file] < names | verdict SINCE [session-file]" >&2
         exit 2
         ;;
 esac

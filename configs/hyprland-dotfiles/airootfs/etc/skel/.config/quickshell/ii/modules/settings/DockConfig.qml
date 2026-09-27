@@ -3,49 +3,20 @@ import QtQuick.Layouts
 import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
+import qs.modules.settings.services
 
 ContentPage {
     id: root
     forceWidth: true
-
-    // Float rounds all four corners alike and Rect only shapes the pair facing
-    // the desktop, so each style is asked for a different pair and only those
-    // are carried out and back in.
-    function stashRoundness(style) {
-        const dock = Config.options.dock;
-        if (style === "float")
-            dock.radiusFloat = dock.radius;
-        else if (style === "rect")
-            dock.topRadiusRect = dock.topRadius;
-        else {
-            dock.radiusNotch = dock.radius;
-            dock.topRadiusNotch = dock.topRadius;
-        }
-    }
-
-    function restoreRoundness(style) {
-        const dock = Config.options.dock;
-        if (style === "float") {
-            if (dock.radiusFloat >= -1)
-                dock.radius = dock.radiusFloat;
-        } else if (style === "rect") {
-            if (dock.topRadiusRect >= -1)
-                dock.topRadius = dock.topRadiusRect;
-        } else {
-            if (dock.radiusNotch >= -1)
-                dock.radius = dock.radiusNotch;
-            if (dock.topRadiusNotch >= -1)
-                dock.topRadius = dock.topRadiusNotch;
-        }
-    }
 
     ContentSection {
         icon: "call_to_action"
         title: Translation.tr("Behavior")
 
         // Same row form as the hot corner's Trigger overview: icon, label,
-        // dropdown on the right. The bar's own edge is not offered; a saved
-        // edge the bar later takes renders flipped to the opposite side.
+        // dropdown on the right. A saved edge the bar later takes renders
+        // flipped to the opposite side. The Hug dock is only offered the edge
+        // facing the bar, the one edge it can run the length of.
         ConfigRow {
             Layout.leftMargin: 8
             Layout.rightMargin: 8
@@ -70,7 +41,7 @@ ContentPage {
                     { displayName: Translation.tr("Bottom"), icon: "keyboard_arrow_down", value: "bottom" },
                     { displayName: Translation.tr("Left"), icon: "keyboard_arrow_left", value: "left" },
                     { displayName: Translation.tr("Right"), icon: "keyboard_arrow_right", value: "right" }
-                ]
+                ].filter(item => item.value === "disabled" || Appearance.sizes.dockEdgeAllowed(item.value))
                 currentIndex: {
                     // Name the edge the dock actually occupies, not the saved
                     // one: the resolver already flips an edge the bar holds and
@@ -85,22 +56,7 @@ ContentPage {
                         Config.options.dock.enable = false;
                         return;
                     }
-                    if (value === Appearance.sizes.barEdge) {
-                        // The bar's own edge is on offer like any other, and
-                        // asking for it sends the bar across to the far side of
-                        // its axis rather than refusing. The bar moves first, so
-                        // the two are never both claiming this edge and the dock
-                        // is not briefly flipped away from what was just asked.
-                        Config.options.bar.bottom = !Config.options.bar.bottom;
-                        Config.options.dock.position = value;
-                    } else if (!Config.options.dock.enable || value !== Appearance.sizes.dockEdge) {
-                        // Re-picking the edge already shown is a no-op, and
-                        // writing it would overwrite a saved edge the bar is
-                        // only borrowing — the dock would stay put once the bar
-                        // moved away.
-                        Config.options.dock.position = value;
-                    }
-                    Config.options.dock.enable = true;
+                    Appearance.sizes.placeDock(value);
                 }
             }
         }
@@ -335,31 +291,12 @@ ContentPage {
 
         ContentSubsection {
             title: Translation.tr("Corner style")
-            ConfigSelectionArray {
-                currentValue: Config.options.dock.cornerStyle
-                onSelected: newValue => {
-                    const previous = Config.options.dock.cornerStyle;
-                    if (previous === newValue)
-                        return;
-                    root.stashRoundness(previous);
-                    Config.options.dock.cornerStyle = newValue;
-                    root.restoreRoundness(newValue);
-                }
-                // Last, and named the same as the bar's, because it is the same
-                // shape: set down on the edge with a curve leaving each end.
-                // The stored value stays "hug" so a config or a theme written
-                // before the rename still selects it.
-                options: [
-                    { displayName: Translation.tr("Float"), icon: "page_header", value: "float" },
-                    { displayName: Translation.tr("Rect"), icon: "toolbar", value: "rect" },
-                    { displayName: Translation.tr("Notch"), icon: "call_to_action", value: "hug" }
-                ]
-            }
+            DockStyleChoices {}
         }
 
         ConfigSlider {
             text: Translation.tr("Icon size")
-            stopIndicatorValues: [Appearance.sizes.dockIconStock]
+            stopIndicatorValues: [Appearance.sizes.dockIconDefault]
             buttonIcon: "apps"
             from: 16
             to: 64
@@ -377,7 +314,7 @@ ContentPage {
 
         ConfigSlider {
             text: Translation.tr("Top roundness")
-            visible: Config.options.dock.cornerStyle !== "float"
+            visible: Config.options.dock.cornerStyle !== "float" && Config.options.dock.cornerStyle !== "span"
             stopIndicatorValues: [Appearance.rounding.dockTopStock]
             buttonIcon: "border_top"
             from: 0
@@ -400,7 +337,7 @@ ContentPage {
 
         ConfigSlider {
             text: Translation.tr("Corner roundness")
-            visible: Config.options.dock.cornerStyle !== "rect"
+            visible: Config.options.dock.cornerStyle !== "rect" && Config.options.dock.cornerStyle !== "span"
             stopIndicatorValues: [Appearance.rounding.dockCornerStock]
             buttonIcon: "rounded_corner"
             from: 0
@@ -418,10 +355,12 @@ ContentPage {
 
 
 
+        // Hug shows neither roundness, so what those two hold belongs to
+        // the style it was last left for and is no reason to offer a reset.
         ConfigResetButton {
             visible: Config.options.dock.iconSize >= 0
-                || Config.options.dock.radius >= 0
-                || Config.options.dock.topRadius >= 0
+                || (Config.options.dock.cornerStyle !== "span"
+                    && (Config.options.dock.radius >= 0 || Config.options.dock.topRadius >= 0))
             Layout.leftMargin: 8
             Layout.topMargin: 2
             buttonText: Translation.tr("Reset to default shape")

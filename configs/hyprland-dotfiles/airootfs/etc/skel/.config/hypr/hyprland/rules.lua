@@ -2,6 +2,9 @@
 
 -- Disable blur for xwayland context menus
 hl.window_rule({match = {class = "^()$", title = "^()$" },                   no_blur = true })
+-- Menus and dropdowns of X11 apps such as Steam are windows of their own with
+-- no title, drawn square to the edge; window rounding would clip their corners.
+hl.window_rule({match = {xwayland = true, title = "^()$" },                  rounding = 0 })
 
 -- Floating
 hl.window_rule({match = {title = "^(Open File)(.*)$" },                      center = true})
@@ -117,8 +120,12 @@ local function reachableRoom(monitor)
     local width = monitor.width / scale
     local height = monitor.height / scale
 
-    local border = tonumber(hl.get_config("general:border_size")) or 0
-    local titleBar = tonumber(hl.get_config("plugin:hyprbars:bar_height")) or 0
+    -- An option that does not exist, such as the title bar's while its plugin
+    -- is not loaded, comes back as nil and an error message. Passed on whole,
+    -- tonumber would take that message as its base and throw, so only the
+    -- value is kept.
+    local border = tonumber((hl.get_config("general:border_size"))) or 0
+    local titleBar = tonumber((hl.get_config("plugin:hyprbars:bar_height"))) or 0
     local gapsOut = hl.get_config("general:gaps_out") or {}
     local left = monitor.x + (reserved.left or 0) + (gapsOut.left or 0) + border
     local top = monitor.y + (reserved.top or 0) + (gapsOut.top or 0) + border + titleBar
@@ -293,9 +300,12 @@ hl.layer_rule({ match = { namespace = "quickshell:dockRight" }, animation = "sli
 -- Arrangement order the shell itself depends on, so it belongs here and not in
 -- custom/, which an existing install keeps its own copy of. A higher order is
 -- handled first and so reserves its edge first: either bar outranks a pinned
--- dock sharing its layer, leaving the dock to be the one shortened.
+-- dock sharing its layer, leaving the dock to be the one shortened. A pinned
+-- left sidebar comes after everything else, so it only pushes windows and fits
+-- between the bar and the dock instead of shortening either of them.
 hl.layer_rule({ match = { namespace = "quickshell:bar" }, order = 10 })
 hl.layer_rule({ match = { namespace = "quickshell:verticalBar" }, order = 10 })
+hl.layer_rule({ match = { namespace = "quickshell:sidebarLeft" }, order = -1 })
 hl.layer_rule({ match = { namespace = "quickshell:screenCorners" }, animation = "popin 120%"})
 hl.layer_rule({ match = { namespace = "quickshell:lockWindowPusher" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:notificationPopup" }, animation = "fade"})
@@ -322,13 +332,7 @@ hl.layer_rule({ match = { namespace = "quickshell:sidebarRight" }, animation = "
 hl.layer_rule({ match = { namespace = "quickshell:sidebarLeft" }, animation = "slide"})
 hl.layer_rule({ match = { namespace = "quickshell:verticalBar" }, animation = "slide"})
 hl.layer_rule({ match = { namespace = "quickshell:osk" }, order = -1})
--- Quickshell: waffles
 hl.layer_rule({ match = { namespace = "quickshell:wallpaperSelector" }, animation = "slide top"})
-hl.layer_rule({ match = { namespace = "quickshell:wNotificationCenter" }, no_anim = true})
-hl.layer_rule({ match = { namespace = "quickshell:wOnScreenDisplay" }, no_anim = true})
-hl.layer_rule({ match = { namespace = "quickshell:wStartMenu" }, no_anim = true})
-hl.layer_rule({ match = { namespace = "quickshell:wTaskView" }, ignore_alpha = 0})
-hl.layer_rule({ match = { namespace = "quickshell:wTaskView" }, no_anim = true})
 
 -- Launchers need to be FAST
 hl.layer_rule({ match = { namespace = "gtk4-layer-shell" }, no_anim = true})

@@ -62,6 +62,13 @@ Item {
     property bool _contextIsFolder: false
     property bool _contextInFolderPopup: false
 
+    // The menu draws on the window's overlay, outside the launcher's fade, and
+    // the window stays mapped once the launcher closes, so whatever puts the
+    // launcher away has to put the menu away with it.
+    function closeContextMenu() {
+        appContextMenu.close();
+    }
+
     // Folder state
     property int _dragHoverIndex: -1
     property bool folderPopupVisible: false
@@ -243,7 +250,7 @@ Item {
         color: Config.options.dock.showBackground
             ? Appearance.colors.colDockBackground : "transparent"
         border.width: Config.options.dock.showBackground ? 1 : 0
-        border.color: Appearance.colors.colDockBackgroundBorder
+        border.color: Appearance.colors.colDrawerBorder
 
         ColumnLayout {
             anchors.fill: parent
@@ -258,14 +265,14 @@ Item {
                 MaterialSymbol {
                     text: "apps"
                     iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.colors.colOnLayer0
+                    color: Appearance.drawerContent.colOnLayer0
                 }
 
                 StyledText {
                     text: root.expanded ? Translation.tr("All Applications") : Translation.tr("Applications")
                     font.pixelSize: Appearance.font.pixelSize.larger
                     font.weight: Font.Medium
-                    color: Appearance.colors.colOnLayer0
+                    color: Appearance.drawerContent.colOnLayer0
                 }
 
                 Item { Layout.fillWidth: true }
@@ -273,7 +280,7 @@ Item {
                 MaterialSymbol {
                     text: root.expanded ? "expand_less" : "expand_more"
                     iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.colors.colSubtext
+                    color: Appearance.drawerContent.colSubtext
                 }
             }
 
@@ -305,7 +312,7 @@ Item {
                 }
 
                 placeholderText: Translation.tr("Search applications...")
-                placeholderTextColor: Appearance.m3colors.m3outline
+                placeholderTextColor: Appearance.drawerContent.m3outlineField
                 padding: 10
 
                 font {
@@ -313,15 +320,15 @@ Item {
                     pixelSize: Appearance.font.pixelSize.small
                 }
 
-                color: Appearance.m3colors.m3onSurface
-                selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
-                selectionColor: Appearance.colors.colSecondaryContainer
+                color: Appearance.drawerContent.m3onSurfaceField
+                selectedTextColor: Appearance.drawerContent.m3onSecondaryContainer
+                selectionColor: Appearance.drawerContent.colSecondaryContainer
 
                 background: Rectangle {
                     radius: Appearance.rounding.small
-                    color: Appearance.colors.colLayer1
+                    color: Appearance.drawerContent.colLayer1
                     border.width: 1
-                    border.color: searchField.activeFocus ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+                    border.color: searchField.activeFocus ? Appearance.drawerContent.colPrimaryOnField : Appearance.drawerContent.colOutlineVariant
 
                     Behavior on border.color {
                         ColorAnimation {
@@ -332,7 +339,7 @@ Item {
 
                 cursorDelegate: Rectangle {
                     width: 1
-                    color: Appearance.colors.colPrimary
+                    color: Appearance.drawerContent.colPrimaryOnField
                     radius: 1
                     visible: searchField.activeFocus
                 }
@@ -348,7 +355,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "close"
                     iconSize: Appearance.font.pixelSize.normal
-                    color: Appearance.colors.colSubtext
+                    color: Appearance.drawerContent.m3outlineField
                     visible: searchField.text.length > 0
 
                     MouseArea {
@@ -410,7 +417,7 @@ Item {
                         visible: appGrid.count === 0 && root.searchText.length > 0
                         text: Translation.tr("No applications found")
                         font.pixelSize: Appearance.font.pixelSize.normal
-                        color: Appearance.colors.colSubtext
+                        color: Appearance.drawerContent.colSubtextRead
                     }
 
                     delegate: RippleButton {
@@ -425,15 +432,29 @@ Item {
                         buttonRadius: Appearance.rounding.normal
                         colBackground: {
                             if (isDragTarget)
-                                return ColorUtils.transparentize(Appearance.colors.colPrimary, 0.5);
+                                return ColorUtils.transparentize(Appearance.drawerContent.colPrimary, 0.5);
                             if (appButton.down || appButton.keyboardDown)
-                                return Appearance.colors.colSecondaryContainerActive;
+                                return Appearance.drawerContent.colSecondaryContainerActive;
                             if (appButton.hovered || appButton.focus)
-                                return Appearance.colors.colSecondaryContainer;
-                            return ColorUtils.transparentize(Appearance.colors.colSecondaryContainer, 1);
+                                return Appearance.drawerContent.colSecondaryContainer;
+                            return ColorUtils.transparentize(Appearance.drawerContent.colSecondaryContainer, 1);
                         }
-                        colBackgroundHover: Appearance.colors.colSecondaryContainer
-                        colRipple: Appearance.colors.colSecondaryContainerActive
+                        colBackgroundHover: Appearance.drawerContent.colSecondaryContainer
+                        colRipple: Appearance.drawerContent.colSecondaryContainerActive
+                        // The name is held against whichever of those fills is
+                        // painted under it, and the button paints the hover fill
+                        // over any other while the pointer is on the tile.
+                        property color colName: {
+                            if (appButton.hovered)
+                                return Appearance.drawerContent.colOnLayer0Hover;
+                            if (isDragTarget)
+                                return Appearance.drawerContent.colOnLayer0Drop;
+                            if (appButton.down || appButton.keyboardDown)
+                                return Appearance.drawerContent.colOnLayer0Active;
+                            if (appButton.focus)
+                                return Appearance.drawerContent.colOnLayer0Hover;
+                            return Appearance.drawerContent.colOnLayer0;
+                        }
 
                         PointingHandInteraction {}
 
@@ -474,9 +495,9 @@ Item {
                                 Layout.preferredWidth: root.iconSize
                                 Layout.preferredHeight: root.iconSize
                                 radius: Appearance.rounding.normal
-                                color: Appearance.colors.colLayer1
+                                color: Appearance.drawerContent.colLayer1
                                 border.width: 1
-                                border.color: Appearance.colors.colLayer0Border
+                                border.color: Appearance.drawerContent.colLayer0BorderOnLayer1
 
                                 Grid {
                                     anchors.centerIn: parent
@@ -500,7 +521,7 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 text: modelData.name
                                 font.pixelSize: Appearance.font.pixelSize.smaller
-                                color: Appearance.colors.colOnLayer0
+                                color: appButton.colName
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
                                 wrapMode: Text.WordWrap
@@ -532,7 +553,7 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 text: modelData.name
                                 font.pixelSize: Appearance.font.pixelSize.smaller
-                                color: Appearance.colors.colOnLayer0
+                                color: appButton.colName
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
                                 wrapMode: Text.WordWrap
@@ -546,7 +567,7 @@ Item {
                             radius: Appearance.rounding.normal
                             color: "transparent"
                             border.width: 2
-                            border.color: Appearance.colors.colPrimary
+                            border.color: Appearance.drawerContent.colPrimary
                             visible: appButton.isDragTarget
                         }
 
@@ -707,69 +728,32 @@ Item {
         }
     }
 
-    // ── Context Menu (Popup — matches TaskList.qml style) ──────────
-    Popup {
+    // ── Context Menu (the shared context menu) ──────────
+    ContextMenuPopup {
         id: appContextMenu
-        padding: 0
-        background: Item {
-            StyledRectangularShadow { target: menuBg }
-            Rectangle {
-                id: menuBg
-                anchors.fill: parent
-                color: Appearance.m3colors.m3surfaceContainer
-                radius: Appearance.rounding.normal
-            }
-        }
 
         contentItem: ColumnLayout {
             spacing: 0
 
             // ── App options ─────────────────────────────
             // Pin / Unpin to dock
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(pinRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: !root._contextIsFolder && !root._contextInFolderPopup
-                buttonRadius: Appearance.rounding.small
+                iconName: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
+                label: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "")
+                    ? Translation.tr("Unpin from dock")
+                    : Translation.tr("Pin to dock")
                 onClicked: {
                     TaskbarApps.togglePin(root.contextMenuApp.id)
                     appContextMenu.close()
                 }
-                contentItem: RowLayout {
-                    id: pinRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "")
-                            ? Translation.tr("Unpin from dock")
-                            : Translation.tr("Pin to dock")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
-                }
             }
 
             // ── Folder options ──────────────────────────
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(renameRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: root._contextIsFolder
-                buttonRadius: Appearance.rounding.small
+                iconName: "edit"
+                label: Translation.tr("Rename folder")
                 onClicked: {
                     root._pendingFolderRenameId = root.contextMenuApp.id
                     root._pendingFolderApp1Id = ""
@@ -777,210 +761,63 @@ Item {
                     root.folderNameDialogVisible = true
                     appContextMenu.close()
                 }
-                contentItem: RowLayout {
-                    id: renameRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: "edit"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: Translation.tr("Rename folder")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
-                }
             }
 
             // Pin / Unpin folder to dock
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(folderDockPinRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: root._contextIsFolder
-                buttonRadius: Appearance.rounding.small
+                iconName: TaskbarApps.isFolderPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
+                label: TaskbarApps.isFolderPinned(root.contextMenuApp?.id ?? "")
+                    ? Translation.tr("Unpin from dock")
+                    : Translation.tr("Pin to dock")
                 onClicked: {
                     TaskbarApps.toggleFolderPin(root.contextMenuApp.id)
                     appContextMenu.close()
                 }
-                contentItem: RowLayout {
-                    id: folderDockPinRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: TaskbarApps.isFolderPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: TaskbarApps.isFolderPinned(root.contextMenuApp?.id ?? "")
-                            ? Translation.tr("Unpin from dock")
-                            : Translation.tr("Pin to dock")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
-                }
             }
 
-            // Separator
-            Item {
-                implicitHeight: 9
-                Layout.fillWidth: true
+            ContextMenuSeparator {
                 visible: root._contextIsFolder
-                Rectangle {
-                    anchors {
-                        left: parent.left; right: parent.right
-                        verticalCenter: parent.verticalCenter
-                        leftMargin: 10; rightMargin: 10
-                    }
-                    implicitHeight: 1
-                    color: ColorUtils.transparentize(Appearance.m3colors.m3outline, 0.7)
-                }
             }
 
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(deleteRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: root._contextIsFolder
-                buttonRadius: Appearance.rounding.small
+                iconName: "delete"
+                label: Translation.tr("Delete folder")
                 onClicked: {
                     AppFolderManager.deleteFolder(root.contextMenuApp.id)
                     appContextMenu.close()
-                }
-                contentItem: RowLayout {
-                    id: deleteRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: "delete"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: Translation.tr("Delete folder")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
                 }
             }
 
             // ── Folder-popup app options ──────────────────
             // Pin / Unpin (inside folder popup)
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(folderPinRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: root._contextInFolderPopup
-                buttonRadius: Appearance.rounding.small
+                iconName: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
+                label: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "")
+                    ? Translation.tr("Unpin from dock")
+                    : Translation.tr("Pin to dock")
                 onClicked: {
                     TaskbarApps.togglePin(root.contextMenuApp.id)
                     appContextMenu.close()
                 }
-                contentItem: RowLayout {
-                    id: folderPinRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "") ? "keep_off" : "keep"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: TaskbarApps.isPinned(root.contextMenuApp?.id ?? "")
-                            ? Translation.tr("Unpin from dock")
-                            : Translation.tr("Pin to dock")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
-                }
             }
 
-            // Separator
-            Item {
-                implicitHeight: 9
-                Layout.fillWidth: true
+            ContextMenuSeparator {
                 visible: root._contextInFolderPopup
-                Rectangle {
-                    anchors {
-                        left: parent.left; right: parent.right
-                        verticalCenter: parent.verticalCenter
-                        leftMargin: 10; rightMargin: 10
-                    }
-                    implicitHeight: 1
-                    color: ColorUtils.transparentize(Appearance.m3colors.m3outline, 0.7)
-                }
             }
 
-            RippleButton {
-                Layout.fillWidth: true
-                implicitHeight: 36
-                implicitWidth: Math.max(removeRow.implicitWidth + 20, 160)
+            ContextMenuItem {
                 visible: root._contextInFolderPopup
-                buttonRadius: Appearance.rounding.small
+                iconName: "folder_off"
+                label: Translation.tr("Remove from folder")
                 onClicked: {
                     if (root.openFolder) {
                         AppFolderManager.removeAppFromFolder(
                             root.openFolder.id, root.contextMenuApp.id)
                     }
                     appContextMenu.close()
-                }
-                contentItem: RowLayout {
-                    id: removeRow
-                    anchors {
-                        fill: parent
-                        leftMargin: 10
-                        rightMargin: 14
-                    }
-                    spacing: 8
-                    MaterialSymbol {
-                        text: "folder_off"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.m3colors.m3onSurface
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: Translation.tr("Remove from folder")
-                        horizontalAlignment: Text.AlignLeft
-                        font.pixelSize: Appearance.font.pixelSize.small
-                        color: Appearance.m3colors.m3onSurface
-                        elide: Text.ElideRight
-                    }
                 }
             }
         }

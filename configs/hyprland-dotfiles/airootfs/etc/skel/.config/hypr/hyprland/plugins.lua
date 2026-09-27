@@ -136,59 +136,166 @@ local function readCustomValue(name)
     return v
 end
 
--- hyprbars takes a single bar_color carrying its own alpha, so the colour and
--- the opacity are composed here rather than set as two keys.
---
--- Returns nil only when NEITHER file holds anything usable, and the caller
--- then leaves the key alone: a machine that has never touched the settings
--- keeps whatever the plugin chooses for itself. A saved opacity without a
--- color composes over the plugin's own stock gray (333333, shipped at 88
--- alpha), so the opacity slider bites without a color pick and its first
--- nudge is continuous with the untouched look.
-local function titleBarColor()
-    local hex = readCustomValue("titlebars.color")
-    if hex then
-        hex = hex:gsub("^#", "")
-        if not hex:match("^%x%x%x%x%x%x$") then hex = nil end
-    end
-    local o = readCustomValue("titlebars.opacity")
-    if not hex then
-        if not o then return nil end
-        hex = "333333"
-    end
-    local on = tonumber(o or "0.5333") or 0.5333
+-- Light or dark, as switchwall.sh last settled it. Nothing here can ask
+-- gsettings, so the script leaves the answer beside the other values. Before
+-- it has ever run the desktop is dark, which is how it starts out.
+local function colorMode()
+    local v = readCustomValue("colormode")
+    if v and v:match("^%s*light%s*$") then return "light" end
+    return "dark"
+end
+
+-- Dark mode and light mode each keep their own title bar colors: the dark set
+-- under the plain names, the light set under the same names ending in Light.
+-- An empty or unreadable file is that mode's stock value below. The button
+-- size is one value for both modes.
+local TITLE_BAR_DEFAULTS = {
+    dark = {
+        color = "333333",
+        opacity = 0.5333,
+        buttonBackground = "rgba(49454e55)",
+        buttonIconColor = "rgb(ffffff)",
+        buttonHighlight = "rgba(6c667599)",
+    },
+    -- The dark set turned over: a chip a shade off the bar, near-black icons
+    -- and a hover a clear step further, the same distances in lightness as
+    -- the dark set keeps from its bar.
+    light = {
+        color = "f3f3f3",
+        opacity = 0.3,
+        buttonBackground = "rgba(d8d3dd55)",
+        buttonIconColor = "rgb(1d1b20)",
+        buttonHighlight = "rgba(b5afbc99)",
+    },
+}
+
+local function titleBarSlot(name, mode)
+    if mode == "light" then return name .. "Light" end
+    return name
+end
+
+local function readHex(name, mode)
+    local v = readCustomValue(titleBarSlot(name, mode))
+    if not v then return nil end
+    v = v:gsub("^#", "")
+    if v:match("^%x%x%x%x%x%x$") or v:match("^%x%x%x%x%x%x%x%x$") then return v end
+    return nil
+end
+
+-- hyprbars takes a single bar_color carrying its own alpha, so the color and
+-- the opacity are composed here rather than set as two keys. Always a value:
+-- the plugin has one stock bar for both modes, and a dark bar on a light
+-- desktop is what leaving the key to it would give.
+local function titleBarColor(mode)
+    local hex = readHex("titlebars.color", mode)
+    if hex and #hex ~= 6 then hex = nil end
+    hex = hex or TITLE_BAR_DEFAULTS[mode].color
+    local on = tonumber(readCustomValue(titleBarSlot("titlebars.opacity", mode)) or "")
+        or TITLE_BAR_DEFAULTS[mode].opacity
     if on < 0 then on = 0 elseif on > 1 then on = 1 end
     return string.format("rgba(%s%02x)", hex, math.floor(on * 255 + 0.5))
 end
 
 -- The buttons carry their own size and colors, kept apart from the bar's so a
--- bar color pick does not drag them along. An empty or unreadable color leaves
--- the pair the plugin has always drawn. Six digits are opaque, eight carry
--- their own alpha, which is how the picker writes a see-through button.
+-- bar color pick does not drag them along. Six digits are opaque, eight carry
+-- their own alpha as RRGGBBAA, which is how a see-through button is written.
 -- The bar's own height, and the ceiling it puts on a button: past about three
--- fifths of the bar there is no room left around the icon.
+-- fifths of the bar there is no room left around the icon. Below about two
+-- fifths the icon, drawn at 0.62 of the button, is too small to read and the
+-- button too small to hit, so that is the floor.
 local TITLE_BAR_HEIGHT = 30
+local TITLE_BAR_BUTTON_MIN = math.ceil(TITLE_BAR_HEIGHT * 0.4)
 local TITLE_BAR_BUTTON_MAX = math.floor(TITLE_BAR_HEIGHT * 0.6)
 -- Half the bar, which sits inside that ceiling with room left around the icon.
 local TITLE_BAR_BUTTON_DEFAULT = math.floor(TITLE_BAR_HEIGHT * 0.5 + 0.5)
 
-local function titleBarButton()
+local function titleBarButton(mode)
     local size = tonumber(readCustomValue("titlebars.buttonSize") or "") or TITLE_BAR_BUTTON_DEFAULT
-    if size < 6 then size = 6
+    if size < TITLE_BAR_BUTTON_MIN then size = TITLE_BAR_BUTTON_MIN
     elseif size > TITLE_BAR_BUTTON_MAX then size = TITLE_BAR_BUTTON_MAX end
-    local function colorOf(name, fallback)
-        local hex = readCustomValue(name)
-        if hex then
-            hex = hex:gsub("^#", "")
-            if hex:match("^%x%x%x%x%x%x$") then return "rgb(" .. hex .. ")" end
-            if hex:match("^%x%x%x%x%x%x%x%x$") then return "rgba(" .. hex .. ")" end
-        end
-        return fallback
+    local defaults = TITLE_BAR_DEFAULTS[mode]
+    local function colorOf(name)
+        local hex = readHex("titlebars." .. name, mode)
+        if not hex then return defaults[name] end
+        return (#hex == 6 and "rgb(" or "rgba(") .. hex .. ")"
     end
-    return size,
-        colorOf("titlebars.buttonBackground", "rgba(49454e55)"),
-        colorOf("titlebars.buttonIconColor", "rgb(ffffff)")
+    return size, colorOf("buttonBackground"), colorOf("buttonIconColor"), colorOf("buttonHighlight")
 end
+
+-- Minimizing puts a window on the scratchpad, the special workspace that opens
+-- over the desktop, without following it there.
+local SCRATCHPAD = "special:special"
+
+local function toScratchpad()
+    return hl.dsp.window.move({ workspace = "special", follow = false })
+end
+
+-- Restoring brings a minimized window back to the workspace on screen and
+-- follows it, so it reappears where the user is looking. Global because the
+-- title bar reaches this config only through `hyprctl dispatch`, which sees
+-- globals and not this file's locals, and the minimize button and the scroll
+-- gestures have to move a window the same way.
+function MainstreamTitleBarMinimize()
+    local w = hl.get_active_window()
+    if w and w.workspace and w.workspace.special then
+        local m = hl.get_active_monitor()
+        local t = m and m.active_workspace
+        if t then
+            return hl.dsp.window.move({ workspace = tostring(t.id), follow = true })
+        end
+    end
+    return toScratchpad()
+end
+
+-- Scrolling on a title bar steps its window one rung along minimized, normal
+-- and maximized: up climbs and down descends. Fullscreen is not a rung, since a
+-- fullscreen window has no title bar to scroll back down on. The plugin focuses
+-- the window under the pointer before running the command, so the active
+-- window is the one scrolled on. A step past either end is a dispatcher that
+-- does nothing, which hl.dispatch accepts without a complaint. Down from
+-- fullscreen only comes from the command run by hand, and it lands on
+-- maximized like one rung lower. Minimized means the
+-- scratchpad alone: a window a rule or the user put on a named special
+-- workspace climbs and descends like any other, down to the scratchpad, where
+-- the minimize button would bring it back to the desktop instead.
+local FULLSCREEN_NONE, FULLSCREEN_MAXIMIZED = 0, 1
+
+function MainstreamTitleBarStep(direction)
+    local w = hl.get_active_window()
+    if not w or (direction ~= "up" and direction ~= "down") then
+        return hl.dsp.no_op()
+    end
+    local up = direction == "up"
+    if w.workspace and w.workspace.name == SCRATCHPAD then
+        if up then return MainstreamTitleBarMinimize() end
+        return hl.dsp.no_op()
+    end
+    local mode = w.fullscreen or FULLSCREEN_NONE
+    if up then
+        if mode == FULLSCREEN_NONE then
+            return hl.dsp.window.fullscreen({ mode = "maximized", action = "set" })
+        end
+        return hl.dsp.no_op()
+    end
+    if mode == FULLSCREEN_NONE then
+        return toScratchpad()
+    elseif mode == FULLSCREEN_MAXIMIZED then
+        return hl.dsp.window.fullscreen({ mode = "maximized", action = "unset" })
+    end
+    return hl.dsp.window.fullscreen({ mode = "maximized", action = "set" })
+end
+
+-- What the title bar's buttons and gestures run. Each is a shell command, and
+-- `hyprctl dispatch X` runs `return hl.dispatch(X)` in this config, so X is a
+-- Lua dispatcher, single-quoted so the shell leaves its parentheses and double
+-- quotes alone. A middle-click closes the way the close button does, which
+-- lets an app ask about unsaved work first, and a double-click maximizes and
+-- restores the way the maximize button does.
+local TITLE_BAR_CLOSE = [[hyprctl dispatch 'hl.dsp.window.close()']]
+local TITLE_BAR_MAXIMIZE = [[hyprctl dispatch 'hl.dsp.window.fullscreen({mode = "maximized"})']]
+local TITLE_BAR_MINIMIZE = [[hyprctl dispatch 'MainstreamTitleBarMinimize()']]
+local TITLE_BAR_SCROLL_UP = [[hyprctl dispatch 'MainstreamTitleBarStep("up")']]
+local TITLE_BAR_SCROLL_DOWN = [[hyprctl dispatch 'MainstreamTitleBarStep("down")']]
 
 -- The wallpaper the overview draws, saved beside the other runtime flags by
 -- switchwall.sh. Read from there rather than written into this file: this file
@@ -289,9 +396,9 @@ local function applyPluginConfig()
     -- hyprbars config + buttons — also probed before apply.
     if hyprbarsActive() and keyAvailable("plugin:hyprbars:bar_height") then
         local tbOn = titleBarsEnabled()
-        -- Built first so the colour can be left out entirely. Setting the key
-        -- to nil would not do that: assigning nil to a table field is how you
-        -- remove it, and the field was never there to remove.
+        local mode = colorMode()
+        -- Built first so a key that only a newer build knows can be added
+        -- below, and left out entirely for an older one.
         local hyprbarsCfg = {
             enabled = tbOn,
             bar_text_font = "Google Sans Flex Medium, Rubik, Geist, AR One Sans, Reddit Sans, Inter, Roboto, Ubuntu, Noto Sans, sans-serif",
@@ -301,15 +408,27 @@ local function applyPluginConfig()
             bar_button_padding = 5,
             bar_precedence_over_border = true,
             bar_part_of_window = true,
+            bar_color = titleBarColor(mode),
         }
-        local barColor = titleBarColor()
-        if barColor then
-            hyprbarsCfg.bar_color = barColor
-        end
         -- Only a plugin built with buttons_on_hover knows the key, so an older
         -- build is not handed a setting it would report as unknown.
         if keyAvailable("plugin:hyprbars:buttons_on_hover") then
             hyprbarsCfg.buttons_on_hover = readCustomValue("titlebars.buttonsOnHover") == "1"
+        end
+        if keyAvailable("plugin:hyprbars:on_double_click") then
+            hyprbarsCfg.on_double_click = TITLE_BAR_MAXIMIZE
+        end
+        if keyAvailable("plugin:hyprbars:on_middle_click") then
+            hyprbarsCfg.on_middle_click = TITLE_BAR_CLOSE
+        end
+        -- Double-click and middle-click are always on. The scroll gestures
+        -- have a switch in Settings, saved beside the other title bar values
+        -- ("1"/"0", absent = on), and an empty command is the plugin's own
+        -- "do nothing".
+        if keyAvailable("plugin:hyprbars:on_scroll_up") and keyAvailable("plugin:hyprbars:on_scroll_down") then
+            local scroll = readCustomValue("titlebars.scrollActions") ~= "0"
+            hyprbarsCfg.on_scroll_up = scroll and TITLE_BAR_SCROLL_UP or ""
+            hyprbarsCfg.on_scroll_down = scroll and TITLE_BAR_SCROLL_DOWN or ""
         end
         hl.config({
             plugin = {
@@ -322,69 +441,62 @@ local function applyPluginConfig()
         -- via addLuaFunction(). Each call appends one button; the closure
         -- inside the plugin's globals tracks them.
         --
-        -- Button actions are SHELL commands run via the legacy `exec`
-        -- dispatcher (barDeco.cpp:277). In Lua mode `hyprctl dispatch X`
-        -- wraps X as `return hl.dispatch(X)` — so X must be a valid Lua
-        -- dispatcher callable, not a hyprlang token like "killactive".
-        -- See HyprCtl.cpp:1108. The dispatchers come from
+        -- Button actions are shell commands the plugin runs through the
+        -- `exec` dispatcher, written the way the TITLE_BAR_* commands above
+        -- describe. The dispatchers come from
         -- src/config/lua/bindings/LuaBindingsDispatchers.cpp's `hl.dsp` tree.
         --
-        -- movetoworkspacesilent has no direct equivalent in hl.dsp; only
-        -- two buttons until upstream adds it (or a Lua-side wrapper).
         -- add_button appends and the plugin cannot be asked what it already
-        -- holds, so re-running this file adds a second set of the same buttons.
-        -- The mark goes on the plugin's own table, which is what makes its life
-        -- match the buttons': a config reload leaves both in place, and an
-        -- unload and load of the plugin clears both together.
+        -- holds, so running this twice in one Lua state adds a second set of
+        -- the same buttons. The mark goes on the plugin's own table, which is
+        -- what makes its life match the buttons': a config reload empties the
+        -- plugin's list and then starts a new Lua state, which takes the mark
+        -- with it, and loading or unloading the plugin ends in a reload too.
+        -- So the mark only stops a second set while one Lua state is running.
         --
         -- A table that will not take the mark reads as unmarked every time, so
         -- the buttons are added again rather than skipped. Two of each is
         -- untidy; none at all leaves a window with no way to close it.
         local buttonsAdded = false
         pcall(function() buttonsAdded = hl.plugin.hyprbars.__ms_buttons == true end)
-        if hyprbarsActive() and tbOn and not buttonsAdded then
+        -- The buttons have a switch of their own in Settings, saved beside
+        -- the other title bar values ("1"/"0", absent = on). The plugin
+        -- empties its list before every reload, so adding none here is what
+        -- takes them off the bars. Double-click, middle-click and the scroll
+        -- steps set above belong to the bar, not to a button, so they stay.
+        local buttonsOn = readCustomValue("titlebars.buttons") ~= "0"
+        if hyprbarsActive() and tbOn and buttonsOn and not buttonsAdded then
             pcall(function() hl.plugin.hyprbars.__ms_buttons = true end)
-            local btnSize, btnBg, btnFg = titleBarButton()
-            -- Action strings are shell commands run via the legacy `exec`
-            -- dispatcher (barDeco.cpp:277). Bare `()` in shell triggers a
-            -- subshell, so the Lua expression after `hyprctl dispatch` must
-            -- be single-quoted to survive shell parsing intact.
-            hl.plugin.hyprbars.add_button({
-                bg_color = btnBg,
-                fg_color = btnFg,
-                size     = btnSize,
-                icon     = "󰖭",
-                action   = "hyprctl dispatch 'hl.dsp.window.close()'",
-            })
-            hl.plugin.hyprbars.add_button({
-                bg_color = btnBg,
-                fg_color = btnFg,
-                size     = btnSize,
-                icon     = "󰖯",
-                action   = [[hyprctl dispatch 'hl.dsp.window.fullscreen({mode = "maximized"})']],
-            })
-            -- Toggle between special and the currently focused workspace.
-            --
-            -- IIFE inspects the active window's workspace via the Lua API:
-            --   * On a special workspace (.workspace.special == true) →
-            --     pull back to the active monitor's currently-visible
-            --     workspace WITH focus follow, so the user sees the window
-            --     reappear where they're looking.
-            --   * On a regular workspace → send to special silently
-            --     (follow=false, same effect as legacy
-            --     `movetoworkspacesilent special`).
-            -- Returns an hl.dsp.window.move dispatcher userdata so the
-            -- outer hl.dispatch(...) wrap is satisfied.
-            hl.plugin.hyprbars.add_button({
-                bg_color = btnBg,
-                fg_color = btnFg,
-                size     = btnSize,
-                icon     = "󰖰",
-                action   = [[hyprctl dispatch '(function() local w = hl.get_active_window(); if w and w.workspace and w.workspace.special then local m = hl.get_active_monitor(); local t = m and m.active_workspace; if t then return hl.dsp.window.move({workspace = tostring(t.id), follow = true}) end end; return hl.dsp.window.move({workspace = "special", follow = false}) end)()']],
-            })
+            local btnSize, btnBg, btnFg, btnHover = titleBarButton(mode)
+            -- Only a plugin built with buttons_pop_in draws its own hover
+            -- color, and an older build is not handed a field it does not
+            -- know. A nil leaves the field out of the table below.
+            if not keyAvailable("plugin:hyprbars:buttons_pop_in") then btnHover = nil end
+            for _, b in ipairs({
+                { icon = "󰖭", action = TITLE_BAR_CLOSE },
+                { icon = "󰖯", action = TITLE_BAR_MAXIMIZE },
+                { icon = "󰖰", action = TITLE_BAR_MINIMIZE },
+            }) do
+                hl.plugin.hyprbars.add_button({
+                    bg_color = btnBg,
+                    fg_color = btnFg,
+                    hover_color = btnHover,
+                    size     = btnSize,
+                    icon     = b.icon,
+                    action   = b.action,
+                })
+            end
         end
     end
 end
+
+-- The shell calls this after it changes one of the title bar files, through
+-- `hyprctl eval "MainstreamApplyPluginConfig()"`, instead of reloading the whole
+-- config: the files are read again and everything above lands as it would on
+-- a reload. The buttons are the exception. The plugin only empties its list on
+-- a reload, so the mark above keeps this from adding a second set, and a
+-- change to the buttons themselves still asks for the reload.
+MainstreamApplyPluginConfig = applyPluginConfig
 
 -- Apply synchronously inside the reload chain — by the time config.reloaded
 -- fires, the plugin's PLUGIN_INIT has completed addConfigValueV2 +

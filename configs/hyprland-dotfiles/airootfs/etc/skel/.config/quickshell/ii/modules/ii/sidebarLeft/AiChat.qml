@@ -15,16 +15,28 @@ Item {
     id: root
     property real padding: 4
     property var inputField: messageInputField
-    // Guarded wherever the strings below read it. The sidebar builds its pages
-    // inside a binding that also depends on the translated tab names, so every
-    // chat is discarded and built again the moment translations land, and the
-    // translated strings of the one on its way out are asked for a value once
-    // more after its own id has gone. Nothing shows them by then, so they are
-    // left empty rather than reaching through an id that is no longer there.
+    // Guarded wherever the strings below read it. A chat being torn down can
+    // have its translated strings asked for a value once more after its own
+    // id has gone. Nothing shows them by then, so they are left empty rather
+    // than reaching through an id that is no longer there.
     property string commandPrefix: "/"
 
     property var suggestionQuery: ""
     property var suggestionList: []
+
+    // The keyring is left closed at startup when nobody typed its password, so
+    // the API keys are read here, when the chat is opened or switched to a model
+    // that needs one. Asking now, while someone is using the chat, beats asking
+    // the moment the desktop appears.
+    function loadApiKeysIfNeeded() {
+        if (Ai.currentModel?.requires_key && !KeyringStorage.loaded)
+            KeyringStorage.fetchKeyringData();
+    }
+    Component.onCompleted: loadApiKeysIfNeeded()
+    Connections {
+        target: Ai
+        function onCurrentModelIdChanged() { root.loadApiKeysIfNeeded(); }
+    }
 
     onFocusChanged: focus => {
         if (focus) {
@@ -580,7 +592,13 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                         const n = Ai.currentCliSetup?.name ?? "";
                         switch (Ai.setupState) {
                         case "installing": return Translation.tr("Installing %1…").arg(n);
-                        case "loggingIn": return Translation.tr("Finish signing in to %1 in the window that just opened…").arg(n);
+                        case "loggingIn":
+                            if (Ai.loginCodeSent) return Translation.tr("Checking the code…");
+                            if (Ai.currentCliSetup?.loginCodePipe)
+                                return Translation.tr("Sign in to Google in your browser within a minute, then click Copy to Clipboard on the page that shows a code. The sidebar picks it up from there.");
+                            return (Ai.currentCliSetup?.loginInBackground
+                                ? Translation.tr("Finish signing in to %1 in your browser…")
+                                : Translation.tr("Finish signing in to %1 in the window that just opened…")).arg(n);
                         case "error": return Translation.tr("Setup didn't finish. Try again.");
                         default: return Translation.tr("%1 needs a one-time sign-in: no API key, just your subscription.").arg(n);
                         }
@@ -594,6 +612,34 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
                     mainText: Ai.setupState === "error" ? Translation.tr("Retry")
                         : Translation.tr("Log in to %1").arg(Ai.currentCliSetup?.name ?? "")
                     onClicked: Ai.setupCurrentModel()
+                }
+
+                RippleButtonWithIcon {
+                    visible: Ai.setupState === "loggingIn" && !Ai.loginCodeSent
+                        && (Ai.currentCliSetup?.loginCodePipe ?? "") !== ""
+                    Layout.alignment: Qt.AlignRight
+                    materialIcon: "content_paste"
+                    mainText: Translation.tr("Paste Code")
+                    onClicked: Ai.pasteLoginCode()
+                }
+
+                RippleButtonWithIcon {
+                    visible: Ai.setupState === "loggingIn" && !Ai.loginCodeSent && (Ai.currentCliSetup?.loginInBackground ?? false)
+                    Layout.alignment: Qt.AlignRight
+                    materialIcon: "open_in_browser"
+                    mainText: Translation.tr("Open the page again")
+                    onClicked: Ai.restartLogin()
+                }
+
+                RippleButtonWithIcon {
+                    visible: Ai.setupState === "error" && (Ai.currentCliSetup?.terminalLogin ?? "") !== ""
+                    Layout.alignment: Qt.AlignRight
+                    materialIcon: "terminal"
+                    mainText: Translation.tr("Sign in with a terminal")
+                    onClicked: Ai.loginInTerminal()
+                    StyledToolTip {
+                        text: Translation.tr("Opens the full app, which shows any first-run screens and takes a pasted sign-in code.")
+                    }
                 }
 
                 // The download can fail in ways retrying will not mend, and

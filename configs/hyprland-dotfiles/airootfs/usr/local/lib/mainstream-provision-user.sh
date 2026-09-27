@@ -71,6 +71,46 @@ provision_home_of() {  # $1 = user
     getent passwd "$1" | cut -d: -f6
 }
 
+# The home a step may write under, or nothing. Asked again by every step that
+# writes under it rather than trusted from the one that looked first: an empty
+# answer aims the step at the filesystem root, and provision_dotfiles would
+# then mirror a tree over it with deletions on.
+_pu_home() {  # $1 = user
+    local h
+    h="$(provision_home_of "$1")"
+    [[ -n "$h" && -d "$h" && "$h" != "/" ]] || return 1
+    printf '%s\n' "$h"
+}
+
+# Writes into a home go through its owner's own permissions. Done as root, a
+# link the owner left at one of these paths would aim the write at any file on
+# the system, and Repair runs on homes whose owners have had every chance to
+# leave one.
+_pu_as() {  # $1 = user, rest = command
+    local u="$1"; shift
+    setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups -- "$@"
+}
+
+# Whether a Lua file already sets something up. The shipped custom files carry
+# the same lines commented out as examples, and those must not count.
+_pu_lua_has() {  # $1 = user  $2 = text  $3 = file
+    _pu_as "$1" grep -qE -- "^[[:space:]]*[^-[:space:]].*$2" "$3" 2>/dev/null
+}
+
+# Gives a home to its owner. A drive or network share mounted inside it, a
+# second disk for games say, is not part of the account: its ownership is
+# somebody's decision, and chown on a network share fails and would fail the
+# whole step.
+_pu_own_home() {  # $1 = user
+    local u="$1" home mp
+    local -a prune=()
+    home="$(_pu_home "$u")" || return 1
+    while IFS= read -r mp; do
+        [[ "$mp" == "$home"/* ]] && prune+=( -path "$mp" -prune -o )
+    done < <(findmnt -J -o TARGET 2>/dev/null | jq -r '.. | .target? // empty' 2>/dev/null)
+    find "$home" "${prune[@]}" -exec chown -h "$u:$u" {} +
+}
+
 # The per-machine parts of a home: built rather than copied. The virtualenv
 # records absolute paths, the plugin binaries carry a build stamp good for one
 # compositor version, and the greeted marker decides whether the welcome
@@ -89,6 +129,18 @@ PROVISION_SKEL_EXCLUDES=(
     '/.local/state/quickshell/.venv/'
     '/.local/state/quickshell/user/first_run.txt'
 )
+
+# skel is what the next account is seeded from. An empty exclusion list would
+# mirror the tree over it with deletions and nothing held back, taking the
+# pre-baked virtualenv and the plugin binaries with it, so that returns 2
+# without touching skel.
+provision_refresh_skel() {  # $1 = dotfiles tree
+    local ex args=()
+    for ex in "${PROVISION_SKEL_EXCLUDES[@]+"${PROVISION_SKEL_EXCLUDES[@]}"}"; do args+=( --exclude="$ex" ); done
+    (( ${#args[@]} )) || return 2
+    rsync -a --delete "${args[@]}" "$1/" /etc/skel/ >/dev/null 2>&1 || return 1
+    chown -R root:root /etc/skel 2>/dev/null || true
+}
 
 # The clone of the release this machine is actually running. updatems keeps it
 # current, and it is the same tree the installer lays down, so it answers
@@ -175,11 +227,7 @@ provision_has_logged_in() {  # $1 = user
 
 provision_dotfiles() {  # $1 = user  $2 = "fresh" when the account was just created
     local u="$1" fresh="${2:-}" home src ex args=()
-    home="$(provision_home_of "$u")"
-    # Checked in every step that writes under it rather than trusted from the
-    # one that looked first: an empty answer aims this at the filesystem root,
-    # and this step would then mirror a tree over it with deletions on.
-    [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    home="$(_pu_home "$u")" || { _pu_warn "no home for $u"; return 1; }
     if [[ "$fresh" != fresh && "${PROVISION_FORCE_DOTFILES:-0}" != 1 ]] \
        && provision_has_logged_in "$u"; then
         _pu_log "$u has been logged into; leaving its settings alone"
@@ -208,12 +256,11 @@ provision_dotfiles() {  # $1 = user  $2 = "fresh" when the account was just crea
     # so on stdout, which is expected here and is not worth the noise. Real
     # trouble still arrives on stderr and in the exit code.
     rsync -a "${args[@]}" "$src/" "$home/" >/dev/null || { _pu_warn "could not lay the dotfiles over $home"; return 1; }
-    chown -R "$u:$u" "$home"
+    _pu_own_home "$u"
 
     # skel is what the next account is seeded from, so bring it along rather
     # than leaving the next user to land in the same place.
-    if rsync -a --delete "${args[@]}" "$src/" /etc/skel/ >/dev/null 2>&1; then
-        chown -R root:root /etc/skel 2>/dev/null || true
+    if provision_refresh_skel "$src"; then
         _pu_log "/etc/skel refreshed to match"
     else
         _pu_warn "could not refresh /etc/skel"
@@ -223,13 +270,19 @@ provision_dotfiles() {  # $1 = user  $2 = "fresh" when the account was just crea
 # Groups the desktop cannot work without: video and render for the GPU, i2c
 # for external-monitor brightness over DDC/CI, input for the virtual input
 # devices, and the rest for sound, networking, printing and removable media.
+# sambashare, where mainstream-system has created it, is what lets the account
+# share folders from Files: a session that starts in it can write the usershare
+# directory without the extra access the Sharing page grants a running one.
+# gamemode, where GameMode is installed, is the only group its polkit rules let
+# change the CPU governor and game priorities; outside it GameMode does little
+# more than keep the screen awake.
 # wheel is not among them, because being an administrator is a choice someone
 # makes about an account rather than part of setting one up.
 provision_groups() {  # $1 = user
     local u="$1" g
     id "$u" >/dev/null 2>&1 || { _pu_warn "no such user: $u"; return 1; }
     for g in render video i2c; do groupadd -f "$g"; done
-    for g in network audio video input power storage lp optical render i2c; do
+    for g in network audio video input power storage lp optical render i2c sambashare gamemode; do
         getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" "$u" || true
     done
     # Administrator is the caller's decision, not a consequence of being set
@@ -244,7 +297,9 @@ provision_groups() {  # $1 = user
     # ddcutil reaches an external monitor's brightness over the DDC/CI bus,
     # which needs the i2c-dev module present from boot.
     echo i2c-dev > /etc/modules-load.d/i2c-dev.conf
-    if [[ -x /usr/bin/zsh ]]; then
+    # A first-time default, like the ones in provision_desktop: someone who
+    # has used the account may have picked another shell.
+    if [[ -x /usr/bin/zsh ]] && ! provision_has_logged_in "$u"; then
         _pu_log "Setting default shell to Zsh for $u..."
         chsh -s /usr/bin/zsh "$u" >/dev/null 2>&1 || _pu_warn "could not change the shell for $u"
     fi
@@ -256,8 +311,7 @@ provision_groups() {  # $1 = user
 # console script, which is why this cannot be anchored to the shebang.
 provision_venv() {  # $1 = user
     local u="$1" home venv target_ver baked_ver
-    home="$(provision_home_of "$u")"
-    [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    home="$(_pu_home "$u")" || { _pu_warn "no home for $u"; return 1; }
     venv="$home/.local/state/quickshell/.venv"
     [[ -d "$venv" ]] || return 0
 
@@ -274,11 +328,14 @@ provision_venv() {  # $1 = user
     baked_ver="$(cat "$venv/.python-version" 2>/dev/null || true)"
     # An interpreter that is not there at all is the other way this venv goes
     # stale, and it reads as an empty version rather than a different one.
-    if [[ -z "$target_ver" ]]; then
-        _pu_warn "venv: /usr/bin/python3.12 is missing, rebuilding $venv from the system python"
-        rm -rf "$venv"
-        return 0
-    elif [[ -n "$baked_ver" && "$baked_ver" != "$target_ver" ]]; then
+    if [[ -z "$target_ver" || ( -n "$baked_ver" && "$baked_ver" != "$target_ver" ) ]]; then
+        # First login builds a new one, but only for an account nobody has
+        # used yet; an established home would be left with none at all.
+        if provision_has_logged_in "$u"; then
+            _pu_warn "venv: $venv was built for Python ${baked_ver:-?} and this machine has ${target_ver:-none}; run Update or Repair Install to rebuild it"
+            return 0
+        fi
+        _pu_warn "venv: $venv does not match Python ${target_ver:-3.12}, leaving it to first login to rebuild"
         rm -rf "$venv"
         return 0
     fi
@@ -292,8 +349,7 @@ provision_venv() {  # $1 = user
 # before it will do anything at all.
 provision_first_run() {  # $1 = user
     local u="$1" home
-    home="$(provision_home_of "$u")"
-    [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    home="$(_pu_home "$u")" || { _pu_warn "no home for $u"; return 1; }
     # Only an account that has never logged in gets the marker. Re-arming it on
     # an established home makes the next login run first-login setup again,
     # which ends by deleting the dotfiles directory it thinks it created, and
@@ -303,8 +359,7 @@ provision_first_run() {  # $1 = user
         return 0
     fi
     rm -f "$home/.local/state/quickshell/user/first_run.txt"
-    touch "$home/.dotfiles-pending-user-setup"
-    chown "$u:$u" "$home/.dotfiles-pending-user-setup"
+    _pu_as "$u" touch "$home/.dotfiles-pending-user-setup"
 }
 
 # Hyprland refuses a plugin whose .builtfor stamp does not name the Hyprland
@@ -318,10 +373,15 @@ provision_first_run() {  # $1 = user
 # title bars is a far better outcome than an account nobody can log in to.
 provision_plugins() {  # $1 = user
     local u="$1" home want dir so stamp src found unit
-    home="$(provision_home_of "$u")"
-    [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    home="$(_pu_home "$u")" || { _pu_warn "no home for $u"; return 1; }
     dir="$home/.local/share/hyprland/plugins"
     [[ -d "$dir" ]] || { _pu_log "no plugin directory, nothing to check"; return 0; }
+    # Root deletes and installs in here, so it has to be the folder it looks
+    # like rather than a link to somewhere else.
+    if [[ "$(realpath -e -- "$dir" 2>/dev/null)" != "$(realpath -e -- "$home" 2>/dev/null)/.local/share/hyprland/plugins" ]]; then
+        _pu_warn "the plugin folder of $u goes through a link, leaving it alone"
+        return 0
+    fi
 
     # Judged exactly the way plugins.lua judges it at login: the first line of
     # each file, from the same version file the guard reads. A stamp carries
@@ -337,7 +397,9 @@ provision_plugins() {  # $1 = user
 
     for so in "$dir"/*.so; do
         [[ -e "$so" ]] || continue
-        stamp="$(head -n1 "$so.builtfor" 2>/dev/null || true)"
+        # Read as the owner, since the stamp is theirs to point at anything and
+        # its first line goes into the log.
+        stamp="$(_pu_as "$u" head -n1 -- "$so.builtfor" 2>/dev/null || true)"
         if [[ "$stamp" == "$want" ]]; then
             _pu_log "$(basename "$so"): stamped $stamp, keeping"
             continue
@@ -353,6 +415,11 @@ provision_plugins() {  # $1 = user
         for src in ${caller_home:+"$caller_home/.local/share/hyprland/plugins/$(basename "$so")"} \
                    /home/*/.local/share/hyprland/plugins/"$(basename "$so")"; do
             [[ -e "$src" ]] || continue
+            # The binary runs inside the new account's session, so it has to
+            # come from someone who could already change the system, the same
+            # rule the dotfiles clone is held to.
+            _pu_trusted_dir "$(dirname "$src")" || continue
+            [[ ! -L "$src" && ! -L "$src.builtfor" ]] || continue
             [[ "$(head -n1 "$src.builtfor" 2>/dev/null || true)" == "$want" ]] || continue
             found="$src"; break
         done
@@ -380,8 +447,7 @@ provision_plugins() {  # $1 = user
 
 provision_desktop() {  # $1 = user
     local u="$1" home
-    home="$(provision_home_of "$u")"
-    [[ -n "$home" && -d "$home" && "$home" != "/" ]] || { _pu_warn "no home for $u"; return 1; }
+    home="$(_pu_home "$u")" || { _pu_warn "no home for $u"; return 1; }
     # Everything below is declared here because this file is sourced into
     # other scripts: a name left global would reach into whatever sourced it.
     local _cjk_ime="${PROVISION_CJK_IME:-}" _kb=""
@@ -428,29 +494,26 @@ provision_desktop() {  # $1 = user
 if [[ -n "$_cjk_ime" ]]; then
     _pu_log "Configuring the $_cjk_ime input method for $u..."
     _ime_env="$home/.config/hypr/custom/env.lua"
-    if [[ -f "$_ime_env" ]] && ! grep -q 'im=fcitx' "$_ime_env"; then
-        cat >> "$_ime_env" << 'IMEENVEOF'
+    if [[ -f "$_ime_env" ]] && ! _pu_lua_has "$u" 'im=fcitx' "$_ime_env"; then
+        _pu_as "$u" tee -a "$_ime_env" >/dev/null << 'IMEENVEOF'
 hl.env({ name = "XMODIFIERS", value = "@im=fcitx" })
 hl.env({ name = "QT_IM_MODULE", value = "fcitx" })
 hl.env({ name = "QT_IM_MODULES", value = "wayland;fcitx" })
 hl.env({ name = "SDL_IM_MODULE", value = "fcitx" })
 hl.env({ name = "GLFW_IM_MODULE", value = "ibus" })
 IMEENVEOF
-        chown "$u:$u" "$_ime_env"
     fi
     _ime_execs="$home/.config/hypr/custom/execs.lua"
-    if [[ -f "$_ime_execs" ]] && ! grep -q 'fcitx5' "$_ime_execs"; then
-        echo 'hl.on("hyprland.start", function() hl.exec_cmd("fcitx5 -d") end)' >> "$_ime_execs"
-        chown "$u:$u" "$_ime_execs"
+    if [[ -f "$_ime_execs" ]] && ! _pu_lua_has "$u" 'fcitx5' "$_ime_execs"; then
+        echo 'hl.on("hyprland.start", function() hl.exec_cmd("fcitx5 -d") end)' | _pu_as "$u" tee -a "$_ime_execs" >/dev/null
     fi
     for _gtkv in gtk-3.0 gtk-4.0; do
         _gtkini="$home/.config/$_gtkv/settings.ini"
         if [[ -f "$_gtkini" ]]; then
-            grep -q '^gtk-im-module=' "$_gtkini" || sed -i '/^\[Settings\]/a gtk-im-module=fcitx' "$_gtkini"
+            _pu_as "$u" grep -q '^gtk-im-module=' "$_gtkini" || _pu_as "$u" sed -i '/^\[Settings\]/a gtk-im-module=fcitx' "$_gtkini"
         else
-            printf '[Settings]\ngtk-im-module=fcitx\n' > "$_gtkini"
+            printf '[Settings]\ngtk-im-module=fcitx\n' | _pu_as "$u" tee "$_gtkini" >/dev/null
         fi
-        chown "$u:$u" "$_gtkini"
     done
     # A profile with the engine already in the group is the difference
     # between typing at first boot and a trip through the config tool.
@@ -458,8 +521,8 @@ IMEENVEOF
     _ime_layout=us
     case "$_kb" in jp*) _ime_layout=jp ;; kr*) _ime_layout=kr ;; esac
     if [[ ! -f "$_ime_profile" ]]; then
-        install -d -o "$u" -g "$u" "$home/.config/fcitx5"
-        cat > "$_ime_profile" << IMEPROFEOF
+        _pu_as "$u" mkdir -p "$home/.config/fcitx5"
+        _pu_as "$u" tee "$_ime_profile" >/dev/null << IMEPROFEOF
 [Groups/0]
 Name=Default
 Default Layout=$_ime_layout
@@ -476,15 +539,14 @@ Layout=
 [GroupOrder]
 0=Default
 IMEPROFEOF
-        chown "$u:$u" "$_ime_profile"
     fi
 fi
 
 # Add hyprpolkitagent autostart if not already present in dotfiles
 EXECS_LUA="$home/.config/hypr/custom/execs.lua"
-if [[ -f "$EXECS_LUA" ]] && ! grep -q "hyprpolkitagent" "$EXECS_LUA"; then
+if [[ -f "$EXECS_LUA" ]] && ! _pu_lua_has "$u" 'hyprpolkitagent' "$EXECS_LUA"; then
     _pu_log "Adding hyprpolkitagent to Hyprland autostart..."
-    echo 'hl.on("hyprland.start", function() hl.exec_cmd("hyprpolkitagent") end)' >> "$EXECS_LUA"
+    echo 'hl.on("hyprland.start", function() hl.exec_cmd("hyprpolkitagent") end)' | _pu_as "$u" tee -a "$EXECS_LUA" >/dev/null
 elif [[ ! -f "$EXECS_LUA" ]]; then
     _pu_warn "Could not find $EXECS_LUA — hyprpolkitagent will not autostart."
 fi
@@ -499,8 +561,8 @@ fi
 if [[ -f /usr/local/bin/dotfiles-first-login ]]; then
     _pu_log "Deploying dotfiles-first-login first-session triggers..."
     SYSTEMD_USER_DIR="$home/.config/systemd/user"
-    mkdir -p "$SYSTEMD_USER_DIR"
-    cat > "$SYSTEMD_USER_DIR/dotfiles-first-login.service" << 'SERVICEEOF'
+    _pu_as "$u" mkdir -p "$SYSTEMD_USER_DIR"
+    _pu_as "$u" tee "$SYSTEMD_USER_DIR/dotfiles-first-login.service" >/dev/null << 'SERVICEEOF'
 [Unit]
 Description=Dotfiles first graphical login setup
 Documentation=man:systemd.service(5)
@@ -513,25 +575,23 @@ KillMode=process
 Environment=DOTFILES_FIRST_LOGIN_FOREGROUND=1
 ExecStart=/usr/local/bin/dotfiles-first-login
 SERVICEEOF
-    chown -R "$u:$u" "$SYSTEMD_USER_DIR"
 
     EXECS_LUA="$home/.config/hypr/custom/execs.lua"
-    mkdir -p "$(dirname "$EXECS_LUA")"
-    touch "$EXECS_LUA"
-    sed -i \
+    _pu_as "$u" mkdir -p "$(dirname "$EXECS_LUA")"
+    _pu_as "$u" touch "$EXECS_LUA"
+    _pu_as "$u" sed -i \
         -e '\|dotfiles-first-login.service|d' \
         -e '\|/usr/local/bin/dotfiles-first-login|d' \
         "$EXECS_LUA" 2>/dev/null || true
-    cat >> "$EXECS_LUA" << 'EXECSEOF'
+    _pu_as "$u" tee -a "$EXECS_LUA" >/dev/null << 'EXECSEOF'
 hl.on("hyprland.start", function() hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start dotfiles-first-login.service || /usr/local/bin/dotfiles-first-login") end)
 EXECSEOF
-    chown "$u:$u" "$EXECS_LUA"
 
     # Keep an XDG autostart entry as a harmless backup for sessions that do
     # run an autostart helper.
     AUTOSTART_DIR="$home/.config/autostart"
-    mkdir -p "$AUTOSTART_DIR"
-    cat > "$AUTOSTART_DIR/dotfiles-first-login.desktop" << 'AUTOSTARTEOF'
+    _pu_as "$u" mkdir -p "$AUTOSTART_DIR"
+    _pu_as "$u" tee "$AUTOSTART_DIR/dotfiles-first-login.desktop" >/dev/null << 'AUTOSTARTEOF'
 [Desktop Entry]
 Type=Application
 Name=Dotfiles First-Login Setup
@@ -539,9 +599,16 @@ Exec=sh -c 'dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 AUTOSTARTEOF
-    chown -R "$u:$u" "$AUTOSTART_DIR"
 else
     _pu_warn "dotfiles-first-login not found in /usr/local/bin — skipping first-session trigger deploy."
+fi
+
+# Everything from here is a first-time default: folders, default apps and the
+# look. An account someone has used holds their own choices there, and Repair
+# says it is safe to run on one.
+if provision_has_logged_in "$u"; then
+    _pu_log "$u has logged in before, keeping their default apps and appearance"
+    return 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -682,8 +749,10 @@ provision_user_home() {  # $1 = user  $2 = "fresh" when the account was just cre
     _pu_step groups   provision_groups   "$u"
     _pu_step venv     provision_venv     "$u"
     _pu_step plugins  provision_plugins  "$u"
+    # Before the desktop step, which writes as the owner: a home kept from an
+    # earlier account of this name is still closed to everyone but root.
+    _pu_step own      _pu_own_home       "$u"
     _pu_step desktop  provision_desktop  "$u"
-    _pu_step own      chown -R "$u:$u" "$home"
     _pu_step firstrun provision_first_run "$u"
 
     # A short account of what the new user will actually find, so a session

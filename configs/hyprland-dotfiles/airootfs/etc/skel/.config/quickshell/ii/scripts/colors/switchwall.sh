@@ -12,28 +12,72 @@ SHELL_CONFIG_FILE="$XDG_CONFIG_HOME/illogical-impulse/config.json"
 MATUGEN_DIR="$XDG_CONFIG_HOME/matugen"
 terminalscheme="$SCRIPT_DIR/terminal/scheme-base.json"
 
+# ImageMagick may otherwise take all of memory and then spill to disk, and
+# /tmp is memory as well, so a picture too big to handle would freeze the
+# system instead of failing. Exported so the wallpaper categorizer gets them
+# too. The same values as Images.magickEnvironment in the shell.
+export MAGICK_MEMORY_LIMIT=2GiB MAGICK_MAP_LIMIT=1GiB MAGICK_DISK_LIMIT=1GiB
+
 pre_process() {
     local mode_flag="$1"
     # Set GNOME color-scheme if mode_flag is dark or light
     # Only steer the widget theme while the user is on the stock adw-gtk3
     # pair — a manual pick in Settings > Themes > System look wins.
-    local current_gtk
-    current_gtk="$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | tr -d "'")"
+    # Both are read in one go and written only when they differ: every write
+    # reaches dconf and each app watching it, the same value included.
+    local current_gtk="" current_scheme="" key value
+    while read -r _ key value; do
+        case "$key" in
+            gtk-theme) current_gtk="${value//\'/}" ;;
+            color-scheme) current_scheme="${value//\'/}" ;;
+        esac
+    done < <(gsettings list-recursively org.gnome.desktop.interface 2>/dev/null)
     if [[ "$mode_flag" == "dark" ]]; then
-        gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
-        case "$current_gtk" in adw-gtk3|adw-gtk3-dark|"")
+        [[ "$current_scheme" == "prefer-dark" ]] || gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+        case "$current_gtk" in adw-gtk3|"")
             gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' ;;
         esac
     elif [[ "$mode_flag" == "light" ]]; then
-        gsettings set org.gnome.desktop.interface color-scheme 'prefer-light'
-        case "$current_gtk" in adw-gtk3|adw-gtk3-dark|"")
+        [[ "$current_scheme" == "prefer-light" ]] || gsettings set org.gnome.desktop.interface color-scheme 'prefer-light'
+        case "$current_gtk" in adw-gtk3-dark|"")
             gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3' ;;
         esac
     fi
+    set_colormode "$mode_flag"
 
     if [ ! -d "$CACHE_DIR"/user/generated ]; then
         mkdir -p "$CACHE_DIR"/user/generated
     fi
+}
+
+# The title bars keep their own colors for each mode, and plugins.lua chooses
+# between them on every Hyprland reload. It cannot ask gsettings, so the mode is
+# left beside the other runtime flags. Renamed into place because a reload can
+# read it at any moment. A run that leaves the mode as it was has nothing new to
+# show, so only a change marks the run as owing a reload; post_process makes
+# that reload on the usual path.
+set_colormode() {
+    local mode="$1"
+    [[ "$mode" == "dark" || "$mode" == "light" ]] || return 0
+    local target="$XDG_CONFIG_HOME/hypr/custom/colormode"
+    [[ "$(cat "$target" 2>/dev/null)" == "$mode" ]] && return 0
+    mkdir -p "${target%/*}" 2>/dev/null
+    local tmpfile
+    tmpfile="$(mktemp "$target.XXXXXX" 2>/dev/null)" || return 0
+    if printf '%s' "$mode" > "$tmpfile" && mv -f "$tmpfile" "$target"; then
+        colormode_changed=1
+    else
+        rm -f "$tmpfile"
+    fi
+}
+
+# For a run that changed the mode but will not reach the reload post_process
+# makes, so the title bars still follow it.
+reload_for_colormode() {
+    [[ -n "${colormode_changed:-}" ]] || return 0
+    # apply-theme.sh reloads once everything it writes is in place.
+    [[ -z "${config_staged_flag:-}" ]] || return 0
+    hyprctl reload >/dev/null 2>&1 9>&- &
 }
 
 set_sddm_background() {
@@ -54,23 +98,37 @@ set_sddm_background() {
 
     [[ ! -d "$sddm_theme_dir" ]] && return
 
+    # A light/dark toggle, an accent pick or a style pick keeps the wallpaper,
+    # and re-encoding it at full size and handing it through pkexec again would
+    # only produce the file that is already there. What was last copied is
+    # noted beside the other generated state, since the login theme's folder
+    # isn't this user's to write in.
+    local stamp_file="$STATE_DIR/user/generated/sddm-background.stamp"
+    local stamp
+    stamp="$(cache_key_for "$1")" || stamp=""
+    if [[ -n "$stamp" && -f "$dest" && "$(cat "$stamp_file" 2>/dev/null)" == "$stamp" ]]; then
+        return
+    fi
+    local copied=""
+
     # Convert to jpg (or copy if already jpg) using a temp file, then move into place
     local tmpfile
     tmpfile="$(mktemp /tmp/sddm-bg-XXXXXX.jpg)"
     if command -v magick &>/dev/null; then
-        magick "$wallpaper_path" -quality 90 "$tmpfile" 2>/dev/null || return
+        magick "$wallpaper_path" -quality 90 "$tmpfile" 2>/dev/null || { rm -f "$tmpfile"; return; }
     elif command -v convert &>/dev/null; then
-        convert "$wallpaper_path" -quality 90 "$tmpfile" 2>/dev/null || return
+        convert "$wallpaper_path" -quality 90 "$tmpfile" 2>/dev/null || { rm -f "$tmpfile"; return; }
     else
-        cp "$wallpaper_path" "$tmpfile" 2>/dev/null || return
+        cp "$wallpaper_path" "$tmpfile" 2>/dev/null || { rm -f "$tmpfile"; return; }
     fi
 
     # Copy to SDDM theme dir
     # Try direct copy first, fall back to pkexec with polkit helper (no password needed)
     if cp "$tmpfile" "$dest" 2>/dev/null; then
         chmod 644 "$dest" 2>/dev/null
+        copied=1
     elif command -v sddm-bg-helper &>/dev/null; then
-        pkexec sddm-bg-helper "$tmpfile" "$dest" 2>/dev/null
+        pkexec sddm-bg-helper "$tmpfile" "$dest" 2>/dev/null && copied=1
     fi
     rm -f "$tmpfile"
 
@@ -82,11 +140,20 @@ set_sddm_background() {
         if cp "$1" "$video_dest" 2>/dev/null; then
             chmod 644 "$video_dest" 2>/dev/null
         elif command -v sddm-bg-helper &>/dev/null; then
-            pkexec sddm-bg-helper "$1" "$video_dest" 2>/dev/null
+            pkexec sddm-bg-helper "$1" "$video_dest" 2>/dev/null || copied=""
+        else
+            copied=""
         fi
     elif [[ -e "$video_dest" ]]; then
         rm -f "$video_dest" 2>/dev/null \
             || { command -v sddm-bg-helper &>/dev/null && pkexec sddm-bg-helper --clear "$video_dest" 2>/dev/null; }
+    fi
+
+    if [[ -n "$copied" && -n "$stamp" ]]; then
+        mkdir -p "${stamp_file%/*}" 2>/dev/null
+        printf '%s' "$stamp" > "$stamp_file" 2>/dev/null
+    else
+        rm -f "$stamp_file" 2>/dev/null
     fi
 }
 
@@ -128,6 +195,12 @@ post_process() {
         # single-key push and leaves the login screen on the theme's wallpaper.
         if [[ -n "${keep_slideshow_flag:-}" ]]; then
             set_scrolloverview_wallpaper "$wallpaper_path" "$screen_width" "$screen_height" "eval"
+        elif [[ -n "${config_staged_flag:-}" ]]; then
+            # apply-theme.sh reloads once the rest of the theme is written, so a
+            # reload here would only be a second one landing late. The overview
+            # is told first, so it doesn't wait on the login background's encode.
+            set_scrolloverview_wallpaper "$wallpaper_path" "$screen_width" "$screen_height" "eval"
+            set_sddm_background "$wallpaper_path"
         else
             set_sddm_background "$wallpaper_path"
             set_scrolloverview_wallpaper "$wallpaper_path" "$screen_width" "$screen_height"
@@ -224,6 +297,50 @@ cache_put() {
     [[ -n "${3:-}" ]] || return 0
     cache_rewrite "$1" "$2" "$3"
 }
+
+# Everything that reads colours out of a picture shrinks it first: matugen to
+# 112 pixels square, the stylesheet generator and the scheme detector to about
+# 128. Each of them decoding the full picture to get there was three full
+# decodes of every new wallpaper, so they are handed one small copy instead,
+# made once. Named for the picture's path, date and size rather than its file
+# name, since two pictures can share a name. SVG and AVIF are flattened on the
+# way, which is also what lets matugen and PIL read them at all. The picture
+# itself is the answer when there is no magick or the copy can't be made.
+COLORSRC_DIR="$CACHE_DIR/user/generated/colorsrc"
+colour_source() {
+    local src="$1" key copy
+    if [[ ! -f "$src" ]] || ! command -v magick >/dev/null 2>&1; then
+        printf '%s' "$src"
+        return
+    fi
+    key="$(cache_key_for "$src")" || { printf '%s' "$src"; return; }
+    copy="$COLORSRC_DIR/$(printf '%s' "$key" | sha256sum | cut -c1-32).png"
+    if [[ ! -s "$copy" ]]; then
+        mkdir -p "$COLORSRC_DIR" 2>/dev/null
+        local flatten=()
+        case "${src,,}" in *.svg|*.svgz|*.avif) flatten=(-flatten) ;; esac
+        # [0] is the first frame, so an animated picture makes one copy.
+        if magick -define jpeg:size=1024x1024 "${src}[0]" -resize '512x512>' "${flatten[@]}" \
+                "$copy.$$.png" 2>/dev/null && [[ -s "$copy.$$.png" ]]; then
+            mv -f "$copy.$$.png" "$copy"
+            ls -1t "$COLORSRC_DIR"/*.png 2>/dev/null | tail -n "+$((PALETTE_CACHE_KEEP + 1))" \
+                | while IFS= read -r stale; do rm -f "$stale"; done
+            # The copies from before were named after the picture alone.
+            rm -f "$CACHE_DIR"/user/generated/colorsrc-*.png 2>/dev/null
+        else
+            rm -f "$copy.$$.png"
+            printf '%s' "$src"
+            return
+        fi
+    fi
+    printf '%s' "$copy"
+}
+
+# The copy for this run's picture, made the first time something needs it, so
+# a run whose colours all come from the caches never makes one.
+ensure_palette_src() {
+    [[ -n "${palette_src:-}" ]] || palette_src="$(colour_source "$palette_img")"
+}
 cache_drop() {
     [[ -f "$1" ]] || return 0
     cache_rewrite "$1" "$2" ""
@@ -239,7 +356,25 @@ kill_existing_mpvpaper() {
         read -r comm < "$p/comm" 2>/dev/null || continue
         [[ "$comm" == "mpvpaper" ]] && kill -9 "${p#/proc/}" 2>/dev/null
     done
+    rm -f "$MPVPAPER_STATE" 2>/dev/null
     return 0
+}
+
+# What the running mpvpaper instances were started with: the video, the
+# options and the monitors, one per line. A run that would start exactly the
+# same again (a light/dark toggle, a style pick, re-applying the theme, the
+# shell coming up after the restore script) leaves them playing instead of
+# tearing every one down for a blank frame and a fresh decoder. The restore
+# script writes the same record. Kept in the runtime directory, so it goes with
+# the session the processes belong to.
+MPVPAPER_STATE="${XDG_RUNTIME_DIR:-/tmp}/quickshell-mpvpaper.${UID:-0}.state"
+mpvpaper_running() {
+    local p comm
+    for p in /proc/[0-9]*; do
+        read -r comm < "$p/comm" 2>/dev/null || continue
+        [[ "$comm" == "mpvpaper" ]] && return 0
+    done
+    return 1
 }
 
 create_restore_script() {
@@ -254,10 +389,12 @@ for p in /proc/[0-9]*; do
     [ "\$comm" = "mpvpaper" ] && kill -9 "\${p#/proc/}" 2>/dev/null
 done
 
-for monitor in \$(hyprctl monitors -j | jq -r '.[] | .name'); do
+monitors=\$(hyprctl monitors -j | jq -r '.[] | .name')
+for monitor in \$monitors; do
     mpvpaper -p -a FULL -o "$VIDEO_OPTS" "\$monitor" "$video_path" &
     sleep 0.1
 done
+printf '%s\\n%s\\n%s' "$video_path" "$VIDEO_OPTS" "\$monitors" > "$MPVPAPER_STATE"
 EOF
     mv "$RESTORE_SCRIPT.tmp" "$RESTORE_SCRIPT"
     chmod +x "$RESTORE_SCRIPT"
@@ -287,6 +424,12 @@ config_jq() {
         local tmp
         tmp="$(mktemp "$SHELL_CONFIG_FILE.XXXXXX" 2>/dev/null)" || return 0
         if jq "$@" "$SHELL_CONFIG_FILE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            # An edit that changes nothing is not written: every rewrite has
+            # each Quickshell process reload the file.
+            if cmp -s "$tmp" "$SHELL_CONFIG_FILE"; then
+                rm -f "$tmp"
+                return 0
+            fi
             chmod --reference="$SHELL_CONFIG_FILE" "$tmp" 2>/dev/null
             mv -f "$tmp" "$SHELL_CONFIG_FILE"
         else
@@ -356,7 +499,7 @@ set_scrolloverview_wallpaper() {
     # path written into that file would be replaced by the stock one the next
     # time it was.
     local target="$XDG_CONFIG_HOME/hypr/custom/overview.wallpaper"
-    [[ -z "$path" ]] && return
+    [[ -z "$path" ]] && { reload_for_colormode; return; }
     mkdir -p "$(dirname "$target")"
 
     # The plugin uploads its wallpaper twice (sharp + pre-blurred), so hand it a
@@ -388,7 +531,10 @@ set_scrolloverview_wallpaper() {
             # folder for as long as it runs, and this is a full decode and encode.
             plugin_path="$scaled"
         elif command -v magick &>/dev/null; then
-            magick "$src" -resize "${screen_width}x${screen_height}^>" "$scaled" 2>/dev/null && plugin_path="$scaled"
+            # The size hint has a JPEG decoded at no more than about the screen
+            # size, which keeps a very large photo inside the memory cap above.
+            magick -define "jpeg:size=${screen_width}x${screen_height}" "$src" \
+                -resize "${screen_width}x${screen_height}^>" "$scaled" 2>/dev/null && plugin_path="$scaled"
         elif command -v convert &>/dev/null; then
             convert "$src" -resize "${screen_width}x${screen_height}^>" "$scaled" 2>/dev/null && plugin_path="$scaled"
         fi
@@ -402,11 +548,12 @@ set_scrolloverview_wallpaper() {
     # One line, written whole. Placed beside the target and renamed, because a
     # reload can be reading it at any moment and half a path reads as none.
     local tmpfile
-    tmpfile="$(mktemp "$target.XXXXXX" 2>/dev/null)" || return
+    tmpfile="$(mktemp "$target.XXXXXX" 2>/dev/null)" || { reload_for_colormode; return; }
     if printf '%s\n' "$plugin_path" > "$tmpfile" && [ -s "$tmpfile" ]; then
         mv -f "$tmpfile" "$target"
     else
         rm -f "$tmpfile"
+        reload_for_colormode
         return
     fi
 
@@ -416,7 +563,10 @@ set_scrolloverview_wallpaper() {
     local lua_path="$plugin_path"
     lua_path="${lua_path//\\/\\\\}"
     lua_path="${lua_path//\"/\\\"}"
-    if [[ "$push_mode" == "eval" ]]; then
+    # A run that changed the mode reloads all the same: the title bars only
+    # take up the other mode's colors on a reload. Under apply-theme.sh that
+    # reload is the one it makes at the end.
+    if [[ "$push_mode" == "eval" && ( -z "${colormode_changed:-}" || -n "${config_staged_flag:-}" ) ]]; then
         hyprctl eval "hl.config({ plugin = { scrolloverview = { wallpaper_path = \"$lua_path\" } } })" >/dev/null 2>&1 &
     else
         hyprctl reload >/dev/null 2>&1 &
@@ -440,10 +590,26 @@ picture_only_post_process() {
     ) >/dev/null 2>&1 9>&- &
 }
 
+# The category belongs to the picture, so it is asked for once per file rather
+# than on every run: a light/dark toggle, an accent pick or the login re-apply
+# would otherwise send the same wallpaper to Gemini again and re-style the
+# clock for nothing. The file it was worked out for is noted beside it.
 categorize_wallpaper() {
+    local dir="$STATE_DIR/user/generated/wallpaper"
+    local key
+    key="$(cache_key_for "$1")" || key=""
+    if [[ -n "$key" && -s "$dir/category.txt" && "$(cat "$dir/category.key" 2>/dev/null)" == "$key" ]]; then
+        return 0
+    fi
     img_cat=$("$SCRIPT_DIR/../ai/gemini-categorize-wallpaper.sh" "$1")
     # notify-send "Wallpaper category" "$img_cat"
-    echo "$img_cat" > "$STATE_DIR/user/generated/wallpaper/category.txt"
+    mkdir -p "$dir" 2>/dev/null
+    echo "$img_cat" > "$dir/category.txt"
+    if [[ -n "$img_cat" && -n "$key" ]]; then
+        printf '%s' "$key" > "$dir/category.key" 2>/dev/null
+    else
+        rm -f "$dir/category.key" 2>/dev/null
+    fi
 }
 
 switch() {
@@ -465,23 +631,17 @@ switch() {
     local skip_config_writes="${config_staged_flag:-}"
 
     # Start Gemini auto-categorization if enabled
-    aiStylingEnabled=$(jq -r '.background.widgets.clock.cookie.aiStyling' "$SHELL_CONFIG_FILE")
-    if [[ "$aiStylingEnabled" == "true" ]]; then
+    if [[ "${cfg_ai_styling:-}" == "true" ]]; then
         categorize_wallpaper "$imgpath" &
     fi
-
-    read scale screenx screeny screensizey < <(hyprctl monitors -j | jq '.[] | select(.focused) | .scale, .x, .y, .height' | xargs)
-    cursorposx=$(hyprctl cursorpos -j | jq '.x' 2>/dev/null) || cursorposx=960
-    cursorposx=$(bc <<< "scale=0; ($cursorposx - $screenx) * $scale / 1")
-    cursorposy=$(hyprctl cursorpos -j | jq '.y' 2>/dev/null) || cursorposy=540
-    cursorposy=$(bc <<< "scale=0; ($cursorposy - $screeny) * $scale / 1")
-    cursorposy_inverted=$((screensizey - cursorposy))
 
     matugen_args=(--source-color-index 0)
     # Only set on the picture path; a hand-picked accent colour needs no cache
     # because there is no picture to read.
     palette_key=""
     palette_hex=""
+    palette_img=""
+    palette_src=""
 
     if [[ "$color_flag" == "1" ]]; then
         matugen_args+=(color hex "$color")
@@ -491,8 +651,6 @@ switch() {
             echo 'Aborted'
             exit 0
         fi
-
-        kill_existing_mpvpaper
 
         if is_video "$imgpath"; then
             mkdir -p "$THUMBNAIL_DIR"
@@ -514,7 +672,7 @@ switch() {
                     "Can't switch to video wallpaper" \
                     "Missing dependencies: ${missing_deps[*]}")
                 if [[ "$action" == "install_arch" ]]; then
-                    kitty -1 sudo pacman -S "${missing_deps[*]}"
+                    kitty -1 sudo pacman -S "${missing_deps[@]}"
                     if command -v mpvpaper &>/dev/null && command -v ffmpeg &>/dev/null; then
                         notify-send 'Wallpaper switcher' 'Alright, try again!' -a "Wallpaper switcher"
                     fi
@@ -531,33 +689,46 @@ switch() {
             # Set video wallpaper
             local video_path="$imgpath"
             monitors=$(hyprctl monitors -j | jq -r '.[] | .name')
-            for monitor in $monitors; do
-                nohup mpvpaper -p -a FULL -o "$VIDEO_OPTS" "$monitor" "$video_path" >/dev/null 2>&1 &
-                sleep 0.1
-            done
-
-            # Extract first frame for color generation
-            thumbnail="$THUMBNAIL_DIR/$(basename "$imgpath").jpg"
-            ffmpeg -y -i "$imgpath" -vframes 1 "$thumbnail" 2>/dev/null
-
-            # Set thumbnail path (skip if apply-theme.sh already staged it)
-            if [[ -z "$skip_config_writes" ]]; then
-                set_thumbnail_path "$thumbnail"
+            local playing
+            playing="$(printf '%s\n%s\n%s' "$video_path" "$VIDEO_OPTS" "$monitors")"
+            if [[ "$(cat "$MPVPAPER_STATE" 2>/dev/null)" != "$playing" ]] || ! mpvpaper_running; then
+                kill_existing_mpvpaper
+                for monitor in $monitors; do
+                    nohup mpvpaper -p -a FULL -o "$VIDEO_OPTS" "$monitor" "$video_path" >/dev/null 2>&1 &
+                    sleep 0.1
+                done
+                printf '%s' "$playing" > "$MPVPAPER_STATE" 2>/dev/null
             fi
+
+            # Extract first frame for color generation. Only when the video is
+            # not the one the thumbnail was taken from: two videos can share a
+            # name, so the source is noted beside it rather than trusted from
+            # the file name. Leaving an unchanged thumbnail alone also keeps
+            # the overview's scaled copy, which is checked against its date.
+            thumbnail="$THUMBNAIL_DIR/$(basename "$imgpath").jpg"
+            local thumb_src
+            thumb_src="$(cache_key_for "$imgpath")" || thumb_src=""
+            if [[ ! -s "$thumbnail" || -z "$thumb_src" || "$(cat "$thumbnail.src" 2>/dev/null)" != "$thumb_src" ]]; then
+                ffmpeg -y -i "$imgpath" -vframes 1 "$thumbnail" 2>/dev/null \
+                    && [[ -n "$thumb_src" ]] && printf '%s' "$thumb_src" > "$thumbnail.src" 2>/dev/null
+            fi
+
+            # Set thumbnail path. Written under apply-theme.sh as well: it
+            # stages the wallpaper but not this, which only exists once ffmpeg
+            # has run, and an unchanged path isn't rewritten.
+            set_thumbnail_path "$thumbnail"
 
             if [ -f "$thumbnail" ]; then
                 palette_img="$thumbnail"
                 # Keyed on the video rather than the thumbnail: ffmpeg rewrites
-                # the thumbnail every run, so its mtime never matches twice and
-                # a thumbnail key could only ever miss, filling the store with
-                # entries nothing can read.
+                # the thumbnail whenever the video changes, and a key on the
+                # thumbnail would say nothing about the video it came from.
                 palette_key="$(cache_key_for "$video_path")"
                 if cache_get "$SRCCOLOR_CACHE" "$palette_key" '^#[0-9a-fA-F]{6}$'; then
                     palette_hex="$cache_value"
                     matugen_args+=(color hex "$palette_hex")
                 else
                     palette_hex=""
-                    matugen_args+=(image "$thumbnail")
                 fi
                 generate_colors_material_args=(--path "$thumbnail")
                 create_restore_script "$video_path"
@@ -567,40 +738,24 @@ switch() {
                 exit 1
             fi
         else
+            kill_existing_mpvpaper
             # Handing matugen the picture means decoding it, which on anything
             # camera-sized is most of the wait. All it takes from the picture is
             # one colour, and the scheme it builds from that colour is the same
             # either way — so once that colour is known, the picture never has
             # to be opened again.
             palette_img="$imgpath"
-            # matugen exits 101 on AVIF and on SVG, and the material generator
-            # is PIL-based with the same gaps, but both formats display fine —
-            # so the colour is read from a small rasterised copy while the
-            # wallpaper stays the original. The cache is keyed on that original,
-            # since this copy is rewritten whenever the source changes and a key
-            # on it could only ever miss.
-            local palette_src="$imgpath"
-            case "${imgpath,,}" in
-                *.avif|*.svg|*.svgz)
-                    if command -v magick >/dev/null 2>&1; then
-                        local colorsrc="$CACHE_DIR/user/generated/colorsrc-$(basename "$imgpath").png"
-                        if [[ ! -f "$colorsrc" || "$imgpath" -nt "$colorsrc" ]]; then
-                            mkdir -p "${colorsrc%/*}" 2>/dev/null
-                            magick "$imgpath" -resize '512x512>' -flatten "$colorsrc" 2>/dev/null || true
-                        fi
-                        [[ -s "$colorsrc" ]] && palette_src="$colorsrc"
-                    fi
-                    ;;
-            esac
+            # The cache is keyed on the original, never on the small copy the
+            # colours are read from (colour_source), which is remade whenever
+            # the picture changes.
             palette_key="$(cache_key_for "$imgpath")"
             if cache_get "$SRCCOLOR_CACHE" "$palette_key" '^#[0-9a-fA-F]{6}$'; then
                 palette_hex="$cache_value"
                 matugen_args+=(color hex "$palette_hex")
             else
                 palette_hex=""
-                matugen_args+=(image "$palette_src")
             fi
-            generate_colors_material_args=(--path "$palette_src")
+            generate_colors_material_args=(--path "$imgpath")
             # Update wallpaper path in config (skip if apply-theme.sh already staged it)
             if [[ -z "$skip_config_writes" ]]; then
                 [[ -n "${clear_accent_color:-}" ]] && set_accent_color ""
@@ -617,6 +772,12 @@ switch() {
         return 0
     fi
 
+    # A picture whose colour isn't cached yet is read from its small copy.
+    if [[ -n "$palette_img" && -z "$palette_hex" ]]; then
+        ensure_palette_src
+        matugen_args+=(image "$palette_src")
+    fi
+
     # Determine mode if not set
     if [[ -z "$mode_flag" ]]; then
         current_mode=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")
@@ -631,7 +792,7 @@ switch() {
     force_dark_mode=""
     if [[ -n "$mode_flag" ]]; then
         matugen_args+=(--mode "$mode_flag")
-        force_dark_mode="$(jq -r '.appearance.wallpaperTheming.terminalGenerationProps.forceDarkMode' "$SHELL_CONFIG_FILE" 2>/dev/null)"
+        force_dark_mode="${cfg_force_dark_mode:-}"
         if [[ "$force_dark_mode" == "true" ]]; then
             generate_colors_material_args+=(--mode "dark")
         else
@@ -645,7 +806,7 @@ switch() {
     # If type_flag is 'auto', detect scheme type from image (after imgpath is set)
     if [[ "$type_flag" == "auto" ]]; then
         if [[ -n "$imgpath" && -f "$imgpath" ]]; then
-            detected_type="$(detect_scheme_type_from_image "$imgpath")"
+            detect_scheme_type_from_image "$imgpath"
             # Only use detected_type if it's valid
             valid_detected=0
             for t in "${allowed_types[@]}"; do
@@ -673,18 +834,19 @@ switch() {
 
     # Check if app and shell theming is enabled in config
     if [ -f "$SHELL_CONFIG_FILE" ]; then
-        enable_apps_shell=$(jq -r '.appearance.wallpaperTheming.enableAppsAndShell' "$SHELL_CONFIG_FILE")
+        enable_apps_shell="${cfg_enable_apps_shell:-}"
         if [ "$enable_apps_shell" == "false" ]; then
             echo "App and shell theming disabled, skipping matugen and color generation"
+            reload_for_colormode
             return
         fi
     fi
 
     # Set harmony and related properties
     if [ -f "$SHELL_CONFIG_FILE" ]; then
-        harmony=$(jq -r '.appearance.wallpaperTheming.terminalGenerationProps.harmony' "$SHELL_CONFIG_FILE")
-        harmonize_threshold=$(jq -r '.appearance.wallpaperTheming.terminalGenerationProps.harmonizeThreshold' "$SHELL_CONFIG_FILE")
-        term_fg_boost=$(jq -r '.appearance.wallpaperTheming.terminalGenerationProps.termFgBoost' "$SHELL_CONFIG_FILE")
+        harmony="${cfg_harmony:-}"
+        harmonize_threshold="${cfg_harmonize_threshold:-}"
+        term_fg_boost="${cfg_term_fg_boost:-}"
         [[ "$harmony" != "null" && -n "$harmony" ]] && generate_colors_material_args+=(--harmony "$harmony")
         [[ "$harmonize_threshold" != "null" && -n "$harmonize_threshold" ]] && generate_colors_material_args+=(--harmonize_threshold "$harmonize_threshold")
         [[ "$term_fg_boost" != "null" && -n "$term_fg_boost" ]] && generate_colors_material_args+=(--term_fg_boost "$term_fg_boost")
@@ -692,11 +854,6 @@ switch() {
 
     source "$(eval echo $ILLOGICAL_IMPULSE_VIRTUAL_ENV)/bin/activate"
     mkdir -p "$STATE_DIR"/user/generated
-    generated_colors_tmp=$(mktemp "$STATE_DIR"/user/generated/material_colors.scss.XXXXXX)
-    # The stylesheet is written to one side and moved into place only once it
-    # has been checked, so a run that ends anywhere in between leaves the
-    # half-written copy behind to accumulate.
-    trap 'rm -f "$generated_colors_tmp"' EXIT INT TERM HUP
     # These two read the same wallpaper and neither reads anything the other
     # writes, so running one after the other only made the wait longer.
     # The colour the editor theme is set from stays matugen's alone: the two
@@ -709,23 +866,46 @@ switch() {
     # gets kept is the finished stylesheet, under everything that went into it.
     scss_cache_key=""
     scss_cache_file=""
-    if [[ -n "${palette_key:-}" ]]; then
+    # What the stylesheet is built from: the picture, or a picked accent colour,
+    # which needs no picture and so is its own key.
+    local scss_source="${palette_key:-}"
+    [[ "$color_flag" == "1" && -n "$color" ]] && scss_source="color:${color,,}"
+    # The mode the generator is actually run in. forceDarkMode runs it dark
+    # whatever the desktop's mode, so a light/dark toggle has nothing new to
+    # build and is served the same entry.
+    local scss_mode="${mode_flag:-}"
+    [[ "$force_dark_mode" == "true" ]] && scss_mode="dark"
+    if [[ -n "$scss_source" ]]; then
         # forceDarkMode belongs in here: it decides whether the generator is
         # run against the dark palette or the current one, so it changes what
         # the cached stylesheet contains without changing anything else here.
         scss_cache_key="$(printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' \
-            "$palette_key" "${mode_flag:-}" "${type_flag:-}" "${harmony:-}" \
+            "$scss_source" "$scss_mode" "${type_flag:-}" "${harmony:-}" \
             "${harmonize_threshold:-}" "${term_fg_boost:-}" "${force_dark_mode:-}" \
             "$(cache_key_for "$terminalscheme")" \
             "$(cache_key_for "$SCRIPT_DIR/generate_colors_material.py")" | sha256sum 2>/dev/null)"
         scss_cache_key="${scss_cache_key:0:32}"
         [[ -n "$scss_cache_key" ]] && scss_cache_file="$CACHE_DIR/user/generated/palette-scss/$scss_cache_key.scss"
     fi
+    # Nothing is written for the stylesheet until it is ready to be checked and
+    # moved into place. matugen is most of the wait, and a run can be killed
+    # outright during it (the Quick settings page is rebuilt as soon as the new
+    # colors land, and takes the run it started down with it), which leaves no
+    # chance to clean up a file held across it.
+    generated_colors_fd=""
+    generated_colors_pid=""
     if [[ -n "$scss_cache_file" && -s "$scss_cache_file" ]]; then
-        cp -f "$scss_cache_file" "$generated_colors_tmp" 2>/dev/null
-        generated_colors_pid=""
-    else
-        python3 "$SCRIPT_DIR/generate_colors_material.py" "${generate_colors_material_args[@]}" > "$generated_colors_tmp" &
+        # Held open from here, so another run pruning the store before this
+        # one reads it cannot take it away.
+        { exec {generated_colors_fd}<"$scss_cache_file"; } 2>/dev/null
+    fi
+    if [[ -z "$generated_colors_fd" ]]; then
+        # Handed the small copy too; its --path is always the first pair.
+        if [[ -n "$palette_img" && "${generate_colors_material_args[0]:-}" == "--path" ]]; then
+            ensure_palette_src
+            generate_colors_material_args[1]="$palette_src"
+        fi
+        exec {generated_colors_fd}< <(python3 "$SCRIPT_DIR/generate_colors_material.py" "${generate_colors_material_args[@]}" </dev/null)
         generated_colors_pid=$!
     fi
 
@@ -748,6 +928,11 @@ switch() {
             && printf '%s\n' "$palette_img" > "$STATE_DIR/user/generated/wallpaper/path.txt" 2>/dev/null
     fi
 
+    # Read in full first, so the file below exists only for as long as writing,
+    # checking and moving it takes, however long the generator runs past
+    # matugen. The x keeps the trailing newlines a command substitution drops.
+    generated_colors="$(cat <&"$generated_colors_fd"; printf x)"
+    exec {generated_colors_fd}<&-
     generated_colors_status=0
     [[ -n "$generated_colors_pid" ]] && { wait "$generated_colors_pid"; generated_colors_status=$?; }
     # A failed matugen leaves the previous colors.json in place, and every check
@@ -757,11 +942,19 @@ switch() {
         # A stored colour matugen won't take is dropped, so the next run reads
         # the picture again instead of being handed the same refusal.
         [[ -n "${palette_hex:-}" && -n "${palette_key:-}" ]] && cache_drop "$SRCCOLOR_CACHE" "$palette_key"
-        rm -f "$generated_colors_tmp"
         echo "[switchwall] matugen failed (exit $matugen_status); keeping the previous colors." >&2
         deactivate
+        reload_for_colormode
         return 1
     fi
+    # A run killed outright leaves its copy behind and nothing else would ever
+    # remove it. Only copies old enough that no run still going could own one.
+    find "$STATE_DIR"/user/generated -maxdepth 1 -type f -name 'material_colors.scss.??????' -mmin +10 -delete 2>/dev/null
+    generated_colors_tmp=$(mktemp "$STATE_DIR"/user/generated/material_colors.scss.XXXXXX)
+    # Moved into place only once it has been checked, so a run that ends in
+    # between would otherwise leave the half-written copy behind.
+    trap 'rm -f "$generated_colors_tmp"' EXIT INT TERM HUP
+    printf '%s' "${generated_colors%x}" > "$generated_colors_tmp"
     if [[ $generated_colors_status -eq 0 ]] \
         && grep -Eq '^\$onBackground: #[[:xdigit:]]{6};$' "$generated_colors_tmp"; then
         # Kept only once it has passed the same check the live copy has to pass,
@@ -775,10 +968,14 @@ switch() {
                 | tail -n "+$((PALETTE_CACHE_KEEP + 1))" | xargs -r rm -f 2>/dev/null
         fi
         mv "$generated_colors_tmp" "$STATE_DIR"/user/generated/material_colors.scss
+        # Nothing is left to clean up, so a signal from here on ends the run
+        # instead of being absorbed by the trap.
+        trap - EXIT INT TERM HUP
     else
         rm -f "$generated_colors_tmp"
         echo "[switchwall] Failed to generate material_colors.scss; keeping the previous colors." >&2
         deactivate
+        reload_for_colormode
         return 1
     fi
     deactivate
@@ -801,40 +998,75 @@ main() {
     keep_slideshow_flag=""
     stop_slideshow=""
 
-    get_type_from_config() {
-        jq -r '.appearance.palette.type' "$SHELL_CONFIG_FILE" 2>/dev/null || echo "auto"
-    }
-    get_accent_color_from_config() {
-        jq -r '.appearance.palette.accentColor' "$SHELL_CONFIG_FILE" 2>/dev/null || echo ""
+    # Every setting the run goes by, in one pass over config.json rather than a
+    # jq each. Read once the arguments are handled, since --color writes the
+    # accent before it is read back here.
+    read_config_settings() {
+        local cfg=()
+        mapfile -t cfg < <(jq -r '[.appearance.palette.type, .appearance.palette.accentColor,
+            .background.widgets.clock.cookie.aiStyling,
+            .appearance.wallpaperTheming.terminalGenerationProps.forceDarkMode,
+            .appearance.wallpaperTheming.enableAppsAndShell,
+            .appearance.wallpaperTheming.terminalGenerationProps.harmony,
+            .appearance.wallpaperTheming.terminalGenerationProps.harmonizeThreshold,
+            .appearance.wallpaperTheming.terminalGenerationProps.termFgBoost]
+            | .[] | tostring | gsub("\n"; " ")' "$SHELL_CONFIG_FILE" 2>/dev/null)
+        # Unreadable reads as it did one jq at a time: the type as auto and
+        # the rest as unset.
+        cfg_palette_type="${cfg[0]:-auto}"
+        cfg_accent_color="${cfg[1]:-}"
+        cfg_ai_styling="${cfg[2]:-}"
+        cfg_force_dark_mode="${cfg[3]:-}"
+        cfg_enable_apps_shell="${cfg[4]:-}"
+        cfg_harmony="${cfg[5]:-}"
+        cfg_harmonize_threshold="${cfg[6]:-}"
+        cfg_term_fg_boost="${cfg[7]:-}"
     }
     set_accent_color() {
         local color="$1"
         config_jq --arg color "$color" '.appearance.palette.accentColor = $color'
     }
 
+    # Sets detected_type rather than printing it, so the small copy made on
+    # the way (ensure_palette_src) is still there for the readers after it.
     detect_scheme_type_from_image() {
         local img="$1"
+        detected_type=""
         # The answer is one of two scheme names decided by a single number
         # measured off the picture, so it can't change while the file doesn't.
         # Arriving at it means starting a Python interpreter and decoding the
-        # image at full size, and the same unchanged wallpaper gets asked about
-        # on every theme apply and every light/dark toggle, so keep the last
-        # answer and the file it belongs to.
+        # image, and the same unchanged wallpaper gets asked about on every
+        # theme apply and every light/dark toggle, so keep the last answer and
+        # the file it belongs to.
         local cache="$STATE_DIR/user/generated/scheme-for-image.cache"
         local key
         key="$(cache_key_for "$img")"
+        # A video used to be handed to the detector as it is, which it cannot
+        # open, so every answer stored for one is the fallback. Its answers are
+        # kept under a key of their own now, read off the thumbnail.
+        is_video "$img" && key+="|frame"
         if cache_get "$cache" "$key"; then
-            printf '%s' "$cache_value"
+            detected_type="$cache_value"
             return 0
         fi
 
+        # Keyed on the wallpaper, read off the small copy of the picture the
+        # palette comes from: the thumbnail's, for a video.
+        local read="$img"
+        if [[ -n "$palette_img" ]]; then
+            ensure_palette_src
+            read="$palette_src"
+        fi
         source "$(eval echo $ILLOGICAL_IMPULSE_VIRTUAL_ENV)/bin/activate"
-        local detected
-        detected="$("$SCRIPT_DIR"/scheme_for_image.py "$img" 2>/dev/null | tr -d '\n')"
+        local detected status=0
+        detected="$("$SCRIPT_DIR"/scheme_for_image.py "$read" 2>/dev/null)" || status=$?
         deactivate
+        detected="${detected//$'\n'/}"
 
-        [[ -n "$detected" ]] && cache_put "$cache" "$key" "$detected"
-        printf '%s' "$detected"
+        # The detector names a fallback when it cannot read the picture, and
+        # that is no answer to keep: the next run should try again.
+        [[ $status -eq 0 && -n "$detected" ]] && cache_put "$cache" "$key" "$detected"
+        detected_type="$detected"
     }
 
     while [[ $# -gt 0 ]]; do
@@ -894,8 +1126,10 @@ main() {
         esac
     done
 
+    read_config_settings
+
     # If accentColor is set in config, use it
-    config_color="$(get_accent_color_from_config)"
+    config_color="$cfg_accent_color"
     if [[ "$config_color" =~ ^#?[A-Fa-f0-9]{6}$ ]]; then
         color_flag="1"
         color="$config_color"
@@ -913,7 +1147,7 @@ main() {
 
     # If type_flag is not set, get it from config
     if [[ -z "$type_flag" ]]; then
-        type_flag="$(get_type_from_config)"
+        type_flag="$cfg_palette_type"
     fi
 
     # Validate type_flag (allow 'auto' as well)

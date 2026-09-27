@@ -15,6 +15,7 @@ means or where it lives.
     decorations.py sync     <general.lua> [--flag-dir DIR] [--keys a,b,...]
     decorations.py push-defaults <general.lua> [--keys a,b,...]
     decorations.py push     <values.json> [--no-reload]
+    decorations.py carry    <general.lua> <yours.lua> <new.lua> <previous.lua>...
 
 Where a setting lives is derived from its hyprctl keyword rather than stated
 twice: decoration:blur:size is the field `size`, inside `blur`, inside
@@ -29,7 +30,11 @@ it fills every key the snapshot doesn't name from the schema defaults, because
 a setting absent from a snapshot did not exist when the theme was saved, and
 stock is what the machine showed then. Leaving those keys alone instead meant
 applying an older theme kept whatever the previous theme had put in the newer
-keys, and the older theme no longer looked like its save. Snapshots from
+keys, and the older theme no longer looked like its save. A row marked
+"restoreFill": false is left as it is when the snapshot lacks it. The corner
+curve is one: picking the Hug style sets it so window corners follow the
+bar's, and a theme saved before the curve was a setting never chose one, so
+applying it keeps the curve the user last picked. Snapshots from
 before two keys were renamed still say borders / roundCorners; a false there
 restores as its modern spelling's zero, and a true is the default the
 completion supplies anyway. restore --push also sends that completed set to
@@ -157,12 +162,29 @@ def _insert_field(text, path, field, rendered):
     return head + "\n" + indent + field + " = " + rendered + tail
 
 
+# The escapes _format writes, read back the way Lua reads them, so a value
+# comes back as it was saved instead of gaining a backslash on every round trip.
+_LUA_ESCAPE = re.compile(r'\\(\d{1,3}|.)', re.S)
+_LUA_SIMPLE = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "'": "'"}
+
+
+def _lua_unescape(text):
+    def one(match):
+        code = match.group(1)
+        if code.isdigit():
+            return chr(int(code)) if int(code) < 256 else match.group(0)
+        return _LUA_SIMPLE.get(code, match.group(0))
+    return _LUA_ESCAPE.sub(one, text)
+
+
 def _parse(raw, kind):
     raw = raw.strip().rstrip(",").strip()
     if kind == "bool":
         return raw.lower() in ("true", "1", "yes", "on")
     if kind == "str":
-        return raw.strip('"') or None
+        if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+            raw = _lua_unescape(raw[1:-1])
+        return raw or None
     if kind == "vec2":
         parts = raw.strip("{}").split(",")
         if len(parts) != 2:
@@ -186,8 +208,24 @@ def _format(value, kind):
         # lands in general.lua, which the compositor evaluates as Lua. Escaping
         # the quote and backslash keeps a value like `x" .. os.execute(...)`
         # a harmless string instead of an expression that breaks out of it.
-        safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
-        return '"' + safe + '"'
+        # A line break or any other control character would end the line with
+        # the string still open, which Lua refuses, and the whole file with it,
+        # so those are written as escapes too.
+        out = []
+        for ch in str(value):
+            if ch == "\\":
+                out.append("\\\\")
+            elif ch == '"':
+                out.append('\\"')
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ord(ch) < 32 or ord(ch) == 127:
+                out.append("\\%03d" % ord(ch))
+            else:
+                out.append(ch)
+        return '"' + "".join(out) + '"'
     if kind == "vec2":
         return "{%s, %s}" % (int(round(float(value[0]))), int(round(float(value[1]))))
     if kind == "int":
@@ -298,12 +336,41 @@ def _locked(path):
     return _Lock()
 
 
+def _publish(path, text, encoding=None):
+    # Beside the target and renamed over it: the target is read by the Hyprland
+    # config and a reload can be reading it at any moment. The name is unique
+    # per writer: a shared one meant two writers held the same inode, and the
+    # loser's rename published a half-written file.
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                               prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+        try:
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write(general_path, values, flag_dir=None, schema=None):
     with _locked(general_path):
         return _write_locked(general_path, values, flag_dir, schema)
 
 
-def _write_locked(general_path, values, flag_dir=None, schema=None):
+def _write_locked(general_path, values, flag_dir=None, schema=None, done=None):
+    # `done` collects the keys that were actually placed. A key can be skipped
+    # (no block to put it in, a profile name that fails the check), and a
+    # caller that reports what it changed must not name those.
+    if done is None:
+        done = []
     schema = schema or load_schema()
     try:
         with open(general_path) as fh:
@@ -329,6 +396,7 @@ def _write_locked(general_path, values, flag_dir=None, schema=None):
                     with open(os.path.join(flag_dir, row["path"]), "w") as fh:
                         fh.write(text_value)
                     written += 1
+                    done.append(row["key"])
                 except OSError:
                     pass
             continue
@@ -340,6 +408,7 @@ def _write_locked(general_path, values, flag_dir=None, schema=None):
                     with open(fp, "w") as fh:
                         fh.write(str(value) + "\n")
                     written += 1
+                    done.append(row["key"])
                 except OSError:
                     pass
             continue
@@ -359,27 +428,8 @@ def _write_locked(general_path, values, flag_dir=None, schema=None):
         else:
             text = text[:span[0]] + rendered + text[span[1]:]
         written += 1
-    # Beside the target and renamed over it: general.lua is sourced by the
-    # Hyprland config and a reload can be reading it at any moment. The name is
-    # unique per writer — a shared one meant two writers held the same inode,
-    # and the loser's rename published a half-written file.
-    import tempfile
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(general_path) or ".",
-                               prefix=os.path.basename(general_path) + ".")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        try:
-            os.chmod(tmp, os.stat(general_path).st_mode & 0o7777)
-        except OSError:
-            pass
-        os.replace(tmp, general_path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        done.append(row["key"])
+    _publish(general_path, text)
     return written
 
 
@@ -435,6 +485,104 @@ def push(values, schema=None, allow_reload=True, keys=None):
         # No compositor to talk to: the file write already happened and is
         # what a later start reads, so this is a no-op rather than a failure.
         pass
+
+
+def _same(a, b, kind):
+    """Equal as the file would spell them, so 4 and 4.0 are one value."""
+    try:
+        return _format(a, kind) == _format(b, kind)
+    except (TypeError, ValueError, IndexError, KeyError):
+        return a == b
+
+
+def carry(general_path, yours_path, new_path, previous_paths, schema=None):
+    """Put the user's own settings back into a general.lua an update replaced.
+
+    An update hands over the new release's general.lua whole, which is right
+    for every setting the user never touched and wrong for every one they did.
+    A value in their copy that differs from what the previous release shipped
+    is their own; one that matches it is only the old default, and the new
+    release's value belongs in its place. When the updater cannot tell which
+    release the machine came from it names several, and a value is the user's
+    only when none of them shipped it: an old default kept over a new one is
+    the mistake to avoid, and a choice missed that way only leaves the new
+    release's value, as any replaced file does. A setting a release left to
+    the compositor counts as that release's schema default, read from the
+    decorations-schema.json beside its general.lua, since a theme apply wrote
+    exactly that value into the file and it is no more the user's choice than
+    a shipped line is.
+
+    Only what the update itself put in the file is replaced. A setting whose
+    value is no longer the new release's was changed after the copy, from the
+    settings page or a theme, and that is the newer choice. Only keys this
+    schema still knows are read, so a setting a release removed goes with it.
+    Flag files are not part of this: they sit in custom/, which updates never
+    replace. A value the file already holds is not written again, so a second
+    pass changes nothing and reports nothing.
+
+    Returns the schema rows it wrote, which is what the caller reports.
+    """
+    schema = schema or load_schema()
+    if not os.path.isfile(new_path):
+        return []
+    lua_keys = [row["key"] for row in schema["keys"] if row.get("hypr")]
+    releases = []
+    for path in previous_paths:
+        if not os.path.isfile(path):
+            continue
+        shipped = read(path, schema=schema)
+        # A file that holds none of these settings is no release to compare
+        # with: measuring against the schema alone would mistake every default
+        # the new release changed for a choice the user made.
+        if not any(key in shipped for key in lua_keys):
+            continue
+        try:
+            was_default = {row["key"]: row["default"]
+                           for row in load_schema(os.path.join(
+                               os.path.dirname(path),
+                               "decorations-schema.json"))["keys"]
+                           if "default" in row}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # A release from before the schema existed, or a copy that does
+            # not parse: this schema's defaults are the nearest guess.
+            was_default = {}
+        releases.append((shipped, was_default))
+    if not releases:
+        return []
+    yours = read(yours_path, schema=schema)
+    new = read(new_path, schema=schema)
+
+    def choose():
+        now = read(general_path, schema=schema)
+        kept = {}
+        for row in schema["keys"]:
+            key, kind = row["key"], row["type"]
+            if row.get("mechanism") == "flagfile" or key not in yours:
+                continue
+            mine = yours[key]
+            if any(_same(mine, shipped.get(key, was_default.get(key, row.get("default"))), kind)
+                   for shipped, was_default in releases):
+                continue
+            if key in now:
+                if _same(mine, now[key], kind):
+                    continue
+                if not _same(now[key], new.get(key, row.get("default")), kind):
+                    continue
+            kept[key] = mine
+        return kept
+
+    # Nothing to put back leaves the user's folder exactly as the update left
+    # it, lock file included.
+    if not choose():
+        return []
+    done = []
+    # Decided again under the lock the settings page writes under, so a change
+    # it makes cannot land between the look and the write.
+    with _locked(general_path):
+        kept = choose()
+        if kept:
+            _write_locked(general_path, kept, schema=schema, done=done)
+    return [row for row in schema["keys"] if row["key"] in done]
 
 
 def coerce(schema, pairs):
@@ -505,7 +653,7 @@ def main(argv):
             values = json.load(fh)
         schema = load_schema()
         full = {row["key"]: row["default"] for row in schema["keys"]
-                if "default" in row}
+                if "default" in row and row.get("restoreFill", True)}
         known = {row["key"] for row in schema["keys"]}
         # Snapshots from before the border/corner keys were split still carry
         # the old bools (borders, roundCorners). Map each through the schema's
@@ -553,6 +701,23 @@ def main(argv):
         except Exception:
             return 0
         push(values, allow_reload="--no-reload" not in rest)
+        return 0
+    if verb == "carry":
+        # `carry <general.lua> <yours.lua> <new.lua> <previous.lua>...` is the
+        # updater's pass once it has settled general.lua: the user's copy from
+        # just before, the release going in, and each release the machine may
+        # have come from, with that release's decorations-schema.json beside
+        # it when it had one. File only: the updater reloads the compositor
+        # once everything is in place. Prints the label of each setting it
+        # kept, one per line, as the settings page names them, and nothing
+        # when it kept nothing.
+        if len(rest) < 3:
+            print("carry needs your copy, the new release's general.lua and "
+                  "at least one earlier release's", file=sys.stderr)
+            return 2
+        kept = carry(general, rest[0], rest[1], rest[2:])
+        for row in kept:
+            print(row.get("label") or row["key"])
         return 0
     if verb in ("sync", "push-defaults"):
         # `sync <general.lua> [--keys a,b]` puts the compositor back to what

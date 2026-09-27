@@ -63,11 +63,27 @@ transparent = (args.transparency == 'transparent')
 
 if args.path is not None:
     image = Image.open(args.path)
+    # Only a small copy is quantized, and a JPEG can be decoded straight at a
+    # fraction of its size, which skips decoding every pixel of a camera-sized
+    # picture. The copy is still resized to the same size below. It has no
+    # effect on other formats.
+    try:
+        image.draft('RGB', calculate_optimal_size(*image.size, args.size))
+    except Exception:
+        pass
 
-    if image.format == "GIF":
+    # Only a GIF with a second frame has one to move to; one with a single
+    # frame raised EOFError and took the whole palette with it.
+    if image.format == "GIF" and getattr(image, "n_frames", 1) > 1:
         image.seek(1)
 
-    if image.mode in ["L", "P"]:
+    # The quantizer reads RGB or RGBA pixels and takes anything else at its
+    # word, so grey with alpha and CMYK came out as the wrong colours and
+    # 16-bit grey stopped the run. 16-bit grey is brought to 8 bits first,
+    # since converting it straight to RGB clips it to white.
+    if image.mode.startswith("I"):
+        image = image.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+    if image.mode not in ("RGB", "RGBA"):
         image = image.convert('RGB')
     wsize, hsize = image.size
     wsize_new, hsize_new = calculate_optimal_size(wsize, hsize, args.size)

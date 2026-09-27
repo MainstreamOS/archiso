@@ -32,7 +32,7 @@ Item {
     property real scale: (Config.options.overview.size / 100)
                          * Math.min(0.9 / Math.max(1, Config.options.overview.columns),
                                     0.9 / Math.max(1, Config.options.overview.rows))
-    property color activeBorderColor: Appearance.colors.colSecondary
+    property color activeBorderColor: Appearance.launcherContent.colSecondaryOnTile
 
     property real workspaceImplicitWidth: (monitorData?.transform % 2 === 1) ? 
         ((monitor.height - monitorData?.reserved[0] - monitorData?.reserved[2]) * root.scale / monitor.scale) :
@@ -95,6 +95,7 @@ Item {
 
     StyledRectangularShadow {
         target: overviewBackground
+        color: Appearance.colors.colLauncherShadow
     }
     Rectangle { // Background
         id: overviewBackground
@@ -105,7 +106,7 @@ Item {
         implicitWidth: workspaceColumnLayout.implicitWidth + padding * 2
         implicitHeight: workspaceColumnLayout.implicitHeight + padding * 2
         radius: Appearance.rounding.dockBody
-        color: Appearance.colors.colBackgroundSurfaceContainer
+        color: Appearance.colors.colLauncherPanel
 
         Column { // Workspaces
             id: workspaceColumnLayout
@@ -128,9 +129,9 @@ Item {
                             required property int index
                             property int colIndex: index
                             property int workspaceValue: root.workspaceGroup * root.workspacesShown + getWsInCell(row.index, colIndex)
-                            property color defaultWorkspaceColor: Appearance.colors.colSurfaceContainerLow
-                            property color hoveredWorkspaceColor: ColorUtils.mix(defaultWorkspaceColor, Appearance.colors.colLayer1Hover, 0.1)
-                            property color hoveredBorderColor: Appearance.colors.colLayer2Hover
+                            property color defaultWorkspaceColor: Appearance.launcherContent.colSurfaceContainerLow
+                            property color hoveredWorkspaceColor: ColorUtils.mix(defaultWorkspaceColor, Appearance.launcherContent.colLayer1Hover, 0.1)
+                            property color hoveredBorderColor: Appearance.launcherContent.colLayer2Hover
                             property bool hoveredWhileDragging: false
                             property bool appDragHovered: root.appDragHoverWorkspace === workspaceValue
 
@@ -156,7 +157,7 @@ Item {
                                     weight: Font.DemiBold
                                     family: Appearance.font.family.expressive
                                 }
-                                color: ColorUtils.transparentize(Appearance.colors.colOnLayer1, 0.8)
+                                color: Appearance.launcherContent.colTileNumber
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: Text.AlignVCenter
                             }
@@ -224,6 +225,15 @@ Item {
 
                     property bool atInitPosition: (initX == x && initY == y)
 
+                    // Cut at its workspace's edge only while it is at rest. A
+                    // dropped window stays whole until the timer below has put
+                    // it in its new place; clipped to the workspace it left, it
+                    // would vanish until Hyprland reported the move.
+                    property bool settling: false
+                    workspaceWidth: root.workspaceImplicitWidth
+                    workspaceHeight: root.workspaceImplicitHeight
+                    restrictToWorkspace: !Drag.active && !settling
+
                     // Offset on the canvas
                     property int workspaceColIndex: getWsColumn(windowData?.workspace.id)
                     property int workspaceRowIndex: getWsRow(windowData?.workspace.id)
@@ -243,9 +253,11 @@ Item {
                     property bool workspaceAtBottomLeft: (workspaceAtLeft && workspaceAtBottom) 
                     property bool workspaceAtBottomRight: (workspaceAtRight && workspaceAtBottom) 
                     property real distanceFromLeftEdge: xWithinWorkspaceWidget
-                    property real distanceFromRightEdge: root.workspaceImplicitWidth - (xWithinWorkspaceWidget + targetWindowWidth)
+                    // Held at 0 for a window cut at the edge, whose cut corner
+                    // then takes the workspace's own radius.
+                    property real distanceFromRightEdge: Math.max(0, root.workspaceImplicitWidth - (xWithinWorkspaceWidget + targetWindowWidth))
                     property real distanceFromTopEdge: yWithinWorkspaceWidget
-                    property real distanceFromBottomEdge: root.workspaceImplicitHeight - (yWithinWorkspaceWidget + targetWindowHeight)
+                    property real distanceFromBottomEdge: Math.max(0, root.workspaceImplicitHeight - (yWithinWorkspaceWidget + targetWindowHeight))
                     property real distanceFromTopLeftCorner: Math.max(distanceFromLeftEdge, distanceFromTopEdge)
                     property real distanceFromTopRightCorner: Math.max(distanceFromRightEdge, distanceFromTopEdge)
                     property real distanceFromBottomLeftCorner: Math.max(distanceFromLeftEdge, distanceFromBottomEdge)
@@ -263,6 +275,7 @@ Item {
                         onTriggered: {
                             window.x = Math.round(xWithinWorkspaceWidget + xOffset)
                             window.y = Math.round(yWithinWorkspaceWidget + yOffset)
+                            window.settling = false
                         }
                     }
 
@@ -271,7 +284,13 @@ Item {
                     Drag.hotSpot.y: height / 2
                     MouseArea {
                         id: dragArea
-                        anchors.fill: parent
+                        // Only the part drawn on its workspace answers the
+                        // pointer, so the part cut off leaves the workspace
+                        // under it free to hover and click.
+                        x: window.visibleLeft
+                        y: window.visibleTop
+                        width: Math.max(0, window.visibleRight - window.visibleLeft)
+                        height: Math.max(0, window.visibleBottom - window.visibleTop)
                         enabled: !window.closing
                         hoverEnabled: !window.closing
                         onEntered: hovered = true // For hover color change
@@ -280,12 +299,16 @@ Item {
                         drag.target: parent
                         onPressed: (mouse) => {
                             if (mouse.button !== Qt.LeftButton) return
+                            // In the window's own coordinates, and read before
+                            // the drag lifts the cut and this area moves.
+                            const hotSpotX = mouse.x + dragArea.x
+                            const hotSpotY = mouse.y + dragArea.y
                             root.draggingFromWorkspace = windowData?.workspace.id
                             window.pressed = true
                             window.Drag.active = true
                             window.Drag.source = window
-                            window.Drag.hotSpot.x = mouse.x
-                            window.Drag.hotSpot.y = mouse.y
+                            window.Drag.hotSpot.x = hotSpotX
+                            window.Drag.hotSpot.y = hotSpotY
                             // console.log(`[OverviewWindow] Dragging window ${windowData?.address} from position (${window.x}, ${window.y})`)
                         }
                         onReleased: (mouse) => {
@@ -295,11 +318,13 @@ Item {
                             window.Drag.active = false
                             root.draggingFromWorkspace = -1
                             if (targetWorkspace !== -1 && targetWorkspace !== windowData?.workspace.id) {
+                                window.settling = true
                                 Hyprland.dispatch(`hl.dsp.window.move({ workspace = ${targetWorkspace}, follow = false, window = "address:${window.windowData?.address}" })`)
                                 updateWindowPosition.restart()
                             }
                             else {
                                 if (!window.windowData?.floating) {
+                                    window.settling = true
                                     updateWindowPosition.restart()
                                     return
                                 }
@@ -344,7 +369,7 @@ Item {
                 property int colIndex: getWsColumn(root.effectiveActiveWorkspaceId)
                 x: (root.workspaceImplicitWidth + workspaceSpacing) * colIndex
                 y: (root.workspaceImplicitHeight + workspaceSpacing) * rowIndex
-                z: root.windowZ
+                z: root.windowDraggingZ - 1
                 width: root.workspaceImplicitWidth
                 height: root.workspaceImplicitHeight
                 color: "transparent"

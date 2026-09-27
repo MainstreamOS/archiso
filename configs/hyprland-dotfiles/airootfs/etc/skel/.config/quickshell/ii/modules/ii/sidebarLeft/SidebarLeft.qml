@@ -48,9 +48,40 @@ Scope { // Scope
         }
         stdout: StdioCollector {
             onStreamFinished: {
-                pinWithFunnyHyprlandWorkaroundProc.hook(text);
+                // The last step has nothing to run after it.
+                if (pinWithFunnyHyprlandWorkaroundProc.hook)
+                    pinWithFunnyHyprlandWorkaroundProc.hook(text);
             }
         }
+    }
+
+    Binding {
+        target: GlobalStates
+        property: "sidebarLeftPinned"
+        value: root.pin && !root.detach
+    }
+
+    // The strip the pinned sidebar reserves, and where, for the surfaces
+    // raised over it with the overview that would otherwise keep clear of it.
+    Binding {
+        target: GlobalStates
+        property: "sidebarLeftZone"
+        value: GlobalStates.sidebarLeftOpen && root.pin && !root.detach
+            ? (sidebarLoader.item?.sidebarWidth ?? 0) : 0
+    }
+    Binding {
+        target: GlobalStates
+        property: "sidebarLeftScreen"
+        value: sidebarLoader.item?.screen?.name ?? ""
+    }
+
+    // How far in from its edge the sidebar reaches while it is open without
+    // reserving that room, so popups on the same edge can sit beside it.
+    Binding {
+        target: GlobalStates
+        property: "sidebarLeftCover"
+        value: GlobalStates.sidebarLeftOpen && !root.pin && !root.detach
+            ? (sidebarLoader.item?.sidebarWidth ?? Appearance.sizes.sidebarWidth) : 0
     }
 
     function togglePin() {
@@ -98,6 +129,12 @@ Scope { // Scope
 
             exclusionMode: ExclusionMode.Normal
             exclusiveZone: root.pin ? sidebarWidth : 0
+            // Pinned, the sidebar's reserved space moves every window beside
+            // it as it comes and goes, and Hyprland reports no window event
+            // for that, so the window list everything else reads would keep
+            // the old positions. Showing and hiding it pinned does the same;
+            // see onVisibleChanged below.
+            onExclusiveZoneChanged: HyprlandData.refreshSoon()
             implicitWidth: Appearance.sizes.sidebarWidthExtended + Appearance.sizes.elevationMargin
             WlrLayershell.namespace: "quickshell:sidebarLeft"
             // Hyprland 0.49: OnDemand is Exclusive, Exclusive just breaks click-outside-to-close
@@ -117,17 +154,32 @@ Scope { // Scope
                 item: sidebarLeftBackground
             }
 
-            onVisibleChanged: {
-                if (visible) {
+            // Pinned, the sidebar stays up while the desktop is used: it
+            // leaves the shared focus grab, so a click on a window goes to that
+            // window instead of closing the sidebar, and the keyboard follows
+            // the click there and back. Unpinned, it closes on a click outside
+            // again. Super+A and Escape still close it either way.
+            function syncFocusGrab() {
+                if (panelWindow.visible && !root.pin)
                     GlobalFocusGrab.addDismissable(panelWindow);
-                } else {
+                else
                     GlobalFocusGrab.removeDismissable(panelWindow);
+            }
+            onVisibleChanged: {
+                panelWindow.syncFocusGrab();
+                if (root.pin) HyprlandData.refreshSoon();
+            }
+            Connections {
+                target: root
+                function onPinChanged() {
+                    panelWindow.syncFocusGrab();
                 }
             }
             Connections {
                 target: GlobalFocusGrab
                 function onDismissed() {
-                    panelWindow.hide();
+                    if (!root.pin)
+                        panelWindow.hide();
                 }
             }
 
@@ -139,20 +191,21 @@ Scope { // Scope
             Rectangle {
                 id: sidebarLeftBackground
                 anchors.top: parent.top
+                anchors.topMargin: Appearance.sizes.hyprlandGapsOut
                 // Held against whichever edge the panel opens from, so the
                 // card keeps its screen gap there and the width animation
-                // below grows inward rather than off the display.
-                anchors.left: panelWindow.onRight ? undefined : parent.left
-                anchors.right: panelWindow.onRight ? parent.right : undefined
-                anchors.topMargin: Appearance.sizes.hyprlandGapsOut
-                anchors.leftMargin: Appearance.sizes.hyprlandGapsOut
-                anchors.rightMargin: Appearance.sizes.hyprlandGapsOut
+                // below grows inward rather than off the display. Placed by x
+                // rather than by trading a left anchor for a right one: while
+                // the trade is under way both hold, which stretches the card
+                // to the whole window and leaves it that wide.
+                x: panelWindow.onRight ? parent.width - width - Appearance.sizes.hyprlandGapsOut
+                    : Appearance.sizes.hyprlandGapsOut
                 width: panelWindow.sidebarWidth - Appearance.sizes.hyprlandGapsOut - Appearance.sizes.elevationMargin
                 height: parent.height - Appearance.sizes.hyprlandGapsOut * 2
                 color: Appearance.colors.colLayer0
                 border.width: 1
                 border.color: Appearance.colors.colLayer0Border
-                radius: Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1
+                radius: RoundedCorners.on ? Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1 : 0
 
                 Behavior on width {
                     animation: Appearance.animation.elementMove.numberAnimation.createObject(this)

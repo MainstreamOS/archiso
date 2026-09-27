@@ -46,6 +46,8 @@ ShellRoot {
     }
 
     Component.onCompleted: {
+        // Only the main shell clears the shared caches, see _clearCachesEnabled.
+        Directories._clearCachesEnabled = true
         MaterialThemeLoader.reapplyTheme()
         Hyprsunset.load()
         Location.load()
@@ -70,41 +72,19 @@ ShellRoot {
         LauncherBlur.load()
         // Same story for the wallpaper rotation — see _rotationEnabled.
         WallpaperSlideshow._rotationEnabled = true
+        // The touchpad watcher runs from the main shell only, see _watchEnabled.
+        TouchpadAutoDisable._watchEnabled = true
+        // Only the shell's bar is ever put away, see _publishBarOpen.
+        GlobalStates._publishBarOpen = true
+        // Only the shell draws the launcher, see _judgeLauncherEnabled.
+        Appearance._judgeLauncherEnabled = true
     }
 
 
-    // Panel families
-    property list<string> families: ["ii", "waffle"]
-    function cyclePanelFamily() {
-        const currentIndex = families.indexOf(Config.options.panelFamily)
-        const nextIndex = (currentIndex + 1) % families.length
-        Config.options.panelFamily = families[nextIndex]
-    }
-
-    component PanelFamilyLoader: LazyLoader {
-        required property string identifier
-        property bool extraCondition: true
-        active: Config.ready && Config.options.panelFamily === identifier && extraCondition
-    }
-    
-    PanelFamilyLoader {
-        identifier: "ii"
+    // Panels
+    LazyLoader {
+        active: Config.ready
         component: IllogicalImpulseFamily {}
-    }
-
-    PanelFamilyLoader {
-        identifier: "waffle"
-        component: WaffleFamily {}
-    }
-
-
-    // Shortcuts
-    IpcHandler {
-        target: "panelFamily"
-
-        function cycle(): void {
-            root.cyclePanelFamily()
-        }
     }
 
     // An update replaces the files this shell is running from, one at a time.
@@ -126,13 +106,6 @@ ShellRoot {
             Quickshell.watchFiles = true
             Quickshell.reload(true)
         }
-    }
-
-    GlobalShortcut {
-        name: "panelFamilyCycle"
-        description: "Cycles panel family"
-
-        onPressed: root.cyclePanelFamily()
     }
 }
 

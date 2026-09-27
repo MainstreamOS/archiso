@@ -63,6 +63,18 @@
       }
     },
     {
+      "key": "roundingPower",
+      "group": "shape",
+      "label": "Corner curve",
+      "type": "float",
+      "default": 4.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 0.1,
+      "hypr": "decoration:rounding_power",
+      "restoreFill": false
+    },
+    {
       "key": "borderSize",
       "group": "shape",
       "label": "Border thickness",
@@ -296,6 +308,16 @@
       "requires": "titleBars"
     },
     {
+      "key": "titleBarColorLight",
+      "group": "shape",
+      "label": "Title bar color in light mode",
+      "type": "str",
+      "default": "",
+      "mechanism": "flagfile",
+      "path": "titlebars.colorLight",
+      "requires": "titleBars"
+    },
+    {
       "key": "titleBarOpacity",
       "group": "shape",
       "label": "Title bar opacity",
@@ -309,15 +331,48 @@
       "requires": "titleBars"
     },
     {
+      "key": "titleBarOpacityLight",
+      "group": "shape",
+      "label": "Title bar opacity in light mode",
+      "type": "float",
+      "default": 0.3,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "mechanism": "flagfile",
+      "path": "titlebars.opacityLight",
+      "requires": "titleBars"
+    },
+    {
+      "key": "titleBarButtons",
+      "group": "shape",
+      "label": "Title bar buttons",
+      "type": "bool",
+      "default": true,
+      "mechanism": "flagfile",
+      "path": "titlebars.buttons",
+      "requires": "titleBars"
+    },
+    {
       "key": "titleBarButtonSize",
       "group": "shape",
       "label": "Title bar button size",
       "type": "int",
       "default": 15,
-      "min": 6,
+      "min": 12,
       "max": 18,
       "mechanism": "flagfile",
       "path": "titlebars.buttonSize",
+      "requires": "titleBars"
+    },
+    {
+      "key": "titleBarButtonsOnHover",
+      "group": "shape",
+      "label": "Title bar buttons only on hover",
+      "type": "bool",
+      "default": false,
+      "mechanism": "flagfile",
+      "path": "titlebars.buttonsOnHover",
       "requires": "titleBars"
     },
     {
@@ -331,6 +386,16 @@
       "requires": "titleBars"
     },
     {
+      "key": "titleBarButtonBackgroundLight",
+      "group": "shape",
+      "label": "Title bar button background in light mode",
+      "type": "str",
+      "default": "",
+      "mechanism": "flagfile",
+      "path": "titlebars.buttonBackgroundLight",
+      "requires": "titleBars"
+    },
+    {
       "key": "titleBarButtonIconColor",
       "group": "shape",
       "label": "Title bar button icon color",
@@ -338,6 +403,36 @@
       "default": "",
       "mechanism": "flagfile",
       "path": "titlebars.buttonIconColor",
+      "requires": "titleBars"
+    },
+    {
+      "key": "titleBarButtonIconColorLight",
+      "group": "shape",
+      "label": "Title bar button icon color in light mode",
+      "type": "str",
+      "default": "",
+      "mechanism": "flagfile",
+      "path": "titlebars.buttonIconColorLight",
+      "requires": "titleBars"
+    },
+    {
+      "key": "titleBarButtonHighlight",
+      "group": "shape",
+      "label": "Title bar button highlight",
+      "type": "str",
+      "default": "",
+      "mechanism": "flagfile",
+      "path": "titlebars.buttonHighlight",
+      "requires": "titleBars"
+    },
+    {
+      "key": "titleBarButtonHighlightLight",
+      "group": "shape",
+      "label": "Title bar button highlight in light mode",
+      "type": "str",
+      "default": "",
+      "mechanism": "flagfile",
+      "path": "titlebars.buttonHighlightLight",
       "requires": "titleBars"
     }
   ]

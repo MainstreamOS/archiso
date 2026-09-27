@@ -45,9 +45,8 @@ Singleton {
     // pair only makes sense together: this has to stay comfortably above
     // previewSourceSize or the previews are upscaled.
     //
-    // Applied only when a theme is saved or updated. Themes captured before
-    // this keep their full-size preview and stay slow to decode until their
-    // next save — there is no migration pass over the library.
+    // Applied when a theme is saved or updated, and once to the previews
+    // saved before this existed (Component.onCompleted below).
     readonly property int previewMaxDimension: 1024
 
     // Qt keys its pixmap cache on the requested size and the fill mode as well
@@ -69,8 +68,7 @@ Singleton {
     }
 
     function refresh() {
-        loadIndexProc.running = false
-        loadIndexProc.running = true
+        indexView.reload()
     }
 
     // Reassigning `themes` resets the pins and every card on the page, so an
@@ -94,7 +92,24 @@ Singleton {
         root.themes = parsed
     }
 
-    Component.onCompleted: ensureDirsProc.running = true
+    Component.onCompleted: {
+        ensureDirsProc.running = true
+        // Previews saved before the size cap are full screenshots, decoded at
+        // full size on every visit to the page. Brought down to the cap once,
+        // then never looked at again.
+        Quickshell.execDetached(["bash", "-c",
+            'd="$1"; max="$2"; mark="$d/.previews-capped"\n' +
+            '[ -e "$mark" ] || [ ! -d "$d" ] && exit 0\n' +
+            'command -v magick >/dev/null 2>&1 || exit 0\n' +
+            'for p in "$d"/*/preview.png; do\n' +
+            '    [ -f "$p" ] || continue\n' +
+            '    read -r w h < <(magick identify -format "%w %h\\n" "$p[0]" 2>/dev/null) || continue\n' +
+            '    [ "${w:-0}" -gt "$max" ] || [ "${h:-0}" -gt "$max" ] || continue\n' +
+            '    magick "$p" -resize "${max}x${max}>" "$p.tmp.png" 2>/dev/null && mv -f "$p.tmp.png" "$p" || rm -f "$p.tmp.png"\n' +
+            'done\n' +
+            ': > "$mark"',
+            "preview-cap", root.themesDir, String(root.previewMaxDimension)])
+    }
 
     Process {
         id: ensureDirsProc
@@ -102,29 +117,7 @@ Singleton {
             `mkdir -p '${root.themesDir}' && ` +
             `if [ ! -f '${root.themesIndex}' ]; then echo '[]' > '${root.themesIndex}'; fi`
         ]
-        onExited: loadIndexProc.running = true
-    }
-
-    Process {
-        id: loadIndexProc
-        property string buf: ""
-        command: ["cat", root.themesIndex]
-        onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => loadIndexProc.buf += data }
-        onExited: {
-            root.adoptIndex(loadIndexProc.buf)
-            loadLastAppliedProc.running = false
-            loadLastAppliedProc.running = true
-        }
-    }
-
-    Process {
-        id: loadLastAppliedProc
-        property string buf: ""
-        command: ["bash", "-c", `[ -f '${root.lastAppliedPath}' ] && cat '${root.lastAppliedPath}' || true`]
-        onRunningChanged: if (running) buf = ""
-        stdout: SplitParser { onRead: data => loadLastAppliedProc.buf += data }
-        onExited: root.lastAppliedSlug = (loadLastAppliedProc.buf || "").trim()
+        onExited: indexView.reload()
     }
 
     // Live-track last-applied.txt so the Themes page updates the "active"
@@ -134,6 +127,7 @@ Singleton {
     FileView {
         path: root.lastAppliedPath
         watchChanges: true
+        printErrors: false
         onFileChanged: reload()
         onLoaded: root.lastAppliedSlug = (text() || "").trim()
         onLoadFailed: error => {
@@ -144,11 +138,15 @@ Singleton {
     // The Themes page no longer re-reads the index by being rebuilt, so watch
     // the file for writers this process can't see — a second Settings window,
     // a restore, a future CLI. index.json is rewritten in place rather than
-    // renamed, so the watch survives it.
+    // renamed, so the watch survives it. Read through this view rather than
+    // a process each time.
     FileView {
+        id: indexView
         path: root.themesIndex
         watchChanges: true
-        onFileChanged: root.refresh()
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: root.adoptIndex(text())
     }
 
 }

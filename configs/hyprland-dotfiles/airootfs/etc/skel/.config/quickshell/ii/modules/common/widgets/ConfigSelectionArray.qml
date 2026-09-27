@@ -10,6 +10,34 @@ Flow {
     Layout.fillWidth: true
     spacing: 2
     property real buttonWidth: 0
+    // Every button grows or shrinks by the same amount so that one line of
+    // them spans the row exactly, for a row whose ends have to meet the edges
+    // of the rows around it. A squeeze that would leave a button less than
+    // half its side padding (12, in SelectionGroupButton) is not made, and the
+    // row wraps as usual instead.
+    property bool justify: false
+    // How wide the buttons are on one line at their own size, for a row that
+    // is sized to its buttons rather than to the page.
+    readonly property real naturalWidth: {
+        let total = 0;
+        let count = 0;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i];
+            if (child.naturalWidth === undefined || !child.visible)
+                continue;
+            total += child.naturalWidth;
+            count++;
+        }
+        return total + spacing * Math.max(0, count - 1);
+    }
+    // A hair short of the edge, so rounding never sends the last button onto
+    // a line of its own.
+    readonly property real justifyExtra: {
+        if (!justify || options.length === 0 || width <= 0)
+            return 0;
+        const extra = (width - 0.1 - naturalWidth) / options.length;
+        return extra < -12 ? 0 : extra;
+    }
     property list<var> options: [
         {
             "displayName": "Option 1",
@@ -32,7 +60,12 @@ Flow {
             id: paletteButton
             required property var modelData
             required property int index
-            baseWidth: root.buttonWidth > 0 ? root.buttonWidth : (contentItem.implicitWidth + horizontalPadding * 2)
+            readonly property real naturalWidth: contentItem.implicitWidth + horizontalPadding * 2
+            baseWidth: root.buttonWidth > 0 ? root.buttonWidth : naturalWidth + root.justifyExtra
+            // Fitting the buttons to one line is layout, not a gesture.
+            // Animated, a freshly built row starts at full width and wraps
+            // onto a second line until the buttons have shrunk.
+            enableImplicitWidthAnimation: false
             onYChanged: {
                 if (index === 0) {
                     paletteButton.leftmost = true
@@ -48,6 +81,11 @@ Flow {
             buttonIcon: modelData.icon || ""
             buttonText: modelData.displayName
             toggled: root.currentValue == modelData.value
+            // An option can be shown without being on offer. Dimmed by its own
+            // flag rather than by whether it is enabled, so a row a page has
+            // already dimmed as a whole is not dimmed twice.
+            enabled: modelData.enabled ?? true
+            opacity: (modelData.enabled ?? true) ? 1 : 0.5
             onClicked: {
                 root.selected(modelData.value);
             }

@@ -75,13 +75,13 @@ last_admin() {  # $1 = user
 # Make-administrator switch. A shell that cannot log in says it is not.
 _no_login_shell() {  # $1 = shell
     case "${1##*/}" in
-        nologin|false|halt|shutdown|sync|""|sync) return 0 ;;
+        nologin|false|halt|shutdown|sync|"") return 0 ;;
         *) return 1 ;;
     esac
 }
 
 cmd_list() {
-    local first=1 rows=()
+    local rows=()
     while IFS=: read -r name _ uid _ gecos home shell; do
         (( uid >= 1000 && uid < 65534 )) || continue
         _no_login_shell "$shell" && continue
@@ -92,18 +92,11 @@ cmd_list() {
                    '{name:$name, fullName:$fullName, home:$home, shell:$shell, admin:$admin}')") \
             || die "could not build the account list"
     done < <(getent passwd)
-    echo -n '['
-    local row
-    for row in ${rows[@]+"${rows[@]}"}; do
-        (( first )) || echo -n ','
-        first=0
-        printf '%s' "$row"
-    done
-    echo ']'
+    printf '%s\n' "${rows[@]}" | jq -cs . || die "could not build the account list"
 }
 
 cmd_create() {  # $1 = user  $2 = full name (optional)  $3 = "admin" to grant wheel
-    local u="${1:-}" full="${2:-}" admin="${3:-}" pw
+    local u="${1:-}" full="${2:-}" admin="${3:-}" pw base fresh=fresh
     valid_name "$u" || die "not a valid user name: $u"
     id "$u" >/dev/null 2>&1 && die "user already exists: $u"
     [[ -r "$PROVISION_LIB" ]] || die "provisioning library missing at $PROVISION_LIB"
@@ -113,8 +106,22 @@ cmd_create() {  # $1 = user  $2 = full name (optional)  $3 = "admin" to grant wh
 
     # -m seeds the home from /etc/skel, which is the whole point: the new
     # account starts from the same tree a fresh install starts from.
+    # A home kept when an earlier account of this name was deleted is still
+    # that person's, and useradd leaves it as it is rather than seeding it. It
+    # is set up like any home in use, and a failed setup must not take it with
+    # the account.
+    base="$(useradd -D 2>/dev/null | sed -n 's/^HOME=//p')"
+    [[ -e "${base:-/home}/$u" ]] && fresh=""
+
     log "creating $u"
     useradd -m -c "$full" -s /bin/bash "$u" || die "useradd failed for $u"
+
+    # lastlog2 keys its records by name and userdel leaves them, so a new
+    # account with an old name would read as logged in already and never get
+    # its first-login setup. A kept home keeps its record with it.
+    if [[ -n "$fresh" ]] && command -v lastlog2 >/dev/null 2>&1; then
+        lastlog2 -C -u "$u" >/dev/null 2>&1 || true
+    fi
 
     # shellcheck source=/dev/null
     source "$PROVISION_LIB"
@@ -128,9 +135,13 @@ cmd_create() {  # $1 = user  $2 = full name (optional)  $3 = "admin" to grant wh
     # No password has been set yet, so nothing can reach this account, and it
     # holds nothing anyone typed. Removing it leaves the machine as it was
     # rather than leaving a broken entry on the Accounts page.
-    if ! provision_user_home "$u" fresh; then
+    if ! provision_user_home "$u" "$fresh"; then
         log "provisioning failed for $u; removing the half-built account"
-        userdel -r "$u" >/dev/null 2>&1 || log "WARN: could not remove $u after the failed provision"
+        if [[ -n "$fresh" ]]; then
+            userdel -r "$u" >/dev/null 2>&1 || log "WARN: could not remove $u after the failed provision"
+        else
+            userdel "$u" >/dev/null 2>&1 || log "WARN: could not remove $u after the failed provision"
+        fi
         die "could not set up a home for $u; the account was not created"
     fi
 
@@ -205,17 +216,74 @@ cmd_rename() {  # $1 = user  $2 = new full name
     log "full name updated for $u"
 }
 
+# Folder sharing keeps per-account state where userdel does not look: the
+# Samba password, the usershare files the account wrote, its entry on the
+# usershare directory's ACL and the Sharing page's marker. Left behind, an
+# account later given the same name would sign in with the old password, and
+# one given the same uid would own the old shares, a kept home among them.
+SAMBA_CONF=/etc/samba/smb.conf
+USERSHARE_DIR=/var/lib/samba/usershares
+SHARING_USERS_DIR=/var/lib/mainstream/sharing/users
+
+# Runs after userdel, so a delete that fails (the account is still logged in)
+# leaves sharing as it was. Nothing here is fatal: the account is already gone.
+_sharing_cleanup() {  # $1 = user  $2 = the uid it had
+    local u="$1" uid="$2" out acl
+    # Without a config there are no Samba accounts to remove, and pdbedit run
+    # as root would create an empty password database just to look.
+    if [[ -f "$SAMBA_CONF" ]] && command -v pdbedit >/dev/null 2>&1; then
+        # pdbedit warns that the Unix account is gone and removes the entry
+        # anyway. An account that never set sharing up has none to remove.
+        if out="$(pdbedit -s "$SAMBA_CONF" -x -u "$u" 2>&1)"; then
+            log "removed the sharing password for $u"
+        elif [[ "$out" != *"does not exist in the passdb"* ]]; then
+            log "WARN: could not remove the sharing password for $u: ${out##*$'\n'}"
+        fi
+    fi
+    if [[ -d "$USERSHARE_DIR" && ! -L "$USERSHARE_DIR" ]]; then
+        # Everyone in sambashare can write here, so a file's name says nothing
+        # about whose share it is: only its owner does. A link could point
+        # anywhere, and nothing below the top level is a share.
+        find "$USERSHARE_DIR" -mindepth 1 -maxdepth 1 -type f -uid "$uid" -delete \
+            || log "WARN: could not remove every folder $u shared"
+        # By number, since the name stopped resolving when userdel ran. Read
+        # whole rather than piped into grep -q, which pipefail can turn into a
+        # miss when getfacl is cut off mid-write.
+        acl="$(getfacl -cnp "$USERSHARE_DIR" 2>/dev/null || true)"
+        if grep -q "^user:$uid:" <<<"$acl"; then
+            setfacl -x "u:$uid" "$USERSHARE_DIR" \
+                || log "WARN: could not take $u off the usershare directory's access list"
+        fi
+    fi
+    rm -f -- "$SHARING_USERS_DIR/$u" || log "WARN: could not remove the sharing marker for $u"
+}
+
 cmd_delete() {  # $1 = user  $2 = keep-home|remove-home
-    local u="${1:-}" mode="${2:-keep-home}"
+    local u="${1:-}" mode="${2:-keep-home}" uid home
     require_human_user "$u"
     [[ "$u" == "$(id -un "${PKEXEC_UID:-0}" 2>/dev/null)" ]] && die "refusing to delete the account asking"
     last_admin "$u" && die "$u is the only administrator; promote someone else first"
+    uid="$(id -u "$u")"
+    home="$(getent passwd "$u" | cut -d: -f6)"
     case "$mode" in
         remove-home) userdel -r "$u" || die "could not delete $u" ;;
-        keep-home)   userdel "$u"    || die "could not delete $u" ;;
+        keep-home)
+            userdel "$u" || die "could not delete $u"
+            # The kept files still carry the old account's number, which
+            # useradd hands to the next account it makes. Closed to everyone
+            # but root until an account of this name is made again.
+            if [[ -n "$home" && "$home" != / && -d "$home" && ! -L "$home" ]]; then
+                chown root:root "$home" && chmod 700 "$home" \
+                    || log "WARN: could not close $home to the next account"
+            fi
+            ;;
         *) die "expected keep-home or remove-home, got: $mode" ;;
     esac
+    # The login screen finds pictures and settings by name, so a later
+    # account of this name would otherwise show this person's.
+    rm -f -- "/var/lib/AccountsService/users/$u" "/var/lib/AccountsService/icons/$u"
     log "$u deleted ($mode)"
+    _sharing_cleanup "$u" "$uid"
 }
 
 cmd_set_avatar() {  # $1 = user  $2 = source image

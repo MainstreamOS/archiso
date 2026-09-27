@@ -19,6 +19,9 @@ ContentPage {
     readonly property string homePath: FileUtils.trimFileProtocol(Directories.home)
     readonly property string shellConfigPath: Directories.shellConfigPath
     readonly property string themesDir: ThemeLibrary.themesDir
+    // The settings that belong to the person rather than to a look: saving,
+    // exporting and importing leave them out, and applying keeps the live ones.
+    readonly property string userSettingsPath: `${root.homePath}/.config/quickshell/ii/scripts/themes/user-settings.json`
     readonly property string lastAppliedPath: ThemeLibrary.lastAppliedPath
 
     // ── State ────────────────────────────────────────────────────────────────
@@ -137,13 +140,7 @@ ContentPage {
             // Rebuilt by re-reading every theme, the way saving and deleting
             // already rebuild it, so one theme's rename cannot leave the index
             // disagreeing with the rest of the library.
-            "out = []\n" +
-            "for entry in sorted(os.listdir(themes_dir)):\n" +
-            "    m = os.path.join(themes_dir, entry, 'meta.json')\n" +
-            "    if not os.path.isfile(m): continue\n" +
-            "    try: out.append(json.load(open(m)))\n" +
-            "    except Exception: pass\n" +
-            "json.dump(out, open(os.path.join(themes_dir, 'index.json'), 'w'), indent=2)\n",
+            root.pyRebuildIndex + "rebuild_index(themes_dir)\n",
             root.themesDir, theme.slug, name]
         renameProc.running = false
         renameProc.running = true
@@ -166,9 +163,8 @@ ContentPage {
     // One instance for the whole grid, pointed at whichever card was right
     // clicked, drawn the way the shell draws its other context menus.
     property var menuTheme: null
-    Popup {
+    ContextMenuPopup {
         id: cardMenu
-        padding: 0
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         parent: Overlay.overlay
@@ -181,49 +177,11 @@ ContentPage {
             cardMenu.open()
         }
 
-        background: Item {
-            StyledRectangularShadow {
-                target: cardMenuBg
-            }
-            Rectangle {
-                id: cardMenuBg
-                anchors.fill: parent
-                color: Appearance.m3colors.m3surfaceContainer
-                radius: Appearance.rounding.normal
-            }
-        }
-
-        component MenuRow: RippleButton {
-            Layout.fillWidth: true
-            implicitHeight: 36
-            buttonRadius: Appearance.rounding.small
-            property string symbol: ""
-            property string label: ""
-            implicitWidth: Math.max(rowContent.implicitWidth + 20, 180)
-            contentItem: RowLayout {
-                id: rowContent
-                spacing: 10
-                MaterialSymbol {
-                    Layout.leftMargin: 10
-                    text: symbol
-                    iconSize: Appearance.font.pixelSize.larger
-                    color: Appearance.m3colors.m3onSurface
-                }
-                StyledText {
-                    Layout.fillWidth: true
-                    Layout.rightMargin: 10
-                    text: label
-                    font.pixelSize: Appearance.font.pixelSize.small
-                    color: Appearance.m3colors.m3onSurface
-                }
-            }
-        }
-
         contentItem: ColumnLayout {
             spacing: 0
 
-            MenuRow {
-                symbol: "edit"
+            ContextMenuItem {
+                iconName: "edit"
                 label: Translation.tr("Rename")
                 onClicked: {
                     const theme = root.menuTheme
@@ -238,9 +196,9 @@ ContentPage {
             // something has drifted from it. It stays available while the
             // schedule is on, because setting again what is already set cannot
             // fight the schedule.
-            MenuRow {
+            ContextMenuItem {
                 visible: cardMenu.onActiveTheme
-                symbol: "refresh"
+                iconName: "refresh"
                 label: Translation.tr("Reapply")
                 enabled: !root.applyInFlight
                 onClicked: {
@@ -286,7 +244,16 @@ ContentPage {
     }
 
     // ── Save theme (capture) ────────────────────────────────────────────────
-    Process { id: saveProc }
+    Process {
+        id: saveProc
+        // The screenshot is all the window was hidden for, so it comes back as
+        // soon as the script has one, not once the whole save is done.
+        stdout: SplitParser {
+            onRead: data => {
+                if (data.trim() === "SHOT") root.restoreWindowAfterShot()
+            }
+        }
+    }
     function beginSave(updateSlug) {
         root.pendingUpdateSlug = updateSlug || ""
         root.saveThemeName = updateSlug
@@ -424,6 +391,22 @@ ContentPage {
             `THEMES='${root.themesDir}'\n` +
             `DIR="$THEMES/$SLUG"\n` +
             `mkdir -p "$DIR"\n` +
+            // Screenshot of primary focused monitor. Always overwrites
+            // preview.png — same path whether this is a brand-new save
+            // or an Update on an existing theme. Taken before anything else,
+            // since it is the only step the window has to be out of the way
+            // for: the script says SHOT the moment it has it and Settings
+            // comes back while the rest of the save carries on.
+            `FOCUSED=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)\n` +
+            // A screen with a picture of its own shows something this machine
+            // alone has, so the shot comes from the default monitor, whose
+            // wallpaper the theme's colors come from.
+            `QSC="\${qsConfig:-ii}"\n` +
+            `if [ -n "$FOCUSED" ] && [ "$(qs -c "$QSC" ipc call monitorWallpapers hasPicture "$FOCUSED" 2>/dev/null)" = "true" ]; then\n` +
+            `    FOCUSED=$(qs -c "$QSC" ipc call monitorWallpapers defaultMonitor 2>/dev/null)\n` +
+            `fi\n` +
+            `if [ -n "$FOCUSED" ]; then grim -o "$FOCUSED" "$DIR/preview.png"; else grim "$DIR/preview.png"; fi\n` +
+            `echo SHOT\n` +
             // Snapshot the live config but strip user-level meta-state that
             // shouldn't ride along with a theme:
             //   - appearance.themeSchedule  (Day/Night picks span themes by
@@ -457,10 +440,15 @@ ContentPage {
             //   - background.widgetsLocked (whether the desktop widgets can be
             //                                dragged is how this machine is
             //                                used, not part of a look.)
+            //   - user-settings.json       (search, AI, lock security, language,
+            //                                battery, pins, time, gestures and
+            //                                the like: this person's settings,
+            //                                listed once for save, apply and
+            //                                sharing.)
             // apply-theme.sh ALSO preserves these from the live config when
             // applying, so older themes that still carry these keys won't
             // poison the user's settings either.
-            `jq 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets) | del(.bar.weather) | del(.dock.pinnedApps) | del(.apps) | del(.updates) | del(.background.widgetsLocked)' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
+            `jq --slurpfile user '${root.userSettingsPath}' 'del(.appearance.themeSchedule) | del(.light.night) | del(.cursor) | del(.bar.seededWidgets) | del(.bar.weather) | del(.dock.pinnedApps) | del(.apps) | del(.updates) | del(.background.widgetsLocked) | reduce $user[0][] as $p (.; delpaths([$p]))' '${root.shellConfigPath}' > "$DIR/config.json"\n` +
             // Snapshot the four interface-look gsettings (App style / Icons /
             // Mouse cursor / cursor size) so a saved theme carries the whole
             // look. Shake-to-locate is user behavior, stripped above.
@@ -490,12 +478,14 @@ ContentPage {
                          `WP_BASE="\${WP##*/}"\n` +
                          `case "$WP_BASE" in *.*) EXT="\${WP_BASE##*.}" ;; *) EXT="img" ;; esac\n` +
                          `[ "$WP" -ef "$DIR/wallpaper.$EXT" ] || cp -f "$WP" "$DIR/wallpaper.$EXT"\n` +
+                         // An update to a picture of another kind leaves the old
+                         // one behind otherwise, and export and import both have
+                         // to guess which of the two is the theme's.
+                         `for OLD in "$DIR"/wallpaper.*; do\n` +
+                         `    [ -e "$OLD" ] && [ "\${OLD##*/}" != "wallpaper.$EXT" ] && rm -f -- "$OLD"\n` +
+                         `done\n` +
                          `WP_FILE="wallpaper.$EXT"\n`
                        : `WP_FILE=""\n`) +
-            // Screenshot of primary focused monitor. Always overwrites
-            // preview.png — same path whether this is a brand-new save
-            // or an Update on an existing theme.
-            //
             // Downscaled on the way out rather than stored at monitor
             // resolution. Nothing ever draws this larger than the save card,
             // so a native-resolution grim was several megabytes and a few
@@ -503,8 +493,7 @@ ContentPage {
             // the page and carried into every export. `>` only ever shrinks, so
             // a small monitor's shot is left alone. If magick isn't there the
             // full-size shot stays rather than the save losing its preview.
-            `FOCUSED=$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name' | head -n1)\n` +
-            `if [ -n "$FOCUSED" ]; then grim -o "$FOCUSED" "$DIR/preview.png"; else grim "$DIR/preview.png"; fi\n` +
+            // The shot itself is taken first thing, above.
             `magick "$DIR/preview.png" -resize ${ThemeLibrary.previewMaxDimension}x${ThemeLibrary.previewMaxDimension}\\> "$DIR/preview.png" 2>/dev/null || true\n` +
             // Millisecond resolution so back-to-back Update saves (within
             // the same wall-clock second) still produce a distinct
@@ -575,24 +564,7 @@ ContentPage {
             `printf '%s' "$SLUG" > '${root.lastAppliedPath}.tmp' && mv -f '${root.lastAppliedPath}.tmp' '${root.lastAppliedPath}'\n` +
             // Rebuild index
             `python3 - "$THEMES" <<'PY'\n` +
-            `import json, os, sys\n` +
-            `themes_dir = sys.argv[1]\n` +
-            `out = []\n` +
-            // An import stages into a dot-prefixed directory alongside the real
-            // ones and only sanitises the archive's meta.json near the end, so a
-            // run killed partway leaves a hidden directory holding whatever the
-            // file claimed its slug was. Skipping dotted names keeps that out of
-            // the index instead of publishing it as a theme.
-            `for name in sorted(os.listdir(themes_dir)):\n` +
-            `    if name.startswith("."): continue\n` +
-            `    p = os.path.join(themes_dir, name)\n` +
-            `    meta = os.path.join(p, "meta.json")\n` +
-            `    if os.path.isdir(p) and os.path.isfile(meta):\n` +
-            `        try:\n` +
-            `            with open(meta) as f: out.append(json.load(f))\n` +
-            `        except Exception: pass\n` +
-            `with open(os.path.join(themes_dir, "index.json"), "w") as f:\n` +
-            `    json.dump(out, f, indent=2)\n` +
+            `import sys\n` + root.pyRebuildIndex + `rebuild_index(sys.argv[1])\n` +
             `PY\n`
         saveProc.command = ["bash", "-c", bash]
         saveProc.running = false
@@ -693,6 +665,13 @@ ContentPage {
         // Track which slug is in-flight so onExited can clear lastAppliedSlug
         // if the user just deleted the currently active theme.
         property string deletingSlug: ""
+        // The page is rebuilt on a color change and left on navigation, which
+        // ends a delete without onExited. Writes are let through again then,
+        // rather than blocked for the rest of the Settings session.
+        Component.onDestruction: {
+            if (running)
+                Config.blockWrites = false;
+        }
     }
     function deleteTheme(theme) {
         // Block the QML config adapter from racing with our config.json patch
@@ -736,17 +715,7 @@ ContentPage {
             // ── Remove theme dir and rebuild index ────────────────────────────
             `rm -rf -- "$THEME_DIR"\n` +
             `python3 - '${root.themesDir}' <<'PY'\n` +
-            `import json, os, sys\n` +
-            `themes_dir = sys.argv[1]\n` +
-            `out = []\n` +
-            `for n in sorted(os.listdir(themes_dir)):\n` +
-            `    if n.startswith("."): continue\n` +
-            `    p = os.path.join(themes_dir, n); m = os.path.join(p, "meta.json")\n` +
-            `    if os.path.isdir(p) and os.path.isfile(m):\n` +
-            `        try:\n` +
-            `            with open(m) as f: out.append(json.load(f))\n` +
-            `        except: pass\n` +
-            `open(os.path.join(themes_dir, "index.json"), "w").write(json.dumps(out, indent=2))\n` +
+            `import sys\n` + root.pyRebuildIndex + `rebuild_index(sys.argv[1])\n` +
             `PY\n`
         deleteProc.command = ["bash", "-c", bash]
         deleteProc.running = false
@@ -781,6 +750,29 @@ ContentPage {
     // doesn't exist, so they come out on export and are re-pointed at local
     // values on import. wallpaperPath goes too: apply-theme.sh recomputes it
     // from the bundled wallpaper, and import writes the local copy's path.
+    // One rebuild of index.json for every path that changes the library, so
+    // they can't drift apart. Dot-prefixed directories are an import's staging
+    // area, and a run killed partway leaves one holding whatever slug the file
+    // claimed, so they are never published as themes.
+    readonly property string pyRebuildIndex: `
+def rebuild_index(themes_dir):
+    import json, os
+    out = []
+    for name in sorted(os.listdir(themes_dir)):
+        if name.startswith("."):
+            continue
+        p = os.path.join(themes_dir, name)
+        m = os.path.join(p, "meta.json")
+        if os.path.isdir(p) and os.path.isfile(m):
+            try:
+                with open(m) as f:
+                    out.append(json.load(f))
+            except Exception:
+                pass
+    with open(os.path.join(themes_dir, "index.json"), "w") as f:
+        json.dump(out, f, indent=2)
+`
+
     readonly property string pyPortable: `
 import json, os
 
@@ -799,6 +791,13 @@ STRIP = [("appearance", "themeSchedule"), ("light", "night"), ("cursor",),
          # the manifest this machine trusts for release news -- neither is part
          # of a look, and neither may be carried in from outside.
          ("apps",), ("updates",)]
+# This person's own settings, listed once for the save, the apply and this.
+# The apply keeps the live ones whatever a theme carries, so an unreadable list
+# still leaves them safe here.
+try:
+    STRIP += [tuple(p) for p in json.load(open("${root.userSettingsPath}")) if isinstance(p, list) and p]
+except (OSError, ValueError):
+    pass
 
 def theme_installed(kind, name, cursors=False):
     # kind is the shared-data subdirectory a look lives in ("themes" for widget
@@ -956,12 +955,17 @@ meta = json.load(open(os.path.join(theme_dir, "meta.json")))
 # archive claims it: widget places are shares of the screen now, and a build
 # from before reads them as pixels, so it should say so when it imports one.
 meta["formatVersion"] = FORMAT_VERSION
-with tarfile.open(out_path, "w:gz") as tar:
+# The pictures are the bulk of a theme and are already compressed, so the
+# fastest level costs next to nothing in size and much less time.
+with tarfile.open(out_path, "w:gz", compresslevel=1) as tar:
     entry(tar, "config.json", cfg)
     entry(tar, "meta.json", meta)
+    # Only the picture meta.json names, when it names one: a folder from before
+    # updates tidied up after themselves can still hold an older one.
+    own_wp = str(meta.get("wallpaperFile") or "")
     for n in sorted(os.listdir(theme_dir)):
         p = os.path.join(theme_dir, n)
-        if os.path.isfile(p) and (n in KEEP or n.startswith("wallpaper.")):
+        if os.path.isfile(p) and (n in KEEP or (n.startswith("wallpaper.") and (not own_wp or n == own_wp))):
             tar.add(p, arcname=n)
     for p in images:
         tar.add(p, arcname="slideshow/" + os.path.basename(p))
@@ -989,9 +993,16 @@ print("OK|" + out_path)
         id: importProc
         property string buf: ""
         onRunningChanged: if (running) buf = ""
+        // The page is rebuilt on a color change and left on navigation, which
+        // ends an import without onExited. Writes are let through again then.
+        Component.onDestruction: {
+            if (running)
+                Config.blockWrites = false;
+        }
         stdout: SplitParser { onRead: data => importProc.buf += data }
         onExited: {
             root.ioBusy = false
+            Config.blockWrites = false
             const line = (importProc.buf || "").trim().split("\n").filter(l => l.length).pop() || ""
             if (line.startsWith("OK|")) {
                 ThemeLibrary.refresh()
@@ -1031,13 +1042,16 @@ print("OK|" + out_path)
     function importTheme() {
         if (root.ioBusy) return
         root.ioBusy = true
+        // Replacing the applied theme may point config.json's wallpaper at a
+        // kept copy, so the adapter is held off for the run, as delete does.
+        Config.blockWrites = true
         const script =
             `IN=$(zenity --file-selection --title="Import theme" ` +
             `--file-filter="Mainstream theme | *.mtheme" ` +
             `--file-filter="All files | *" 2>/dev/null) || { echo CANCEL; exit 0; }\n` +
             `[ -n "$IN" ] || { echo CANCEL; exit 0; }\n` +
             `python3 - "$IN" '${root.themesDir}' '${root.shellConfigPath}' <<'PY'\n` +
-            root.pyPortable +
+            root.pyPortable + root.pyRebuildIndex +
             `import re, shutil, sys, tarfile, tempfile, time
 archive, themes_dir, live_config = sys.argv[1], sys.argv[2], sys.argv[3]
 EXACT = {"meta.json", "config.json", "interface.json", "decorations.json", "windowrules.json", "preview.png"}
@@ -1086,15 +1100,18 @@ def fail():
 # rename — a half-written theme never appears in the grid.
 tmp = tempfile.mkdtemp(prefix=".importing-", dir=themes_dir)
 try:
+    # Read as a stream, one pass from start to end, each wanted member written
+    # out as it goes by: listing the members first and extracting them after
+    # decompressed the whole archive twice.
     try:
-        tar = tarfile.open(archive, "r:*")
+        tar = tarfile.open(archive, "r|*")
     except Exception:
         fail()
     with tar:
         picked, seen, total_bytes = [], set(), 0
         ss_picked, ss_seen, ss_bytes = [], set(), 0
         anim_picked, anim_seen, anim_bytes = [], set(), 0
-        for m in tar.getmembers():
+        for m in tar:
             if not m.isfile():
                 continue
             raw = m.name[2:] if m.name.startswith("./") else m.name
@@ -1107,6 +1124,7 @@ try:
                 anim_bytes += m.size
                 m.name = "animations/" + an
                 anim_picked.append(m)
+                tar.extract(m, tmp, filter="data")
                 continue
             ss = slideshow_name(raw)
             if ss:
@@ -1117,6 +1135,7 @@ try:
                 ss_bytes += m.size
                 m.name = "slideshow/" + ss
                 ss_picked.append(m)
+                tar.extract(m, tmp, filter="data")
                 continue
             # Anything else nested is dropped rather than flattened, so a
             # picture folder can't smuggle in a second meta.json.
@@ -1135,9 +1154,9 @@ try:
             seen.add(n)
             m.name = n
             picked.append(m)
+            tar.extract(m, tmp, filter="data")
         if "meta.json" not in seen or "config.json" not in seen:
             fail()
-        tar.extractall(tmp, members=picked + ss_picked + anim_picked, filter="data")
 
     try:
         meta = json.load(open(os.path.join(tmp, "meta.json")))
@@ -1161,7 +1180,18 @@ try:
         live = json.load(open(live_config))
     except Exception:
         live = {}
-    wp = next((f for f in sorted(os.listdir(tmp)) if f.startswith("wallpaper.")), "")
+    # The picture the theme's meta.json names, when the archive has it, since an
+    # older export can carry a second one. Any other copy is left out.
+    def pick_wallpaper(folder, named):
+        files = sorted(os.listdir(folder))
+        named = str(named or "")
+        if named.startswith("wallpaper.") and named in files:
+            return named
+        return next((f for f in files if f.startswith("wallpaper.")), "")
+    wp = pick_wallpaper(tmp, meta.get("wallpaperFile"))
+    for f in os.listdir(tmp):
+        if f.startswith("wallpaper.") and f != wp:
+            os.remove(os.path.join(tmp, f))
 
     # Replacing a theme swaps the whole directory, so anything the incoming file
     # doesn't carry would go out with the old copy. An archive exported without
@@ -1174,7 +1204,11 @@ try:
             if os.path.isfile(src_keep) and not os.path.exists(os.path.join(tmp, keep_name)):
                 shutil.copy2(src_keep, os.path.join(tmp, keep_name))
         if not wp:
-            old_wp = next((f for f in sorted(os.listdir(dest)) if f.startswith("wallpaper.")), "")
+            try:
+                old_named = json.load(open(os.path.join(dest, "meta.json"))).get("wallpaperFile")
+            except Exception:
+                old_named = ""
+            old_wp = pick_wallpaper(dest, old_named)
             if old_wp:
                 shutil.copy2(os.path.join(dest, old_wp), os.path.join(tmp, old_wp))
                 wp = old_wp
@@ -1244,6 +1278,16 @@ try:
     json.dump(meta, open(os.path.join(tmp, "meta.json"), "w"), indent=2)
     json.dump(cfg, open(os.path.join(tmp, "config.json"), "w"), indent=2)
 
+    # The theme on screen can be the one being replaced, with the live wallpaper
+    # a file inside its folder. That file goes with the old folder, so it is
+    # kept where the swap can't take it and config.json is pointed there, the
+    # way deleting a theme keeps it.
+    live_wp = str((live.get("background") or {}).get("wallpaperPath") or "")
+    kept_wp = ""
+    if replaced and live_wp.startswith(dest + os.sep) and os.path.isfile(live_wp):
+        kept_wp = os.path.join(themes_dir, "last-wallpaper" + (os.path.splitext(live_wp)[1] or ".img"))
+        shutil.copy2(live_wp, kept_wp)
+
     # Swap the finished copy in rather than writing over the old one where it
     # stands, so an import that dies partway can't leave a theme made of half
     # of each. The outgoing copy is only discarded once the new one is in place.
@@ -1260,16 +1304,18 @@ try:
     shutil.rmtree(previous, ignore_errors=True)
     tmp = None
 
-    index = []
-    for d in sorted(os.listdir(themes_dir)):
-        if d.startswith("."): continue
-        mp = os.path.join(themes_dir, d, "meta.json")
-        if os.path.isdir(os.path.join(themes_dir, d)) and os.path.isfile(mp):
-            try:
-                index.append(json.load(open(mp)))
-            except Exception:
-                pass
-    json.dump(index, open(os.path.join(themes_dir, "index.json"), "w"), indent=2)
+    if kept_wp:
+        try:
+            with open(live_config) as f:
+                data = json.load(f)
+            data.setdefault("background", {})["wallpaperPath"] = kept_wp
+            with open(live_config + ".tmp", "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(live_config + ".tmp", live_config)
+        except Exception:
+            pass
+
+    rebuild_index(themes_dir)
     print("OK|" + json.dumps({"name": name, "missing": missing, "newer": newer, "replaced": replaced}))
 finally:
     if tmp and os.path.isdir(tmp):
@@ -1424,8 +1470,17 @@ finally:
             }
 
             // ── Existing theme cards ──
+            // Kept per theme rather than rebuilt with the whole list: an apply
+            // moves the active card to the front and a save or rename changes
+            // one entry, and a plain array model destroyed and recreated every
+            // card each time. A card is matched on its slug, name and save
+            // time, so one whose content changed is still built afresh.
             Repeater {
-                model: root.orderedThemes
+                model: ScriptModel {
+                    objectProp: "cardKey"
+                    values: root.orderedThemes.map(t => Object.assign({}, t,
+                        { cardKey: `${t.slug}|${t.name}|${t.created || 0}` }))
+                }
                 delegate: Rectangle {
                     id: themeCard
                     required property var modelData

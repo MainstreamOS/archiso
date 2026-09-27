@@ -19,8 +19,28 @@ Item { // Player instance
     property string artDownloadLocation: Directories.coverArt
     property string artFileName: Qt.md5(artUrl)
     property string artFilePath: `${artDownloadLocation}/${artFileName}`
-    property color artDominantColor: ColorUtils.mix((colorQuantizer?.colors[0] ?? Appearance.colors.colPrimary), Appearance.colors.colPrimaryContainer, 0.8) || Appearance.m3colors.m3secondaryContainer
-    property bool downloaded: false
+    // A track with no art is part of the binding rather than an assignment in
+    // onArtFilePathChanged, which would break it for every track after.
+    property color artDominantColor: root.artUrl.length == 0 ? Appearance.m3colors.m3secondaryContainer
+        : (ColorUtils.mix((colorQuantizer?.colors[0] ?? (root.savedArtColor || Appearance.colors.colPrimary)), Appearance.colors.colPrimaryContainer, 0.8) || Appearance.m3colors.m3secondaryContainer)
+
+    // The album color is kept beside the cached art and read as the card is
+    // built. The popup builds its cards afresh every time it opens, and a
+    // reload of the shell forgets everything, so without it a card starts in
+    // the default color until the quantizer has looked at the art again.
+    FileView {
+        id: artColorFile
+        path: root.artUrl ? `${root.artFilePath}.color` : ""
+        blockLoading: true
+        printErrors: false
+    }
+    readonly property string savedArtColor: {
+        if (!artColorFile.path)
+            return "";
+        const saved = (artColorFile.text() ?? "").trim();
+        return /^#[0-9a-fA-F]{6,8}$/.test(saved) ? saved : "";
+    }
+    property bool artReloading: false
     property list<real> visualizerPoints: []
     property real maxVisualizerValue: 1000 // Max value in the data points
     property int visualizerSmoothing: 2 // Number of points to average for smoothing
@@ -46,7 +66,11 @@ Item { // Player instance
         onRunningChanged: if (!running) root.visualizerPoints = [];
     }
 
-    property string displayedArtFilePath: root.downloaded ? Qt.resolvedUrl(artFilePath) : ""
+    // The cached copy is shown straight away, so art fetched before appears
+    // with the player instead of after the downloader has looked for it. Art
+    // that is not there yet fails to load, which shows the placeholder, and
+    // comes in once the download lands.
+    property string displayedArtFilePath: root.artUrl && !root.artReloading ? Qt.resolvedUrl(artFilePath) : ""
 
     component TrackChangeButton: RippleButton {
         implicitWidth: 24
@@ -80,16 +104,13 @@ Item { // Player instance
     }
 
     onArtFilePathChanged: {
-        if (root.artUrl.length == 0) {
-            root.artDominantColor = Appearance.m3colors.m3secondaryContainer
+        if (root.artUrl.length == 0)
             return;
-        }
 
         // Binding does not work in Process
         coverArtDownloader.targetFile = root.artUrl 
         coverArtDownloader.artFilePath = root.artFilePath
         // Download
-        root.downloaded = false
         coverArtDownloader.running = true
     }
 
@@ -97,9 +118,18 @@ Item { // Player instance
         id: coverArtDownloader
         property string targetFile: root.artUrl
         property string artFilePath: root.artFilePath
-        command: [ "bash", "-c", '[ -f "$1" ] || curl -4 -sSL "$2" -o "$1"', "coverart", artFilePath, targetFile ]
+        // Local players such as mpv report their art as a file:// path, and
+        // the panels that take their colors from this folder need that copy
+        // too.
+        command: ["bash", Quickshell.shellPath("scripts/mpris/fetch-cover-art.sh"), artFilePath, targetFile, "http,https,file"]
+        // A file that was not there when the image looked is loaded again
+        // once it has arrived; one that was there needs nothing. A failed
+        // download leaves the placeholder, and the next track tries again.
         onExited: (exitCode, exitStatus) => {
-            root.downloaded = true
+            if (exitCode === 0 && mediaArt.status === Image.Error) {
+                root.artReloading = true
+                Qt.callLater(() => root.artReloading = false)
+            }
         }
     }
 
@@ -108,6 +138,13 @@ Item { // Player instance
         source: root.displayedArtFilePath
         depth: 0 // 2^0 = 1 color
         rescaleSize: 1 // Rescale to 1x1 pixel for faster processing
+        onColorsChanged: {
+            if (colors.length === 0 || !artColorFile.path)
+                return;
+            const color = String(colors[0]);
+            if (color !== root.savedArtColor)
+                artColorFile.setText(color);
+        }
     }
 
     property QtObject blendedColors: AdaptedMaterialScheme {
@@ -136,11 +173,14 @@ Item { // Player instance
         StyledImage {
             id: blurredArt
             anchors.fill: parent
+            // Cached art is small and local: loaded as the card is built, and
+            // without a fade, it is there from the popup's first frame.
+            fadeIn: false
             source: root.displayedArtFilePath
             fillMode: Image.PreserveAspectCrop
             cache: false
             antialiasing: true
-            asynchronous: true
+            asynchronous: false
 
             layer.enabled: true
             layer.effect: StyledBlurEffect {
@@ -216,6 +256,8 @@ Item { // Player instance
 
                 StyledImage { // Art image
                     id: mediaArt
+                    fadeIn: false
+                    asynchronous: false
                     property int size: parent.height
                     anchors.fill: parent
 
@@ -226,6 +268,15 @@ Item { // Player instance
 
                     width: size
                     height: size
+                }
+
+                MaterialSymbol {
+                    anchors.centerIn: parent
+                    visible: root.displayedArtFilePath === "" || mediaArt.status === Image.Error
+                    fill: 1
+                    text: "music_note"
+                    color: blendedColors.colPrimary
+                    iconSize: Math.round(parent.height * 0.4)
                 }
             }
 
@@ -282,6 +333,7 @@ Item { // Player instance
                             elide: Text.ElideNone
                             animateChange: true
                             text: StringUtils.cleanMusicTitle(root.player?.trackTitle) || "Untitled"
+                            textFormat: Text.PlainText
 
                             // Reset visual position immediately when track changes
                             onTextChanged: {
@@ -296,6 +348,7 @@ Item { // Player instance
                             font: trackTitleMain.font
                             color: trackTitleMain.color
                             text: trackTitleMain.text
+                            textFormat: Text.PlainText
                             elide: Text.ElideNone
                         }
                     }
@@ -309,6 +362,7 @@ Item { // Player instance
                     color: blendedColors.colSubtext
                     elide: Text.ElideRight
                     text: root.player?.trackArtist
+                    textFormat: Text.PlainText
                     animateChange: true
                     animationDistanceX: 6
                     animationDistanceY: 0

@@ -27,6 +27,7 @@ Item { // Bar content region
         case "activeWindow": return comp_activeWindow;
         case "activeWindowPill": return comp_activeWindowPill;
         case "resources": return comp_resources;
+        case "network": return comp_network;
         case "media": return comp_media;
         case "workspaces": return comp_workspaces;
         case "clock": return comp_clock;
@@ -51,12 +52,11 @@ Item { // Bar content region
         // The button hides itself when none of the things it opens are turned
         // on. The slot can't see that from the outside, so it would keep the
         // space reserved for a button nobody can see.
-        case "sidebarButton": return Config.options.policies.ai !== 0
-            || Config.options.sidebar.translator.enable
-            || Config.options.policies.weeb !== 0;
+        case "sidebarButton": return SidebarLeftTabs.buttonShown;
         case "activeWindow": return root.useShortenedForm === 0;
         case "activeWindowPill": return root.useShortenedForm === 0;
         case "media": return root.useShortenedForm < 2;
+        case "network": return root.useShortenedForm < 2;
         case "utilButtons": return Config.options.bar.verbose && root.useShortenedForm === 0;
         case "battery": return root.useShortenedForm < 2 && Battery.available;
         case "volume": return root.useShortenedForm === 0;
@@ -189,7 +189,7 @@ Item { // Bar content region
         Layout.fillHeight: true
         implicitWidth: 1
         implicitHeight: Appearance.sizes.baseBarHeight / 3
-        color: Appearance.colors.colOutlineVariant
+        color: Appearance.barContent.colOutlineVariant
     }
 
     // Generic single-widget slot.
@@ -214,6 +214,8 @@ Item { // Bar content region
         // pairing fills anywhere, because its pill keeps a set width in
         // every section.
         property bool inCenter: false
+        // A module in a group with no pill sits bare on the strip.
+        property bool onStrip: false
         Layout.alignment: Qt.AlignVCenter
         Layout.fillWidth: root.moduleFillWidth(moduleName)
             && (inCenter || yieldsToGroupMate || root.moduleTakesSpace(moduleName))
@@ -290,6 +292,7 @@ Item { // Bar content region
                     moduleName: modelData.id
                     entryEnabled: modelData.enabled
                     inCenter: pill.centerSection
+                    onStrip: true
                 }
             }
         }
@@ -342,13 +345,16 @@ Item { // Bar content region
     Component {
         id: comp_sidebarButton
         LeftSidebarButton {
-            colBackground: barLeftSideMouseArea.hovered ? Appearance.colors.colLayer1Hover : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
+            tones: (parent?.onStrip ?? false) ? Appearance.barStripContent : Appearance.barContent
+            colBackground: barLeftSideMouseArea.hovered ? tones.colLayer1Hover : ColorUtils.transparentize(tones.colLayer1Hover, 1)
         }
     }
 
     Component {
         id: comp_activeWindow
-        ActiveWindow {}
+        ActiveWindow {
+            tones: (parent?.onStrip ?? false) ? Appearance.barStripContent : Appearance.barContent
+        }
     }
 
     Component {
@@ -366,6 +372,11 @@ Item { // Bar content region
             alwaysShowAllResources: root.useShortenedForm === 2
                 || !(parent?.yieldsToGroupMate ?? false)
         }
+    }
+
+    Component {
+        id: comp_network
+        NetworkSpeed {}
     }
 
     Component {
@@ -437,7 +448,9 @@ Item { // Bar content region
 
     Component {
         id: comp_releaseUpdates
-        ReleaseUpdatesIndicator {}
+        ReleaseUpdatesIndicator {
+            tones: (parent?.onStrip ?? false) ? Appearance.barStripContent : Appearance.barContent
+        }
     }
 
     Component {
@@ -449,14 +462,14 @@ Item { // Bar content region
             implicitHeight: indicatorsRowLayout.implicitHeight + 5 * 2
 
             buttonRadius: Appearance.rounding.full
-            colBackground: barRightSideMouseArea.hovered ? Appearance.colors.colLayer1Hover : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
-            colBackgroundHover: Appearance.colors.colLayer1Hover
-            colRipple: Appearance.colors.colLayer1Active
-            colBackgroundToggled: Appearance.colors.colSecondaryContainer
-            colBackgroundToggledHover: Appearance.colors.colSecondaryContainerHover
-            colRippleToggled: Appearance.colors.colSecondaryContainerActive
+            colBackground: barRightSideMouseArea.hovered ? Appearance.barContent.colLayer1Hover : ColorUtils.transparentize(Appearance.barContent.colLayer1Hover, 1)
+            colBackgroundHover: Appearance.barContent.colLayer1Hover
+            colRipple: Appearance.barContent.colLayer1Active
+            colBackgroundToggled: Appearance.barContent.colSecondaryContainer
+            colBackgroundToggledHover: Appearance.barContent.colSecondaryContainerHover
+            colRippleToggled: Appearance.barContent.colSecondaryContainerActive
             toggled: GlobalStates.sidebarRightOpen
-            property color colText: toggled ? Appearance.m3colors.m3onSecondaryContainer : Appearance.colors.colOnLayer0
+            property color colText: toggled ? Appearance.barContent.m3onSecondaryContainer : Appearance.barContent.colOnLayer0
 
             Behavior on colText {
                 animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
@@ -558,12 +571,12 @@ Item { // Bar content region
                 implicitHeight: 32
                 buttonRadius: Appearance.rounding.full
                 toggled: volumeBarPopup.shown
-                colBackground: barRightSideMouseArea.hovered ? Appearance.colors.colLayer1Hover : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
-                colBackgroundHover: Appearance.colors.colLayer1Hover
-                colRipple: Appearance.colors.colLayer1Active
-                colBackgroundToggled: Appearance.colors.colSecondaryContainer
-                colBackgroundToggledHover: Appearance.colors.colSecondaryContainerHover
-                colRippleToggled: Appearance.colors.colSecondaryContainerActive
+                colBackground: barRightSideMouseArea.hovered ? Appearance.barContent.colLayer1Hover : ColorUtils.transparentize(Appearance.barContent.colLayer1Hover, 1)
+                colBackgroundHover: Appearance.barContent.colLayer1Hover
+                colRipple: Appearance.barContent.colLayer1Active
+                colBackgroundToggled: Appearance.barContent.colSecondaryContainer
+                colBackgroundToggledHover: Appearance.barContent.colSecondaryContainerHover
+                colRippleToggled: Appearance.barContent.colSecondaryContainerActive
                 onClicked: volumeBarPopup.shown = !volumeBarPopup.shown
 
                 contentItem: MaterialSymbol {
@@ -576,7 +589,7 @@ Item { // Bar content region
                         return "volume_up";
                     }
                     iconSize: Appearance.font.pixelSize.larger
-                    color: volumeIconButton.toggled ? Appearance.m3colors.m3onSecondaryContainer : Appearance.colors.colOnLayer0
+                    color: volumeIconButton.toggled ? Appearance.barContent.m3onSecondaryContainer : Appearance.barContent.colOnLayer0
                 }
             }
 

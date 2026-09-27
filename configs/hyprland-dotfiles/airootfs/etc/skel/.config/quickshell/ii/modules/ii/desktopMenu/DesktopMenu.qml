@@ -26,6 +26,11 @@ Scope {
             id: menuWindow
 
             screen: GlobalStates.desktopMenuScreen ?? Quickshell.screens[0]
+            // Off the default monitor the wallpaper rows are this screen's
+            // own: the default monitor's wallpaper is the one the colors come
+            // from, and it stays the one Super+W changes.
+            readonly property string targetMonitor: menuWindow.screen?.name ?? ""
+            readonly property bool forThisScreen: MonitorWallpapers.isOtherMonitor(menuWindow.targetMonitor)
             color: "transparent"
             exclusionMode: ExclusionMode.Ignore
             WlrLayershell.namespace: "quickshell:desktopMenu"
@@ -53,19 +58,8 @@ Scope {
                 }
             }
 
-            // Darker than the shared default, which is faint enough to vanish
-            // over a bright wallpaper. Deeper rather than wider on purpose:
-            // the card is kept one elevation margin from the screen edges, so
-            // a larger blur would be cut off exactly where the menu is most
-            // likely to open.
-            StyledRectangularShadow {
-                target: menuCard
-                color: ColorUtils.transparentize(Appearance.m3colors.m3shadow, 0.4)
-            }
-
-            Rectangle {
+            ContextMenuCard {
                 id: menuCard
-                property real padding: 4
 
                 // The card grows right and down from the click, and to the
                 // other side of it when that edge is too close. Sliding it
@@ -80,8 +74,6 @@ Scope {
                 y: menuCard.place(GlobalStates.desktopMenuY, height, menuWindow.height)
                 implicitWidth: menuColumn.implicitWidth + padding * 2
                 implicitHeight: menuColumn.implicitHeight + padding * 2
-                color: Appearance.m3colors.m3surfaceContainer
-                radius: Appearance.rounding.normal
 
                 ColumnLayout {
                     id: menuColumn
@@ -92,22 +84,34 @@ Scope {
                     spacing: 0
 
                     // A menu opened on the wallpaper leads with the wallpaper.
-                    // The two rows for the desktop itself come first and
+                    // The rows for the desktop itself come first and
                     // together, then the pair of strips along its edges, then
                     // the monitor, which is the least desktop thing here.
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "image"
                         label: Translation.tr("Change Wallpaper")
-                        // What Super+W does, so picking a wallpaper means the
-                        // same thing here as it does from the keyboard, the
-                        // system file dialog setting included.
+                        // On the default monitor this is what Super+W does, so
+                        // picking a wallpaper means the same thing here as it
+                        // does from the keyboard. On any other monitor it picks
+                        // a picture for that screen alone, which leaves the
+                        // colors as they are. The system file dialog setting
+                        // holds for both.
+                        onClicked: menuWindow.changeWallpaper()
+                    }
+
+                    // Only once this screen has a picture of its own, so the
+                    // row always does something.
+                    ContextMenuItem {
+                        visible: menuWindow.forThisScreen && MonitorWallpapers.hasPicture(menuWindow.targetMonitor)
+                        iconName: "reset_image"
+                        label: Translation.tr("Use Main Wallpaper")
                         onClicked: {
+                            MonitorWallpapers.clearPicture(menuWindow.targetMonitor);
                             GlobalStates.desktopMenuOpen = false;
-                            Hyprland.dispatch(`hl.dsp.global("quickshell:wallpaperSelectorToggle")`);
                         }
                     }
 
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "dashboard_customize"
                         label: Translation.tr("Personalize Desktop")
                         onClicked: menuWindow.openSettingsPage("BackgroundConfig.qml")
@@ -115,14 +119,18 @@ Scope {
 
                     ContextMenuSeparator {}
 
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "toast"
+                        // The bar's glyph is a toast, which points the wrong
+                        // way for a strip along an edge, so Settings turns it
+                        // over. A row here showing it the other way up would
+                        // not read as the same thing.
                         iconRotation: 180
                         label: Translation.tr("Personalize Bar")
                         onClicked: menuWindow.openSettingsPage("BarConfig.qml")
                     }
 
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "toast"
                         label: Translation.tr("Personalize Dock")
                         onClicked: menuWindow.openSettingsPage("DockConfig.qml")
@@ -130,7 +138,7 @@ Scope {
 
                     ContextMenuSeparator {}
 
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "display_settings"
                         label: Translation.tr("Display Settings")
                         onClicked: menuWindow.openSettingsPage("DisplayConfig.qml")
@@ -140,7 +148,7 @@ Scope {
 
                     // On its own at the end, because a theme is the one thing
                     // here that changes everything above it at once.
-                    DesktopMenuItem {
+                    ContextMenuItem {
                         iconName: "style"
                         label: Translation.tr("Switch Theme")
                         onClicked: menuWindow.openSettingsPage("ThemesConfig.qml")
@@ -148,52 +156,30 @@ Scope {
                 }
             }
 
+            // Read before the menu closes, which takes this window with it.
+            function changeWallpaper() {
+                const monitorName = menuWindow.targetMonitor;
+                const screen = menuWindow.screen;
+                const forThisScreen = menuWindow.forThisScreen;
+                GlobalStates.desktopMenuOpen = false;
+                if (!forThisScreen) {
+                    Hyprland.dispatch(`hl.dsp.global("quickshell:wallpaperSelectorToggle")`);
+                    return;
+                }
+                if (Config.options.wallpaperSelector.useSystemFileDialog) {
+                    MonitorWallpapers.pickWithSystemDialog(monitorName);
+                    return;
+                }
+                GlobalStates.wallpaperSelectorScreen = screen;
+                GlobalStates.wallpaperSelectorMonitor = monitorName;
+                GlobalStates.wallpaperSelectorOpen = true;
+            }
+
             function openSettingsPage(page) {
                 GlobalStates.desktopMenuOpen = false;
                 Quickshell.execDetached(["sh", "-c",
                     `QS_SETTINGS_PAGE=${page} quickshell -p '`
                     + StringUtils.shellSingleQuoteEscape(Directories.settingsAppPath) + "'"]);
-            }
-        }
-    }
-
-    // Same row as the dock's own context menu, so both menus read alike.
-    component DesktopMenuItem: RippleButton {
-        id: menuItemRoot
-        property string iconName
-        // The bar's glyph is a toast, which points the wrong way for a strip
-        // along an edge, so Settings turns it over. A row here showing it the
-        // other way up would not read as the same thing.
-        property int iconRotation: 0
-        property string label
-        Layout.fillWidth: true
-        implicitHeight: 36
-        implicitWidth: Math.max(itemRow.implicitWidth + 20, 200)
-        buttonRadius: Appearance.rounding.small
-
-        contentItem: RowLayout {
-            id: itemRow
-            anchors {
-                fill: parent
-                leftMargin: 10
-                rightMargin: 14
-            }
-            spacing: 8
-
-            MaterialSymbol {
-                text: menuItemRoot.iconName
-                iconSize: Appearance.font.pixelSize.normal
-                color: Appearance.m3colors.m3onSurface
-                rotation: menuItemRoot.iconRotation
-                Layout.alignment: Qt.AlignVCenter
-            }
-
-            StyledText {
-                Layout.fillWidth: true
-                text: menuItemRoot.label
-                horizontalAlignment: Text.AlignLeft
-                font.pixelSize: Appearance.font.pixelSize.small
-                color: Appearance.m3colors.m3onSurface
             }
         }
     }

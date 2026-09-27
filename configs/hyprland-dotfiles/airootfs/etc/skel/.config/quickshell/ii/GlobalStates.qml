@@ -11,6 +11,30 @@ Singleton {
     id: root
     property bool hdrActive: false
     property bool barOpen: true
+    // The dock's edge rule lives in Appearance, which cannot reach this file,
+    // and the Hug dock is free of the bar's edge while the bar is put away.
+    // Settings and the Welcome app keep a GlobalStates of their own whose bar
+    // is never put away, so only the shell may speak for it: shell.qml turns
+    // this on. It hands the rule the bar's state first hand, and leaves it in
+    // the runtime file the other processes read.
+    property bool _publishBarOpen: false
+    Binding {
+        when: root._publishBarOpen
+        target: Appearance.sizes
+        property: "barShown"
+        value: root.barOpen
+    }
+    FileView {
+        id: barStateFile
+        path: Appearance.barStatePath
+        preload: false
+    }
+    function _writeBarOpen() {
+        if (root._publishBarOpen)
+            barStateFile.setText(root.barOpen ? "shown" : "hidden");
+    }
+    onBarOpenChanged: root._writeBarOpen()
+    on_PublishBarOpenChanged: root._writeBarOpen()
     // The narrowest a floating strip can be set to without its widgets running
     // together, as a percentage, published by the bar itself because only it
     // knows how wide the widgets on show actually are. With more than one
@@ -20,6 +44,10 @@ Singleton {
     property bool crosshairOpen: false
     property bool sidebarLeftOpen: false
     property bool sidebarRightOpen: false
+    // Asks the right sidebar to open on its Wi-Fi list. A flag the sidebar
+    // takes down rather than a signal: kept unloaded, its contents only exist
+    // once it opens, and a signal sent before then would be lost.
+    property bool sidebarRightWifiRequested: false
     property bool mediaControlsOpen: false
     property bool mediaTransferActive: false
     // The bar's media widget, set by whichever one opens the popup, so the
@@ -30,6 +58,16 @@ Singleton {
     // Written by the dock; a pinned dock reserves an exclusive zone, an
     // unpinned one reveals over other surfaces.
     property bool dockPinned: false
+    // Written by the left sidebar; pinned, it reserves an exclusive zone.
+    property bool sidebarLeftPinned: false
+    // Written by the left sidebar: how far it reaches in from its edge while
+    // open without reserving that room. Pinned, its exclusive zone moves
+    // popups instead.
+    property real sidebarLeftCover: 0
+    // Written by the left sidebar: the strip it reserves while pinned open,
+    // and the screen that strip is on.
+    property real sidebarLeftZone: 0
+    property string sidebarLeftScreen: ""
     property var mediaTransferUrls: []
     property bool mediaReceiveActive: false
     property bool osdBrightnessOpen: false
@@ -37,6 +75,16 @@ Singleton {
     property bool oskOpen: false
     property bool overlayOpen: false
     property bool overviewOpen: false
+    // The screens the launcher's dim is shown on, by name, as the dim sets
+    // them when it starts to fade in or out. It covers the focused screen
+    // alone, and only once its surface spans that screen, which can land a
+    // configure after the launcher opens. What is drawn over the dim reads
+    // this rather than the launcher being open, so it changes with the dim.
+    property list<string> launcherDimScreens: []
+    function setLauncherDim(screenName, shown) {
+        const others = root.launcherDimScreens.filter(name => name !== screenName);
+        root.launcherDimScreens = shown ? others.concat([screenName]) : others;
+    }
     // True while the scrolloverview Hyprland plugin's overview is open (synced
     // from its scrolloverview>>open/close IPC events below). The hot corner's
     // "already open, don't re-fire" guards check this so a focus-grab-synthesized
@@ -80,7 +128,6 @@ Singleton {
         if (!overviewOpen) overviewWorkspacesOnly = false;
     }
     property bool regionSelectorOpen: false
-    property bool searchOpen: false
     property bool screenLocked: false
     property bool screenLockContainsCharacters: false
     property bool screenUnlockFailed: false
@@ -89,6 +136,16 @@ Singleton {
     property bool superDown: false
     property bool superReleaseMightTrigger: true
     property bool wallpaperSelectorOpen: false
+    // The monitor the picker is choosing a picture for, by connector name,
+    // and its screen; empty for the main wallpaper, which themes everything.
+    // Cleared on every close, so Super+W always opens on the main wallpaper.
+    property string wallpaperSelectorMonitor: ""
+    property var wallpaperSelectorScreen: null
+    onWallpaperSelectorOpenChanged: {
+        if (root.wallpaperSelectorOpen) return;
+        root.wallpaperSelectorMonitor = "";
+        root.wallpaperSelectorScreen = null;
+    }
     property bool workspaceShowNumbers: false
     property string openFolderId: ""  // Set by dock to open a folder in the app drawer
     // Whether the hyprland-scroll-overview plugin is currently loaded into
@@ -145,6 +202,17 @@ Singleton {
             GlobalStates.mediaReceiveActive = true;
             GlobalStates.mediaControlsOpen = true;
         }
+    }
+
+    // The bar's network widget. It puts an open sidebar away, the way the
+    // bar's other ways into the sidebar do, rather than reaching past it.
+    function toggleWifiList() {
+        if (GlobalStates.sidebarRightOpen) {
+            GlobalStates.sidebarRightOpen = false;
+            return;
+        }
+        GlobalStates.sidebarRightOpen = true;
+        GlobalStates.sidebarRightWifiRequested = true;
     }
 
     onMediaControlsOpenChanged: {

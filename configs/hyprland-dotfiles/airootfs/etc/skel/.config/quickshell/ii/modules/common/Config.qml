@@ -26,6 +26,7 @@ Singleton {
     readonly property var defaultBarLayout: ({
         "left": [
             { "widgets": [ {"id": "resources", "enabled": false} ] },
+            { "widgets": [ {"id": "network", "enabled": false} ] },
             { "widgets": [ {"id": "workspaces", "enabled": true} ] },
             { "widgets": [ {"id": "tray", "enabled": true} ] },
             { "widgets": [ {"id": "activeWindowPill", "enabled": false}, {"id": "activeWindow", "enabled": false} ] },
@@ -241,6 +242,22 @@ Singleton {
         return true
     }
 
+    // The session menu became one row of four large buttons, and a file
+    // written before that has no say in it. Its owner has only known the full
+    // menu, so they keep it and can pick the simple one in Settings. A fresh
+    // install writes the key with every other default and never gets here.
+    function keepFullSessionMenu() {
+        let stored = null
+        try {
+            stored = JSON.parse(configFileView.text())
+        } catch (e) {
+            return false
+        }
+        if (!stored || stored.session?.simpleMenu !== undefined) return false
+        root.options.session.simpleMenu = false
+        return true
+    }
+
     function reloadFromFile() {
         root._reloading = true
         configFileView.reload()
@@ -301,6 +318,10 @@ Singleton {
         }
     }
 
+    // A window running as its own process waits for this before it quits, or
+    // the change that started the countdown below would never reach the file.
+    readonly property bool writePending: fileWriteTimer.running
+
     Timer {
         id: fileWriteTimer
         interval: root.readWriteDelay
@@ -357,7 +378,8 @@ Singleton {
             const seeded = root.seedBarLayoutFromLegacySwitches()
             const scrubbed = root.scrubRetiredBarModules()
             const united = root.migrateWeatherUnits()
-            if (seeded || scrubbed || united) fileWriteTimer.restart()
+            const kept = root.keepFullSessionMenu()
+            if (seeded || scrubbed || united || kept) fileWriteTimer.restart()
         }
         onLoadFailed: error => {
             if (error == FileViewError.FileNotFound) {
@@ -367,8 +389,6 @@ Singleton {
 
         JsonAdapter {
             id: configOptionsJsonAdapter
-
-            property string panelFamily: "ii" // "ii", "waffle"
 
             property JsonObject policies: JsonObject {
                 property int ai: 0 // 0: No | 1: Yes | 2: Local
@@ -384,7 +404,7 @@ Singleton {
                         "description": "This is a custom model. Edit the config to add more! | Anyway, this is DeepSeek R1 Distill LLaMA 70B",
                         "endpoint": "https://openrouter.ai/api/v1/chat/completions",
                         "homepage": "https://openrouter.ai/deepseek/deepseek-r1-distill-llama-70b:free", // Not mandatory
-                        "icon": "spark-symbolic", // Not mandatory
+                        "icon": "deepseek-symbolic", // Not mandatory
                         "key_get_link": "https://openrouter.ai/settings/keys", // Not mandatory
                         "key_id": "openrouter",
                         "model": "deepseek/deepseek-r1-distill-llama-70b:free",
@@ -396,6 +416,16 @@ Singleton {
 
             property JsonObject appearance: JsonObject {
                 property bool extraBackgroundTint: true
+                // Whether the content on the bar, the dock and the launcher
+                // answers to what it is drawn on: turned light or dark and
+                // firmed up when a color or a transparency would lose it. The
+                // launcher is part of it because it wears the dock's style,
+                // so its text is laid on the same colors. Off, all of it
+                // keeps the palette's own tones whatever the surface, and the
+                // launcher's panels and dim keep the palette's own surface
+                // too, the one those tones were chosen for. Nothing on screen
+                // sets it; it is here for a setup the judgment gets wrong.
+                property bool autoIconContrast: true
                 // Lives here rather than in the Hyprland config so a saved
                 // theme carries it. Palette mode holds role names, which are
                 // re-read from whatever palette is current so the border
@@ -422,6 +452,14 @@ Singleton {
                     property int opacity: 15
                 }
                 property int fakeScreenRounding: 2 // 0: None | 1: Always | 2: When not fullscreen
+                // What the Rounded Corners switch turns back on to: the bar
+                // style, the screen corners and the window radius. -1 is
+                // nothing remembered. See services/RoundedCorners.qml.
+                property JsonObject roundCornersRestore: JsonObject {
+                    property int barCornerStyle: -1
+                    property int fakeScreenRounding: -1
+                    property int windowRounding: -1
+                }
                 property JsonObject fonts: JsonObject {
                     property string main: "Google Sans Flex"
                     property string numbers: "Google Sans Flex"
@@ -692,7 +730,7 @@ Singleton {
                     property bool animationEnabled: true
                 }
                 property bool borderless: false // true for no grouping of items
-                property string topLeftIcon: "spark" // Options: "distro" or any icon name in ~/.config/quickshell/ii/assets/icons
+                property string topLeftIcon: "spark" // "spark" shows the logo of the AI model picked in the sidebar, and no button while AI is off; or "distro", or any icon name in ~/.config/quickshell/ii/assets/icons
                 property bool showBackground: true
                 // How solid each of the bar's two surfaces is, as plain opacity:
                 // 0 is gone, 1 is fully solid. Below zero means the interface
@@ -744,8 +782,9 @@ Singleton {
                 // a pill (combined); separate groups are separate pills. In the
                 // center, the middle group is kept screen-centered. Recognized
                 // ids: sidebarButton, activeWindow, activeWindowPill,
-                // resources, media, workspaces, clock, utilButtons, battery,
-                // indicators, volume, tray, timers, weather, releaseUpdates.
+                // resources, network, media, workspaces, clock, utilButtons,
+                // battery, indicators, volume, tray, timers, weather,
+                // releaseUpdates.
                 property JsonObject layout: JsonObject {
                     property list<var> left: root.defaultBarLayout.left
                     property list<var> center: root.defaultBarLayout.center
@@ -900,6 +939,10 @@ Singleton {
             // were open, on the workspaces they were on.
             property JsonObject session: JsonObject {
                 property bool restoreEnabled: true
+                // The session menu as one row of Lock, Logout, Reboot and
+                // Shutdown. Off, it is the full grid with Sleep, Hibernate,
+                // Task Manager and Reboot to firmware settings as well.
+                property bool simpleMenu: true
             }
 
             property JsonObject brightness: JsonObject {
@@ -968,8 +1011,12 @@ Singleton {
                 // rounds all four corners alike; hug sits flush on the edge,
                 // where the two corners touching it can curve outward into it
                 // instead of away, so the dock reads as part of the edge
-                // rather than a slab resting near it.
-                property string cornerStyle: "float" // "float" | "hug" | "rect"
+                // rather than a slab resting near it. Settings calls hug
+                // "Notch", the shape the bar's notch has, and keeps the name
+                // "Hug" for span: a strip the whole length of the edge, drawn
+                // the way the Hug bar is, which only sits on the edge facing
+                // the bar. Any other value is drawn as rect.
+                property string cornerStyle: "float" // "float" | "hug" | "rect" | "span"
                 // The corners facing the desktop can answer to themselves;
                 // below zero they follow the radius above. The pair on the
                 // edge takes its shape from the style instead: hug curves it
@@ -977,10 +1024,11 @@ Singleton {
                 property real topRadius: -1
                 // Each corner style keeps the roundness it was last given, so
                 // moving between them brings back what that style looked like
-                // rather than dragging one shape through all three. Only the
-                // corners a style can actually set are kept for it. Below minus
-                // one means that style has never been left, and whatever the
-                // two above already hold still stands.
+                // rather than dragging one shape through all of them. Only the
+                // corners a style can actually set are kept for it, and span
+                // sets none: the only curves it has are the screen's rounding.
+                // Below minus one means that style has never been left, and
+                // whatever the two above already hold still stands.
                 property real radiusFloat: -2
                 property real radiusNotch: -2
                 property real topRadiusRect: -2
@@ -1005,11 +1053,13 @@ Singleton {
                 property string badgeTextColorLight: ""
                 // "bottom" | "top" | "left" | "right". The dock yields if the
                 // bar is moved onto this edge; asking for the bar's edge from
-                // the dock's own setting moves the bar across instead.
+                // the dock's own setting moves the bar across instead. Styled
+                // span, the dock takes the edge facing the bar while the bar
+                // is up, and moves with it.
                 property string position: "bottom"
                 property bool monochromeIcons: false
                 // "magnify" | "glow" | "off"
-                property string hoverEffect: "magnify"
+                property string hoverEffect: "glow"
                 // Percent grown on hover, one key per effect so each keeps its
                 // own setting; -1 takes the effect's own stock.
                 property real hoverMagnify: -1
@@ -1143,6 +1193,8 @@ Singleton {
 
             property JsonObject notifications: JsonObject {
                 property int timeout: 7000
+                // "top_left" | "top_center" | "top_right" | "bottom_left" | "bottom_center" | "bottom_right"
+                property string position: "top_right"
                 property JsonObject forceMonitor: JsonObject {
                     property bool enable: false
                     property string name: "" // Name of the monitor to show notifications on, like "eDP-1". Find out with 'hyprctl monitors' command
@@ -1280,6 +1332,11 @@ Singleton {
 
             property JsonObject tray: JsonObject {
                 property bool monochromeIcons: false
+                // A tray icon is inverted only when fewer than this share of
+                // its visible pixels stands off the bar. The ratio is WCAG
+                // contrast; 3:1 is the mark for non-text UI graphics.
+                property real autoContrastMinimumRatio: 3
+                property real autoContrastMinimumVisibleShare: 0.65
                 property bool showItemId: false
                 property bool invertPinnedItems: true // Makes the below a whitelist for the tray and blacklist for the pinned area
                 property list<var> pinnedItems: [ "Fcitx" ]
@@ -1326,6 +1383,14 @@ Singleton {
                 property JsonObject translator: JsonObject {
                     property bool enable: false
                     property int delay: 300 // Delay before sending request. Reduces (potential) rate limits and lag.
+                }
+                property JsonObject media: JsonObject {
+                    property bool enable: true
+                    // The song's title and artist go to lrclib.net only while
+                    // the lyrics are actually on screen.
+                    property bool showLyrics: true
+                    property bool artColors: true
+                    property bool blurredBackground: true
                 }
                 property JsonObject ai: JsonObject {
                     property bool textFadeIn: false
@@ -1430,27 +1495,6 @@ Singleton {
 
             property JsonObject hacks: JsonObject {
                 property int arbitraryRaceConditionDelay: 20 // milliseconds
-            }
-
-            property JsonObject waffles: JsonObject {
-                // Some spots are kinda janky/awkward. Setting the following to
-                // false will make (some) stuff also be like that for accuracy. 
-                // Example: the right-click menu of the Start button
-                property JsonObject tweaks: JsonObject {
-                    property bool switchHandlePositionFix: true
-                    property bool smootherMenuAnimations: true
-                    property bool smootherSearchBar: true
-                }
-                property JsonObject bar: JsonObject {
-                    property bool bottom: true
-                    property bool leftAlignApps: false
-                }
-                property JsonObject actionCenter: JsonObject {
-                    property list<string> toggles: [ "network", "bluetooth", "easyEffects", "powerProfile", "idleInhibitor", "nightLight", "darkMode", "antiFlashbang", "cloudflareWarp", "mic", "musicRecognition", "notifications", "onScreenKeyboard", "gameMode", "screenSnip", "colorPicker" ]
-                }
-                property JsonObject calendar: JsonObject {
-                    property bool force2CharDayOfWeek: true
-                }
             }
         }
     }

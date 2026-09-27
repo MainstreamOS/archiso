@@ -183,6 +183,11 @@ Scope {
         function edgeClearance(edge) {
             const index = { left: 0, top: 1, right: 2, bottom: 3 }[edge];
             let c = panelWindow.monitorData?.reserved?.[index] ?? 0;
+            // A pinned left sidebar keeps its strip reserved, but the overview
+            // draws over it, so the content centers on the whole screen.
+            if (edge === Appearance.sizes.sidebarLeftEdge
+                    && GlobalStates.sidebarLeftScreen === (panelWindow.screen?.name ?? ""))
+                c = Math.max(0, c - GlobalStates.sidebarLeftZone);
             if (Config.options.dock.enable && Appearance.sizes.dockEdge === edge)
                 c += GlobalStates.dockPinned ? Appearance.sizes.elevationMargin : Appearance.sizes.dockExtent;
             if (edge === "top" && Config.options.dock.enable
@@ -198,22 +203,14 @@ Scope {
                     searchWidget.disableExpandAnimation();
                     overviewScope.dontAutoCancelSearch = false;
                     // Reset drawer state
-                    appDrawer.expanded = panelWindow.drawerStartsExpanded;
-                    appDrawer.searchText = "";
-                    appDrawer.folderPopupVisible = false;
-                    appDrawer.openFolder = null;
-                    appDrawer.resetScroll();
+                    panelWindow.resetDrawer();
                     flickable.contentY = 0;
                 } else {
                     if (!overviewScope.dontAutoCancelSearch) {
                         searchWidget.cancelSearch();
                     }
                     // Reset drawer state on open.
-                    appDrawer.expanded = panelWindow.drawerStartsExpanded;
-                    appDrawer.searchText = "";
-                    appDrawer.folderPopupVisible = false;
-                    appDrawer.openFolder = null;
-                    appDrawer.resetScroll();
+                    panelWindow.resetDrawer();
                     // Focus the search box (Exclusive keyboardFocus delivers keys).
                     Qt.callLater(() => searchWidget.focusSearchInput());
                 }
@@ -223,6 +220,26 @@ Scope {
         function setSearchingText(text) {
             searchWidget.setSearchingText(text);
             searchWidget.focusFirstItem();
+        }
+
+        function collapseDrawer(refocus) {
+            appDrawer.closeContextMenu();
+            appDrawer.expanded = false;
+            appDrawer.searchText = "";
+            Qt.callLater(() => { flickable.contentY = 0; });
+            if (refocus) {
+                columnLayout.forceActiveFocus();
+                Qt.callLater(() => { searchWidget.focusSearchInput(); });
+            }
+        }
+
+        function resetDrawer() {
+            appDrawer.closeContextMenu();
+            appDrawer.expanded = panelWindow.drawerStartsExpanded;
+            appDrawer.searchText = "";
+            appDrawer.folderPopupVisible = false;
+            appDrawer.openFolder = null;
+            appDrawer.resetScroll();
         }
 
         // Wraps all content so a single opacity animation fades everything together
@@ -431,11 +448,8 @@ Scope {
             onContentYChanged: {
                 // Drag-overshoot past the top while expanded → collapse.
                 // Wheel-based collapse is handled by wheelOverlay below.
-                if (appDrawer.expanded && !panelWindow.drawerStartsExpanded && contentY < -30) {
-                    appDrawer.expanded = false;
-                    appDrawer.searchText = "";
-                    Qt.callLater(() => { flickable.contentY = 0; });
-                }
+                if (appDrawer.expanded && appDrawer.collapsible && contentY < -30)
+                    panelWindow.collapseDrawer(false);
             }
 
             // Click empty space to close. Inside the flickable + z:-1 so it sits
@@ -457,12 +471,8 @@ Scope {
 
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
-                        if (appDrawer.expanded && !panelWindow.drawerStartsExpanded) {
-                            appDrawer.expanded = false;
-                            appDrawer.searchText = "";
-                            Qt.callLater(() => { flickable.contentY = 0; });
-                            columnLayout.forceActiveFocus();
-                            Qt.callLater(() => { searchWidget.focusSearchInput(); });
+                        if (appDrawer.expanded && appDrawer.collapsible) {
+                            panelWindow.collapseDrawer(true);
                         } else if (panelWindow.searchingText !== "") {
                             searchWidget.cancelSearch();
                             Qt.callLater(() => { searchWidget.focusSearchInput(); });
@@ -683,15 +693,11 @@ Scope {
                 // one, unless the full list is what the launcher opens on, in
                 // which case there is no shorter state to go back to and the
                 // scroll falls through to the grid below.
-                if (appDrawer.expanded && !panelWindow.drawerStartsExpanded
+                if (appDrawer.expanded && appDrawer.collapsible
                         && scrollingUp
                         && flickable.scrollTargetY <= 0
                         && appDrawer.isGridAtTop()) {
-                    appDrawer.expanded = false;
-                    appDrawer.searchText = "";
-                    Qt.callLater(() => { flickable.contentY = 0; });
-                    columnLayout.forceActiveFocus();
-                    Qt.callLater(() => { searchWidget.focusSearchInput(); });
+                    panelWindow.collapseDrawer(true);
                     event.accepted = true;
                     return;
                 }

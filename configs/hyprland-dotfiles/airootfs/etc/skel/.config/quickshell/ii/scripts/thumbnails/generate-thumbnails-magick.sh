@@ -7,6 +7,12 @@
 
 set -e
 
+# ImageMagick may otherwise take all of memory and then spill to disk, and
+# /tmp is memory as well, so a picture too big to handle would freeze the
+# system instead of failing. The same values as Images.magickEnvironment in
+# the shell.
+export MAGICK_MEMORY_LIMIT=2GiB MAGICK_MAP_LIMIT=1GiB MAGICK_DISK_LIMIT=1GiB
+
 # Thumbnail sizes mapping
 get_thumbnail_size() {
     case "$1" in
@@ -118,9 +124,18 @@ case "$MODE" in
             echo "Directory not found: $TARGET"
             exit 2
         fi
+        # One picture per core at a time: a folder of large pictures would
+        # otherwise have every one of them decoded in memory at once.
+        jobs_max="$(nproc 2>/dev/null || echo 4)"
+        running=0
         for f in "$TARGET"/*; do
             [ -f "$f" ] || continue
+            if (( running >= jobs_max )); then
+                wait -n || true
+                running=$((running - 1))
+            fi
             generate_thumbnail "$f" &
+            running=$((running + 1))
         done
         wait
         ;;

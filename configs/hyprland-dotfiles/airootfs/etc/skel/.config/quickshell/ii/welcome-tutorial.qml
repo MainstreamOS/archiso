@@ -48,7 +48,7 @@ ApplicationWindow {
     title: Translation.tr("Welcome to Mainstream")
 
     property int currentCard: 0
-    readonly property int cardCount: 12   // bump as you add more cards
+    readonly property int cardCount: 13   // bump as you add more cards
     // The window's own title doubles as each page's heading, so a page that
     // names itself does not spend a line of its own saying so.
     readonly property string cardTitle: {
@@ -64,9 +64,9 @@ ApplicationWindow {
         return Translation.tr("Getting around");
     }
 
-    // The footer shows the walkthrough as three parts, since twelve steps
-    // read as a long way to go to someone new. The ranges come from the apps
-    // page and the page count, so a tour page added later lands in Tour.
+    // The footer shows the walkthrough as three parts, since the full list of
+    // steps reads as a long way to go to someone new. The ranges come from the
+    // apps page and the page count, so a tour page added later lands in Tour.
     readonly property var sections: [
         { label: Translation.tr("Setup"),  first: 0, count: root.installCardIndex + 1 },
         { label: Translation.tr("Tour"),   first: root.installCardIndex + 1, count: root.cardCount - root.installCardIndex - 2 },
@@ -171,6 +171,20 @@ ApplicationWindow {
             "import sys\nopen(sys.argv[2], 'w').write(sys.argv[1] + '\\n')\n",
             value, Quickshell.env("HOME") + "/.config/hypr/custom/scrolloverview.layout"]);
     }
+    // Starts from what is saved, as Settings does: shown as Vertical over a
+    // saved Horizontal, picking Vertical would look like no change and write
+    // nothing.
+    Process {
+        running: true
+        command: ["cat", Quickshell.env("HOME") + "/.config/hypr/custom/scrolloverview.layout"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const saved = this.text.trim();
+                if (saved === "vertical" || saved === "horizontal")
+                    root.scrollOverviewLayout = saved;
+            }
+        }
+    }
 
     // Shared mockup geometry — the feature cards render the same
     // 600x380 canvas and 560-wide bar, so these live here as one
@@ -224,6 +238,11 @@ ApplicationWindow {
     property string firstRunFilePath: FileUtils.trimFileProtocol(`${Directories.state}/user/first_run.txt`)
     property string firstRunFileContent: "This file is just here to confirm you've been greeted :>"
     property bool showNextStartup: false
+
+    // Closing hides the window straight away, and the process goes once a page
+    // has finished what it started, such as a theme apply or a new wallpaper.
+    onClosing: quitWhenIdle.request()
+    QuitWhenIdle { id: quitWhenIdle }
 
     Component.onCompleted: {
         MaterialThemeLoader.reapplyTheme()
@@ -331,7 +350,7 @@ ApplicationWindow {
 
                 // Cards are built lazily — only the visited ones are
                 // instantiated, so the welcome paints card 0 immediately
-                // instead of constructing all eleven (with their timers and
+                // instead of constructing every card (with their timers and
                 // animations) up front. Once shown, a card stays loaded so
                 // navigating back to it is instant.
                 LazyCard { sourceComponent: card0Comp }
@@ -344,6 +363,7 @@ ApplicationWindow {
                 LazyCard { sourceComponent: card4Comp }
                 LazyCard { sourceComponent: card5Comp }
                 LazyCard { sourceComponent: card6Comp }
+                LazyCard { sourceComponent: cardDesktopMenuComp }
                 LazyCard { sourceComponent: card7Comp }
                 LazyCard { sourceComponent: card8Comp }
                 // add more LazyCard { sourceComponent: cardNComp } here
@@ -359,6 +379,7 @@ ApplicationWindow {
             Component { id: card4Comp; Card4MoveBetweenWorkspaces {} }
             Component { id: card5Comp; Card5FileDragViaBar {} }
             Component { id: card6Comp; Card6DockPreview {} }
+            Component { id: cardDesktopMenuComp; CardDesktopMenu {} }
             Component { id: card7Comp; Card7AppShowcaseTabs {} }
             Component { id: card8Comp; Card8Contribute {} }
         }
@@ -490,14 +511,12 @@ ApplicationWindow {
 
 
     // Whether the compositor frosts what sits behind the bar and the dock.
-    // Read again whenever the page turns, since the windows page can turn
-    // blur off.
+    // Read again on arriving at the two pages that draw it, since the windows
+    // page can turn blur off.
     property bool layerBlur: true
     Process {
         id: layerBlurReader
-        command: ["python3", `${FileUtils.trimFileProtocol(Directories.config)}/quickshell/ii/scripts/themes/decorations.py`,
-                  "read", `${FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/general.lua`,
-                  "--flag-dir", `${FileUtils.trimFileProtocol(Directories.config)}/hypr/custom`]
+        command: root.decorationsCommand("read")
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
@@ -508,8 +527,10 @@ ApplicationWindow {
         }
     }
     onCurrentCardChanged: {
-        layerBlurReader.running = false;
-        layerBlurReader.running = true;
+        if (currentCard <= 1) {
+            layerBlurReader.running = false;
+            layerBlurReader.running = true;
+        }
         if (!visitedCards[currentCard]) {
             var v = visitedCards.slice(); v[currentCard] = true; visitedCards = v;
         }
@@ -518,11 +539,11 @@ ApplicationWindow {
     // ---- Style page (card 1) ----
     // One pick sets both halves, so a tile reads the bar and speaks for the
     // pair. Settings can still move each on its own, and the bar carries a
-    // fourth style none of these tiles offers, which lights none of them.
+    // fourth style, Rect, which none of these tiles offers and none lights.
     readonly property string barDockStyle: {
         switch (Config.options.bar.cornerStyle) {
+        case 0: return "hug";
         case 1: return "float";
-        case 2: return "rect";
         case 3: return "notch";
         }
         return "";
@@ -538,7 +559,7 @@ ApplicationWindow {
         Config.options.bar.floatWidth = -1;
         Config.options.bar.notchWidth = -1;
         Config.options.bar.floatSplit = false;
-        Config.options.bar.cornerStyle = v;
+        RoundedCorners.pickBarStyle(v);
     }
 
     function applyDockStyle(v) {
@@ -550,21 +571,135 @@ ApplicationWindow {
         Config.options.dock.radiusNotch = -2;
         Config.options.dock.topRadiusRect = -2;
         Config.options.dock.topRadiusNotch = -2;
-        Config.options.dock.cornerStyle = v;
+        // Through the rule the Dock page uses, which sets a Hug dock down on
+        // the edge facing the bar, the only edge it can run the length of.
+        Appearance.sizes.setDockStyle(v);
     }
 
     // The pair a tile stands for. Each half is set through its own call above
     // so the roundness each one pins is let go of the same way either route in.
+    // The Hug dock is stored as "span", since "hug" names the notch.
     function applyBarDockStyle(name) {
-        if (name === "rect") {
-            root.applyBarStyle(2);
-            root.applyDockStyle("rect");
+        if (name === "hug") {
+            root.applyBarStyle(0);
+            root.applyDockStyle("span");
         } else if (name === "notch") {
             root.applyBarStyle(3);
             root.applyDockStyle("hug");
         } else {
             root.applyBarStyle(1);
             root.applyDockStyle("float");
+        }
+        root.fitWindowsToHug(name === "hug");
+    }
+
+    // ---- Window corners under Hug ----
+    // The Hug bar and dock carry the screen's rounding round where they meet
+    // the desktop, and a window sits inside that curve by the outer gap. A
+    // window corner of the screen's radius less that gap, drawn as a circle
+    // (rounding power 2) rather than the stock squircle, reads as running
+    // alongside it; taking the border off as well looks tighter than the bar.
+    // Picking Hug writes that once as the user's own saved setting, the way
+    // the windows page writes one, so Settings goes on moving it freely.
+    // What the corners were before is kept for this session, so that leaving
+    // Hug for another tile puts them back, but only where each still holds what
+    // Hug set: anything changed since, here or in Settings, is the user's.
+    property var hugFit: null // { before, set } while a fit is in place
+    property bool hugFitWanted: false
+    property bool hugFitBusy: false
+    property bool hugFitAgain: false
+    readonly property var hugFitKeys: ["rounding", "roundingPower"]
+    // What the compositor draws for a key general.lua never names, which is
+    // what the screen showed before Hug wrote it, and so what leaving Hug puts
+    // back.
+    readonly property var hugFitBuiltIn: ({ rounding: 0, roundingPower: 2 })
+    // The rounding the latest Hug fit switched on from off, or -1. Kept after
+    // leaving Hug switches it off again, so the windows page can tell Hug's
+    // radius apart from one the user chose for Rounded Corners.
+    property int hugFitRoundingOn: -1
+    // The windows page reads its values once, so it is told when they move.
+    signal decorationsRewritten()
+
+    function decorationsCommand(verb, extra) {
+        const config = FileUtils.trimFileProtocol(Directories.config);
+        return ["python3", `${config}/quickshell/ii/scripts/themes/decorations.py`, verb,
+                `${config}/hypr/hyprland/general.lua`, "--flag-dir", `${config}/hypr/custom`].concat(extra ?? []);
+    }
+
+    // One pick at a time: a tile clicked while the last one is still reading
+    // or writing is taken up once it has finished, as the latest pick.
+    function fitWindowsToHug(wanted) {
+        root.hugFitWanted = wanted;
+        if (root.hugFitBusy) {
+            root.hugFitAgain = true;
+            return;
+        }
+        if (!wanted && root.hugFit === null) return;
+        root.hugFitBusy = true;
+        hugFitReader.running = true;
+    }
+
+    // What to write for the latest pick, given the settings as they are now.
+    function hugFitChanges(now) {
+        const fitted = root.hugFit;
+        const shown = k => now[k] ?? root.hugFitBuiltIn[k];
+        if (!root.hugFitWanted) {
+            root.hugFit = null;
+            if (fitted === null) return [];
+            return root.hugFitKeys
+                .filter(k => shown(k) === fitted.set[k] && fitted.before[k] !== fitted.set[k])
+                .map(k => `${k}=${fitted.before[k]}`);
+        }
+        // Without the gap there is nothing to measure from, and with no room
+        // left for a curve the windows keep the corners they have rather than
+        // a bar style switching their rounding off.
+        if (typeof now.gapsOut !== "number") return [];
+        const radius = Math.max(0, Appearance.rounding.screenRounding - now.gapsOut);
+        if (radius === 0) return [];
+        const set = { rounding: radius, roundingPower: 2 };
+        // Hug picked again while its fit is still in place: what came before
+        // that fit is still what leaving Hug puts back.
+        const before = {};
+        for (const k of root.hugFitKeys)
+            before[k] = (fitted !== null && shown(k) === fitted.set[k]) ? fitted.before[k] : shown(k);
+        root.hugFit = { before: before, set: set };
+        root.hugFitRoundingOn = before.rounding > 0 ? -1 : set.rounding;
+        return root.hugFitKeys.filter(k => shown(k) !== set[k]).map(k => `${k}=${set[k]}`);
+    }
+
+    function hugFitDone() {
+        root.hugFitBusy = false;
+        if (!root.hugFitAgain) return;
+        root.hugFitAgain = false;
+        root.fitWindowsToHug(root.hugFitWanted);
+    }
+
+    // Read at the moment of the pick, so the fit follows the gap and the border
+    // the windows have now.
+    Process {
+        id: hugFitReader
+        command: root.decorationsCommand("read")
+        stdout: StdioCollector { id: hugFitRead }
+        onExited: (exitCode, exitStatus) => {
+            let now = null;
+            try { now = JSON.parse(hugFitRead.text); } catch (e) {}
+            const pairs = (exitCode === 0 && now) ? root.hugFitChanges(now) : [];
+            if (pairs.length === 0) {
+                root.hugFitDone();
+                return;
+            }
+            hugFitWriter.command = root.decorationsCommand("set", pairs);
+            hugFitWriter.running = true;
+        }
+    }
+
+    // The same set call the windows page makes, which saves the file and hands
+    // the values to the compositor together.
+    Process {
+        id: hugFitWriter
+        onExited: (exitCode, exitStatus) => {
+            root.decorationsRewritten();
+            root.hugFitDone();
         }
     }
 
@@ -647,16 +782,11 @@ ApplicationWindow {
             anchors.fill: parent
             opacity: tile.locked ? 0.6 : 1
 
-            Rectangle {
+            PickFrame {
                 anchors.fill: parent
                 radius: Appearance.rounding.small
-                color: tile.selected
-                    ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1)
-                    : (tile.containsMouse && !tile.locked ? Appearance.colors.colLayer2Hover : Appearance.colors.colLayer2)
-                border.width: tile.selected ? 2 : 1
-                border.color: tile.selected ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                Behavior on color { ColorAnimation { duration: 120 } }
-                Behavior on border.color { ColorAnimation { duration: 120 } }
+                selected: tile.selected
+                hovered: tile.containsMouse && !tile.locked
             }
 
             // Only on a picked tile. A lit tile already reads as picked, and an
@@ -960,25 +1090,19 @@ ApplicationWindow {
         }
     }
 
-    // Faint pill background shared by every bar section in card 2 —
-    // matches the real shell's BarGroup.qml (colLayer1 with a touch
-    // of transparency, soft rounding, no border).
-    // A little screen carrying one piece of the interface, so a tile is about
-    // the bar or about the dock and never about both at once.
+    // A little screen carrying the bar and the dock in one style, so a tile
+    // shows the pair it sets.
     //
     // Every measurement is a literal on purpose: the interface's own roundness
     // tokens answer to whichever style is selected right now, so reading them
     // would make every picture change together and show one shape many times.
     component StyleMockup : Item {
         id: mock
-        property string part: "both"         // "bar" | "dock" | "both"
-        property string styleName: "float"   // "float" | "rect" | "notch"
-
-        readonly property bool showBar: mock.part !== "dock"
-        readonly property bool showDock: mock.part !== "bar"
+        property string styleName: "float"   // "float" | "hug" | "notch"
 
         readonly property bool isFloat: styleName === "float"
         readonly property bool isNotch: styleName === "notch"
+        readonly property bool isHug: styleName === "hug"
 
         readonly property color screenColor: Appearance.m3colors.m3surfaceContainerLowest
         readonly property color surfaceColor: Appearance.m3colors.m3surfaceContainerHighest
@@ -1006,14 +1130,13 @@ ApplicationWindow {
             // ── The bar, along the top ──────────────────────────────────
             Rectangle {
                 id: barBody
-                visible: mock.showBar
                 readonly property int sideInset: mock.isFloat ? 8 : (mock.isNotch ? 28 : 0)
                 x: sideInset
                 y: mock.isFloat ? 8 : 0
                 width: parent.width - sideInset * 2
                 height: 15
                 color: mock.surfaceColor
-                // Rect reaches the sides, so its top pair is the screen's own
+                // Hug reaches the sides, so its top pair is the screen's own
                 // corners. Notch stops short of them and the pieces beside it
                 // make that turn instead, so its top pair is square: rounding
                 // it as well would cut a wedge out of where the two meet.
@@ -1036,31 +1159,36 @@ ApplicationWindow {
             }
 
             // Notch curves back into the edge with a piece at each end.
+            NotchSwoops { piece: barBody; size: 8; color: mock.surfaceColor; visible: mock.isNotch }
+
+            // Hug rounds the desktop's corners under it with the screen's own
+            // radius, one at each end, the way the Hug bar does on screen.
             Repeater {
-                model: (mock.showBar && mock.isNotch) ? 2 : 0
+                model: mock.isHug ? 2 : 0
                 delegate: RoundCorner {
                     required property int index
-                    implicitSize: 8
+                    implicitSize: screen.radius
                     color: mock.surfaceColor
-                    y: 0
-                    x: index === 0 ? barBody.x - implicitSize : barBody.x + barBody.width
-                    corner: index === 0 ? RoundCorner.CornerEnum.TopRight
-                        : RoundCorner.CornerEnum.TopLeft
+                    y: barBody.y + barBody.height
+                    x: index === 0 ? 0 : screen.width - implicitSize
+                    corner: index === 0 ? RoundCorner.CornerEnum.TopLeft
+                        : RoundCorner.CornerEnum.TopRight
                 }
             }
 
             // ── The dock, along the bottom ──────────────────────────────
             Rectangle {
                 id: dockBody
-                visible: mock.showDock
-                width: 118
+                width: mock.isHug ? parent.width : 118
                 height: 18
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: parent.height - height - (mock.isFloat ? 9 : 0)
                 color: mock.surfaceColor
                 topLeftRadius: mock.isFloat ? 6 : (mock.isNotch ? 8 : 0)
                 topRightRadius: topLeftRadius
-                bottomLeftRadius: mock.isFloat ? 6 : 0
+                // Hug runs the whole edge, so its bottom pair is the screen's
+                // own corners, as the bar's top pair is.
+                bottomLeftRadius: mock.isFloat ? 6 : (mock.isHug ? screen.radius : 0)
                 bottomRightRadius: bottomLeftRadius
 
                 Row {
@@ -1077,7 +1205,7 @@ ApplicationWindow {
             }
 
             Repeater {
-                model: (mock.showDock && mock.isNotch) ? 2 : 0
+                model: mock.isNotch ? 2 : 0
                 delegate: RoundCorner {
                     required property int index
                     implicitSize: 8
@@ -1088,9 +1216,24 @@ ApplicationWindow {
                         : RoundCorner.CornerEnum.BottomLeft
                 }
             }
+
+            Repeater {
+                model: mock.isHug ? 2 : 0
+                delegate: RoundCorner {
+                    required property int index
+                    implicitSize: screen.radius
+                    color: mock.surfaceColor
+                    y: dockBody.y - implicitSize
+                    x: index === 0 ? 0 : screen.width - implicitSize
+                    corner: index === 0 ? RoundCorner.CornerEnum.BottomLeft
+                        : RoundCorner.CornerEnum.BottomRight
+                }
+            }
         }
     }
 
+    // The filled pill behind each group in the tour's bar, after the real
+    // shell's BarGroup.qml.
     component PillBg : Rectangle {
         // The bar sets its groups apart by giving each one a filled pill. At a
         // third transparent they washed into the strip and the grouping, which
@@ -1281,8 +1424,6 @@ ApplicationWindow {
         }
     }
 
-    // The "now playing" pill that sits just right of the active-window
-    // text in the bar. Shared by every card that renders the bar.
     // The monochrome glyphs apps publish for the tray, which is what the bar
     // shows. Taken by path because the active icon theme inherits from
     // Papirus-Dark, and only plain Papirus carries these panel icons. They are
@@ -1295,15 +1436,10 @@ ApplicationWindow {
         color: Appearance.colors.colOnLayer1
     }
 
+    // The "now playing" pill at the head of the bar's right-hand group, where
+    // a Row places it. Shared by every card that renders the bar.
     component MediaPill : PillBg {
-        // The shipped layout puts this in the right-hand group, where a Row
-        // owns x, so anchoring it there would fight the layout. anchorLeftTo
-        // stays for the mockups that still place the pill by hand.
-        property Item anchorLeftTo: null
-        property bool inRow: false
         required property var card
-        anchors.left: inRow ? undefined : (anchorLeftTo ? anchorLeftTo.right : parent.left)
-        anchors.leftMargin: anchorLeftTo ? 8 : 10
         anchors.verticalCenter: parent.verticalCenter
         height: card.barPillH
         width: mediaRow.implicitWidth + 12
@@ -1330,6 +1466,195 @@ ApplicationWindow {
                 color: Appearance.colors.colOnLayer1
                 elide: Text.ElideRight
                 width: 70
+            }
+        }
+    }
+
+    // The inside of the tour's bar, in the order the shipped layout uses: the
+    // workspaces and the tray on the left, the utilities, clock and weather in
+    // the middle, and what is playing with the status icons on the right.
+    component MockBarContents : Item {
+        id: mockBar
+        required property var card
+        property bool showAppIcon: true
+        property alias workspacePill: wsPill
+        property alias sysTrayPill: trayPill
+        property alias barRight: rightRow
+        property alias mediaPill: playingPill
+        anchors.fill: parent
+
+        PillBg {
+            id: wsPill
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            height: mockBar.card.barPillH
+            width: barWsStrip.implicitWidth + 10
+            Item {
+                id: barWsStrip
+                anchors.centerIn: parent
+                implicitWidth: mockBar.card.barSlotW * mockBar.card.totalWs
+                implicitHeight: mockBar.card.barSlotH
+
+                WorkspaceIndicator { anchors.fill: parent; z: 1; card: mockBar.card }
+
+                Row {
+                    z: 2
+                    anchors.fill: parent
+                    Repeater {
+                        model: mockBar.card.totalWs
+                        delegate: Item {
+                            required property int index
+                            width: mockBar.card.barSlotW
+                            height: mockBar.card.barSlotH
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: mockBar.card.barSlotR * 2
+                                height: mockBar.card.barSlotR * 2
+                                radius: width / 2
+                                color: Appearance.colors.colOnLayer0
+                                opacity: 0.35
+                            }
+                        }
+                    }
+                }
+
+                IconImage {
+                    z: 3
+                    readonly property string primary: mockBar.showAppIcon ? mockBar.card.primaryAppFor(mockBar.card.currentWs) : ""
+                    visible: primary !== ""
+                    implicitSize: mockBar.card.barIconSize
+                    x: mockBar.card.currentWs * mockBar.card.barSlotW + (mockBar.card.barSlotW - implicitSize) / 2
+                    y: (mockBar.card.barSlotH - implicitSize) / 2
+                    source: primary !== ""
+                        ? Quickshell.iconPath(primary, "image-missing")
+                        : ""
+                }
+            }
+        }
+
+        PillBg {
+            id: trayPill
+            anchors.left: wsPill.right
+            anchors.leftMargin: 3
+            anchors.verticalCenter: parent.verticalCenter
+            height: mockBar.card.barPillH
+            width: trayRow.implicitWidth + 12
+            Row {
+                id: trayRow
+                anchors.centerIn: parent
+                spacing: 6
+                TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "discord-tray.svg" }
+                TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "steam_tray_mono.svg" }
+            }
+        }
+
+        // Center: the utility buttons, the clock, and the
+        // weather beside it.
+        Row {
+            id: barCenter
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+            PillBg {
+                height: mockBar.card.barPillH
+                width: utilRow.implicitWidth + 12
+                anchors.verticalCenter: parent.verticalCenter
+                Row {
+                    id: utilRow
+                    anchors.centerIn: parent
+                    spacing: 5
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "screenshot_region"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "videocam"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "mic"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                }
+            }
+            PillBg {
+                height: mockBar.card.barPillH
+                width: clockText.implicitWidth + 16
+                anchors.verticalCenter: parent.verticalCenter
+                StyledText {
+                    id: clockText
+                    anchors.centerIn: parent
+                    text: "9:41 AM"
+                    font.pixelSize: 10
+                    color: Appearance.colors.colOnLayer1
+                }
+            }
+            PillBg {
+                height: mockBar.card.barPillH
+                width: weatherRow.implicitWidth + 10
+                anchors.verticalCenter: parent.verticalCenter
+                Row {
+                    id: weatherRow
+                    anchors.centerIn: parent
+                    spacing: 2
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "clear_day"
+                        iconSize: 11
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "73°F"
+                        font.pixelSize: 9
+                        color: Appearance.colors.colOnLayer1
+                    }
+                }
+            }
+        }
+
+        // Right: what is playing, then the status icons
+        // against the screen edge.
+        Row {
+            id: rightRow
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
+            MediaPill { id: playingPill; card: mockBar.card }
+            PillBg {
+                height: mockBar.card.barPillH
+                width: indicatorRow.implicitWidth + 12
+                anchors.verticalCenter: parent.verticalCenter
+                Row {
+                    id: indicatorRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "volume_up"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "lan"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "bluetooth"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                    MaterialSymbol {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "settings"; iconSize: 10
+                        color: Appearance.colors.colOnLayer1
+                    }
+                }
             }
         }
     }
@@ -1379,14 +1704,10 @@ ApplicationWindow {
     }
 
 
-    // ── Card 8: Contribute ───────────────────────────────────────────────
-    // The last page. The links that ask for money sit beside the ones that
-    // ask only for time, because both are real ways to help and a reader who
-    // cannot give one should not feel they have nothing to offer.
     // ── Card 1: Style ───────────────────────────────────────────────────
-    // The bar and the dock are chosen apart, each as a row of pictures, with
-    // the colour the two share underneath. Nothing is written until a tile is
-    // pressed, and the lit one is read back from the settings.
+    // One tile sets the bar and the dock together, with the color the two
+    // share underneath. Nothing is written until a tile is pressed, and the
+    // lit one is read back from the settings.
 
     // The grouping the setup card beside this one uses, so the page reads as
     // part of the same tour rather than as its own thing.
@@ -1458,6 +1779,19 @@ ApplicationWindow {
         }
     }
 
+    // The card Settings → Layouts draws around a choice: tinted and outlined
+    // in the accent when picked, lifted on hover otherwise.
+    component PickFrame : Rectangle {
+        property bool selected: false
+        property bool hovered: false
+        color: selected ? ColorUtils.applyAlpha(Appearance.colors.colPrimary, 0.1)
+            : (hovered ? Appearance.colors.colLayer2Hover : Appearance.colors.colLayer2)
+        border.width: selected ? 2 : 1
+        border.color: selected ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
+        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on border.color { ColorAnimation { duration: 120 } }
+    }
+
     // One of the style page's three pictures, in the card Settings → Layouts
     // puts around each of its own: the picture framed, lit when picked, with
     // a radio and the style's name under it.
@@ -1481,17 +1815,12 @@ ApplicationWindow {
             width: parent.width
             spacing: 6
 
-            Rectangle {
+            PickFrame {
                 Layout.fillWidth: true
                 implicitHeight: 92
                 radius: Appearance.rounding.normal
-                color: tile.selected
-                    ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1)
-                    : (tile.containsMouse ? Appearance.colors.colLayer2Hover : Appearance.colors.colLayer2)
-                border.width: tile.selected ? 2 : 1
-                border.color: tile.selected ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-                Behavior on color { ColorAnimation { duration: 120 } }
-                Behavior on border.color { ColorAnimation { duration: 120 } }
+                selected: tile.selected
+                hovered: tile.containsMouse
 
                 StyleMockup {
                     anchors.fill: parent
@@ -1516,21 +1845,13 @@ ApplicationWindow {
 
     // A window layout's picture, lifted 1:1 from the cards Settings → Layouts
     // picks between, so the two show a layout the same way.
-    component LayoutPicture : Rectangle {
+    component LayoutPicture : PickFrame {
         id: layoutPicture
         property string layout: "dwindle"
-        property bool selected: true
-        property bool hovered: false
+        selected: true
         // Tighter than the page's other cards: at this size the standard
         // rounding turns a small card into a pill.
         radius: Appearance.rounding.verysmall
-        color: layoutPicture.selected
-            ? Qt.rgba(Appearance.colors.colPrimary.r, Appearance.colors.colPrimary.g, Appearance.colors.colPrimary.b, 0.1)
-            : (layoutPicture.hovered ? Appearance.colors.colLayer2Hover : Appearance.colors.colLayer2)
-        border.width: layoutPicture.selected ? 2 : 1
-        border.color: layoutPicture.selected ? Appearance.colors.colPrimary : Appearance.colors.colOutlineVariant
-        Behavior on color { ColorAnimation { duration: 120 } }
-        Behavior on border.color { ColorAnimation { duration: 120 } }
 
         // Drawn at the size Settings → Layouts draws it and scaled to fit, so
         // a small card shows the same picture rather than a squeezed one.
@@ -1869,6 +2190,24 @@ ApplicationWindow {
             }
         }
 
+        // The desktop behind either overview, blurred out as it opens.
+        WorkspaceThumb {
+            id: desktopCopy
+            anchors.fill: parent
+            visible: false
+            wallpaperSource: demo.wallpaperSource
+            showWindows: false
+            barShape: demo.barShape
+            dockShape: demo.dockShape
+        }
+        FastBlur {
+            anchors.fill: parent
+            visible: (demo.trigger === "default" || demo.trigger === "scrolloverview") && demo.openT > 0
+            source: desktopCopy
+            radius: 64
+            opacity: demo.openT
+        }
+
         // ── The default overview, as the corner opens it: the workspace grid
         // alone at the top of the screen, with no search field, over the
         // desktop blurred and darkened. The dock is left standing sharp at its
@@ -1877,21 +2216,6 @@ ApplicationWindow {
             anchors.fill: parent
             visible: demo.trigger === "default" && demo.openT > 0
 
-            WorkspaceThumb {
-                id: overviewDesktopCopy
-                anchors.fill: parent
-                visible: false
-                wallpaperSource: demo.wallpaperSource
-                showWindows: false
-                barShape: demo.barShape
-                dockShape: demo.dockShape
-            }
-            FastBlur {
-                anchors.fill: parent
-                source: overviewDesktopCopy
-                radius: 64
-                opacity: demo.openT
-            }
             Rectangle {
                 anchors.fill: parent
                 color: "black"
@@ -1977,22 +2301,6 @@ ApplicationWindow {
             readonly property bool vertical: demo.layout !== "horizontal"
             readonly property real s: 1 - 0.5 * demo.openT
             readonly property real gap: demo.width * 0.04 * demo.openT
-
-            WorkspaceThumb {
-                id: desktopCopy
-                anchors.fill: parent
-                visible: false
-                wallpaperSource: demo.wallpaperSource
-                showWindows: false
-                barShape: demo.barShape
-                dockShape: demo.dockShape
-            }
-            FastBlur {
-                anchors.fill: parent
-                source: desktopCopy
-                radius: 64
-                opacity: demo.openT
-            }
 
             Repeater {
                 model: [-1, 0, 1]
@@ -2136,9 +2444,9 @@ ApplicationWindow {
                 DrawnWallpaper {
                     anchors.fill: parent
                 }
-                // The wallpaper actually set, over the drawn one. A video, or
-                // a picture whose thumbnail is still being made, leaves the
-                // drawn one showing.
+                // The wallpaper actually set, over the drawn one, which stays
+                // in view while the thumbnail is made. A video shows its first
+                // frame.
                 ThumbnailImage {
                     anchors.fill: parent
                     fillMode: Image.PreserveAspectCrop
@@ -2238,22 +2546,27 @@ ApplicationWindow {
         anchors.fill: parent
 
         readonly property real thick: 20
+        // The Hug bar's two curves as the real bar draws them: the screen's
+        // rounding, taken as a share of the bar's height.
+        readonly property real hugRadius: bar.thick * Appearance.rounding.screenRounding / Appearance.sizes.baseBarHeight
         property real gap: bar.shape === "float" ? 8 : 0
         property real inset: bar.shape === "notch" ? bar.width * 0.14 : (bar.shape === "float" ? 8 : 0)
         property real edgeRadius: bar.shape === "float" ? 10 : 0
-        property real farRadius: bar.shape === "rect" ? 0 : 10
+        property real farRadius: (bar.shape === "rect" || bar.shape === "hug") ? 0 : 10
         property real swoop: bar.shape === "notch" ? 1 : 0
+        property real hug: bar.shape === "hug" ? 1 : 0
         Behavior on gap { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on inset { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on edgeRadius { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on farRadius { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on swoop { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+        Behavior on hug { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
 
         // How far the piece has slid off its edge while it moves to another.
-        readonly property real slide: bar.retract * (bar.thick + bar.gap + 12)
+        readonly property real slide: bar.retract * (bar.thick + bar.gap + bar.hugRadius * bar.hug + 12)
         readonly property bool drawn: Config.options.bar.showBackground
         readonly property color fill: bar.maskOnly ? "white" : Appearance.colors.colBarBackground
-        readonly property color markColor: ColorUtils.transparentize(Appearance.colors.colOnLayer0, 0.45)
+        readonly property color markColor: ColorUtils.transparentize(Appearance.barStripContent.colOnLayer0, 0.45)
 
         Item {
             id: barBox
@@ -2264,7 +2577,10 @@ ApplicationWindow {
 
             RectangularShadow {
                 anchors.fill: parent
-                visible: !bar.maskOnly && bar.drawn && Config.options.bar.floatStyleShadow && bar.shape !== "rect"
+                // Float and Notch cast one, as on screen, and the strips that
+                // run the whole edge do not.
+                visible: !bar.maskOnly && bar.drawn && Config.options.bar.floatStyleShadow
+                    && (bar.shape === "float" || bar.shape === "notch")
                 radius: bar.farRadius
                 blur: 8
                 offset: Qt.vector2d(0, 1)
@@ -2287,7 +2603,7 @@ ApplicationWindow {
                 x: Math.max(10, bar.farRadius)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
-                Rectangle { width: 16; height: 6; radius: 3; color: Appearance.colors.colPrimary }
+                Rectangle { width: 16; height: 6; radius: 3; color: Appearance.barStripContent.colPrimary }
                 Repeater {
                     model: 3
                     Rectangle { width: 6; height: 6; radius: 3; color: bar.markColor }
@@ -2320,6 +2636,22 @@ ApplicationWindow {
             opacity: bar.swoop
             color: bar.fill
         }
+
+        // Hug rounds the desktop's corners where each end of the bar meets
+        // it. They grow out of the bar's ends rather than fading in, so moving
+        // to or from Hug reads as the same bar changing shape.
+        Repeater {
+            model: 2
+            RoundCorner {
+                required property int index
+                implicitSize: Math.round(bar.hugRadius * bar.hug)
+                visible: bar.drawn && implicitSize > 0
+                color: bar.fill
+                y: barBox.y + barBox.height
+                x: index === 0 ? barBox.x : barBox.x + barBox.width - implicitSize
+                corner: index === 0 ? RoundCorner.CornerEnum.TopLeft : RoundCorner.CornerEnum.TopRight
+            }
+        }
     }
 
     // The dock along the top of its box, the same way the bar is drawn.
@@ -2331,7 +2663,10 @@ ApplicationWindow {
         anchors.fill: parent
 
         readonly property real thick: 30
-        readonly property real span: Math.min(dock.width * 0.54, 250)
+        // Hug stretches the body out to both ends of its edge, and the rest
+        // keep it to the middle.
+        readonly property real restSpan: Math.min(dock.width * 0.54, 250)
+        readonly property real span: dock.restSpan + (dock.width - dock.restSpan) * dock.hug
         // The notched dock's two curves as the real dock draws them, taken as
         // shares of its body's height: a long sweep leaving the edge, and a
         // body turned generously enough to meet it.
@@ -2339,19 +2674,25 @@ ApplicationWindow {
         readonly property real notchFlare: dock.thick
             * Math.min(Appearance.rounding.dock, Appearance.rounding.dockFlareFit) / dock.realBodyHeight
         readonly property real notchCorner: dock.thick * Appearance.rounding.dockBody / dock.realBodyHeight
+        // The Hug dock's two curves are the screen's rounding, the same share
+        // of its body as the Hug bar's are of the bar.
+        readonly property real hugRadius: dock.thick * Appearance.rounding.dockSpanCorner / dock.realBodyHeight
         property real gap: dock.shape === "float" ? 9 : 0
         property real edgeRadius: dock.shape === "float" ? 11 : 0
-        property real farRadius: dock.shape === "rect" ? 0 : (dock.shape === "notch" ? dock.notchCorner : 11)
+        property real farRadius: (dock.shape === "rect" || dock.shape === "hug") ? 0
+            : (dock.shape === "notch" ? dock.notchCorner : 11)
         property real swoop: dock.shape === "notch" ? 1 : 0
+        property real hug: dock.shape === "hug" ? 1 : 0
         Behavior on gap { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on edgeRadius { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on farRadius { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         Behavior on swoop { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+        Behavior on hug { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         // Set down on the edge, the body reaches a pixel past it so the outline
         // it draws along the screen's own edge falls outside the picture.
         readonly property real edgeTuck: dock.shape === "float" ? 0 : 1
 
-        readonly property real slide: dock.retract * (dock.thick + dock.gap + 12)
+        readonly property real slide: dock.retract * (dock.thick + dock.gap + dock.hugRadius * dock.hug + 12)
         readonly property bool drawn: Config.options.dock.showBackground
         readonly property color fill: dock.maskOnly ? "white" : Appearance.colors.colDockBackground
 
@@ -2367,7 +2708,7 @@ ApplicationWindow {
                 width: parent.width
                 height: parent.height + dock.edgeTuck
                 visible: dock.drawn && opacity > 0
-                opacity: 1 - dock.swoop
+                opacity: Math.max(0, 1 - dock.swoop - dock.hug)
                 color: dock.fill
                 topLeftRadius: dock.edgeRadius
                 topRightRadius: dock.edgeRadius
@@ -2458,6 +2799,69 @@ ApplicationWindow {
                 PathLine { x: notchOutline.bx - notchOutline.reachF; y: notchOutline.by - 1 }
             }
         }
+
+        // The Hug dock the way the real one is drawn: the strip and the curve
+        // at each end as one outline, lined only along the side facing the
+        // desktop and round both curves. The strip's ends and the edge it
+        // lies on are the screen's own and carry no line.
+        Shape {
+            id: hugOutline
+            z: -1
+            visible: dock.drawn && dock.hug > 0
+            opacity: dock.hug
+            preferredRendererType: Shape.CurveRenderer
+
+            readonly property real bx: dockBox.x
+            readonly property real by: dockBox.y
+            readonly property real w: dock.span
+            readonly property real h: dock.thick
+            readonly property real r: dock.hugRadius * dock.hug
+
+            ShapePath {
+                fillColor: dock.fill
+                strokeWidth: -1
+                strokeColor: "transparent"
+                // A pixel past the ends and the edge, so no seam of the
+                // background shows along the screen's own sides.
+                startX: hugOutline.bx - 1
+                startY: hugOutline.by - 1
+                PathLine { x: hugOutline.bx - 1; y: hugOutline.by + hugOutline.h + hugOutline.r }
+                PathLine { x: hugOutline.bx; y: hugOutline.by + hugOutline.h + hugOutline.r }
+                PathArc {
+                    x: hugOutline.bx + hugOutline.r; y: hugOutline.by + hugOutline.h
+                    radiusX: hugOutline.r; radiusY: hugOutline.r
+                    direction: PathArc.Clockwise
+                }
+                PathLine { x: hugOutline.bx + hugOutline.w - hugOutline.r; y: hugOutline.by + hugOutline.h }
+                PathArc {
+                    x: hugOutline.bx + hugOutline.w; y: hugOutline.by + hugOutline.h + hugOutline.r
+                    radiusX: hugOutline.r; radiusY: hugOutline.r
+                    direction: PathArc.Clockwise
+                }
+                PathLine { x: hugOutline.bx + hugOutline.w + 1; y: hugOutline.by + hugOutline.h + hugOutline.r }
+                PathLine { x: hugOutline.bx + hugOutline.w + 1; y: hugOutline.by - 1 }
+                PathLine { x: hugOutline.bx - 1; y: hugOutline.by - 1 }
+            }
+            ShapePath {
+                fillColor: "transparent"
+                strokeColor: dock.maskOnly ? "transparent" : Appearance.colors.colDockBackgroundBorder
+                strokeWidth: dock.maskOnly ? 0 : 1
+                capStyle: ShapePath.FlatCap
+                startX: hugOutline.bx
+                startY: hugOutline.by + hugOutline.h + hugOutline.r
+                PathArc {
+                    x: hugOutline.bx + hugOutline.r; y: hugOutline.by + hugOutline.h
+                    radiusX: hugOutline.r; radiusY: hugOutline.r
+                    direction: PathArc.Clockwise
+                }
+                PathLine { x: hugOutline.bx + hugOutline.w - hugOutline.r; y: hugOutline.by + hugOutline.h }
+                PathArc {
+                    x: hugOutline.bx + hugOutline.w; y: hugOutline.by + hugOutline.h + hugOutline.r
+                    radiusX: hugOutline.r; radiusY: hugOutline.r
+                    direction: PathArc.Clockwise
+                }
+            }
+        }
     }
 
     // The style page's picture: the bar and the dock where they are, in the
@@ -2468,8 +2872,11 @@ ApplicationWindow {
         id: bds
         property bool blur: true
 
-        readonly property string barShape: ({ 1: "float", 3: "notch" })[Config.options.bar.cornerStyle] ?? "rect"
-        readonly property string dockShape: ({ hug: "notch", rect: "rect" })[Config.options.dock.cornerStyle] ?? "float"
+        // Named the way Settings names them, so the dock's stored "hug" is the
+        // notch and its "span" is Hug. Anything else is drawn as rect, as the
+        // bar and the dock themselves draw it.
+        readonly property string barShape: root.barDockStyle || "rect"
+        readonly property string dockShape: ({ float: "float", hug: "notch", span: "hug" })[Config.options.dock.cornerStyle] ?? "rect"
         readonly property bool dockShown: Config.options.dock.enable
 
         Item {
@@ -2579,6 +2986,7 @@ ApplicationWindow {
                     opacity: 0.35
                 }
                 Row {
+                    visible: dw.host.titleBarButtons
                     anchors {
                         right: parent.right
                         rightMargin: Math.max(7, surface.radius * 0.6)
@@ -2723,6 +3131,7 @@ ApplicationWindow {
         property color shadowColor: Qt.rgba(0, 0, 0, 0.125)
         property var shadowOffset: [0, 2]
         property bool titleBars: true
+        property bool titleBarButtons: true
         property bool blur: true
         property real activeOpacity: 1
         property real inactiveOpacity: 1
@@ -3014,9 +3423,6 @@ ApplicationWindow {
     component CardWindows : Item {
         id: cardWindows
 
-        readonly property string generalConf: `${FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/general.lua`
-        readonly property string decorationsPy: `${FileUtils.trimFileProtocol(Directories.config)}/quickshell/ii/scripts/themes/decorations.py`
-        readonly property string flagDir: `${FileUtils.trimFileProtocol(Directories.config)}/hypr/custom`
         readonly property string animationsDir: `${FileUtils.trimFileProtocol(Directories.config)}/hypr/hyprland/animations`
 
         property bool decoReady: false
@@ -3026,6 +3432,7 @@ ApplicationWindow {
         property bool bordersEnabled: true
         property bool roundCornersEnabled: true
         property int roundingValue: 10
+        property int roundingWhileOff: 10
         property int borderSizeValue: 4
         property real activeOpacityValue: 1.0
         property real inactiveOpacityValue: 1.0
@@ -3037,7 +3444,6 @@ ApplicationWindow {
         property string shadowColorValue: "rgba(00000020)"
         property var shadowOffsetValue: [0, 2]
         property string animationProfileValue: "expressive"
-        property int previousCornerStyle: Config.options.bar.cornerStyle
         property var decoDefaults: ({})
         property var motion: ({})
 
@@ -3054,8 +3460,7 @@ ApplicationWindow {
         }
 
         function setDecoration(pairs) {
-            Quickshell.execDetached(["python3", cardWindows.decorationsPy, "set", cardWindows.generalConf,
-                                     "--flag-dir", cardWindows.flagDir, ...pairs])
+            Quickshell.execDetached(root.decorationsCommand("set", pairs))
         }
 
         // A dragged slider would otherwise write on every frame.
@@ -3097,7 +3502,7 @@ ApplicationWindow {
 
         Process {
             id: decoDefaultsReader
-            command: ["python3", cardWindows.decorationsPy, "defaults", cardWindows.generalConf]
+            command: root.decorationsCommand("defaults")
             stdout: StdioCollector {
                 onStreamFinished: {
                     try { cardWindows.decoDefaults = JSON.parse(text || "{}") }
@@ -3108,16 +3513,47 @@ ApplicationWindow {
 
         Process {
             id: decoReader
-            command: ["python3", cardWindows.decorationsPy, "read", cardWindows.generalConf,
-                      "--flag-dir", cardWindows.flagDir]
-            property string buf: ""
-            onRunningChanged: if (running) buf = ""
-            stdout: SplitParser { onRead: data => decoReader.buf += data }
+            command: root.decorationsCommand("read")
+            stdout: StdioCollector { id: decoRead }
             onExited: {
+                if (cardWindows.readAgain) {
+                    cardWindows.readAgain = false
+                    decoReader.running = true
+                    return
+                }
                 let values = ({})
-                try { values = JSON.parse(decoReader.buf || "{}") } catch (e) { values = ({}) }
+                try { values = JSON.parse(decoRead.text || "{}") } catch (e) { values = ({}) }
+                // The radius Rounded Corners turns back on to is the user's,
+                // not the one Hug switched on and leaving Hug switched off.
+                const hugOn = root.hugFitRoundingOn
+                if (!cardWindows.roundCornersEnabled && values.rounding === hugOn)
+                    cardWindows.roundingWhileOff = cardWindows.roundingValue
                 cardWindows.applyDecoValues(values)
+                if (values.rounding === 0 && cardWindows.roundingValue === hugOn) {
+                    cardWindows.roundingValue = cardWindows.roundingWhileOff
+                    // Turned off while on Hug, the switch remembered Hug's radius.
+                    const memory = Config.options.appearance.roundCornersRestore
+                    if (memory.windowRounding === hugOn)
+                        memory.windowRounding = cardWindows.roundingWhileOff
+                }
+                // A switch that has been clicked no longer follows its value
+                // (see ConfigSwitch), and the style page can change this one.
+                roundCornersSwitch.checked = Qt.binding(() => cardWindows.roundCornersEnabled)
                 cardWindows.decoReady = true
+            }
+        }
+
+        // The Hug tile on the style page can change the corners after this page
+        // has read them. The page reads again with decoReady off meanwhile, so
+        // the switches take the new values without writing them straight back,
+        // and a read already under way when the write landed is not trusted.
+        property bool readAgain: false
+        Connections {
+            target: root
+            function onDecorationsRewritten() {
+                cardWindows.decoReady = false
+                if (decoReader.running) cardWindows.readAgain = true
+                else decoReader.running = true
             }
         }
 
@@ -3283,6 +3719,7 @@ ApplicationWindow {
                     shadowColor: cardWindows.colorOf(cardWindows.shadowColorValue)
                     shadowOffset: cardWindows.shadowOffsetValue
                     titleBars: TitleBars.enabled
+                    titleBarButtons: TitleBars.buttonsEnabled
                     blur: cardWindows.blurEnabled
                     activeOpacity: cardWindows.activeOpacityValue
                     inactiveOpacity: cardWindows.inactiveOpacityValue
@@ -3463,24 +3900,34 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         uniform: true
                         ConfigSwitch {
+                            id: roundCornersSwitch
                             buttonIcon: "rounded_corner"
                             text: Translation.tr("Rounded Corners")
                             checked: cardWindows.roundCornersEnabled
                             animateChanges: cardWindows.decoReady
                             onCheckedChanged: {
-                                if (!cardWindows.decoReady) return;
+                                // Only a click moves the switch away from the
+                                // card's value; a reread moves both together
+                                // and must write nothing back. The bar's own
+                                // corners and the screen's rounded corners
+                                // follow the window rounding.
+                                if (!cardWindows.decoReady || checked === cardWindows.roundCornersEnabled) return;
                                 cardWindows.roundCornersEnabled = checked;
-                                cardWindows.setDecoration([`rounding=${checked ? cardWindows.roundingValue : 0}`]);
-                                // The bar's own corners follow the window rounding.
-                                if (!checked) {
-                                    cardWindows.previousCornerStyle = Config.options.bar.cornerStyle;
-                                    Config.options.bar.cornerStyle = 2;
+                                if (checked) {
+                                    const radius = RoundedCorners.turnOn(cardWindows.roundingValue);
+                                    if (radius > 0) {
+                                        cardWindows.roundingValue = radius;
+                                        cardWindows.setDecoration([`rounding=${radius}`]);
+                                    } else {
+                                        root.decorationsRewritten();
+                                    }
                                 } else {
-                                    Config.options.bar.cornerStyle = cardWindows.previousCornerStyle;
+                                    RoundedCorners.turnOff(cardWindows.roundingValue);
+                                    cardWindows.setDecoration(["rounding=0"]);
                                 }
                             }
                             StyledToolTip {
-                                text: Translation.tr("Rounded corners on windows and the bar")
+                                text: Translation.tr("Rounded corners on windows, the bar and the screen")
                             }
                         }
                         ConfigSwitch {
@@ -3547,14 +3994,14 @@ ApplicationWindow {
                             onPicked: root.applyBarDockStyle("float")
                         }
                         StyleTile {
-                            styleName: "rect"; label: Translation.tr("Rect")
-                            selected: root.barDockStyle === "rect"
-                            onPicked: root.applyBarDockStyle("rect")
-                        }
-                        StyleTile {
                             styleName: "notch"; label: Translation.tr("Notch")
                             selected: root.barDockStyle === "notch"
                             onPicked: root.applyBarDockStyle("notch")
+                        }
+                        StyleTile {
+                            styleName: "hug"; label: Translation.tr("Hug")
+                            selected: root.barDockStyle === "hug"
+                            onPicked: root.applyBarDockStyle("hug")
                         }
                     }
 
@@ -3566,7 +4013,7 @@ ApplicationWindow {
                         color: Appearance.colors.colSubtext
                         text: ({
                             float: Translation.tr("The bar and the dock float clear of the screen's edges"),
-                            rect: Translation.tr("The bar and the dock sit flush with the edges, square cornered"),
+                            hug: Translation.tr("The bar and the dock run end to end along opposite edges"),
                             notch: Translation.tr("Flush with the edge, curving back into it at either end")
                         })[root.barDockStyle] ?? Translation.tr("The bar keeps a shape of its own, picked in Settings")
                     }
@@ -3640,10 +4087,9 @@ ApplicationWindow {
                         ConfigSelectionArray {
                             Layout.fillWidth: true
                             currentValue: (Config.options.bar.bottom ? 1 : 0) | (Config.options.bar.vertical ? 2 : 0)
-                            onSelected: newValue => {
-                                Config.options.bar.bottom = (newValue & 1) !== 0
-                                Config.options.bar.vertical = (newValue & 2) !== 0
-                            }
+                            // Through the shared rule, which carries a Hug
+                            // dock across to face the bar wherever it goes.
+                            onSelected: newValue => Appearance.sizes.placeBar((newValue & 1) !== 0, (newValue & 2) !== 0)
                             options: [
                                 { displayName: Translation.tr("Top"),    icon: "arrow_upward",    value: 0 },
                                 { displayName: Translation.tr("Left"),   icon: "arrow_back",      value: 2 },
@@ -3663,28 +4109,19 @@ ApplicationWindow {
                             // the saved one: the resolver already sends it
                             // away from whichever edge the bar holds.
                             currentValue: Appearance.sizes.dockEdge
-                            onSelected: newValue => {
-                                if (newValue === Appearance.sizes.barEdge) {
-                                    // Asking for the bar's own edge sends the
-                                    // bar across its axis rather than
-                                    // refusing, so the two never both claim
-                                    // this edge.
-                                    Config.options.bar.bottom = !Config.options.bar.bottom
-                                    Config.options.dock.position = newValue
-                                } else if (!Config.options.dock.enable || newValue !== Appearance.sizes.dockEdge) {
-                                    // Re-picking the edge already shown would
-                                    // overwrite a saved edge the bar is only
-                                    // borrowing.
-                                    Config.options.dock.position = newValue
-                                }
-                                Config.options.dock.enable = true
-                            }
+                            // The same placement the Dock page makes: the
+                            // bar's own edge sends the bar across, and a Hug
+                            // dock stays on the edge facing the bar.
+                            onSelected: newValue => Appearance.sizes.placeDock(newValue)
+                            // The edges a Hug dock cannot take stay in the row,
+                            // dimmed the way this page dims what does not apply,
+                            // so the row keeps its shape as the style changes.
                             options: [
                                 { displayName: Translation.tr("Top"),    icon: "arrow_upward",    value: "top" },
                                 { displayName: Translation.tr("Left"),   icon: "arrow_back",      value: "left" },
                                 { displayName: Translation.tr("Bottom"), icon: "arrow_downward",  value: "bottom" },
                                 { displayName: Translation.tr("Right"),  icon: "arrow_forward",   value: "right" }
-                            ]
+                            ].map(option => Object.assign({ enabled: Appearance.sizes.dockEdgeAllowed(option.value) }, option))
                         }
                     }
                 }
@@ -3692,6 +4129,10 @@ ApplicationWindow {
         }
     }
 
+    // ── Card 8: Contribute ───────────────────────────────────────────────
+    // The last page. The links that ask for money sit beside the ones that
+    // ask only for time, because both are real ways to help and a reader who
+    // cannot give one should not feel they have nothing to offer.
     component Card8Contribute : Item {
         id: card8
 
@@ -3885,194 +4326,12 @@ ApplicationWindow {
                             y: card2.barY
                             width: card2.barW
                             height: card2.barH
-                            // Fully-rounded pill ends to match the
-                            // earlier mockup shape.
                             radius: card2.barH / 2
                             color: ColorUtils.transparentize(Appearance.colors.colLayer0, 0.45)
                             border.color: ColorUtils.transparentize(Appearance.colors.colOutline, 0.35)
                             border.width: 1
 
-                            // Active-window text column on the far left
-                            // (mirrors the real shell's ActiveWindow.qml:
-                            // top line dim, bottom line bright).
-                            // Left: the workspaces, then the tray, the way the
-                            // shipped layout orders them. The window title the
-                            // bar used to open with is still switched off.
-                            PillBg {
-                                id: workspacePill
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card2.barPillH
-                                width: barWsStrip.implicitWidth + 10
-                                Item {
-                                    id: barWsStrip
-                                    anchors.centerIn: parent
-                                    implicitWidth: card2.barSlotW * card2.totalWs
-                                    implicitHeight: card2.barSlotH
-
-                                    WorkspaceIndicator { anchors.fill: parent; z: 1; card: card2 }
-
-                                    Row {
-                                        z: 2
-                                        anchors.fill: parent
-                                        Repeater {
-                                            model: card2.totalWs
-                                            delegate: Item {
-                                                required property int index
-                                                width: card2.barSlotW
-                                                height: card2.barSlotH
-                                                Rectangle {
-                                                    anchors.centerIn: parent
-                                                    width: card2.barSlotR * 2
-                                                    height: card2.barSlotR * 2
-                                                    radius: width / 2
-                                                    color: Appearance.colors.colOnLayer0
-                                                    opacity: 0.35
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    IconImage {
-                                        z: 3
-                                        readonly property string primary: card2.primaryAppFor(card2.currentWs)
-                                        visible: primary !== ""
-                                        implicitSize: card2.barIconSize
-                                        x: card2.currentWs * card2.barSlotW + (card2.barSlotW - implicitSize) / 2
-                                        y: (card2.barSlotH - implicitSize) / 2
-                                        source: primary !== ""
-                                            ? Quickshell.iconPath(primary, "image-missing")
-                                            : ""
-                                    }
-                                }
-                            }
-
-                            PillBg {
-                                id: sysTrayPill
-                                anchors.left: workspacePill.right
-                                anchors.leftMargin: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card2.barPillH
-                                width: trayRow.implicitWidth + 12
-                                Row {
-                                    id: trayRow
-                                    anchors.centerIn: parent
-                                    spacing: 6
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "discord-tray.svg" }
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "steam_tray_mono.svg" }
-                                }
-                            }
-
-                            // Center: the utility buttons, the clock, and the
-                            // weather beside it.
-                            Row {
-                                id: barCenter
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-                                PillBg {
-                                    height: card2.barPillH
-                                    width: utilRow.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: utilRow
-                                        anchors.centerIn: parent
-                                        spacing: 5
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "screenshot_region"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "videocam"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "mic"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                                PillBg {
-                                    height: card2.barPillH
-                                    width: clockText.implicitWidth + 16
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    StyledText {
-                                        id: clockText
-                                        anchors.centerIn: parent
-                                        text: "9:41 AM"
-                                        font.pixelSize: 10
-                                        color: Appearance.colors.colOnLayer1
-                                    }
-                                }
-                                PillBg {
-                                    height: card2.barPillH
-                                    width: weatherRow.implicitWidth + 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: weatherRow
-                                        anchors.centerIn: parent
-                                        spacing: 2
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "clear_day"
-                                            iconSize: 11
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        StyledText {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "73°F"
-                                            font.pixelSize: 9
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Right: what is playing, then the status icons
-                            // against the screen edge.
-                            Row {
-                                id: barRight
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-                                MediaPill { id: mediaPill; card: card2; inRow: true }
-                                PillBg {
-                                    height: card2.barPillH
-                                    width: indicatorRow.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: indicatorRow
-                                        anchors.centerIn: parent
-                                        spacing: 6
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "volume_up"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "lan"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "bluetooth"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "settings"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
+                            MockBarContents { card: card2 }
                         }
 
                         // ─── Tiled windows background ───
@@ -4369,185 +4628,7 @@ ApplicationWindow {
                             border.color: ColorUtils.transparentize(Appearance.colors.colOutline, 0.35)
                             border.width: 1
 
-                            // Active-window text
-                            // Left: the workspaces, then the tray, the way the
-                            // shipped layout orders them. The window title the
-                            // bar used to open with is still switched off.
-                            PillBg {
-                                id: workspacePill3
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card6.barPillH
-                                width: barWsStrip3.implicitWidth + 10
-                                Item {
-                                    id: barWsStrip3
-                                    anchors.centerIn: parent
-                                    implicitWidth: card6.barSlotW * card6.totalWs
-                                    implicitHeight: card6.barSlotH
-
-                                    WorkspaceIndicator { anchors.fill: parent; z: 1; card: card6 }
-
-                                    Row {
-                                        z: 2
-                                        anchors.fill: parent
-                                        Repeater {
-                                            model: card6.totalWs
-                                            delegate: Item {
-                                                required property int index
-                                                width: card6.barSlotW
-                                                height: card6.barSlotH
-                                                Rectangle {
-                                                    anchors.centerIn: parent
-                                                    width: card6.barSlotR * 2
-                                                    height: card6.barSlotR * 2
-                                                    radius: width / 2
-                                                    color: Appearance.colors.colOnLayer0
-                                                    opacity: 0.35
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    IconImage {
-                                        z: 3
-                                        readonly property string primary: card6.primaryAppFor(card6.currentWs)
-                                        visible: primary !== ""
-                                        implicitSize: card6.barIconSize
-                                        x: card6.currentWs * card6.barSlotW + (card6.barSlotW - implicitSize) / 2
-                                        y: (card6.barSlotH - implicitSize) / 2
-                                        source: primary !== ""
-                                            ? Quickshell.iconPath(primary, "image-missing")
-                                            : ""
-                                    }
-                                }
-                            }
-
-                            PillBg {
-                                id: sysTrayPill3
-                                anchors.left: workspacePill3.right
-                                anchors.leftMargin: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card6.barPillH
-                                width: trayRow3.implicitWidth + 12
-                                Row {
-                                    id: trayRow3
-                                    anchors.centerIn: parent
-                                    spacing: 6
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "discord-tray.svg" }
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "steam_tray_mono.svg" }
-                                }
-                            }
-
-                            // Center: the utility buttons, the clock, and the
-                            // weather beside it.
-                            Row {
-                                id: barCenter3
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-                                PillBg {
-                                    height: card6.barPillH
-                                    width: utilRow3.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: utilRow3
-                                        anchors.centerIn: parent
-                                        spacing: 5
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "screenshot_region"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "videocam"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "mic"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                                PillBg {
-                                    height: card6.barPillH
-                                    width: clockText3.implicitWidth + 16
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    StyledText {
-                                        id: clockText3
-                                        anchors.centerIn: parent
-                                        text: "9:41 AM"
-                                        font.pixelSize: 10
-                                        color: Appearance.colors.colOnLayer1
-                                    }
-                                }
-                                PillBg {
-                                    height: card6.barPillH
-                                    width: weatherRow3.implicitWidth + 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: weatherRow3
-                                        anchors.centerIn: parent
-                                        spacing: 2
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "clear_day"
-                                            iconSize: 11
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        StyledText {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "73°F"
-                                            font.pixelSize: 9
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Right: what is playing, then the status icons
-                            // against the screen edge.
-                            Row {
-                                id: barRight3
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-                                MediaPill { id: mediaPill3; card: card6; inRow: true }
-                                PillBg {
-                                    height: card6.barPillH
-                                    width: indicatorRow3.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: indicatorRow3
-                                        anchors.centerIn: parent
-                                        spacing: 6
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "volume_up"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "lan"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "bluetooth"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "settings"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
+                            MockBarContents { card: card6 }
                         }
 
                         // ─── Tile viewport with sliding pages ───
@@ -5243,6 +5324,391 @@ ApplicationWindow {
     }
 
 
+    // ── Desktop right-click menu ─────────────────────────────────────────
+    // Picks up where the dock page leaves off: the same bar and dock over the
+    // workspace that page emptied, so the only new thing is where the
+    // right-click lands. The menu is DesktopMenu.qml's, row for row, drawn at
+    // the size the dock page draws its own menu.
+    component CardDesktopMenu : Item {
+        id: cardDesk
+
+        // ── State ──
+        property real cursorX: 1000
+        property real cursorY: 1000
+        property real cursorPulse: 1.0     // briefly scales the cursor on right-click
+        property bool menuVisible: false
+
+        // The rows of DesktopMenu.qml, in its order. A divided row has the
+        // menu's rule above it, and a flipped glyph is turned over the way
+        // that menu turns the bar's.
+        readonly property var menuRows: [
+            { icon: "image", label: Translation.tr("Change Wallpaper") },
+            { icon: "dashboard_customize", label: Translation.tr("Personalize Desktop") },
+            { icon: "toast", flipped: true, divided: true, label: Translation.tr("Personalize Bar") },
+            { icon: "toast", label: Translation.tr("Personalize Dock") },
+            { icon: "display_settings", divided: true, label: Translation.tr("Display Settings") },
+            { icon: "style", divided: true, label: Translation.tr("Switch Theme") }
+        ]
+
+        // ── Mockup geometry ──
+        readonly property int mockW: root.mockW
+        readonly property int mockH: root.mockH
+
+        // Bar and dock as the dock page draws them, so turning the page from
+        // there leaves both exactly where they were.
+        readonly property int barW: root.barW
+        readonly property int barH: 30
+        readonly property int barX: (mockW - barW) / 2
+        readonly property int barY: 12
+        readonly property int barPillH: 22
+        readonly property int barSlotW: root.barSlotW
+        readonly property int barSlotH: root.barSlotH
+        readonly property int barSlotR: root.barSlotR
+        readonly property int barIconSize: root.barIconSize
+        readonly property int barIndicatorInset: root.barIndicatorInset
+        // Workspace 3, where the dock page's loop ends once Spotify fades.
+        readonly property int currentWs: 2
+        readonly property int totalWs: 10
+
+        readonly property var dockApps: [
+            "google-chrome", "spotify", "org.gnome.Nautilus", "gimp", "discord"
+        ]
+        readonly property int dockIconSize: 29
+        readonly property int dockGap: 14
+        readonly property int dockPadding: 14
+        readonly property int dockCellCount: dockApps.length + 2   // pin + apps + drawer
+        readonly property real dockW: dockCellCount * dockIconSize + (dockCellCount - 1) * dockGap + 2 * dockPadding
+        readonly property real dockH: dockIconSize + 2 * dockPadding
+        readonly property real dockX: (mockW - dockW) / 2
+        readonly property real dockY: mockH - dockH - 14
+
+        // The menu opens with its corner on the click and grows right and
+        // down, as DesktopMenu.qml places it. This spot leaves the whole menu
+        // room between the bar and the dock, so it never has to flip.
+        readonly property int clickX: 220
+        readonly property int clickY: 86
+        readonly property int menuPad: 4
+        readonly property int menuRowH: 26
+        readonly property int menuSepH: 7
+        readonly property int menuHoverX: clickX + 56
+
+        function menuRowTop(i) {
+            let top = menuPad
+            for (let r = 0; r <= i; r++) {
+                if (menuRows[r].divided) top += menuSepH
+                if (r < i) top += menuRowH
+            }
+            return top
+        }
+        function menuRowCenterY(i) {
+            return clickY + menuRowTop(i) + menuRowH / 2
+        }
+
+        // Worked out from where the pointer is rather than set by the
+        // timeline, so a row lights the moment the pointer crosses into it,
+        // as a real hover would.
+        readonly property int hoveredRow: {
+            if (!menuVisible) return -1
+            const x = cursorX - clickX
+            const y = cursorY - clickY
+            if (x < menuPad || x > deskMenu.width - menuPad) return -1
+            for (let i = 0; i < menuRows.length; i++) {
+                const top = menuRowTop(i)
+                if (y >= top && y < top + menuRowH) return i
+            }
+            return -1
+        }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 28
+
+            // Left: title + body
+            CardLeftColumn {
+                title: Translation.tr("Right-click the desktop for quick settings")
+                body: Translation.tr("Any empty spot works, wherever no window is in the way. Pick a new wallpaper, or open the Settings page for your desktop, bar, dock, displays, or theme.")
+            }
+
+            // Right: animated mockup
+            Item {
+                id: deskMockupHost
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                Item {
+                    id: deskMockupContainer
+                    width: cardDesk.mockW
+                    height: cardDesk.mockH
+                    anchors.centerIn: parent
+                    scale: Math.min(
+                        1.0,
+                        (deskMockupHost.width  - 8) / width,
+                        (deskMockupHost.height - 8) / height
+                    )
+
+                    Rectangle {
+                        id: deskMockup
+                        anchors.fill: parent
+                        radius: 14
+                        color: "#0e0e12"
+                        border.color: ColorUtils.transparentize(Appearance.colors.colOutline, 0.6)
+                        border.width: 1
+                        clip: true
+
+                        // ─── Bar at top (same as the dock page's) ───
+                        Rectangle {
+                            id: barFrameDesk
+                            x: cardDesk.barX
+                            y: cardDesk.barY
+                            width: cardDesk.barW
+                            height: cardDesk.barH
+                            radius: cardDesk.barH / 2
+                            color: ColorUtils.transparentize(Appearance.colors.colLayer0, 0.45)
+                            border.color: ColorUtils.transparentize(Appearance.colors.colOutline, 0.35)
+                            border.width: 1
+
+                            MockBarContents { card: cardDesk; showAppIcon: false }
+                        }
+
+                        // ─── Dock (same as the dock page's) ───
+                        Rectangle {
+                            id: dockStripDesk
+                            x: cardDesk.dockX
+                            y: cardDesk.dockY
+                            width: cardDesk.dockW
+                            height: cardDesk.dockH
+                            radius: Appearance.rounding.large
+                            color: "#000000"
+                            border.color: ColorUtils.transparentize(Appearance.colors.colOutline, 0.5)
+                            border.width: 1
+                            z: 2
+
+                            Row {
+                                anchors.left: parent.left
+                                anchors.leftMargin: cardDesk.dockPadding
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: cardDesk.dockGap
+
+                                // Pin button
+                                Item {
+                                    width: cardDesk.dockIconSize
+                                    height: cardDesk.dockIconSize
+                                    MaterialSymbol {
+                                        anchors.centerIn: parent
+                                        text: "push_pin"
+                                        iconSize: cardDesk.dockIconSize - 6
+                                        color: Appearance.colors.colOnLayer0
+                                        opacity: 0.85
+                                    }
+                                }
+
+                                // Pinned apps, each with its open-window mark
+                                Repeater {
+                                    model: cardDesk.dockApps
+                                    delegate: Item {
+                                        id: deskDockSlot
+                                        required property string modelData
+                                        width: cardDesk.dockIconSize
+                                        height: cardDesk.dockIconSize
+                                        IconImage {
+                                            anchors.centerIn: parent
+                                            implicitSize: cardDesk.dockIconSize
+                                            source: Quickshell.iconPath(deskDockSlot.modelData, "image-missing")
+                                        }
+                                        Rectangle {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            anchors.bottom: parent.bottom
+                                            anchors.bottomMargin: -6
+                                            width: 10
+                                            height: 2
+                                            radius: 1
+                                            color: Appearance.colors.colOnLayer0
+                                            opacity: 0.55
+                                        }
+                                    }
+                                }
+
+                                // App drawer toggle
+                                Item {
+                                    width: cardDesk.dockIconSize
+                                    height: cardDesk.dockIconSize
+                                    MaterialSymbol {
+                                        anchors.centerIn: parent
+                                        text: "apps"
+                                        iconSize: cardDesk.dockIconSize - 6
+                                        color: Appearance.colors.colOnLayer0
+                                        opacity: 0.85
+                                    }
+                                }
+                            }
+                        }
+
+                        // ─── Desktop menu ───
+                        // The dock page's menu card with DesktopMenu.qml's
+                        // rows in it, sized like that page's rows.
+                        Rectangle {
+                            id: deskMenu
+                            x: cardDesk.clickX
+                            y: cardDesk.clickY
+                            width: deskMenuColumn.implicitWidth + cardDesk.menuPad * 2
+                            height: deskMenuColumn.implicitHeight + cardDesk.menuPad * 2
+                            radius: 12
+                            color: Appearance.m3colors.m3surfaceContainer
+                            // Fade only, no grow: the real menu fades in
+                            // right where the pointer already is.
+                            opacity: cardDesk.menuVisible ? 1 : 0
+                            visible: opacity > 0
+                            z: 7
+                            Behavior on opacity {
+                                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                            }
+
+                            ColumnLayout {
+                                id: deskMenuColumn
+                                anchors {
+                                    fill: parent
+                                    margins: cardDesk.menuPad
+                                }
+                                spacing: 0
+
+                                Repeater {
+                                    model: cardDesk.menuRows
+                                    delegate: ColumnLayout {
+                                        id: deskMenuEntry
+                                        required property var modelData
+                                        required property int index
+                                        Layout.fillWidth: true
+                                        spacing: 0
+
+                                        ContextMenuSeparator {
+                                            visible: deskMenuEntry.modelData.divided === true
+                                            implicitHeight: cardDesk.menuSepH
+                                        }
+
+                                        // Lit with a state layer rather than the real
+                                        // row's hover color, which sits too close to
+                                        // the card's own to read at this size.
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: cardDesk.menuRowH
+                                            implicitWidth: Math.max(deskMenuRow.implicitWidth + 24, 144)
+                                            radius: 8
+                                            color: ColorUtils.transparentize(Appearance.m3colors.m3onSurface,
+                                                cardDesk.hoveredRow === deskMenuEntry.index ? 0.88 : 1)
+                                            Behavior on color {
+                                                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                                            }
+
+                                            RowLayout {
+                                                id: deskMenuRow
+                                                anchors {
+                                                    fill: parent
+                                                    leftMargin: 10
+                                                    rightMargin: 14
+                                                }
+                                                spacing: 8
+                                                MaterialSymbol {
+                                                    Layout.alignment: Qt.AlignVCenter
+                                                    text: deskMenuEntry.modelData.icon
+                                                    iconSize: 13
+                                                    rotation: deskMenuEntry.modelData.flipped ? 180 : 0
+                                                    color: Appearance.m3colors.m3onSurface
+                                                }
+                                                StyledText {
+                                                    Layout.fillWidth: true
+                                                    text: deskMenuEntry.modelData.label
+                                                    font.pixelSize: 11
+                                                    color: Appearance.m3colors.m3onSurface
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ─── Cursor cue ───
+                        MaterialSymbol {
+                            id: deskCursor
+                            z: 8
+                            text: "arrow_selector_tool"
+                            iconSize: 20
+                            color: Appearance.colors.colOnLayer0
+                            x: cardDesk.cursorX - 4
+                            y: cardDesk.cursorY - 4
+                            scale: cardDesk.cursorPulse
+                            transformOrigin: Item.TopLeft
+                            Behavior on scale {
+                                NumberAnimation { duration: 120; easing.type: Easing.OutBack }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Animation timeline ──
+        // The pointer comes onto the empty workspace and right-clicks it, and
+        // the menu opens at the click. It then runs down every row so each one
+        // lights in turn, and comes back up to settle on Personalize Desktop
+        // before the menu closes and the loop starts over.
+        SequentialAnimation {
+            id: deskCycle
+            running: cardDesk.visible
+            loops: Animation.Infinite
+
+            // Reset
+            ScriptAction {
+                script: {
+                    cardDesk.cursorX = cardDesk.mockW + 60
+                    cardDesk.cursorY = cardDesk.mockH * 0.45
+                    cardDesk.menuVisible = false
+                    cardDesk.cursorPulse = 1.0
+                }
+            }
+            PauseAnimation { duration: 700 }
+
+            // Cursor drifts in onto the bare desktop
+            ParallelAnimation {
+                NumberAnimation { target: cardDesk; property: "cursorX"; to: cardDesk.clickX; duration: 900; easing.type: Easing.OutCubic }
+                NumberAnimation { target: cardDesk; property: "cursorY"; to: cardDesk.clickY; duration: 900; easing.type: Easing.OutCubic }
+            }
+            PauseAnimation { duration: 350 }
+
+            // Right-click: quick cursor pulse, menu opens at the pointer
+            ScriptAction { script: cardDesk.cursorPulse = 0.78 }
+            PauseAnimation { duration: 110 }
+            ParallelAnimation {
+                ScriptAction { script: cardDesk.cursorPulse = 1.0 }
+                ScriptAction { script: cardDesk.menuVisible = true }
+            }
+            PauseAnimation { duration: 700 }
+
+            // Onto the first row
+            ParallelAnimation {
+                NumberAnimation { target: cardDesk; property: "cursorX"; to: cardDesk.menuHoverX; duration: 380; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: cardDesk; property: "cursorY"; to: cardDesk.menuRowCenterY(0); duration: 380; easing.type: Easing.InOutQuad }
+            }
+            PauseAnimation { duration: 600 }
+
+            // Down past every row to the last
+            NumberAnimation { target: cardDesk; property: "cursorY"; to: cardDesk.menuRowCenterY(cardDesk.menuRows.length - 1); duration: 1800; easing.type: Easing.InOutQuad }
+            PauseAnimation { duration: 700 }
+
+            // Back up to settle on Personalize Desktop
+            NumberAnimation { target: cardDesk; property: "cursorY"; to: cardDesk.menuRowCenterY(1); duration: 900; easing.type: Easing.InOutQuad }
+            PauseAnimation { duration: 2200 }
+
+            // Close menu, cursor parks off-screen right for the loop
+            ScriptAction { script: cardDesk.menuVisible = false }
+            PauseAnimation { duration: 280 }
+            NumberAnimation { target: cardDesk; property: "cursorX"; to: cardDesk.mockW + 60; duration: 500; easing.type: Easing.InCubic }
+            PauseAnimation { duration: 600 }
+        }
+    }
+
+
     // ── Card 4: Move open windows between workspaces ─────────────────────
     // Same scaffold as card 1 (bar, overview widget, drawer, dock) but
     // the demo starts with two windows already open on workspace 1 and
@@ -5923,10 +6389,10 @@ readonly property var drawerApps: root.drawerApps
         // cannot drift away from what it is naming. The centre group and the
         // dock hold still, and stay tuned by eye.
         readonly property var sectionXs: [
-            barX + barRight8.x + mediaPill8.x + mediaPill8.width / 2,
-            barX + sysTrayPill8.x + sysTrayPill8.width / 2,
+            barX + mockBar8.barRight.x + mockBar8.mediaPill.x + mockBar8.mediaPill.width / 2,
+            barX + mockBar8.sysTrayPill.x + mockBar8.sysTrayPill.width / 2,
             260, 310, 356,
-            barX + workspacePill8.x + workspacePill8.width / 2,
+            barX + mockBar8.workspacePill.x + mockBar8.workspacePill.width / 2,
             300, 360
         ]
         // Per-section pointer y + arrow direction. Bar sections point up
@@ -6047,183 +6513,7 @@ readonly property var drawerApps: root.drawerApps
                             border.width: 1
                             z: 2
 
-                            // Left: the workspaces, then the tray, the way the
-                            // shipped layout orders them. The window title the
-                            // bar used to open with is still switched off.
-                            PillBg {
-                                id: workspacePill8
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card1.barPillH
-                                width: barWsStrip8.implicitWidth + 10
-                                Item {
-                                    id: barWsStrip8
-                                    anchors.centerIn: parent
-                                    implicitWidth: card1.barSlotW * card1.totalWs
-                                    implicitHeight: card1.barSlotH
-
-                                    WorkspaceIndicator { anchors.fill: parent; z: 1; card: card1 }
-
-                                    Row {
-                                        z: 2
-                                        anchors.fill: parent
-                                        Repeater {
-                                            model: card1.totalWs
-                                            delegate: Item {
-                                                required property int index
-                                                width: card1.barSlotW
-                                                height: card1.barSlotH
-                                                Rectangle {
-                                                    anchors.centerIn: parent
-                                                    width: card1.barSlotR * 2
-                                                    height: card1.barSlotR * 2
-                                                    radius: width / 2
-                                                    color: Appearance.colors.colOnLayer0
-                                                    opacity: 0.35
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    IconImage {
-                                        z: 3
-                                        readonly property string primary: card1.primaryAppFor(card1.currentWs)
-                                        visible: primary !== ""
-                                        implicitSize: card1.barIconSize
-                                        x: card1.currentWs * card1.barSlotW + (card1.barSlotW - implicitSize) / 2
-                                        y: (card1.barSlotH - implicitSize) / 2
-                                        source: primary !== ""
-                                            ? Quickshell.iconPath(primary, "image-missing")
-                                            : ""
-                                    }
-                                }
-                            }
-
-                            PillBg {
-                                id: sysTrayPill8
-                                anchors.left: workspacePill8.right
-                                anchors.leftMargin: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card1.barPillH
-                                width: trayRow8.implicitWidth + 12
-                                Row {
-                                    id: trayRow8
-                                    anchors.centerIn: parent
-                                    spacing: 6
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "discord-tray.svg" }
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "steam_tray_mono.svg" }
-                                }
-                            }
-
-                            // Center: the utility buttons, the clock, and the
-                            // weather beside it.
-                            Row {
-                                id: barCenter8
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-                                PillBg {
-                                    height: card1.barPillH
-                                    width: utilRow8.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: utilRow8
-                                        anchors.centerIn: parent
-                                        spacing: 5
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "screenshot_region"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "videocam"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "mic"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                                PillBg {
-                                    height: card1.barPillH
-                                    width: clockText8.implicitWidth + 16
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    StyledText {
-                                        id: clockText8
-                                        anchors.centerIn: parent
-                                        text: "9:41 AM"
-                                        font.pixelSize: 10
-                                        color: Appearance.colors.colOnLayer1
-                                    }
-                                }
-                                PillBg {
-                                    height: card1.barPillH
-                                    width: weatherRow8.implicitWidth + 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: weatherRow8
-                                        anchors.centerIn: parent
-                                        spacing: 2
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "clear_day"
-                                            iconSize: 11
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        StyledText {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "73°F"
-                                            font.pixelSize: 9
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Right: what is playing, then the status icons
-                            // against the screen edge.
-                            Row {
-                                id: barRight8
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-                                MediaPill { id: mediaPill8; card: card1; inRow: true }
-                                PillBg {
-                                    height: card1.barPillH
-                                    width: indicatorRow8.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: indicatorRow8
-                                        anchors.centerIn: parent
-                                        spacing: 6
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "volume_up"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "lan"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "bluetooth"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "settings"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
+                            MockBarContents { id: mockBar8; card: card1 }
                         }
 
                         // ─── Pointer ───
@@ -7911,184 +8201,7 @@ readonly property var drawerApps: root.drawerApps
                             border.width: 1
                             z: 2
 
-                            // Left: the workspaces, then the tray, the way the
-                            // shipped layout orders them. The window title the
-                            // bar used to open with is still switched off.
-                            PillBg {
-                                id: workspacePill12
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card7.barPillH
-                                width: barWsStrip12.implicitWidth + 10
-                                Item {
-                                    id: barWsStrip12
-                                    anchors.centerIn: parent
-                                    implicitWidth: card7.barSlotW * card7.totalWs
-                                    implicitHeight: card7.barSlotH
-
-                                    WorkspaceIndicator { anchors.fill: parent; z: 1; card: card7 }
-
-                                    Row {
-                                        z: 2
-                                        anchors.fill: parent
-                                        Repeater {
-                                            model: card7.totalWs
-                                            delegate: Item {
-                                                required property int index
-                                                width: card7.barSlotW
-                                                height: card7.barSlotH
-                                                Rectangle {
-                                                    anchors.centerIn: parent
-                                                    width: card7.barSlotR * 2
-                                                    height: card7.barSlotR * 2
-                                                    radius: width / 2
-                                                    color: Appearance.colors.colOnLayer0
-                                                    opacity: 0.35
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    IconImage {
-                                        z: 3
-                                        readonly property string primary: card7.primaryAppFor(card7.currentWs)
-                                        visible: primary !== ""
-                                        implicitSize: card7.barIconSize
-                                        x: card7.currentWs * card7.barSlotW + (card7.barSlotW - implicitSize) / 2
-                                        y: (card7.barSlotH - implicitSize) / 2
-                                        source: primary !== ""
-                                            ? Quickshell.iconPath(primary, "image-missing")
-                                            : ""
-                                    }
-                                }
-                            }
-
-                            PillBg {
-                                id: sysTrayPill12
-                                anchors.left: workspacePill12.right
-                                anchors.leftMargin: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: card7.barPillH
-                                width: trayRow12.implicitWidth + 12
-                                Row {
-                                    id: trayRow12
-                                    anchors.centerIn: parent
-                                    spacing: 6
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "discord-tray.svg" }
-                                    TrayAppIcon { anchors.verticalCenter: parent.verticalCenter; trayIcon: "steam_tray_mono.svg" }
-                                }
-                            }
-
-                            // Center: the utility buttons, the clock, and the
-                            // weather beside it.
-                            Row {
-                                id: barCenter12
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-                                PillBg {
-                                    height: card7.barPillH
-                                    width: utilRow12.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: utilRow12
-                                        anchors.centerIn: parent
-                                        spacing: 5
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "screenshot_region"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "videocam"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "mic"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                                PillBg {
-                                    height: card7.barPillH
-                                    width: clockText12.implicitWidth + 16
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    StyledText {
-                                        id: clockText12
-                                        anchors.centerIn: parent
-                                        text: "9:41 AM"
-                                        font.pixelSize: 10
-                                        color: Appearance.colors.colOnLayer1
-                                    }
-                                }
-                                PillBg {
-                                    height: card7.barPillH
-                                    width: weatherRow12.implicitWidth + 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: weatherRow12
-                                        anchors.centerIn: parent
-                                        spacing: 2
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "clear_day"
-                                            iconSize: 11
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        StyledText {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "73°F"
-                                            font.pixelSize: 9
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Right: what is playing, then the status icons
-                            // against the screen edge.
-                            Row {
-                                id: barRight12
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-                                MediaPill { id: mediaPill12; card: card7; inRow: true }
-                                PillBg {
-                                    height: card7.barPillH
-                                    width: indicatorRow12.implicitWidth + 12
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    Row {
-                                        id: indicatorRow12
-                                        anchors.centerIn: parent
-                                        spacing: 6
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "volume_up"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "lan"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "bluetooth"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                        MaterialSymbol {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "settings"; iconSize: 10
-                                            color: Appearance.colors.colOnLayer1
-                                        }
-                                    }
-                                }
-                            }
-
+                            MockBarContents { card: card7 }
                         }
 
                         // Screenshot window — nested Repeater: section → images

@@ -143,6 +143,12 @@ ApplicationWindow {
         },
         {
             group: 4,
+            name: Translation.tr("Sharing"),
+            icon: "folder_shared",
+            component: "modules/settings/SharingConfig.qml"
+        },
+        {
+            group: 4,
             name: Translation.tr("Manage"),
             icon: "apps",
             component: "modules/settings/ManageAppsConfig.qml"
@@ -167,13 +173,21 @@ ApplicationWindow {
         }
     ]
     
+    function pageIndex(name) {
+        return root.pages.findIndex(page => page.component.endsWith(name));
+    }
+    function showPage(name) {
+        const idx = root.pageIndex(name);
+        if (idx !== -1) root.currentPage = idx;
+    }
+
     // Read deep-linking from environment variables (set by dialogs)
     // A page may be named by its component file (UpdateConfig.qml) instead of
     // its position, so callers don't have to track this list's ordering.
     property int initialPage: {
         const envPage = Quickshell.env("QS_SETTINGS_PAGE");
         if (!envPage) return 0;
-        const named = root.pages.findIndex(page => page.component.endsWith(envPage));
+        const named = root.pageIndex(envPage);
         return named !== -1 ? named : (parseInt(envPage) || 0);
     }
     property int initialTab: {
@@ -192,7 +206,7 @@ ApplicationWindow {
     onClosing: {
         Quickshell.execDetached(["bash", "-c",
             '[ -f "$0/update.seen" ] && rm -f "$0/update.log" "$0/update.exit" "$0/update.seen"',
-            Quickshell.env("HOME") + "/.local/state/mainstream"]);
+            Directories.updateStateDir]);
         Qt.quit();
     }
     title: Translation.tr("Mainstream Settings")
@@ -306,6 +320,11 @@ ApplicationWindow {
         ThemeLibrary.load()
         Config.readWriteDelay = 0 // Settings app always only sets one var at a time so delay isn't needed
         recenterTimer.restart()
+        // Files opens the Sharing page naming the folder that should be
+        // shared once sharing is set up.
+        const sharingFolder = Quickshell.env("QS_SHARING_FOLDER")
+        if (sharingFolder)
+            FileSharing.requestFolder(sharingFolder)
     }
 
     // A second launch hands its page to this window rather than opening
@@ -313,8 +332,21 @@ ApplicationWindow {
     IpcHandler {
         target: "settings"
         function showPage(name: string): void {
-            const idx = root.pages.findIndex(page => page.component.endsWith(name));
-            if (idx !== -1) root.currentPage = idx;
+            root.showPage(name);
+        }
+        // What QS_SHARING_FOLDER does for a new window, for one already open:
+        // qs ipc -p <this file> call settings shareFolder <absolute path>
+        // It exits nonzero when no Settings window is running. The window is
+        // brought forward here, since the caller has no address for it. It
+        // stays void: Files takes any output as an older Settings without
+        // this function and opens a new window instead.
+        function shareFolder(path: string): void {
+            FileSharing.requestFolder(path);
+            root.showPage("SharingConfig.qml");
+            const titleRegex = (root.title || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            if (titleRegex)
+                Quickshell.execDetached(["hyprctl", "dispatch",
+                    `hl.dsp.focus({ window = [[title:^${titleRegex}$]] })`]);
         }
     }
 
@@ -329,12 +361,10 @@ ApplicationWindow {
         command: ["bash", "-c",
             'bash "$0" "$1" >/dev/null 2>&1 && [ ! -f "$2" ]',
             Quickshell.shellPath("scripts/update/update-live.sh"),
-            Quickshell.env("HOME") + "/.local/state/mainstream/update.pid",
-            Quickshell.env("HOME") + "/.local/state/mainstream/update.exit"]
+            Directories.updateStateDir + "/update.pid",
+            Directories.updateStateDir + "/update.exit"]
         onExited: (exitCode, exitStatus) => {
-            if (exitCode !== 0) return
-            const idx = root.pages.findIndex(page => page.component.endsWith("UpdateConfig.qml"))
-            if (idx !== -1) root.currentPage = idx
+            if (exitCode === 0) root.showPage("UpdateConfig.qml")
         }
     }
 

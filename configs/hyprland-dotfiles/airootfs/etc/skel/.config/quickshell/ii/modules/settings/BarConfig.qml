@@ -88,10 +88,9 @@ ContentPage {
 
                 ConfigSelectionArray {
                     currentValue: (Config.options.bar.bottom ? 1 : 0) | (Config.options.bar.vertical ? 2 : 0)
-                    onSelected: newValue => {
-                        Config.options.bar.bottom = (newValue & 1) !== 0;
-                        Config.options.bar.vertical = (newValue & 2) !== 0;
-                    }
+                    // Through the shared rule, which carries a Hug dock across
+                    // to face the bar wherever it goes.
+                    onSelected: newValue => Appearance.sizes.placeBar((newValue & 1) !== 0, (newValue & 2) !== 0)
                     options: [
                         {
                             displayName: Translation.tr("Top"),
@@ -147,34 +146,7 @@ ContentPage {
                 title: Translation.tr("Corner style")
                 Layout.fillWidth: true
 
-                ConfigSelectionArray {
-                    currentValue: Config.options.bar.cornerStyle
-                    onSelected: newValue => {
-                        Config.options.bar.cornerStyle = newValue; // Update local copy
-                    }
-                    options: [
-                        {
-                            displayName: Translation.tr("Hug"),
-                            icon: "line_curve",
-                            value: 0
-                        },
-                        {
-                            displayName: Translation.tr("Float"),
-                            icon: "page_header",
-                            value: 1
-                        },
-                        {
-                            displayName: Translation.tr("Rect"),
-                            icon: "toolbar",
-                            value: 2
-                        },
-                        {
-                            displayName: Translation.tr("Notch"),
-                            icon: "call_to_action",
-                            value: 3
-                        }
-                    ]
-                }
+                BarStyleChoices {}
             }
 
             ContentSubsection {
@@ -404,7 +376,7 @@ ContentPage {
             allowEmpty: true
             buttonIcon: "location_chip"
             value: Appearance.colors.barWidgetPick
-            fallback: String(Appearance.colors.colLayer1)
+            fallback: String(Appearance.colBarPill)
             onEdited: newValue => {
                 if (Appearance.m3colors.darkmode) Config.options.bar.widgetColorDark = newValue
                 else Config.options.bar.widgetColorLight = newValue

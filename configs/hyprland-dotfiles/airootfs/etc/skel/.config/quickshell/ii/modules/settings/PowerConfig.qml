@@ -213,6 +213,27 @@ ContentPage {
         }
     }
 
+    // ── Session Menu ──────────────────────────────────────────────────────────
+    ContentSection {
+        icon: "power_settings_new"
+        title: Translation.tr("Session Menu")
+
+        ConfigRow {
+            uniform: false
+            ConfigSwitch {
+                buttonIcon: "view_week"
+                text: Translation.tr("Simple session menu")
+                checked: Config.options.session.simpleMenu
+                onCheckedChanged: {
+                    Config.options.session.simpleMenu = checked
+                }
+                StyledToolTip {
+                    text: Translation.tr("Lock, Logout, Reboot and Shutdown in one row of large buttons. Turn it off for the full menu, with Sleep, Hibernate, Task Manager and Reboot to firmware settings.")
+                }
+            }
+        }
+    }
+
     // ── Power Saving ──────────────────────────────────────────────────────────
     ContentSection {
         icon: "battery_charging_full"
