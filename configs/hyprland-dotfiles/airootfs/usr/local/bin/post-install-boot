@@ -127,34 +127,35 @@ fi
 # mkinitcpio -P below, so this only stages the config.
 # ---------------------------------------------------------------------------
 GPU_LIB="/usr/local/lib/gpu-config.sh"
-if [[ -r "$GPU_LIB" ]]; then
-    # shellcheck source=/dev/null
-    source "$GPU_LIB"
-    GPU_SUDO=''
+if [[ ! -r "$GPU_LIB" ]]; then
+    log "ERROR: the shared GPU library is missing from $GPU_LIB; this image is incomplete."
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$GPU_LIB"
+GPU_SUDO=''
 
-    # resume= is decided after this block, on every install, GPU or none. The
-    # library's own probe sees every swap on every attached disk and cannot
-    # tell which one the installed system turns on, so it adds nothing here.
-    _gpu_swap_partuuid() { :; }
+# resume= is decided after this block, on every install, GPU or none. The
+# library's probe reads /proc/swaps, which in this chroot is the live
+# session's, and cannot see a swap systemd would turn on by its GPT type,
+# so it adds nothing here.
+_gpu_swap_partuuid() { :; }
 
-    info "Detecting GPU hardware..."
-    if gpu_detect; then
-        info "Detected GPU(s):"
-        lspci 2>/dev/null | grep -iE "VGA|3D|Display" | while read -r line; do info "  $line"; done || true
-        info "GPU autoconfig — Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
-        gpu_apply_autoconfig
-        if [[ -n "${MAIN_USER:-}" ]]; then
-            gpu_apply_hypr_tweaks "$MAIN_USER_HOME"
-        fi
-        # Anything the configuration could not do is only in memory until this
-        # is called, and a reason nobody can read is the same as no reason.
-        flush_failures
-        info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
-    else
-        warn "No GPU detected via lspci — skipping GPU configuration."
+info "Detecting GPU hardware..."
+if gpu_detect; then
+    info "Detected GPU(s):"
+    lspci 2>/dev/null | grep -iE "VGA|3D|Display" | while read -r line; do info "  $line"; done || true
+    info "GPU autoconfig: Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
+    gpu_apply_autoconfig
+    if [[ -n "${MAIN_USER:-}" ]]; then
+        gpu_apply_hypr_tweaks "$MAIN_USER_HOME"
     fi
+    # Anything the configuration could not do is only in memory until this
+    # is called, and a reason nobody can read is the same as no reason.
+    flush_failures
+    info "GPU configuration complete. Intel=$HAS_INTEL AMD=$HAS_AMD NVIDIA=$HAS_NVIDIA Hybrid=$IS_HYBRID"
 else
-    warn "Shared GPU library not found at $GPU_LIB — skipping GPU configuration."
+    warn "No GPU detected via lspci, skipping GPU configuration."
 fi
 
 # Holding back resume= alone does not stop hibernation: on UEFI, systemd
@@ -319,12 +320,6 @@ _apply_hibernation_policy() {
     partuuid=$(lsblk -dno PARTUUID "$swap_dev" 2>/dev/null) || partuuid=""
     [[ -n "$partuuid" ]] || return 0
     if grep -Eq '(^|[[:space:]])resume=' "$kc" 2>/dev/null; then
-        return 0
-    fi
-    # The one cmdline writer lives in the GPU library, and install-limine
-    # refuses an image without it, so this branch is only a guard.
-    if ! declare -F cmdline_upsert >/dev/null; then
-        warn "No resume= for swap $swap_dev: the GPU library that writes the kernel command line is missing."
         return 0
     fi
     cmdline_upsert "resume=PARTUUID=$partuuid"

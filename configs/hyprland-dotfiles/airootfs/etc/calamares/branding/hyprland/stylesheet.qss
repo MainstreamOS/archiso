@@ -896,9 +896,6 @@ QMenu::separator {
     margin:           4px 8px;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * MESSAGE BOX (warnings, partition confirmations)
- * ──────────────────────────────────────────────────────────────────────────── */
 /* ──────────────────────────────────────────────────────────────────────────────
  * DIALOGS
  *
@@ -906,8 +903,7 @@ QMenu::separator {
  * shows through it. A dialog is its own top-level window with nothing of ours
  * behind it, so transparent leaves it bare: light text and pale controls over
  * whatever the compositor has underneath, which is how the partitioning dialogs
- * came up unreadable. Every dialog paints the popup surface instead, the one
- * QMessageBox below already had to ask for on its own.
+ * came up unreadable. Every dialog paints the popup surface instead.
  * ──────────────────────────────────────────────────────────────────────────── */
 QDialog {
     background-color: #201f20;                     /* m3surfaceContainer */
@@ -932,13 +928,6 @@ QDialogButtonBox QPushButton:pressed {
 QDialogButtonBox QPushButton:disabled {
     background-color: #2b2a2a;                     /* m3surfaceContainerHigh */
     color:            #6d6a6d;
-}
-
-QMessageBox {
-    background-color: #201f20;                     /* m3surfaceContainer */
-}
-QMessageBox QPushButton {
-    min-width: 80px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

@@ -222,8 +222,7 @@ fi
 # 8. THE USER'S HOME
 # ---------------------------------------------------------------------------
 # The same code that builds an account made later from Settings, so the two
-# cannot drift: this script used to carry its own copy of it, and a second
-# account ended up with a desktop this one would never have produced.
+# cannot drift.
 #
 # Only the steps this script owns are called. postdesktop runs before
 # postfinalize, so post-install-theme has already built the virtualenv and
