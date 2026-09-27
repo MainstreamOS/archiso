@@ -4,13 +4,15 @@
  * Each slide is a self-contained 3696x2016 PNG (1.833:1 — exactly 3× the
  * 1232x672 slideshow pane Calamares allocates inside our 1500x800 branded
  * window; see render-slides.sh for the full geometry breakdown) rendered
- * from the SVG masters in ./sources/. The PNGs bake in their own titles,
- * body copy, tickers, and brand-mark composition (Stream gradient,
- * Abyss/Night palette, DM Sans / Google Sans Flex, JetBrains Mono). The
- * QML side just rotates them — no overlay text, no per-slide layout.
+ * from the SVG masters in configs/hyprland-dotfiles/branding-sources/. The
+ * PNGs bake in their own titles, body copy, tickers, and brand-mark
+ * composition (Stream gradient, Abyss/Night palette, DM Sans / Google Sans
+ * Flex, JetBrains Mono). The QML side just rotates them, with no overlay text,
+ * no per-slide layout.
  * To edit a slide:
- *   1. Edit the SVG in ./sources/.
- *   2. Run ./sources/render-slides.sh to re-export the PNG.
+ *   1. Edit the SVG in configs/hyprland-dotfiles/branding-sources/.
+ *   2. Run configs/hyprland-dotfiles/branding-sources/render-slides.sh to
+ *      re-export the PNG.
  *
  * slideshowAPI: 2 — onActivate / onLeave fire from Calamares.
  * =========================================================================== */

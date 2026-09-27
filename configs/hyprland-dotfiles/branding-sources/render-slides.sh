@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Renders the SVG masters in this directory into the PNGs Calamares loads from
-# the parent branding directory. Run after any SVG edit:
+# airootfs/etc/calamares/branding/hyprland. Run after any SVG edit:
 #   ./render-slides.sh
 #
 # Slideshow PNGs are 3810x1785 (1270:595 = 2.1345:1) — measured against the
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
-OUT="$(realpath ..)"
+OUT="$(realpath ../airootfs/etc/calamares/branding/hyprland)"
 
 render() {
     local svg="$1" png="$2" w="$3" h="$4" bg="${5:-}"
