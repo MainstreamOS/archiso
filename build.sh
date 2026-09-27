@@ -675,7 +675,6 @@ MKARCHISO="${SCRIPT_DIR}/archiso/mkarchiso"
 OUT_DIR="${SCRIPT_DIR}/out"
 WORK_DIR="${SCRIPT_DIR}/work"
 VERBOSE=""
-CLEAR_WORK=0
 
 # Package-build flags
 REFRESH_PKGS=false
@@ -825,7 +824,7 @@ set -- "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 while getopts 'vco:w:' opt; do
     case "${opt}" in
         v) VERBOSE='-v' ;;
-        c) CLEAR_WORK=1 ;;
+        c) ;;
         o) OUT_DIR="${OPTARG}" ;;
         w) WORK_DIR="${OPTARG}" ;;
         *) echo "Usage: sudo $0 [-v] [-c] [-o out_dir] [-w work_dir] [--refresh|--clean|--cleancal]" >&2; exit 1 ;;
@@ -1168,12 +1167,7 @@ if [[ "$CLEAN_BUILD" == true ]]; then
     rm -f "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
     info "Package output directory cleared."
 
-    # Also clear previous output and the mkarchiso work dir so a --clean run
-    # starts from a true clean slate. Without this, leftover work/ state from
-    # a previous (possibly failed) run can interfere with the next mkarchiso
-    # pacstrap, and stale ISOs in out/ accumulate. Bakes in the manual
-    # `rm -rf out work` step that previously had to happen between --clean
-    # iterations.
+    # Also clear previous output so stale ISOs in out/ do not accumulate.
     #
     # Only this edition's artifacts go, though: a release is both editions at
     # the same version, and they are built one after the other, so wiping the
@@ -1710,27 +1704,6 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
                 || die "Could not archive the dotfiles for the install"
             info "Dotfiles archived for the install ($(du -h "$DOTS_ARCHIVE" | cut -f1))"
 
-        # Bake the shared GPU library into the ISO from this build-time clone so
-        # the installed-system GPU steps source a trusted in-image copy instead
-        # of re-cloning and sourcing it as root at install time.
-        if [[ -f "$DOTS_WORK/sdata/lib/gpu-config.sh" ]]; then
-            install -Dm644 "$DOTS_WORK/sdata/lib/gpu-config.sh" \
-                "$PROFILE_DIR/airootfs/usr/local/lib/gpu-config.sh"
-        fi
-        if [[ -f "$DOTS_WORK/sdata/lib/mac-config.sh" ]]; then
-            install -Dm644 "$DOTS_WORK/sdata/lib/mac-config.sh" \
-                "$PROFILE_DIR/airootfs/usr/local/lib/mac-config.sh"
-        fi
-        # What the partitioning step built, read by the boot steps.
-        if [[ -f "$DOTS_WORK/sdata/lib/boot-layout.sh" ]]; then
-            install -Dm644 "$DOTS_WORK/sdata/lib/boot-layout.sh" \
-                "$PROFILE_DIR/airootfs/usr/local/lib/boot-layout.sh"
-        fi
-        # The scripts' translation lookup, read by the update helper.
-        if [[ -f "$DOTS_WORK/sdata/lib/tr.sh" ]]; then
-            install -Dm644 "$DOTS_WORK/sdata/lib/tr.sh" \
-                "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-tr.sh"
-        fi
         # The Mac firmware fetch and the two upstream pieces it runs, so a T2
         # Mac can pull its own Wi-Fi and Bluetooth firmware from Apple.
         if [[ -f "$DOTS_WORK/sdata/mac/mainstream-mac-firmware" ]]; then
@@ -1751,32 +1724,29 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # profile as the fallback for a build whose clone did not land, but a
         # clone that did land always wins, so a dots commit cannot leave the
         # image running a script several versions behind its own skel.
-        for _rel in \
-            sdata/update/updatems \
-            sdata/update/updatems-system \
-            sdata/update/mainstream-update-helper \
-            sdata/keyring/mainstream-keyring-init \
-            sdata/keyring/mainstream-keyring-repair \
-            sdata/boot/mainstream-limine-windows \
-            sdata/sddm/pixie-sddm-keyboard-bridge.sh \
-            sdata/polkit/app-remover \
-            sdata/polkit/disk-mounter \
-            sdata/polkit/user-manager \
-            sdata/provision/dotfiles-first-login \
-            sdata/polkit/ai-cli-install \
-            sdata/polkit/ollama-setup; do
-            _src="$DOTS_WORK/$_rel"
-            [[ -f "$_src" ]] || continue
-            install -Dm755 "$_src" \
-                "$PROFILE_DIR/airootfs/usr/local/bin/$(basename "$_rel")"
+        # Driven off what the profile ships, like the policy loop below, so a
+        # new helper still needs its committed copy before the clone refreshes it.
+        for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/*; do
+            [[ -f "$_dst" ]] || continue
+            for _dir in polkit update keyring boot provision sddm; do
+                _src="$DOTS_WORK/sdata/$_dir/$(basename "$_dst")"
+                [[ -f "$_src" ]] || continue
+                install -Dm755 "$_src" "$_dst"
+                break
+            done
         done
 
-        # The same for the dots-owned pieces that are not plain bin scripts.
+        # The same for the dots-owned pieces that are not plain bin scripts. The
+        # install steps source these shared libraries from the image rather than
+        # cloning dots and sourcing it as root at install time.
         for _pair in \
+            "sdata/lib/gpu-config.sh:644:usr/local/lib/gpu-config.sh" \
+            "sdata/lib/mac-config.sh:644:usr/local/lib/mac-config.sh" \
+            "sdata/lib/boot-layout.sh:644:usr/local/lib/boot-layout.sh" \
+            "sdata/lib/tr.sh:644:usr/local/lib/mainstream-tr.sh" \
             "sdata/polkit/power-key-helper.sh:755:usr/local/bin/power-key-helper" \
             "sdata/lib/provision-user.sh:644:usr/local/lib/mainstream-provision-user.sh" \
             "sdata/lib/venv-common.sh:644:usr/local/lib/mainstream-venv-common.sh" \
-            "sdata/polkit/org.mainstreamos.user-manager.policy:644:usr/share/polkit-1/actions/org.mainstreamos.user-manager.policy" \
             "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml"; do
             _src="$DOTS_WORK/${_pair%%:*}"; _rest="${_pair#*:}"
             [[ -f "$_src" ]] || continue
@@ -2046,7 +2016,7 @@ prebuild_hyprland_plugin() {
         return 0
     fi
 
-    # The plugin Makefiles build with -g; Hyprland never reads the debug info.
+    # scrolloverview's Makefile builds with -g; Hyprland never reads the debug info.
     strip --strip-debug "$build_dir/$so_filename" 2>/dev/null || true
 
     local skel_plugins="$SKEL_DIR/.local/share/hyprland/plugins"
