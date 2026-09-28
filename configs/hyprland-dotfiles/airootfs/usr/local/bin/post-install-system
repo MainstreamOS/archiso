@@ -242,6 +242,9 @@ if [[ -n "$MAIN_USER" ]]; then
         PROVISION_FAILED=""
 
         _pu_step groups   provision_groups    "$MAIN_USER"
+        # The desktop step writes into the home as its owner, so the owner has
+        # to hold it first; the steps before this one wrote parts of it as root.
+        _pu_step own      chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
         _pu_step desktop  provision_desktop   "$MAIN_USER"
         _pu_step own      chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_USER_HOME"
         _pu_step firstrun provision_first_run "$MAIN_USER"
