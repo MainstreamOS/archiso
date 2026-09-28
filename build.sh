@@ -1747,7 +1747,8 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             "sdata/polkit/power-key-helper.sh:755:usr/local/bin/power-key-helper" \
             "sdata/lib/provision-user.sh:644:usr/local/lib/mainstream-provision-user.sh" \
             "sdata/lib/venv-common.sh:644:usr/local/lib/mainstream-venv-common.sh" \
-            "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml"; do
+            "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml" \
+            "sdata/system-sleep/hyprland-dpms.sh:755:usr/lib/systemd/system-sleep/hyprland-dpms.sh"; do
             _src="$DOTS_WORK/${_pair%%:*}"; _rest="${_pair#*:}"
             [[ -f "$_src" ]] || continue
             install -D -m"${_rest%%:*}" "$_src" "$PROFILE_DIR/airootfs/${_rest#*:}"
@@ -1762,6 +1763,39 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             [[ -f "$_from" ]] || continue
             install -Dm644 "$_from" "$_dst"
         done
+
+        # A machine installed from this image keeps its root helpers and
+        # polkit files current only through updatems-system, which installs
+        # the ones its list names. One the image ships from the dotfiles but
+        # the list leaves out would stay at install day on every machine, so
+        # the build stops until the list names it. The login screen's pieces
+        # are left out of the test, since updatems-system installs those only
+        # where there is a login screen. A clone whose updatems-system cannot
+        # print its list predates it, and is not held to it. Run as the build
+        # user, so a copy from before the flag stops at its root check rather
+        # than starting on its root work.
+        if _root_list="$(su "$BUILD_USER" -c "bash '$DOTS_WORK/sdata/update/updatems-system' --list-root-files" 2>/dev/null)" \
+           && [[ -n "$_root_list" ]]; then
+            _unlisted=()
+            for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/* \
+                        "$PROFILE_DIR"/airootfs/usr/share/polkit-1/actions/*.policy \
+                        "$PROFILE_DIR"/airootfs/usr/share/polkit-1/rules.d/*.rules; do
+                [[ -f "$_dst" ]] || continue
+                _b="$(basename "$_dst")"
+                _from_dots=false
+                for _dir in polkit update keyring boot provision; do
+                    [[ -f "$DOTS_WORK/sdata/$_dir/$_b" ]] && _from_dots=true
+                done
+                [[ -f "$DOTS_WORK/sdata/polkit/$_b.sh" ]] && _from_dots=true
+                [[ $_from_dots == true ]] || continue
+                _rel="/${_dst#"$PROFILE_DIR"/airootfs/}"
+                awk -v d="$_rel" '$3 == d { f = 1 } END { exit !f }' <<<"$_root_list" \
+                    || _unlisted+=("$_rel")
+            done
+            if [[ ${#_unlisted[@]} -gt 0 ]]; then
+                die "the image ships ${_unlisted[*]} from the dotfiles, but updatems-system's ROOT_FILES does not list them, so installed machines would never be updated past install day; add them there"
+            fi
+        fi
 
         # Stamp the baked dotfiles release into the image so updatems on the
         # installed system treats it as already applied and only acts on a

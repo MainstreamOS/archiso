@@ -10,9 +10,11 @@ case "$1" in
       for instance in "$uid_path"/*/; do
         [ -d "$instance" ] || continue
         sig=$(basename "$instance")
+        # Under the Lua config `hyprctl dispatch X` runs `return hl.dispatch(X)`,
+        # so X has to be a Lua dispatcher; the plain `dpms off` form is refused.
         HYPRLAND_INSTANCE_SIGNATURE="$sig" \
           XDG_RUNTIME_DIR="/run/user/$uid" \
-          hyprctl dispatch dpms off 2>/dev/null
+          hyprctl dispatch 'hl.dsp.dpms({ action = "disable" })' 2>/dev/null
       done
     done
     ;;
@@ -32,7 +34,7 @@ case "$1" in
         sig=$(basename "$instance")
         HYPRLAND_INSTANCE_SIGNATURE="$sig" \
           XDG_RUNTIME_DIR="/run/user/$uid" \
-          hyprctl dispatch dpms on 2>/dev/null
+          hyprctl dispatch 'hl.dsp.dpms({ action = "enable" })' 2>/dev/null
       done
     done
     ;;
