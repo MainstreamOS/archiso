@@ -134,3 +134,12 @@ file_permissions=(
   ["/etc/sudoers.d/zz-gpu-drivers"]="0:0:440"
   ["/etc/systemd/system/systemd-firstboot.service"]="0:0:644"
 )
+
+# mkarchiso copies airootfs without its modes, and skel is what every account
+# made after install starts from, so each script in it is named here from what
+# the tree holds when the image is built. A list kept by hand fell behind
+# whenever the dotfiles gained a script.
+while IFS= read -r -d '' _skel_exec; do
+    file_permissions["/${_skel_exec#airootfs/}"]="0:0:755"
+done < <(cd -- "${profile:-.}" && find airootfs/etc/skel -type f -perm -u+x -print0 2>/dev/null)
+unset _skel_exec
