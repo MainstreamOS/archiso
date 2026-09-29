@@ -33,6 +33,19 @@ find /etc -name "autologin.conf" -type f | while read -r f; do
     fi
 done
 
+# Gaming Mode rewrites /etc/sddm.conf's [Autologin] block before every login
+# screen, and puts back only the autologin recorded as its preference. Without
+# the record the "Log in automatically" choice written above was gone by the
+# first boot.
+AUTOLOGIN_USER="$(awk -F= '/^\[/ { s = ($0 == "[Autologin]") } s && $1 == "User" { u = $2 } END { print u }' /etc/sddm.conf 2>/dev/null)"
+if [[ -n "$AUTOLOGIN_USER" && -x /usr/bin/gaming-mode-switch ]]; then
+    if /usr/bin/gaming-mode-switch set autologin-user "$AUTOLOGIN_USER"; then
+        info "Recorded the autologin choice for $AUTOLOGIN_USER"
+    else
+        warn "Could not record the autologin choice for $AUTOLOGIN_USER; the first boot will show the login screen"
+    fi
+fi
+
 # SDDM user home directory, Hyprland greeter config, and permissions.
 # The greeter config itself comes with the image, at this same path, mirrored
 # from the dotfiles at build time; nothing is written here, so the login screen
