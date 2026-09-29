@@ -463,25 +463,39 @@ mainstream_unneeded_pkgs() {
 # and blocks updates. Downloading the repo's own builds makes the ISO ship
 # byte-identical versions (no drift) and skips the recompile. Populates the
 # global GITHUB_PROVIDED set; the AUR_DEPS loop skips any name in it. Anything
-# the repo doesn't provide — or if GitHub is unreachable — falls through to the
-# local build (curl --retry hardens the single-server GitHub fetch).
+# the repo doesn't provide, or that fails to download, falls through to the
+# local build (curl --retry hardens the single-server GitHub fetch). A db that
+# cannot be read stops a clean build, and a non-clean one keeps what an earlier
+# build left.
 declare -A GITHUB_PROVIDED=()
 declare -A FAILED_DOWNLOADS=()
 download_mainstream_repo_pkgs() {
     local repo_dir="$1"
-    local api="https://api.github.com/repos/MainstreamOS/packages/releases/tags/mainstream-repo"
     local rel="https://github.com/MainstreamOS/packages/releases/download/mainstream-repo"
     info "Fetching the [mainstream] GitHub repo package list..."
-    # The release only ever ADDS assets, so it accumulates stale builds (dropped
-    # or superseded packages). Trust the db, not the raw asset list: collect the
-    # pkgname-ver-rel stems the current db indexes and pull only those.
-    local current dbtmp unneeded="" unneeded_dirs="" uname
+    # The db is the list: it names every package the repo serves, under the file
+    # name the release publishes it as (an epoch's ':' already '_'). It comes from
+    # releases/download like the packages themselves, never from api.github.com,
+    # whose 60 requests an hour for an unauthenticated address are shared by
+    # everything behind it, a VPN exit included.
+    local files="" dberr="" dbtmp unneeded="" unneeded_dirs="" uname
     dbtmp=$(mktemp)
-    if curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused -o "$dbtmp" "$rel/mainstream.db" 2>/dev/null; then
-        current=$(tar tzf "$dbtmp" 2>/dev/null | grep -oE '^[^/]+/' | tr -d '/' | sort -u) || current=""
+    if dberr=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused \
+                    -o "$dbtmp" "$rel/mainstream.db" 2>&1); then
+        files=$(tar xzOf "$dbtmp" --wildcards '*/desc' 2>/dev/null \
+            | awk '/^%FILENAME%$/ { getline; print }' \
+            | grep -E '^[^/]+\.pkg\.tar\.zst$') || files=""
         unneeded=$(mainstream_unneeded_pkgs "$dbtmp") || unneeded=""
     fi
     rm -f "$dbtmp"
+    if [[ -z "$files" ]]; then
+        local why="Could not read the [mainstream] db${dberr:+ ($dberr)}"
+        # python312 and the netinstall/Welcome packages exist nowhere else, and a
+        # clean build has just emptied the only place an earlier copy could be.
+        [[ "$CLEAN_BUILD" == true ]] && die "$why. The image needs packages only it carries (python312 among them); check the connection to github.com and re-run."
+        warn "$why — nothing is downloaded from it this run; what only [mainstream] carries must be left from an earlier build."
+        return 0
+    fi
     if [[ -n "$unneeded" ]]; then
         info "Not bundling what nothing on the ISO installs: $(cut -d' ' -f1 <<< "$unneeded" | sort | paste -sd' ')"
         unneeded_dirs=$(cut -d' ' -f2 <<< "$unneeded" | tr ':' '_')
@@ -492,36 +506,14 @@ download_mainstream_repo_pkgs() {
             rm -f "$repo_dir/$uname"-[0-9]*.pkg.tar.zst{,.sig}
         done <<< "$unneeded"
     fi
-    local urls
-    # A failed listing has to reach the fallback below rather than end the
-    # build under set -e, and a reset HTTP/2 stream is worth retrying too.
-    urls=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused --retry-all-errors "$api" 2>/dev/null \
-        | grep -oE '"browser_download_url":[[:space:]]*"[^"]+\.pkg\.tar\.zst"' \
-        | sed -E 's/.*"(https[^"]+)".*/\1/') || urls=""
-    if [[ -z "$urls" ]]; then
-        warn "Could not list [mainstream] release assets — building every AUR package locally (versions may drift)."
-        return 0
-    fi
     local url f name base skip m stem
-    while read -r url; do
-        [[ -n "$url" ]] || continue
-        base=$(basename "$url")
-        # Skip assets the current db doesn't index — stale leftovers from old
-        # builds. If the db fetch failed, fall back to downloading everything.
-        if [[ -n "${current:-}" ]]; then
-            stem=$(sed -E 's/-[^-]+\.pkg\.tar\.zst$//' <<< "$base")
-            # Epoch packages publish a colon-free asset filename (GitHub Release
-            # assets can't store the ':' epoch separator) while the db dir keeps
-            # the epoch, so normalise ':'->'_' on the db side before matching —
-            # otherwise the epoch package looks "stale" and falls back to a
-            # drift-prone local build.
-            if ! grep -qxF "$stem" <<< "${current//:/_}"; then
-                info "$base — not in current db, skipping stale asset."
-                continue
-            fi
-            if grep -qxF "$stem" <<< "$unneeded_dirs"; then
-                continue
-            fi
+    while read -r base; do
+        [[ -n "$base" ]] || continue
+        url="$rel/$base"
+        # unneeded_dirs is normalised ':'->'_' the same way the file names are.
+        stem=$(sed -E 's/-[^-]+\.pkg\.tar\.zst$//' <<< "$base")
+        if grep -qxF "$stem" <<< "$unneeded_dirs"; then
+            continue
         fi
         # The mainstream-* meta-packages are compiled locally in this build,
         # against the Qt this ISO ships. Their published prebuilt is for the
@@ -582,7 +574,7 @@ download_mainstream_repo_pkgs() {
             # so its own .PKGINFO cannot be read.
             FAILED_DOWNLOADS["$(sed -E 's/-[^-]+-[^-]+-[^-]+\.pkg\.tar\.zst$//' <<< "$base")"]=1
         fi
-    done <<< "$urls"
+    done <<< "$files"
 
     # A split PKGBUILD emits several packages from one build, so a sibling that
     # failed to download cannot be fetched by itself — the only thing that
