@@ -398,6 +398,9 @@ if $HAS_NVIDIA; then
             ;;
     esac
 
+    mapfile -t _nv_extra < <(nvidia_extra_pkgs)
+    install_pkgs_opt "${_nv_extra[@]}"
+
     # PRIME render-offload tool for hybrid (NVIDIA + Intel/AMD).
     [[ $IS_HYBRID == true ]] && install_pkgs nvidia-prime || true
 
