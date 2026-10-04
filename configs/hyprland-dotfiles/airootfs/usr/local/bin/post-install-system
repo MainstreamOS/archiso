@@ -219,6 +219,25 @@ if command -v firewall-offline-cmd &>/dev/null && [[ -f /etc/firewalld/zones/Mai
 fi
 
 # ---------------------------------------------------------------------------
+# 7c. WI-FI COUNTRY
+# ---------------------------------------------------------------------------
+# The country of the time zone picked in the installer, so USB adapters such as
+# the Steam Frame's get its channels. The installer's fallback zone is ignored.
+if [[ -r /usr/local/lib/wifi-country.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/wifi-country.sh
+    if _wifi_cc="$(wifi_country_seed --from-image)"; then
+        if [[ -n "$_wifi_cc" ]]; then
+            info "Wi-Fi country set to $_wifi_cc from the time zone."
+        else
+            info "Wi-Fi country not set from the time zone; Settings > Wi-Fi sets it."
+        fi
+    else
+        warn "Could not write the Wi-Fi country to /etc/conf.d/wireless-regdom."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 8. THE USER'S HOME
 # ---------------------------------------------------------------------------
 # The same code that builds an account made later from Settings, so the two
