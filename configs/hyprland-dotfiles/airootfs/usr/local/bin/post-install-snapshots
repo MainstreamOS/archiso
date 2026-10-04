@@ -71,12 +71,30 @@ if $_root_is_btrfs; then
         warn "Root is on Btrfs ${_root_subvol:-/} rather than /@; snapshots are kept, but boot-menu entries for them are not set up."
     elif command -v limine-snapper-sync &>/dev/null; then
         info "Configuring limine-snapper-sync..."
+        # Snapshot entries stop once about 32 MiB of the boot partition is left for
+        # the next boot image; ./setup and mainstream-system.install use the same math.
+        _snap_limit=90
+        # The same lookup limine-entry-tool makes for the partition it writes to.
+        _boot_part=$(bash -c '. /usr/lib/limine/limine-common-functions >/dev/null 2>&1 \
+            && load_config >/dev/null 2>&1 && printf %s "$ESP_PATH"' 2>/dev/null) || _boot_part=""
+        if [[ -z "$_boot_part" ]]; then
+            if mountpoint -q /boot/efi 2>/dev/null; then _boot_part=/boot/efi; else _boot_part=/boot; fi
+        fi
+        _boot_mib=$(stat -f -c '%b %S' "$_boot_part" 2>/dev/null | awk '{printf "%d", $1 * $2 / 1048576}') || _boot_mib=0
+        if [[ "$_boot_mib" =~ ^[0-9]+$ ]] && (( _boot_mib > 0 )); then
+            _snap_limit=$(( 100 - (3200 + _boot_mib - 1) / _boot_mib ))
+            if (( _snap_limit > 90 )); then _snap_limit=90; fi
+            if (( _snap_limit < 1 )); then _snap_limit=1; fi
+            info "Snapshot boot entries stop at ${_snap_limit}% of $_boot_part (${_boot_mib} MiB)."
+        else
+            info "Could not read the size of $_boot_part; snapshot boot entries stop at ${_snap_limit}%."
+        fi
         # The enroll steps around each save come from the packages' own hook
         # scripts in /etc/boot/hooks/{pre,post}.d, which limine-snapper-sync
         # runs itself. Naming them here as well ran them twice per save and
         # logged a deprecation warning on every sync.
-        cat > /etc/limine-snapper-sync.conf << 'LSSCONF'
-LIMIT_USAGE_PERCENT=90
+        cat > /etc/limine-snapper-sync.conf << LSSCONF
+LIMIT_USAGE_PERCENT=${_snap_limit}
 MAX_SNAPSHOT_ENTRIES=8
 ROOT_SUBVOLUME_PATH="/@"
 ROOT_SNAPSHOTS_PATH="/@/.snapshots"

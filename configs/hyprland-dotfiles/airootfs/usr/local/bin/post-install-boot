@@ -425,8 +425,9 @@ if grep -qE '^FILES=.*crypto_keyfile\.bin' /etc/mkinitcpio.conf; then
     fi
 fi
 
-# Restore a standard installed-system mkinitcpio preset. On UEFI installs,
-# also emit UKIs that Limine can chainload from the ESP.
+# Restore a standard installed-system mkinitcpio preset. The UKI is left to
+# limine-mkinitcpio, which pins its hash in limine.conf; a UKI path here would
+# let a plain mkinitcpio -P replace that file without updating its pin.
 # Which kernel this image carries. Editions differ: the MacBook one ships
 # linux-t2 in place of Arch's linux, and the preset below names the kernel in
 # three separate filenames. pkgbase is what pacman recorded for the package that
@@ -436,17 +437,13 @@ KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
     printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
 done | sort -V | tail -n1 | cut -d' ' -f2)"
 [[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
-# The UKI keeps one name across every edition, because limine.conf.template and
-# the checks below look for it by name.
 if [[ "$IS_UEFI" == true ]]; then
-    mkdir -p /boot/efi/EFI/Linux
-    # UEFI: build only the default UKI; no fallback entry means no fallback in menu
+    # UEFI boots the UKI, so no fallback image is built.
     cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
 PRESETS=('default')
 ALL_kver='/boot/vmlinuz-${KERNEL_PKG}'
 default_config='/etc/mkinitcpio.conf'
 default_image='/boot/initramfs-${KERNEL_PKG}.img'
-default_uki='/boot/efi/EFI/Linux/mainstream_linux.efi'
 PRESET
 else
     cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
@@ -555,10 +552,19 @@ if ! limine-mkinitcpio; then
     log "ERROR: limine-mkinitcpio failed; refusing to install an unbootable system."
     exit 1
 fi
-if [[ "$IS_UEFI" == true ]] && ! compgen -G "/boot/efi/EFI/Linux/*.efi" >/dev/null 2>&1; then
-    esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
-    log "ERROR: UKI missing after Limine build (free ESP space: ${esp_free:-?} MiB)."
-    exit 1
+if [[ "$IS_UEFI" == true ]]; then
+    # limine-mkinitcpio skips a kernel whose UKI fails to build, and a reused
+    # partition can hold an older one, so only a pin that matches proves this build.
+    _uki="/boot/efi/EFI/Linux/mainstream_${KERNEL_PKG}.efi"
+    _uki_rel=${_uki#/boot/efi/}
+    _pin=$(grep -ioE "^[[:space:]]*(image_)?path:[[:space:]]*boot\(\):/+${_uki_rel//./\\.}#[0-9a-f]{128}" \
+        /boot/efi/limine.conf 2>/dev/null | tail -n1) || _pin=""
+    _pin=${_pin##*#}
+    if [[ ! -s "$_uki" || -z "$_pin" || "$(b2sum < "$_uki" | cut -c1-128)" != "${_pin,,}" ]]; then
+        esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
+        log "ERROR: UKI missing or not pinned in limine.conf after Limine build (free ESP space: ${esp_free:-?} MiB)."
+        exit 1
+    fi
 fi
 
 # limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
@@ -595,7 +601,7 @@ fi
 # These stale files can be left by an earlier install attempt. The UKI
 # supersedes them and limine-mkinitcpio will only generate entries for files it
 # finds, so remove them to prevent a stale non-UKI menu entry.
-if [[ "$IS_UEFI" == true ]] && [ -f "/boot/efi/EFI/Linux/mainstream_linux.efi" ]; then
+if [[ "$IS_UEFI" == true ]]; then
     rm -f "/boot/efi/vmlinuz-${KERNEL_PKG}" "/boot/efi/initramfs-${KERNEL_PKG}.img" || true
 fi
 

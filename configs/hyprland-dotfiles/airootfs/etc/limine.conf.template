@@ -1,6 +1,7 @@
 timeout: 5
 remember_last_entry: yes
 default_entry: 2
+hash_mismatch_panic: no
 
 # ── Mainstream OS brand palette (see brand.html) ──────────────────────────
 # Background: Night (#191A1F, Surface/01).
@@ -25,9 +26,8 @@ term_palette:          191A1F;D98888;7FA88C;D9B373;008DC3;8A7FB2;009CA5;C9CCD4
 term_palette_bright:   40434A;EAA0A0;9EC9AA;EFCB94;00B3D4;A99DC9;00B3D4;ECE9E3
 backdrop:              191A1F
 
-# NOTE: This entry is a temporary fallback used only before the UKI is built
-# by mkinitcpio on first boot. post-install will replace it with the UKI entry
-# once mainstream_linux.efi exists on the ESP.
+# NOTE: Temporary entry; post-install-boot's limine-mkinitcpio run replaces
+# it with the real one.
 #
 # Structure note: limine-snapper-sync requires the kernel to live in a
 # //<Kernel name> sub-entry under the /<OS name> parent, plus a //Snapshots
