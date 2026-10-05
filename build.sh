@@ -1712,10 +1712,8 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         fi
 
         # Every script under usr/local/bin that dots-hyprland owns, refreshed
-        # from the clone the way skel already is. Committed copies stay in the
-        # profile as the fallback for a build whose clone did not land, but a
-        # clone that did land always wins, so a dots commit cannot leave the
-        # image running a script several versions behind its own skel.
+        # from the clone the way skel already is, so a dots commit cannot leave
+        # the image running a script several versions behind its own skel.
         # Driven off what the profile ships, like the policy loop below, so a
         # new helper still needs its committed copy before the clone refreshes it.
         for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/*; do
