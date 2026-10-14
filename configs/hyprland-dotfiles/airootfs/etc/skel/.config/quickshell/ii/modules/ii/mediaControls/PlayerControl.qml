@@ -3,6 +3,7 @@ import qs.modules.common
 import qs.modules.common.models
 import qs.modules.common.widgets
 import qs.services
+import "../../../services/MprisCapabilities.js" as Capabilities
 import qs.modules.common.functions
 import Qt5Compat.GraphicalEffects
 import QtQuick
@@ -393,7 +394,7 @@ Item { // Player instance
                         anchors.leftMargin: 10
                         anchors.rightMargin: 4
 
-                        visible: root.player !== null
+                        visible: Capabilities.volume(root.player)
 
                         MaterialSymbol {
                             iconSize: Appearance.font.pixelSize.medium
@@ -416,7 +417,7 @@ Item { // Player instance
                             value: root.player?.volume ?? 1.0
 
                             onMoved: {
-                                if (root.player) root.player.volume = value;
+                                if (Capabilities.volume(root.player)) root.player.volume = value;
                             }
                         }
                     }

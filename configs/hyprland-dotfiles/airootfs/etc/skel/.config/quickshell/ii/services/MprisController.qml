@@ -10,6 +10,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
 import "MprisSelection.js" as Selection
+import "MprisCapabilities.js" as Capabilities
 import qs.modules.common
 
 /**
@@ -222,9 +223,9 @@ Singleton {
 		}
 	}
 
-	property bool canChangeVolume: this.activePlayer && this.activePlayer.volumeSupported && this.activePlayer.canControl;
+	property bool canChangeVolume: Capabilities.volume(this.activePlayer);
 
-	property bool loopSupported: this.activePlayer && this.activePlayer.loopSupported && this.activePlayer.canControl;
+	property bool loopSupported: Capabilities.loop(this.activePlayer);
 	property var loopState: this.activePlayer?.loopState ?? MprisLoopState.None;
 	function setLoopState(loopState: var) {
 		if (this.loopSupported) {
@@ -232,7 +233,7 @@ Singleton {
 		}
 	}
 
-	property bool shuffleSupported: this.activePlayer && this.activePlayer.shuffleSupported && this.activePlayer.canControl;
+	property bool shuffleSupported: Capabilities.shuffle(this.activePlayer);
 	property bool hasShuffle: this.activePlayer?.shuffle ?? false;
 	function setShuffle(shuffle: bool) {
 		if (this.shuffleSupported) {
@@ -265,7 +266,7 @@ Singleton {
 		}
 
         function state(): string {
-            return JSON.stringify({ active: root.activePlayer?.dbusName ?? "", title: root.activePlayer?.trackTitle ?? "", players: root.players.map(p => ({ name: p.dbusName, title: p.trackTitle, playing: p.isPlaying })) });
+            return JSON.stringify({ active: root.activePlayer?.dbusName ?? "", title: root.activePlayer?.trackTitle ?? "", capabilities: { volume: root.canChangeVolume, loop: root.loopSupported, shuffle: root.shuffleSupported }, players: root.players.map(p => ({ name: p.dbusName, title: p.trackTitle, playing: p.isPlaying })) });
         }
 
 		function playPause(): void { root.togglePlaying(); }

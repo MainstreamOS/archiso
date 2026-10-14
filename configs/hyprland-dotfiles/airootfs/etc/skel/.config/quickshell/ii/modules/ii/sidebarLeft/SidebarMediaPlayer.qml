@@ -137,7 +137,7 @@ Item {
         function fetch() {
             artDownloader.target = root.artFilePath;
             artDownloader.stopped = false;
-            artDownloader.command = ["bash", Quickshell.shellPath("scripts/mpris/fetch-cover-art.sh"), artDownloader.target, root.artUrl, "http,https"];
+            artDownloader.command = ["bash", Quickshell.shellPath("scripts/mpris/fetch-cover-art.sh"), artDownloader.target, root.artUrl, "http,https,file"];
             artDownloader.running = true;
         }
         function stop() {
