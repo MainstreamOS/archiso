@@ -1405,6 +1405,8 @@ build_local_pkg "calamares-mainstream"
 # WebExtension .xpi and the browser auto-install policies. git-sourced PKGBUILD,
 # so it tracks the published repo.
 build_local_pkg "mpris-hyprland"
+# The mpv bundle uses this optional metadata hook for asynchronous TV lookups.
+build_local_pkg "mpv-mpris-mainstream"
 
 # Pull what the GitHub [mainstream] repo already provides so we don't rebuild
 # (and drift from) those versions; the loop below skips anything it supplied.
