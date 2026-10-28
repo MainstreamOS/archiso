@@ -870,7 +870,7 @@ _make_common_bootmode_uefi.systemd-boot_copy_files() {
             install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt" \
                 "${isofs_dir}/boot/memtest86+/LICENSE"
         fi
-        install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest86${target_arch,,}.efi" \
+        install -m 0644 -- "${boot_dir}/memtest86+/memtest86${target_arch,,}.efi" \
             "${isofs_dir}/boot/memtest86+/"
     fi
 }
