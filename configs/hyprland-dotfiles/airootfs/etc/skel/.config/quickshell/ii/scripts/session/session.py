@@ -236,13 +236,21 @@ def workspace_selector(ws: dict) -> str:
     it a named workspace is silently dropped and the window lands on whatever
     happens to be active."""
     wid = ws.get("id")
-    name = (ws.get("name") or "").strip()
+    # The address survives display-name changes, including named workspaces.
+    address = ws.get("address")
+    name = address if address else (ws.get("name") or "").strip()
     if isinstance(wid, int) and wid >= 1:
         return str(wid)
+    if address and ws.get("type") == "normal":
+        return f"name:{address}"
+    # The default (-99) and a scratchpad named "special" share this label.
+    # Keep minimized windows on the default instead of recreating its alias.
+    if wid == -99 or name == "special:special":
+        return "special"
     if name.startswith("special:"):
         return name
     if name:
-        return f"name:{name}"
+        return name if name.startswith("name:") else f"name:{name}"
     return ""
 
 

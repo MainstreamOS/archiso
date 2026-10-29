@@ -224,7 +224,7 @@ end
 
 -- Minimizing puts a window on the scratchpad, the special workspace that opens
 -- over the desktop, without following it there.
-local SCRATCHPAD = "special:special"
+local Workspace = require("hyprland.workspace")
 
 local function toScratchpad()
     return hl.dsp.window.move({ workspace = "special", follow = false })
@@ -240,8 +240,9 @@ function MainstreamTitleBarMinimize()
     if w and w.workspace and w.workspace.special then
         local m = hl.get_active_monitor()
         local t = m and m.active_workspace
-        if t then
-            return hl.dsp.window.move({ workspace = tostring(t.id), follow = true })
+        local destination = Workspace.selector(t)
+        if destination then
+            return hl.dsp.window.move({ workspace = destination, follow = true })
         end
     end
     return toScratchpad()
@@ -266,7 +267,7 @@ function MainstreamTitleBarStep(direction)
         return hl.dsp.no_op()
     end
     local up = direction == "up"
-    if w.workspace and w.workspace.name == SCRATCHPAD then
+    if Workspace.isScratchpad(w.workspace) then
         if up then return MainstreamTitleBarMinimize() end
         return hl.dsp.no_op()
     end

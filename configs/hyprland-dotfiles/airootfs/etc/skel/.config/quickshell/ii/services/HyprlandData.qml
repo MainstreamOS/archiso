@@ -24,6 +24,12 @@ Singleton {
 
     // Convenient stuff
 
+    function isSpecialWorkspace(workspace) {
+        if (workspace?.type) return workspace.type === "special";
+        if (workspace?.address) return workspace.address.startsWith("special:");
+        return (workspace?.id ?? 0) < 0 || workspace?.name?.startsWith("special:") === true;
+    }
+
     function toplevelsForWorkspace(workspace) {
         return ToplevelManager.toplevels.values.filter(toplevel => {
             const address = `0x${toplevel.HyprlandToplevel?.address}`;
