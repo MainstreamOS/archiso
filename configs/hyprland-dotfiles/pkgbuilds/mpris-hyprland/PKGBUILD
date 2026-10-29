@@ -61,6 +61,7 @@ package() {
     fi
 
     install -Dm0755 packaging/manage-policies.py "$pkgdir/usr/lib/$pkgname/manage-policies.py"
+    install -Dm0644 -t "$pkgdir/usr/lib/$pkgname/policies" packaging/policies/firefox.json packaging/policies/zen.json
     # Only our ExtensionSettings entry is merged by the install scriptlet.
     # Browser-wide policies.json files are deliberately not owned by this package.
 
