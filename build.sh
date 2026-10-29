@@ -1976,14 +1976,14 @@ fi
 # case the pacman rebuild hook will retry on the next `pacman -Syu` that
 # touches hyprland.
 #
-# Build failures here are non-fatal — we warn and continue. The ISO still
-# ships, and the post-install will build from source on the user's system.
+# A release image must have working plugin artifacts for its build version.
+# Fail the build rather than silently shipping an old guarded-off binary.
 
 info "Installing build deps for plugin prebuild..."
-pacman -S --noconfirm --needed hyprland 2>&1 | grep -v "is up to date" || true
+pacman -S --noconfirm --needed hyprland
 
 # ── Plugin ABI guard stamps ────────────────────────────────────────────────
-# custom/general.lua refuses to load a plugin whose .builtfor stamp disagrees
+# hyprland/plugins.lua refuses to load a plugin whose .builtfor stamp disagrees
 # with /var/lib/hyprland-plugins/hyprland-version. Both are pkgver-pkgrel from
 # `pacman -Q hyprland`, matching what sdata/*/rebuild.sh writes.
 #
@@ -1994,19 +1994,17 @@ pacman -S --noconfirm --needed hyprland 2>&1 | grep -v "is up to date" || true
 #   * <so>.builtfor is written inside prebuild_hyprland_plugin's success path
 #     only, so it describes the .so that is actually there.
 #
-# Both .so files are tracked in git. When a prebuild fails, the committed copy
-# ships and keeps the stamp from whichever build produced it — which is the
-# case the guard exists to catch. Writing both stamps together would make them
-# equal by construction and the comparison a no-op.
-HYPR_PREBUILD_VER=$(pacman -Q hyprland 2>/dev/null | awk '{print $2}')
-[[ -n "$HYPR_PREBUILD_VER" ]] || HYPR_PREBUILD_VER=$(pkg-config --modversion hyprland 2>/dev/null || echo "")
+# Both .so files are tracked in git. A failed prebuild aborts before the image
+# is made; only a successful build replaces its artifact's stamp. The guard
+# still rejects starter copies after a later compositor upgrade.
+HYPR_PREBUILD_VER=$(pacman -Q hyprland | awk '{print $2}')
 if [[ -n "$HYPR_PREBUILD_VER" ]]; then
     mkdir -p "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins"
     printf '%s\n' "$HYPR_PREBUILD_VER" \
         > "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins/hyprland-version"
     info "Plugin ABI guard armed for Hyprland $HYPR_PREBUILD_VER."
 else
-    warn "Could not read Hyprland version — plugin ABI guard will be unarmed on the ISO."
+    die "Could not read Hyprland package version; refusing an image without plugin ABI guards."
 fi
 
 prebuild_hyprland_plugin() {
@@ -2022,8 +2020,8 @@ prebuild_hyprland_plugin() {
     rm -rf "$work"
 
     if ! su "$BUILD_USER" -c "git clone --depth=1 --branch '$branch' '$repo_url' '$work'"; then
-        warn "$name: git clone failed — skipping prebuild (post-install will build from source)."
-        return 0
+        warn "$name: git clone failed — stopping the ISO build."
+        return 1
     fi
 
     local build_dir="$work"
@@ -2032,15 +2030,15 @@ prebuild_hyprland_plugin() {
     fi
 
     if ! su "$BUILD_USER" -c "cd '$build_dir' && make all -j$(nproc)"; then
-        warn "$name: make failed — skipping prebuild (post-install will build from source)."
+        warn "$name: make failed — stopping the ISO build."
         rm -rf "$work"
-        return 0
+        return 1
     fi
 
-    if [[ ! -f "$build_dir/$so_filename" ]]; then
-        warn "$name: build succeeded but $so_filename not found at $build_dir — skipping prebuild."
+    if [[ ! -s "$build_dir/$so_filename" ]]; then
+        warn "$name: build succeeded but $so_filename not found at $build_dir — stopping the ISO build."
         rm -rf "$work"
-        return 0
+        return 1
     fi
 
     # scrolloverview's Makefile builds with -g; Hyprland never reads the debug info.
