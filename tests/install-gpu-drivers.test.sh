@@ -39,15 +39,17 @@ PAC=(); TRIES=0; ATT=0
 pacman() { PAC+=("$*"); TRIES=$((TRIES+1)); return 0; }
 _gpu_modinfo() { ATT=$((ATT+1)); [[ $ATT -gt 2 ]]; }   # miss, miss, then present after the swap
 GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
-chk dkms-rc "$rc" "0"; chk dkms-tries "$TRIES" "5"
+chk dkms-rc "$rc" "0"; chk dkms-tries "$TRIES" "6"
 # The toolchain goes in on its own, so a refused swap cannot also cost the
 # headers a build would need.
 chk dkms-toolchain-alone "$( [[ "${PAC[2]}" == *linux-headers* && "${PAC[2]}" != *nvidia-open-dkms* ]] && echo yes || echo no )" "yes"
+# Fetch the replacement DKMS driver before touching the prebuilt one.
+chk dkms-fetches-first "$( [[ "${PAC[3]}" == *-Sw* && "${PAC[3]}" == *nvidia-open-dkms* ]] && echo yes || echo no )" "yes"
 # The prebuilt driver must be removed explicitly: it conflicts with the DKMS
 # one, and pacman answers its own conflict question with no when it cannot ask.
-chk dkms-removes-prebuilt "$( [[ "${PAC[3]}" == *-Rdd* && "${PAC[3]}" == *nvidia-open* ]] && echo yes || echo no )" "yes"
-chk dkms-then-swap "$( [[ "${PAC[4]}" == *nvidia-open-dkms* ]] && echo yes || echo no )" "yes"
-chk dkms-swap-not-batched "$( [[ "${PAC[4]}" == *linux-headers* ]] && echo yes || echo no )" "no"
+chk dkms-removes-prebuilt "$( [[ "${PAC[4]}" == *-Rdd* && "${PAC[4]}" == *nvidia-open* ]] && echo yes || echo no )" "yes"
+chk dkms-then-swap "$( [[ "${PAC[5]}" == *nvidia-open-dkms* ]] && echo yes || echo no )" "yes"
+chk dkms-swap-not-batched "$( [[ "${PAC[5]}" == *linux-headers* ]] && echo yes || echo no )" "no"
 chk dkms-nofail "${#GPU_FAILURES[@]}" "0"
 
 # ---- 4. nothing works: recorded as a failure, not silent
@@ -55,7 +57,7 @@ PAC=(); TRIES=0
 pacman() { PAC+=("$*"); TRIES=$((TRIES+1)); return 0; }
 _gpu_modinfo() { return 1; }
 GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
-chk hopeless-rc "$rc" "1"; chk hopeless-tries "$TRIES" "5"
+chk hopeless-rc "$rc" "1"; chk hopeless-tries "$TRIES" "6"
 chk hopeless-recorded "$( [[ "${GPU_FAILURES[*]}" == *"no loadable module"* ]] && echo yes || echo no )" "yes"
 
 # ---- 5. pacman itself fails: still recorded, never aborts the install
@@ -64,7 +66,7 @@ pacman() { TRIES=$((TRIES+1)); return 1; }
 _gpu_modinfo() { return 1; }
 GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
 chk pacfail-rc "$rc" "1"; chk pacfail-recorded "${#GPU_FAILURES[@]}" "1"
-chk pacfail-tried-all "$TRIES" "5"
+chk pacfail-tried-all "$TRIES" "4"
 
 # ---- 6. unknown target kernel: recorded, no blind pacman
 TRIES=0; gpu_target_kernel() { echo ""; }

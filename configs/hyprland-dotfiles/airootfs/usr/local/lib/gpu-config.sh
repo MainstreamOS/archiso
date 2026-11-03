@@ -557,9 +557,59 @@ nvidia_write_qs_hint() {
 HINT
 }
 
+# ── nvidia_is_display_gpu ───────────────────────────────────────────────────
+# Returns 0 if NVIDIA drives the display (desktop, dGPU-only laptop, or MUX switch),
+# or returns 1 if an integrated GPU (Intel/AMD) is the boot display GPU on a hybrid laptop.
+# Reads cached sysfs IDs rather than lspci, preventing waking suspended dGPUs from D3cold.
+nvidia_is_display_gpu() {
+    local pci_dir="${GPU_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
+    [[ -d "$pci_dir" ]] || return 0
+
+    local dev boot_vga class vendor
+    local nvidia_boot=0 other_boot=0 has_nvidia=false
+
+    for dev in "$pci_dir"/*; do
+        [[ -r "$dev/class" && -r "$dev/vendor" ]] || continue
+        class="$(< "$dev/class")"
+        # Only display controllers: 0x03xxxx
+        [[ "$class" == 0x03* ]] || continue
+
+        vendor="$(< "$dev/vendor")"
+        boot_vga=0
+        if [[ -r "$dev/boot_vga" ]]; then
+            boot_vga="$(< "$dev/boot_vga")"
+        fi
+
+        if [[ "$vendor" == "0x10de" ]]; then
+            has_nvidia=true
+            if [[ "$boot_vga" == "1" ]]; then
+                nvidia_boot=1
+            fi
+        else
+            if [[ "$boot_vga" == "1" ]]; then
+                other_boot=1
+            fi
+        fi
+    done
+
+    # If no NVIDIA device is found in sysfs (e.g. unit tests without mocked sysfs),
+    # assume display GPU to preserve default behaviour.
+    [[ "$has_nvidia" == true ]] || return 0
+
+    # On hybrid systems where another GPU is the boot display GPU and NVIDIA is not,
+    # NVIDIA is an offload renderer, not the primary display.
+    if (( other_boot == 1 && nvidia_boot == 0 )); then
+        return 1
+    fi
+
+    return 0
+}
+
 # ── nvidia_write_env <user_home> ────────────────────────────────────────────
-# NVIDIA Wayland env + Hyprland conf. LIBVA/GBM always; NVD_BACKEND on
-# turing/maxwell only. Cursors + GL anti-flicker go through Hyprland conf.
+# NVIDIA Wayland env + Hyprland conf. LIBVA/GBM always on display GPUs; NVD_BACKEND on
+# turing/maxwell only. On hybrid laptops where Intel/AMD drives the display,
+# LIBVA/GBM are retired to avoid black video in Chromium/Firefox/Electron.
+# Cursors + GL anti-flicker go through Hyprland conf.
 # __GLX_VENDOR_LIBRARY_NAME is NOT set (GLX-only; no effect on the native
 # Wayland/Qt6 path and breaks XWayland windows/screenshare) and is retired from
 # older installs; same for the dead wlroots-era WLR_NO_HARDWARE_CURSORS.
@@ -567,13 +617,21 @@ nvidia_write_env() {
     local uh="$1"
     hypr_env_retire "$uh" __GLX_VENDOR_LIBRARY_NAME
     hypr_env_retire "$uh" WLR_NO_HARDWARE_CURSORS
-    hypr_env_upsert "$uh" LIBVA_DRIVER_NAME nvidia
-    hypr_env_upsert "$uh" GBM_BACKEND nvidia-drm
+
+    if nvidia_is_display_gpu; then
+        hypr_env_upsert "$uh" LIBVA_DRIVER_NAME nvidia
+        hypr_env_upsert "$uh" GBM_BACKEND nvidia-drm
+        case "$NVIDIA_GEN" in
+            turing|maxwell) hypr_env_upsert "$uh" NVD_BACKEND direct ;;
+        esac
+    else
+        hypr_env_retire "$uh" LIBVA_DRIVER_NAME
+        hypr_env_retire "$uh" GBM_BACKEND
+        hypr_env_retire "$uh" NVD_BACKEND
+    fi
+
     hypr_config_upsert "$uh" no_hardware_cursors 'hl.config({ cursor = { no_hardware_cursors = true } })'
     hypr_config_upsert "$uh" nvidia_anti_flicker 'hl.config({ opengl = { nvidia_anti_flicker = true } })'
-    case "$NVIDIA_GEN" in
-        turing|maxwell) hypr_env_upsert "$uh" NVD_BACKEND direct ;;
-    esac
     case "$NVIDIA_GEN" in
         maxwell) nvidia_write_qs_hint "$uh" ;;
     esac
