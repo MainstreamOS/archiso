@@ -16,6 +16,9 @@
 //                    is required by something else and can't be removed
 //   remove  <pkg>    privileged (pkexec)      → pacman -Rns
 //
+// AppImages belong to the user, so scripts/appimage/appimage.py lists and
+// removes them unprivileged, from wherever they were installed.
+//
 // Only `remove` touches the system, so browsing and previewing never
 // prompt; the single polkit prompt appears when the user confirms a
 // removal. A matching polkit policy declares allow_active=auth_admin_keep
@@ -33,6 +36,7 @@ import Quickshell.Io
 import Quickshell.Widgets
 import qs.services
 import qs.modules.common
+import qs.modules.common.functions
 import qs.modules.common.widgets
 
 ApplicationWindow {
@@ -48,7 +52,11 @@ ApplicationWindow {
     title: Translation.tr("Uninstall Apps")
 
     // ── State ──────────────────────────────────────────────────────
-    property var apps: []          // [{pkg,name,icon,comment,size}]
+    readonly property string appImageScript: `${FileUtils.trimFileProtocol(Directories.scriptPath)}/appimage/appimage.py`
+    property var packagedApps: []  // [{pkg,name,icon,comment,size}]
+    property var appImages: []     // the same shape, kind:"appimage"
+    readonly property var apps: root.packagedApps.concat(root.appImages)
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
     property bool loading: true
     property bool busy: false      // a preview or removal is in flight
     property string status: ""
@@ -82,18 +90,32 @@ ApplicationWindow {
 
     function refresh() {
         root.loading = true
+        root.packagedApps = []
+        root.appImages = []
         listProc.running = true
+        appImageListProc.running = true
+    }
+
+    function shortPath(path) {
+        const home = FileUtils.trimFileProtocol(Directories.home)
+        return path.startsWith(home) ? "~" + path.slice(home.length) : path
+    }
+
+    function formatSize(bytes) {
+        return bytes < 1073741824
+            ? Translation.tr("%1 MB").arg(Math.max(1, Math.round(bytes / 1048576)))
+            : Translation.tr("%1 GB").arg((bytes / 1073741824).toFixed(1))
     }
 
     // ── Actions ────────────────────────────────────────────────────
     function askRemove(app) {
         if (root.busy) return
-        if (app.kind === "flatpak") {
-            // Flatpaks are never blocked by other apps — no dry run needed.
+        if (app.kind === "flatpak" || app.kind === "appimage") {
+            // Flatpaks and AppImages are never blocked by other apps, so they need no dry run.
             root.confirmPkg = app.pkg
             root.confirmName = app.name
             root.confirmDid = app.desktopId || ""
-            root.confirmKind = "flatpak"
+            root.confirmKind = app.kind
             root.confirmInst = app.installation || "system"
             root.confirmBlocked = false
             root.confirmReason = ""
@@ -117,7 +139,9 @@ ApplicationWindow {
         removeProc.appName = root.confirmName
         removeProc.outBuf = ""
         removeProc.errBuf = ""
-        if (root.confirmKind === "flatpak") {
+        if (root.confirmKind === "appimage") {
+            removeProc.command = [root.appImageScript, "remove", root.confirmDid]
+        } else if (root.confirmKind === "flatpak") {
             removeProc.command = root.confirmInst === "user"
                 ? ["/usr/local/bin/app-remover", "remove-flatpak", root.confirmPkg, "user"]
                 : ["pkexec", "/usr/local/bin/app-remover", "remove-flatpak", root.confirmPkg, "system"]
@@ -127,7 +151,7 @@ ApplicationWindow {
         root.confirmShown = false
         root.busy = true
         root.resultKind = ""
-        root.status = Translation.tr("Removing ") + root.confirmName + "…"
+        root.status = Translation.tr("Removing %1…").arg(root.confirmName)
         removeProc.running = true
     }
 
@@ -138,13 +162,30 @@ ApplicationWindow {
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    root.apps = JSON.parse(this.text) || []
+                    root.packagedApps = JSON.parse(this.text) || []
                 } catch (e) {
-                    root.apps = []
+                    root.packagedApps = []
                     root.resultKind = "error"
-                    root.status = Translation.tr("Couldn't read the app list: ") + e
+                    root.status = Translation.tr("Couldn't read the app list: %1").arg(e)
                 }
                 root.loading = false
+            }
+        }
+    }
+
+    Process {
+        id: appImageListProc
+        command: [root.appImageScript, "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    root.appImages = JSON.parse(this.text).map(app => Object.assign(app, {
+                        pkg: root.shortPath(app.path),
+                        size: app.missing ? Translation.tr("File missing") : root.formatSize(app.bytes)
+                    }))
+                } catch (e) {
+                    root.appImages = []
+                }
             }
         }
     }
@@ -178,7 +219,7 @@ ApplicationWindow {
                 while ((m = re.exec(previewProc.errBuf)) !== null)
                     if (needed.indexOf(m[1]) < 0) needed.push(m[1])
                 root.confirmReason = needed.length > 0
-                    ? Translation.tr("Other software on your system still needs it: ") + needed.join(", ")
+                    ? Translation.tr("Other software on your system still needs it: %1").arg(needed.join(", "))
                     : (root.cleanText(previewProc.errBuf)
                         || Translation.tr("This app can't be removed on its own."))
             }
@@ -197,10 +238,10 @@ ApplicationWindow {
             root.busy = false
             if (exitCode === 0) {
                 root.resultKind = "success"
-                root.status = removeProc.appName + Translation.tr(" was removed.")
+                root.status = Translation.tr("%1 was removed.").arg(removeProc.appName)
                 // Drop the app's launcher override (custom icon/name) too,
-                // then refresh once the entry is gone.
-                if (root.confirmDid.length > 0) {
+                // then refresh once the entry is gone. An AppImage's removal took its own.
+                if (root.confirmDid.length > 0 && root.confirmKind !== "appimage") {
                     cleanupProc.command = ["/usr/local/bin/app-remover", "cleanup", root.confirmDid]
                     cleanupProc.running = true
                 } else {
@@ -212,7 +253,7 @@ ApplicationWindow {
             } else {
                 root.resultKind = "error"
                 root.status = root.cleanText(removeProc.errBuf)
-                    || (Translation.tr("Couldn't remove ") + removeProc.appName + ".")
+                    || Translation.tr("Couldn't remove %1.").arg(removeProc.appName)
             }
         }
     }
@@ -224,7 +265,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         MaterialThemeLoader.reapplyTheme()
-        listProc.running = true
+        root.refresh()
     }
 
     // Closing hides the window straight away, and the process goes once a
@@ -539,8 +580,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     text: root.confirmBlocked
-                        ? Translation.tr("Can't remove ") + root.confirmName
-                        : Translation.tr("Remove ") + root.confirmName + "?"
+                        ? Translation.tr("Can't remove %1").arg(root.confirmName)
+                        : Translation.tr("Remove %1?").arg(root.confirmName)
                     font.pixelSize: Appearance.font.pixelSize.larger
                     font.weight: Font.Medium
                     color: Appearance.colors.colOnLayer1
@@ -560,7 +601,9 @@ ApplicationWindow {
                 StyledText {  // removable: plain-English, no package list
                     Layout.fillWidth: true
                     visible: !root.confirmBlocked
-                    text: Translation.tr("The app and anything only it uses will be removed.")
+                    text: root.confirmKind === "appimage"
+                        ? Translation.tr("The AppImage and its launcher entry will be deleted.")
+                        : Translation.tr("The app and anything only it uses will be removed.")
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
                     font.pixelSize: Appearance.font.pixelSize.small

@@ -2,6 +2,7 @@ import qs
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Bluetooth
 import qs.services
 import qs.modules.common
 import qs.modules.common.functions
@@ -10,10 +11,127 @@ import qs.modules.settings.bar
 import qs.modules.settings.services
 
 ContentPage {
+    id: root
+    readonly property bool island: Appearance.sizes.barIsIsland
+    readonly property bool phoneConnected: Phone.devices.some(device => device.reachable)
+        || Bluetooth.devices.values.some(device => device.connected && device.icon === "phone")
+
+    // Observe KDE Connect while this page is visible. Bluetooth already exposes
+    // connected phones, without starting a second copy of the call helper.
+    Binding {
+        target: Phone
+        property: "keepConnected"
+        when: root.visible
+        value: Config.options.bar.island.phoneIntegration
+    }
+
+    ContentSection {
+        icon: "toolbar"
+        title: Translation.tr("Desktop bar")
+        BarModeChoices {}
+        StyledText {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: Appearance.colors.colSubtext
+            text: root.island
+                ? Translation.tr("Hover over the clock to expand. Use the arrows beside the panel title to change panels; scrolling there switches workspaces.")
+                : Translation.tr("Choose a style, arrange your widgets, and access workspaces, media, and system controls from the bar.")
+        }
+    }
     forceWidth: true
+    ContentSection {
+        visible: root.island
+        icon: "dynamic_feed"
+        title: Translation.tr("Dynamic Island")
+        ConfigSwitch {
+            buttonIcon: "apps"
+            text: Translation.tr("Use Dynamic Island as your App Drawer")
+            tooltipText: Translation.tr("Press Super to search apps in the island.")
+            checked: Config.options.bar.island.appDrawer
+            onCheckedChanged: Config.options.bar.island.appDrawer = checked
+        }
+        ConfigSwitch {
+            buttonIcon: "notifications"
+            text: Translation.tr("Show desktop notifications in the Island")
+            checked: Config.options.bar.island.desktopNotifications
+            onCheckedChanged: Config.options.bar.island.desktopNotifications = checked
+        }
+    }
+
+    ContentSection {
+        icon: "smartphone"
+        title: Translation.tr("Phone")
+
+        ConfigSwitch {
+            buttonIcon: "phonelink"
+            text: Translation.tr("Connect phone services")
+            checked: Config.options.bar.island.phoneIntegration
+            onCheckedChanged: Config.options.bar.island.phoneIntegration = checked
+        }
+
+        ConfigSwitch {
+            visible: Config.options.bar.island.phoneIntegration
+            buttonIcon: "notifications_active"
+            text: Translation.tr("Show calls, messages, and phone notifications automatically")
+            checked: Config.options.bar.island.automaticAlerts
+            onCheckedChanged: Config.options.bar.island.automaticAlerts = checked
+        }
+        ConfigSwitch {
+            visible: Config.options.bar.island.phoneIntegration
+            buttonIcon: "screen_share"
+            text: Translation.tr("Disable calls, messages, and phone notifications while streaming")
+            checked: Config.options.bar.island.suppressWhileStreaming
+            onCheckedChanged: Config.options.bar.island.suppressWhileStreaming = checked
+        }
+        Repeater {
+            model: [
+                {key: "suppressForDiscord", label: Translation.tr("Discord"), icon: "forum"},
+                {key: "suppressForObs", label: Translation.tr("OBS Studio"), icon: "videocam"}
+            ]
+            ConfigSwitch {
+                required property var modelData
+                visible: Config.options.bar.island.phoneIntegration && Config.options.bar.island.suppressWhileStreaming
+                Layout.leftMargin: 24
+                buttonIcon: modelData.icon
+                text: modelData.label
+                checked: Config.options.bar.island[modelData.key]
+                onCheckedChanged: Config.options.bar.island[modelData.key] = checked
+            }
+        }
+    }
+
+    ContentSection {
+        visible: root.island
+        icon: "dashboard_customize"
+        title: Translation.tr("Island panels")
+        IslandPanelEditor {}
+    }
+
+    ContentSection {
+        visible: root.island && root.phoneConnected
+        icon: "shield_person"
+        title: Translation.tr("Contact privacy")
+        Repeater {
+            model: [
+                {key: "showContactName", label: Translation.tr("Show contact name"), icon: "person"},
+                {key: "showPhoneNumber", label: Translation.tr("Show phone number"), icon: "call"},
+                {key: "showMessage", label: Translation.tr("Show message contents"), icon: "chat"},
+                {key: "showContactPicture", label: Translation.tr("Show contact picture"), icon: "account_circle"}
+            ]
+            ConfigSwitch {
+                required property var modelData
+                buttonIcon: modelData.icon
+                text: modelData.label
+                checked: Config.options.bar.island[modelData.key]
+                onCheckedChanged: Config.options.bar.island[modelData.key] = checked
+            }
+        }
+    }
+
     // ── Widget layout ─────────────────────────────────────────────────────────
     ContentSection {
         icon: "reorder"
+        visible: !root.island
         title: Translation.tr("Widget layout")
 
         BarLayoutEditor {}
@@ -52,6 +170,7 @@ ContentPage {
 
             ContentSubsection {
                 title: Translation.tr("Date Format")
+                Layout.fillWidth: false
 
                 ConfigSelectionArray {
                     currentValue: Config.options.time.dateFormat
@@ -61,6 +180,9 @@ ContentPage {
                         if (newValue === "ddd, dd/MM") {
                             Config.options.time.shortDateFormat = "dd/MM";
                             Config.options.time.dateWithYearFormat = "dd/MM/yyyy";
+                        } else if (newValue === "ddd, dd.MM") {
+                            Config.options.time.shortDateFormat = "dd.MM";
+                            Config.options.time.dateWithYearFormat = "dd.MM.yyyy";
                         } else {
                             Config.options.time.shortDateFormat = "MM/dd";
                             Config.options.time.dateWithYearFormat = "MM/dd/yyyy";
@@ -69,8 +191,9 @@ ContentPage {
                         Quickshell.execDetached(["bash", "-c", `command -v pixie-sddm-set-state >/dev/null 2>&1 && pixie-sddm-set-state dateFormat ${JSON.stringify(newValue)} || true`]);
                     }
                     options: [
-                        { displayName: Translation.tr("Date First dd/MM"),  value: "ddd, dd/MM" },
-                        { displayName: Translation.tr("Month First MM/dd"), value: "ddd, MM/dd" },
+                        { displayName: Translation.tr("dd/MM"), value: "ddd, dd/MM" },
+                        { displayName: Translation.tr("dd.MM"), value: "ddd, dd.MM" },
+                        { displayName: Translation.tr("MM/dd"), value: "ddd, MM/dd" },
                     ]
                 }
             }
@@ -83,13 +206,14 @@ ContentPage {
 
         ConfigRow {
             ContentSubsection {
-                title: Translation.tr("Bar position")
+                title: root.island ? Translation.tr("Island position") : Translation.tr("Bar position")
                 Layout.fillWidth: true
 
                 ConfigSelectionArray {
                     currentValue: (Config.options.bar.bottom ? 1 : 0) | (Config.options.bar.vertical ? 2 : 0)
                     // Through the shared rule, which carries a Hug dock across
-                    // to face the bar wherever it goes.
+                    // to face the bar. The sides are left out while the dock is
+                    // Hug, since it only runs along the top or bottom.
                     onSelected: newValue => Appearance.sizes.placeBar((newValue & 1) !== 0, (newValue & 2) !== 0)
                     options: [
                         {
@@ -112,7 +236,7 @@ ContentPage {
                             icon: "arrow_forward",
                             value: 3 // bottom: true, vertical: true
                         }
-                    ]
+                    ].filter(option => (option.value & 2) === 0 || (!root.island && Appearance.sizes.barSidesAllowed))
                 }
             }
             ContentSubsection {
@@ -140,10 +264,26 @@ ContentPage {
             }
         }
 
+        ContentSubsection {
+            visible: root.island
+            title: Translation.tr("Island style")
+            IslandStyleChoices {}
+        }
+
+        ConfigSwitch {
+            visible: Config.options.bar.autoHide.enable
+            buttonIcon: "open_in_full"
+            text: Translation.tr("Move windows aside while the hidden bar shows")
+            checked: Config.options.bar.autoHide.pushWindows
+            onCheckedChanged: Config.options.bar.autoHide.pushWindows = checked
+        }
+
         ConfigRow {
-            
+            visible: !root.island
+
             ContentSubsection {
                 title: Translation.tr("Corner style")
+                visible: !root.island
                 Layout.fillWidth: true
 
                 BarStyleChoices {}
@@ -151,6 +291,7 @@ ContentPage {
 
             ContentSubsection {
                 title: Translation.tr("Group style")
+                visible: !root.island
                 Layout.fillWidth: false
 
                 ConfigSelectionArray {
@@ -180,21 +321,16 @@ ContentPage {
     // round is the one on screen — a slider for an edge the bar isn't drawing
     // would move nothing.
     ContentSection {
+        id: shapeSection
         icon: "rounded_corner"
         title: Translation.tr("Shape")
-        // A header over an empty room: with no style that shapes a surface
-        // active and Pills off, every control here is put away, so the section
-        // goes with them. Unless a radius still holds a non-stock value, which
-        // keeps the reset within reach of the state it exists to clear.
-        visible: Appearance.sizes.barFloats
-            || !Config.options.bar.borderless
-            || Config.options.bar.widgetRadius >= 0
-            || Config.options.bar.floatRadius >= 0
-            || Config.options.bar.floatWidth >= 0
-            || Config.options.bar.notchWidth >= 0
+        readonly property bool surfaceShape: Appearance.sizes.barFloats
+        readonly property bool widgetShape: !root.island && !Config.options.bar.borderless
+        // Saved values from other styles must not leave an empty section.
+        visible: shapeSection.surfaceShape || shapeSection.widgetShape
 
         ConfigSwitch {
-            visible: Appearance.sizes.barFloats
+            visible: shapeSection.surfaceShape && !root.island
             buttonIcon: "view_column_2"
             text: Translation.tr("Split into three")
             checked: Config.options.bar.floatSplit
@@ -207,7 +343,7 @@ ContentPage {
         // and the strip has nowhere left to put them.
         ConfigSlider {
             text: Config.options.bar.floatSplit ? Translation.tr("Spread") : Translation.tr("Width")
-            visible: Appearance.sizes.barFloats
+            visible: shapeSection.surfaceShape && !root.island
             stopIndicatorValues: [Appearance.sizes.barFloatWidthMax]
             buttonIcon: "width"
             // The floor chases the widgets, so a crowded strip can push it to
@@ -226,7 +362,7 @@ ContentPage {
 
         ConfigSlider {
             text: Translation.tr("Corner roundness")
-            visible: Appearance.sizes.barFloats
+            visible: shapeSection.surfaceShape
             stopIndicatorValues: [Appearance.rounding.barFloatStock]
             buttonIcon: "rounded_corner"
             from: 0
@@ -241,7 +377,7 @@ ContentPage {
 
         ConfigSlider {
             text: Translation.tr("Widget pills")
-            visible: !Config.options.bar.borderless
+            visible: shapeSection.widgetShape
             stopIndicatorValues: [Appearance.rounding.barWidgetStock]
             buttonIcon: "rounded_corner"
             from: 0
@@ -254,26 +390,28 @@ ContentPage {
             }
         }
 
-        // Landing a slider on its mark freezes today's stock number; this
-        // hands the radius back to the interface outright, so if what it
-        // decides ever moves, a reset bar moves with it. Checked flat rather
-        // than by the active style, because a radius set under one style
-        // waits out the others.
+        // Only offer a reset for controls the current style actually shows.
         ConfigResetButton {
-            visible: Config.options.bar.widgetRadius >= 0
-                || Config.options.bar.floatRadius >= 0
-                || Config.options.bar.floatWidth >= 0
-                || Config.options.bar.notchWidth >= 0
+            visible: (shapeSection.widgetShape && Config.options.bar.widgetRadius >= 0)
+                || (shapeSection.surfaceShape && Config.options.bar.floatRadius >= 0)
+                || (!root.island && shapeSection.surfaceShape
+                    && Config.options.bar[Appearance.sizes.barIsNotch ? "notchWidth" : "floatWidth"] >= 0)
             Layout.leftMargin: 8
             Layout.topMargin: 2
             buttonText: Translation.tr("Reset to default shape")
             onClicked: {
-                Config.options.bar.widgetRadius = -1
+                if (!root.island) Config.options.bar.widgetRadius = -1
                 Config.options.bar.floatRadius = -1
-                Config.options.bar.floatWidth = -1
-                Config.options.bar.notchWidth = -1
+                if (!root.island) {
+                    Config.options.bar.floatWidth = -1
+                    Config.options.bar.notchWidth = -1
+                }
             }
         }
+    }
+
+    BackdropSection {
+        surface: Config.options.bar
     }
 
     ContentSection {
@@ -288,13 +426,14 @@ ContentPage {
         ConfigSwitch {
             buttonIcon: "background_replace"
             text: Translation.tr("Show background")
+            visible: !root.island
             checked: Config.options.bar.showBackground
             onCheckedChanged: Config.options.bar.showBackground = checked
         }
 
         ConfigSlider {
             text: Translation.tr("Background")
-            visible: Config.options.bar.showBackground
+            visible: root.island || Config.options.bar.showBackground
             stopIndicatorValues: [Appearance.colors.barStockAlpha]
             buttonIcon: "wallpaper"
             // The strip is given the same blur cutoff as the dock in
@@ -319,7 +458,7 @@ ContentPage {
         // rather than offered in a state that could do nothing.
         ConfigSlider {
             text: Translation.tr("Widget pills")
-            visible: !Config.options.bar.borderless
+            visible: !root.island && !Config.options.bar.borderless
             // Where the pills sit before anyone touches this, read from the
             // same value the slider falls back to, so the mark cannot promise
             // a default the track would not actually return to.
@@ -372,7 +511,7 @@ ContentPage {
 
         ColorField {
             text: Translation.tr("Widget pills")
-            visible: !Config.options.bar.borderless
+            visible: !root.island && !Config.options.bar.borderless
             allowEmpty: true
             buttonIcon: "location_chip"
             value: Appearance.colors.barWidgetPick
@@ -420,6 +559,7 @@ ContentPage {
         ConfigSwitch {
             buttonIcon: "counter_1"
             text: Translation.tr('Always show numbers')
+            visible: !root.island
             checked: Config.options.bar.workspaces.alwaysShowNumbers
             onCheckedChanged: {
                 Config.options.bar.workspaces.alwaysShowNumbers = checked;
@@ -456,12 +596,13 @@ ContentPage {
         ConfigSpinBox {
             icon: "view_column"
             text: Translation.tr("Workspaces shown")
-            value: Config.options.bar.workspaces.shown
+            value: root.island ? Math.min(Config.options.bar.workspaces.shown, 10) : Config.options.bar.workspaces.shown
             from: 1
-            to: 30
+            to: root.island ? 10 : 30
             stepSize: 1
+            // The island shows at most 10; showing that cap must not overwrite a larger stored count.
             onValueChanged: {
-                Config.options.bar.workspaces.shown = value;
+                if (value !== Math.min(Config.options.bar.workspaces.shown, to)) Config.options.bar.workspaces.shown = value;
             }
         }
 
@@ -480,7 +621,11 @@ ContentPage {
             title: Translation.tr("Number style")
 
             ConfigSelectionArray {
-                currentValue: JSON.stringify(Config.options.bar.workspaces.numberMap)
+                // A map of plain numbers, the default ["1","2"] among them, shows as Normal.
+                currentValue: {
+                    const map = Array.from(Config.options.bar.workspaces.numberMap);
+                    return map.every((c, i) => c === String(i + 1)) ? '[]' : JSON.stringify(map);
+                }
                 onSelected: newValue => {
                     Config.options.bar.workspaces.numberMap = JSON.parse(newValue)
                 }
@@ -508,6 +653,7 @@ ContentPage {
     ContentSection {
         icon: "widgets"
         title: Translation.tr("Utility buttons")
+        visible: !root.island || IslandPanels.enabled("resources")
 
         ConfigRow {
             uniform: true
@@ -584,6 +730,7 @@ ContentPage {
     ContentSection {
         icon: "shelf_auto_hide"
         title: Translation.tr("Tray")
+        visible: !root.island || IslandPanels.enabled("system")
 
         ConfigSwitch {
             buttonIcon: "keep"
@@ -607,6 +754,7 @@ ContentPage {
     ContentSection {
         icon: "notifications"
         title: Translation.tr("Notifications")
+        visible: !root.island
 
         ConfigSwitch {
             buttonIcon: "counter_2"
@@ -621,6 +769,7 @@ ContentPage {
     ContentSection {
         icon: "tooltip"
         title: Translation.tr("Tooltips")
+        visible: !root.island
         ConfigSwitch {
             buttonIcon: "ads_click"
             text: Translation.tr("Click to show")

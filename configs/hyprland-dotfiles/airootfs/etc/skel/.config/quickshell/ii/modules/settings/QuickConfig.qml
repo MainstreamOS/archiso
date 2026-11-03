@@ -27,7 +27,9 @@ ContentPage {
         id: randomWallProc
         property string status: ""
         property string scriptPath: `${Directories.scriptPath}/colors/random/set_default_wall.sh`
-        command: ["bash", "-c", FileUtils.trimFileProtocol(randomWallProc.scriptPath)]
+        // In a session of its own and writing nowhere, so it outlives this page as
+        // applyTheme's run below does; --wait keeps the buttons busy meanwhile.
+        command: ["setsid", "--fork", "--wait", "bash", "-c", '"$0" > /dev/null 2>&1', FileUtils.trimFileProtocol(randomWallProc.scriptPath)]
         stdout: SplitParser {
             onRead: data => {
                 randomWallProc.status = data.trim();
@@ -64,24 +66,27 @@ ContentPage {
     // size; a picture it has not measured yet is measured the same way here.
     property string autoScheme: "scheme-tonal-spot"
     readonly property string autoSchemeWallpaper: FileUtils.trimFileProtocol(Config.options.background.wallpaperPath)
-    onAutoSchemeWallpaperChanged: {
-        autoSchemeProc.running = false;
-        autoSchemeProc.running = true;
-    }
     Component.onCompleted: autoSchemeProc.running = true
 
     Process {
         id: autoSchemeProc
+        // Restarted from the command rather than the wallpaper, so the new run
+        // is sure to measure the new picture.
+        onCommandChanged: {
+            running = false;
+            running = true;
+        }
+        // Without a picture, or an answer, switchwall settles on Tonal Spot.
         command: ["bash", "-c", `
             wall="$1"; cache="$2"; detect="$3"
-            [ -f "$wall" ] || exit 0
+            [ -f "$wall" ] || { echo scheme-tonal-spot; exit 0; }
             key="$wall:$(stat -c '%Y:%s' "$wall")"
             # switchwall keeps a video's answer under a key of its own.
             case "\${wall,,}" in *.mp4|*.webm|*.mkv|*.avi|*.mov|*.m4v|*.ogv) key="$key|frame" ;; esac
             scheme="$(awk -F '\\t' -v k="$key" '$1 == k { print $2; exit }' "$cache" 2>/dev/null)"
             venv="\${ILLOGICAL_IMPULSE_VIRTUAL_ENV/#\\~/$HOME}"
             [ -n "$scheme" ] || scheme="$("$venv/bin/python" "$detect" "$wall" 2>/dev/null)"
-            printf '%s\\n' "$scheme"
+            printf '%s\\n' "\${scheme:-scheme-tonal-spot}"
         `, "auto-scheme", page.autoSchemeWallpaper,
             FileUtils.trimFileProtocol(`${Directories.state}/user/generated/scheme-for-image.cache`),
             `${FileUtils.trimFileProtocol(Directories.scriptPath)}/colors/scheme_for_image.py`]
@@ -469,9 +474,11 @@ ContentPage {
         icon: "screenshot_monitor"
         title: Translation.tr("Bar & Dock")
 
+        BarModeChoices {}
+
         ConfigRow {
             ContentSubsection {
-                title: Translation.tr("Bar position")
+                title: Appearance.sizes.barIsIsland ? Translation.tr("Island position") : Translation.tr("Bar position")
 
                 ConfigSelectionArray {
                     currentValue: (Config.options.bar.bottom ? 1 : 0) | (Config.options.bar.vertical ? 2 : 0)
@@ -497,12 +504,22 @@ ContentPage {
                             icon: "arrow_forward",
                             value: 3 // bottom: true, vertical: true
                         }
-                    ]
+                    ].filter(option => (option.value & 2) === 0 || (!Appearance.sizes.barIsIsland && Appearance.sizes.barSidesAllowed))
                 }
             }
 
             ContentSubsection {
-                title: Translation.tr("Bar style")
+                title: Translation.tr("Island style")
+                visible: Appearance.sizes.barIsIsland
+                Layout.fillWidth: false
+                Layout.preferredWidth: islandStyleChoices.naturalWidth
+
+                IslandStyleChoices { id: islandStyleChoices }
+            }
+
+            ContentSubsection {
+                title: Translation.tr("Corner style")
+                visible: !Appearance.sizes.barIsIsland
 
                 Layout.fillWidth: false
 

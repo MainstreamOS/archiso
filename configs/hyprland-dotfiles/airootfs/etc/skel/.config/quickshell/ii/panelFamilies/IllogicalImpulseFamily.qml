@@ -4,6 +4,7 @@ import Quickshell
 import qs.modules.common
 import qs.modules.ii.background
 import qs.modules.ii.bar
+import qs.modules.ii.dynamicIsland
 import qs.modules.ii.cheatsheet
 import qs.modules.ii.desktopMenu
 import qs.modules.ii.dock
@@ -23,14 +24,17 @@ import qs.modules.ii.sidebarRight
 import qs.modules.ii.overlay
 import qs.modules.ii.verticalBar
 import qs.modules.ii.wallpaperSelector
+import qs.modules.ii.windowOverview
 
 Scope {
     PanelLoader { extraCondition: !Config.options.bar.vertical; component: Bar {} }
+    PanelLoader { extraCondition: Appearance.sizes.barIsIsland; component: DynamicIsland {} }
     // After Bar so most compositors stack the ripple above the bar within
     // the Overlay layer (creation-order tiebreak). Loads regardless of
     // bar orientation since HotCornerRipple anchors itself to the screen's
-    // top-left and works without a horizontal bar present.
-    PanelLoader { component: HotCornerRipple {} }
+    // top corners and works without a horizontal bar present.
+    PanelLoader { component: HotCornerRipple { trigger: Config.options.bar.hotCorners.trigger } }
+    PanelLoader { component: HotCornerRipple { right: true; trigger: Config.options.bar.hotCorners.rightTrigger } }
     PanelLoader { component: Background {} }
     PanelLoader { component: Cheatsheet {} }
     PanelLoader { component: DesktopMenu {} }
@@ -43,9 +47,11 @@ Scope {
     PanelLoader { component: Overlay {} }
     PanelLoader { component: Overview {} }
     PanelLoader { component: OverviewDim {} }
+    PanelLoader { component: WindowOverview {} }
     PanelLoader { component: Polkit {} }
     PanelLoader { component: RegionSelector {} }
     PanelLoader { component: ScreenCorners {} }
+    PanelLoader { component: ScrollingIndicators {} }
     PanelLoader { component: ScreenTranslator {} }
     PanelLoader { component: SessionScreen {} }
     PanelLoader { component: SidebarLeft {} }

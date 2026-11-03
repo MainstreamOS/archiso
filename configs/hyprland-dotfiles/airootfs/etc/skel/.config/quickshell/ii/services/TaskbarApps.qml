@@ -34,6 +34,7 @@ Singleton {
         if (title === Translation.tr("Welcome to Mainstream")) return "welcome-tutorial";
         if (title === Translation.tr("Uninstall Apps")) return "app-remover";
         if (title === Translation.tr("Auto Drive Mount")) return "disk-mounter";
+        if (title === Translation.tr("Sidebar") || title === "Sidebar" || title === Translation.tr("Mainstream Sidebar")) return "mainstream-sidebar";
         return toplevel.appId;
     }
 
@@ -92,12 +93,11 @@ Singleton {
     // Doing so creates a reactive dependency that re-evaluates the entire
     // dock model on every folder change, causing animation glitches.
     // Folder data is resolved lazily by DockAppButton via AppFolderManager.
+    readonly property var appsWithoutSeparator: apps.filter(app => app.appId !== "SEPARATOR")
     property list<var> apps: {
-        // resolveAppId goes through DesktopEntries.byId, a plain call that
-        // registers no dependency, and the entry database fills in lazily
-        // after startup. Windows restored at login would otherwise keep the
-        // raw-id grouping they were dealt before the scan landed.
-        DesktopEntries.applications.values;
+        // resolveAppId registers no dependency, so this re-runs once per app scan
+        // (not once per app) to regroup windows restored before the scan landed.
+        AppSearch.list;
         var map = new Map();
 
         // Pinned apps and folders

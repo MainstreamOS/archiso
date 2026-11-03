@@ -29,6 +29,9 @@ hl.window_rule({match = {title = "^(.*)(wants to open)$" },                  flo
 -- Keep hidden games rendering — alt-tabbing must not freeze multiplayer
 -- ticks or starve OBS game capture (rate: misc:render_unfocused_fps).
 hl.window_rule({match = {class = "^(steam_app_.*)$" },                       render_unfocused = true})
+-- Headset input never reaches the compositor, so the idle timers would lock, blank and
+-- suspend mid-session. SteamVR opens its status window, XWayland or native, every session.
+hl.window_rule({name = "steamvr-idle-inhibit", match = {class = "^(vrmonitor|com\\.valvesoftware\\.vrmonitor)$" }, idle_inhibit = "always"})
 
 hl.window_rule({match = {class = "^(blueberry\\.py)$" },                     float = true})
 hl.window_rule({match = {class = "^(guifetch)$" },                           float = true}) -- FlafyDev/guifetch
@@ -72,6 +75,8 @@ hl.window_rule({match = {title = "^([Pp]icture[-\\s]?[Ii]n[-\\s]?[Pp]icture)(.*)
 hl.window_rule({match = {title = "^([Pp]icture[-\\s]?[Ii]n[-\\s]?[Pp]icture)(.*)$" }, pin = true})
 
 -- Screen sharing
+-- Let the portal picker use its compact preferred size instead of a tiled slot.
+hl.window_rule({name = "screen-sharing-picker", match = {class = "^hyprland-share-picker$" }, float = true, center = true})
 hl.window_rule({match = {title = ".*is sharing (a window|your screen).*" }, float = true})
 hl.window_rule({match = {title = ".*is sharing (a window|your screen).*" }, pin = true})
 hl.window_rule({match = {title = ".*is sharing (a window|your screen).*" }, move = {"(monitor_w*.5-window_w*.5)", "(monitor_h-window_h-12)"} })
@@ -88,8 +93,7 @@ hl.window_rule({match = {float = 0 }, no_shadow = true})
 -- title bar is the only handle it has, and a client may ask to open at an
 -- absolute position, so one can arrive with that bar beneath the bar or the
 -- dock. The panels' own reservations are already in monitor.reserved; this
--- moves a float to the near edge of the room they leave, and moves nothing
--- else. What size a window opens at is left to it, and where a window is
+-- moves a float to the near edge of the room they leave. Where a window is
 -- deliberately placed is left alone unless its title bar would land
 -- somewhere it cannot be grabbed.
 --
@@ -139,11 +143,8 @@ local function reachableRoom(monitor)
 end
 
 -- Held inside the room, a window wears its title bar inside it too, however
--- big the window is, and that bar is the one handle a float has. So moving
--- is all it takes: what a window asked to be is its own business once it
--- can be reached, and one larger than the room keeps that size and
--- overhangs the far edge rather than being cut down to fit. The floors are
--- what make this hold: without them a window too big for the room is
+-- big the window is, and that bar is the one handle a float has. The floors
+-- are what make this hold: without them a window too big for the room is
 -- pushed past the near edge instead of resting against it, which is the
 -- one way the title bar still gets away.
 local function withinReach(room, x, y, size)
@@ -151,7 +152,7 @@ local function withinReach(room, x, y, size)
            math.min(math.max(y, room.top), math.max(room.top, room.bottom - size.y))
 end
 
-local function keepFloatingWindowWithinReach(window)
+local function keepFloatingWindowWithinReach(window, fitOnOpen)
     if not window or not window.floating or window.fullscreen ~= 0 then
         return
     end
@@ -163,26 +164,68 @@ local function keepFloatingWindowWithinReach(window)
         return
     end
 
+    -- Apps that remember being maximized reopen at the whole screen's size,
+    -- which overhangs the dock, so they open fitted to the room instead.
+    if fitOnOpen then
+        local w = math.min(size.x, room.right - room.left)
+        local h = math.min(size.y, room.bottom - room.top)
+        if w ~= size.x or h ~= size.y then
+            hl.dispatch(hl.dsp.window.resize({ x = w, y = h, window = window }))
+            size = { x = w, y = h }
+        end
+    end
+
     local x, y = withinReach(room, at.x, at.y, size)
     if x ~= at.x or y ~= at.y then
         hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
     end
 end
 
+-- Some events are announced before Hyprland acts on them. The next turn of the loop
+-- comes after that and before anything is drawn.
+local function nextTurn(fn)
+    hl.timer(fn, { timeout = 1, type = "oneshot" })
+end
+
 -- `window.open` fires once the floating layout has given the window its
 -- initial geometry.
-hl.on("window.open", keepFloatingWindowWithinReach)
+hl.on("window.open", function(window)
+    keepFloatingWindowWithinReach(window, true)
+end)
 
 -- A float can end up under a panel later as well: moved to a workspace on a
 -- monitor whose panels sit elsewhere, or dropped there by an overview. Both
--- announce the move before the window is put in its new place, so the check
--- waits for the next turn of the loop, which is after the placement and
--- before anything is drawn.
+-- announce the move before the window is put in its new place.
 hl.on("window.move_to_workspace", function(window)
-    hl.timer(function()
+    nextTurn(function()
         keepFloatingWindowWithinReach(window)
-    end, { timeout = 1, type = "oneshot" })
+    end)
 end)
+
+-- A float restored from maximized that still fills the room would look as if
+-- nothing happened, so the title bar's scroll down hands it a quarter of the
+-- room, centered. A float with a smaller size of its own keeps it.
+function MainstreamShrinkRoomFillingFloat(window)
+    if not window or not window.floating or window.fullscreen ~= 0 then
+        return
+    end
+    local size = window.size
+    local room = reachableRoom(window.monitor)
+    if not size or not room then
+        return
+    end
+    local roomW, roomH = room.right - room.left, room.bottom - room.top
+    if size.x < roomW - 1 or size.y < roomH - 1 then
+        return
+    end
+    local w, h = math.floor(roomW / 2), math.floor(roomH / 2)
+    hl.dispatch(hl.dsp.window.resize({ x = w, y = h, window = window }))
+    hl.dispatch(hl.dsp.window.move({
+        x = math.floor(room.left + (roomW - w) / 2),
+        y = math.floor(room.top + (roomH - h) / 2),
+        window = window,
+    }))
+end
 
 -- The launcher's overview drops a floating window where the pointer let go
 -- and asks here for the move to make, so the drop lands within reach. x and
@@ -201,6 +244,119 @@ function MainstreamFloatMoveWithinReach(selector, x, y)
         gx, gy = withinReach(room, gx, gy, window.size)
     end
     return hl.dsp.window.move({ x = gx, y = gy, window = selector })
+end
+
+-- Hyprland draws every float allowed over a floating fullscreen window on top of it, but clicks
+-- follow the stack. One stacked below it is raised if it has focus or belongs with it, else sent behind.
+local settlePending = false
+local settleWatch = nil
+
+-- X11 menus and tooltips have no title and close on their own, so they are left alone.
+local function shownOverFullscreen(window)
+    return window.allowed_over_fullscreen and not window.pinned and not window.hidden
+        and not (window.xwayland and window.title == "")
+end
+
+-- Lua cannot see a dialog's parent, so the app's own windows and portal file choosers stay up;
+-- hiding a modal dialog would leave its parent looking frozen.
+local function staysWith(window, fullscreen)
+    local pid, class = fullscreen.pid, window.class or ""
+    return (pid ~= nil and pid > 1 and window.pid == pid)
+        or class:find("^xdg%-desktop%-portal") ~= nil or class:find("^org%.freedesktop%.impl%.portal%.") ~= nil
+end
+
+local function settleWorkspace(workspace, activeWindow)
+    local fullscreen = workspace and workspace.fullscreen_window
+    if not fullscreen or not fullscreen.floating then
+        return false
+    end
+
+    local active = activeWindow()
+    local below, shownOver, focused, raise, hide = true, false, nil, {}, {}
+    for _, window in ipairs(hl.get_windows({ workspace = workspace, floating = true })) do
+        if window == fullscreen then
+            below = false
+        elseif shownOverFullscreen(window) then
+            if not below then
+                shownOver = true
+            elseif window == active then
+                focused = window
+            elseif staysWith(window, fullscreen) then
+                raise[#raise + 1] = window
+            else
+                hide[#hide + 1] = window
+            end
+        end
+    end
+    if focused then
+        raise[#raise + 1] = focused
+    end
+
+    -- Each one lowered lands at the very bottom, so the topmost goes first to keep their order.
+    for i = #hide, 1, -1 do
+        hl.dispatch(hl.dsp.window.alter_zorder({ mode = "bottom", window = hide[i] }))
+    end
+    for _, window in ipairs(raise) do
+        hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
+    end
+
+    return shownOver or #raise > 0
+end
+
+local function settleFloatsOverFullscreen()
+    -- Focus is looked up only once a floating fullscreen window turns up, and only once
+    -- per pass, as a raise can move it.
+    local active
+    local function activeWindow()
+        if active == nil then
+            active = hl.get_active_window() or false
+        end
+        return active
+    end
+
+    local shownOver = false
+    for _, monitor in ipairs(hl.get_monitors()) do
+        shownOver = settleWorkspace(monitor.active_workspace, activeWindow) or shownOver
+        shownOver = settleWorkspace(monitor.active_special_workspace, activeWindow) or shownOver
+    end
+
+    -- While a float shows over one, this also catches raises no event reports, such as a title bar click.
+    if shownOver and not settleWatch then
+        settleWatch = hl.timer(settleFloatsOverFullscreen, { timeout = 250, type = "repeat" })
+    elseif settleWatch and settleWatch:is_enabled() ~= shownOver then
+        settleWatch:set_enabled(shownOver)
+    end
+end
+
+local function settleQueued()
+    settlePending = false
+    settleFloatsOverFullscreen()
+end
+
+-- Binds run before a click raises its window, and focus can come before a raise.
+local function settleSoon()
+    if settlePending then
+        return
+    end
+    settlePending = true
+    nextTurn(settleQueued)
+end
+
+-- A reload drops the watch, so it is checked again after one.
+for _, event in ipairs({
+    "window.active", "window.open", "window.fullscreen", "window.move_to_workspace", "window.pin",
+    "workspace.active", "workspace.special_active", "workspace.move_to_monitor", "monitor.added", "config.reloaded",
+}) do
+    hl.on(event, settleSoon)
+end
+for button = 272, 276 do
+    hl.bind("mouse:" .. button, settleSoon, { non_consuming = true, ignore_mods = true, dont_inhibit = true, submap_universal = true })
+end
+
+-- The dock's raise can cover a float shown over a fullscreen one, so it settles after.
+function MainstreamRaiseFloat(selector)
+    settleSoon()
+    return hl.dsp.window.alter_zorder({ mode = "top", window = selector })
 end
 
 -- ######## Workspace rules ########
@@ -255,6 +411,10 @@ hl.layer_rule({ match = { namespace = "osk[0-9]*" }, ignore_alpha = 0.6})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, blur_popups = true})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, blur = true})
 hl.layer_rule({ match = { namespace = "quickshell:.*" }, ignore_alpha = 0.79})
+-- Window blur presets must not reach the bar or dock. They draw their own
+-- wallpaper blur, plain for a see-through Solid and styled for Frost or Glass.
+-- WallpaperPlacement disables this override when video needs compositor blur.
+hl.layer_rule({ name = "mainstream-panel-blur", match = { namespace = "quickshell:(bar|verticalBar|dynamicIsland|dock|dockTop|dockLeft|dockRight)" }, blur = false})
 -- The catch-all above also blurs surfaces nothing is ever seen through: the
 -- wallpaper layer itself, the corner masks and the hot-corner ripple. The
 -- wallpaper covers the whole screen, and the blur pass runs over its full
@@ -263,31 +423,22 @@ hl.layer_rule({ match = { namespace = "quickshell:.*" }, ignore_alpha = 0.79})
 -- dock and sidebars a fraction of it. The overview's dim stays blurred: what
 -- it frosts behind the overview is very much seen.
 hl.layer_rule({ match = { namespace = "quickshell:(background|screenCorners|hotCornerRipple)" }, blur = false})
--- Blur stops at a fixed alpha, so with the shared 0.79 the bar loses its blur
--- between two neighboring steps of its own transparency slider, and where that
--- lands moves with the interface's transparency setting — around 7% of the
--- slider on a wallpaper the automatic setting reads as fairly vibrant. Held low
--- enough that the slider is smooth through the range anyone uses, and above the
--- shadow these surfaces cast. Their layer is larger than the shape drawn on it:
--- the rest is the room the shadow falls in, and a floor under the shadow's own
--- alpha sends the blur through that too, ringing every surface in a frosted
--- halo. The dock and sidebars ride the same floor, because the shared threshold
--- above sits inside the reach of their stock alpha — the automatic transparency
--- can land them a hair under it on a dark wallpaper, and a surface should not
--- lose its blur to settings nobody touched.
-hl.layer_rule({ match = { namespace = "quickshell:(bar|verticalBar|dock[A-Za-z]*|sidebarLeft|sidebarRight)" }, ignore_alpha = 0.35})
--- The dock and the app list sit above the overview's dim while the overview is
--- open, so they are the blurred surfaces here whose blur edge is ever seen
--- against anything but the wallpaper. Blurring the wallpaper alone punches a
--- bright, stepped outline through the dim, because that edge is decided per
--- pixel with nothing in between. Reading what is actually behind them puts the
--- dim on both sides of the line, and the line has nothing left to show. The
--- app list wears the dock's surface besides, so the two have to frost the same
--- way or they stop reading as one material. The dim itself is there to obscure
--- the apps behind the launcher; with xray it would frost the wallpaper and
--- leave every window legible through it.
+-- Sidebars keep blur below their stock alpha but above their shadows, so the room around
+-- them never turns into a frosted halo. Panels a custom rule blurs share this floor.
+hl.layer_rule({ match = { namespace = "quickshell:(bar|dynamicIsland|verticalBar|dock[A-Za-z]*|sidebarLeft|sidebarRight)" }, ignore_alpha = 0.35})
+-- The app list sits above the overview's dim. Read what is actually behind it
+-- so its blur edge blends with the dim instead of revealing a wallpaper outline.
 hl.layer_rule({ match = { namespace = "quickshell:(dock[A-Za-z]*|overview[A-Za-z]*)" }, xray = false})
+-- The dim is what the launcher stands on, and it shows the wallpaper past the
+-- windows. Its blur is computed once and reused until the wallpaper changes.
+-- The surface is all but clear, so no alpha floor: it is blurred wherever it spans.
+hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, xray = true, ignore_alpha = 0})
+-- The island's antialiased edge must blend with the surface beneath it.
+-- X-ray blur injects wallpaper color there even when the body is fully opaque.
+hl.layer_rule({ match = { namespace = "quickshell:dynamicIsland" }, xray = false})
 hl.layer_rule({ match = { namespace = "quickshell:bar" }, animation = "slide"})
+-- The island animates its own surface; a compositor slide would double it.
+hl.layer_rule({ match = { namespace = "quickshell:dynamicIsland" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:actionCenter" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:cheatsheet" }, animation = "slide bottom"})
 -- A menu belongs under the pointer at once. The stock layer animation
@@ -303,7 +454,7 @@ hl.layer_rule({ match = { namespace = "quickshell:dockRight" }, animation = "sli
 -- dock sharing its layer, leaving the dock to be the one shortened. A pinned
 -- left sidebar comes after everything else, so it only pushes windows and fits
 -- between the bar and the dock instead of shortening either of them.
-hl.layer_rule({ match = { namespace = "quickshell:bar" }, order = 10 })
+hl.layer_rule({ match = { namespace = "quickshell:(bar|dynamicIsland)" }, order = 10 })
 hl.layer_rule({ match = { namespace = "quickshell:verticalBar" }, order = 10 })
 hl.layer_rule({ match = { namespace = "quickshell:sidebarLeft" }, order = -1 })
 hl.layer_rule({ match = { namespace = "quickshell:screenCorners" }, animation = "popin 120%"})
@@ -311,10 +462,15 @@ hl.layer_rule({ match = { namespace = "quickshell:lockWindowPusher" }, no_anim =
 hl.layer_rule({ match = { namespace = "quickshell:notificationPopup" }, animation = "fade"})
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, ignore_alpha = 1})
-hl.layer_rule({ match = { namespace = "quickshell:overview" }, no_anim = true})
+-- Higher arrangement orders are painted first. Keep the launcher and its
+-- backdrop before the dock so its visible buttons stay above both surfaces.
+-- The dock still reserves its edge before the pinned sidebar below.
+hl.layer_rule({ match = { namespace = "quickshell:dock.*" }, order = 1})
+hl.layer_rule({ match = { namespace = "quickshell:overview" }, order = 2, no_anim = true})
+hl.layer_rule({ match = { namespace = "quickshell:windowOverview" }, order = 2, no_anim = true})
 -- The dim grows from a pixel to the screen on every open; animated, that
 -- reads as blur spreading outward. It appears in one step, like the launcher.
-hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, no_anim = true})
+hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, order = 3, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:osk" }, animation = "slide bottom"})
 hl.layer_rule({ match = { namespace = "quickshell:polkit" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:popup" }, xray = false}) -- No weird color for bar tooltips (this in theory should suffice)

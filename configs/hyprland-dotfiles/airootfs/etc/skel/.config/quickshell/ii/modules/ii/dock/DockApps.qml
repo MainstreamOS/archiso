@@ -53,6 +53,7 @@ Item {
     // preview's per-window buttons and by DockAppButton's single-window
     // fast path (see its onClicked for why 1 window skips the preview).
     function focusToplevel(tl) {
+        GlobalStates.overviewOpen = false;
         // Handing focus to a window is a deliberate exit from whatever the
         // shared grab was holding open. Left armed, the grab's whitelist
         // collapses with the sidebar's focus and it spends the user's next
@@ -101,7 +102,7 @@ Item {
     // win.floating themselves since tiled windows have no z-order to alter.
     function raiseToplevel(fullAddr) {
         Hyprland.dispatch(
-            `hl.dsp.window.alter_zorder({mode = "top", window = "address:${fullAddr}"})`
+            `MainstreamRaiseFloat("address:${fullAddr}")`
         );
     }
 
@@ -127,9 +128,10 @@ Item {
         folderPopupData = null;
     }
 
-    // Drag-to-reorder state
+    // Drag-to-reorder and style-switch state
     property bool dragging: false
     property bool _reordering: false
+    property bool _showSeparators: true
     property bool _suppressTranslateAnim: false
     property int dragSourceIndex: -1
     // Main-axis scalars: X on a horizontal dock, Y on a vertical one.
@@ -140,8 +142,30 @@ Item {
         if (!dragging || slotSize <= 0) return dragSourceIndex;
         var delta = dragCursorPos - dragStartCursorPos;
         var slots = Math.round(delta / slotSize);
-        var pinnedCount = Config.options.dock.pinnedApps.length;
-        return Math.max(0, Math.min(dragSourceIndex + slots, pinnedCount - 1));
+        const pins = Config.options.dock.pinnedApps;
+        if (dockRoot.showIconSeparators) return Math.max(0, Math.min(dragSourceIndex + slots, pins.length - 1));
+        const visible = pins.map((id, index) => ({id, index})).filter(pin => pin.id !== "SEPARATOR");
+        const source = visible.findIndex(pin => pin.index === dragSourceIndex);
+        if (source < 0) return dragSourceIndex;
+        return visible[Math.max(0, Math.min(source + slots, visible.length - 1))].index;
+    }
+
+    // Change the model with transitions held, so separator toggles do not
+    // animate every app leaving and returning to the list.
+    function applySeparators() {
+        root.cancelDrag();
+        root._reordering = true;
+        root._showSeparators = dockRoot.showIconSeparators;
+        listView.forceLayout();
+        Qt.callLater(() => {
+            listView.forceLayout();
+            reorderSettleTimer.restart();
+        });
+    }
+    Component.onCompleted: applySeparators()
+    Connections {
+        target: dockRoot
+        function onShowIconSeparatorsChanged() { root.applySeparators(); }
     }
 
     // Timer to re-enable animations after the model has fully settled.
@@ -153,6 +177,7 @@ Item {
         onTriggered: {
             root._reordering = false;
             root._suppressTranslateAnim = false;
+            listView.forceLayout();
         }
     }
 
@@ -214,8 +239,8 @@ Item {
     // effects read as one decision. The effect is asked first: a mode that
     // grows nothing never reads the mouse, and its bindings stay cold.
     function hoverScaleFor(itemPos, itemSize, isSeparator) {
-        const effect = Config.options.dock.hoverEffect;
-        if (effect === "off" || !listHovered || previewShow) return 1.0;
+        const effect = Appearance.sizes.dockHoverEffect;
+        if (effect === "off" || effect === "bubble" || !listHovered || previewShow) return 1.0;
         if (effect === "glow")
             return !isSeparator && pointerIsOver(itemPos, itemSize) ? maxScale : 1.0;
         const itemCenter = itemPos + itemSize / 2;
@@ -240,10 +265,6 @@ Item {
 
     Layout.fillHeight: !dockRoot.dockVertical
     Layout.fillWidth: dockRoot.dockVertical
-    Layout.topMargin: dockRoot.dockEdge === "bottom" ? Appearance.sizes.hyprlandGapsOut : 0
-    Layout.bottomMargin: dockRoot.dockEdge === "top" ? Appearance.sizes.hyprlandGapsOut : 0
-    Layout.leftMargin: dockRoot.dockEdge === "right" ? Appearance.sizes.hyprlandGapsOut : 0
-    Layout.rightMargin: dockRoot.dockEdge === "left" ? Appearance.sizes.hyprlandGapsOut : 0
     implicitWidth: dockRoot.dockVertical ? 0 : listView.implicitWidth
     implicitHeight: dockRoot.dockVertical ? listView.implicitHeight : 0
 
@@ -268,7 +289,7 @@ Item {
 
     StyledListView {
         id: listView
-        spacing: 2
+        spacing: dockRoot.listSpacing
         clip: false
         interactive: false
         animateAppearance: !root._reordering
@@ -279,8 +300,10 @@ Item {
             left: dockRoot.dockVertical ? parent.left : undefined
             right: dockRoot.dockVertical ? parent.right : undefined
         }
-        implicitWidth: dockRoot.dockVertical ? 0 : contentWidth
-        implicitHeight: dockRoot.dockVertical ? contentHeight : 0
+        implicitWidth: dockRoot.dockVertical ? 0
+            : contentWidth
+        implicitHeight: !dockRoot.dockVertical ? 0
+            : contentHeight
 
         Behavior on implicitWidth {
             animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
@@ -291,7 +314,7 @@ Item {
 
         model: ScriptModel {
             objectProp: "appId"
-            values: TaskbarApps.apps
+            values: root._showSeparators ? TaskbarApps.apps : TaskbarApps.appsWithoutSeparator
         }
         delegate: DockAppButton {
             id: delegateButton
@@ -306,15 +329,15 @@ Item {
             }
             buttonIndex: index
 
-            topInset: dockRoot.dockVertical ? 0 : Appearance.sizes.hyprlandGapsOut + root.buttonPadding
-            bottomInset: dockRoot.dockVertical ? 0 : Appearance.sizes.hyprlandGapsOut + root.buttonPadding
-            leftInset: dockRoot.dockVertical ? Appearance.sizes.hyprlandGapsOut + root.buttonPadding : 0
-            rightInset: dockRoot.dockVertical ? Appearance.sizes.hyprlandGapsOut + root.buttonPadding : 0
+            topInset: dockRoot.dockVertical ? 0 : dockRoot.buttonInset
+            bottomInset: topInset
+            leftInset: !dockRoot.dockVertical ? 0 : dockRoot.buttonInset
+            rightInset: leftInset
             hoverScale: root.hoverScaleFor(dockRoot.dockVertical ? y : x,
                 dockRoot.dockVertical ? height : width, isSeparator)
             // Gated on the mode first, so the halo's only consumer is also the
             // only one paying the per-motion arithmetic behind it.
-            pointerOver: Config.options.dock.hoverEffect === "glow"
+            pointerOver: ["glow", "bubble"].includes(Appearance.sizes.dockHoverEffect)
                 && root.pointerIsOver(dockRoot.dockVertical ? y : x, dockRoot.dockVertical ? height : width)
         }
     }
@@ -433,19 +456,13 @@ Item {
                                             }
                                         }
 
-                                        ScreencopyView {
+                                        HdrScreencopyView {
                                             id: screencopyView
                                             anchors.fill: parent
                                             captureSource: windowButton.captureSuppressed ? null : windowButton.modelData
                                             live: true
                                             paintCursor: true
                                             constraintSize: Qt.size(root.maxWindowPreviewWidth, root.maxWindowPreviewHeight)
-                                            // PQ-to-sRGB tone-mapping when HDR Always On
-                                            layer.enabled: GlobalStates.hdrActive
-                                            layer.effect: ShaderEffect {
-                                                property real sdrPaperWhite: 203.0
-                                                fragmentShader: "file://" + Quickshell.env("HOME") + "/.config/quickshell/ii/shaders/pq_to_srgb.frag.qsb"
-                                            }
                                         }
                                     }
                                 }
@@ -592,6 +609,10 @@ Item {
                                 folderColumn.renaming = false;
                             }
                             Keys.onEscapePressed: folderColumn.renaming = false
+
+                            ContextMenu.menu: null
+
+                            TextFieldContextMenuArea {}
                         }
 
                         // Confirm button (only visible when renaming)
@@ -638,7 +659,7 @@ Item {
                                 const apps = [];
                                 for (let i = 0; i < root.folderPopupData.appIds.length; i++) {
                                     const appId = root.folderPopupData.appIds[i];
-                                    const entry = AppSearch.recordFor(DesktopEntries.heuristicLookup(appId));
+                                    const entry = DesktopEntries.heuristicLookup(appId);
                                     if (entry) {
                                         apps.push({ id: appId, entry: entry });
                                     }

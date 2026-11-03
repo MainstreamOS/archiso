@@ -29,6 +29,7 @@ Slider {
 
     property var configuration: StyledSlider.Configuration.S
 
+    property bool showHandle: true
     property real handleDefaultWidth: 3
     property real handlePressedWidth: 1.5
     property color highlightColor: Appearance.colors.colPrimary
@@ -38,14 +39,15 @@ Slider {
     property color dotColorHighlighted: Appearance.m3colors.m3onPrimary
     property real unsharpenRadius: Appearance.rounding.unsharpen
     property real trackWidth: configuration
-    property real trackRadius: trackWidth >= StyledSlider.Configuration.XL ? 21
+    property real trackRadius: !showHandle ? (trackWidth / 2)
+        : trackWidth >= StyledSlider.Configuration.XL ? 21
         : trackWidth >= StyledSlider.Configuration.L ? 12
         : trackWidth >= StyledSlider.Configuration.M ? 9
         : trackWidth >= StyledSlider.Configuration.S ? 6
-        : height / 2
-    property real handleHeight: (configuration === StyledSlider.Configuration.Wavy) ? 24 : Math.max(33, trackWidth + 9)
-    property real handleWidth: root.pressed ? handlePressedWidth : handleDefaultWidth
-    property real handleMargins: 4
+        : trackWidth / 2
+    property real handleHeight: showHandle ? ((configuration === StyledSlider.Configuration.Wavy) ? Appearance.sizes.wavySliderHeight : Math.max(33, trackWidth + 9)) : 0
+    property real handleWidth: showHandle ? (root.pressed ? handlePressedWidth : handleDefaultWidth) : 0
+    property real handleMargins: showHandle ? 4 : 0
     property real dividerMargins: 2
     property real trackDotSize: 3
     property bool usePercentTooltip: true
@@ -54,11 +56,10 @@ Slider {
     property bool animateWave: true
     property real waveAmplitudeMultiplier: wavy ? 0.5 : 0
     property real waveFrequency: 6
-    property real waveFps: 60
 
     leftPadding: handleMargins
     rightPadding: handleMargins
-    property real effectiveDraggingWidth: width - leftPadding - rightPadding
+    property real effectiveDraggingWidth: Math.max(0, width - leftPadding - rightPadding)
 
     Layout.fillWidth: true
     from: 0
@@ -100,7 +101,30 @@ Slider {
         anchors.verticalCenter: parent.verticalCenter
         anchors.horizontalCenter: parent.horizontalCenter
         width: root.width
-        implicitHeight: trackWidth
+        implicitHeight: Math.max(root.trackWidth, root.handleHeight)
+
+        Rectangle {
+            id: pillTrack
+            visible: !root.showHandle
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: root.trackWidth
+            radius: root.trackRadius
+            color: root.trackColor
+        }
+
+        Rectangle {
+            id: pillFill
+            visible: !root.showHandle && root.visualPosition > 0
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            width: Math.max(0, parent.width * root.visualPosition)
+            height: root.trackWidth
+            radius: root.trackRadius
+            color: root.highlightColor
+        }
+
         property var normalized: root.dividerValues.map(v => (v - root.from) / (root.to - root.from))
         property var filtered: normalized.filter(v => Math.abs(v - root.visualPosition) * effectiveDraggingWidth > handleMargins + handleWidth / 2 - dividerMargins)
         property var leftValues: [0, ...filtered.filter(v => v < root.visualPosition), root.visualPosition]
@@ -110,7 +134,7 @@ Slider {
 
         // Fill left
         Repeater {
-            model: background.leftWidths.length
+            model: root.showHandle ? background.leftWidths.length : 0
 
             Loader {
                 required property real index
@@ -132,7 +156,7 @@ Slider {
         }
 
         Repeater {
-            model: background.leftWidths.length
+            model: root.showHandle ? background.leftWidths.length : 0
 
             Loader {
                 required property int index
@@ -141,34 +165,22 @@ Slider {
                 property real rightMargin: index < background.leftWidths.length - 1 ? root.dividerMargins : root.handleMargins
                 x: background.leftValues[index] * root.effectiveDraggingWidth + leftMargin + (index > 0 ? leftPadding : 0)
                 width: background.leftWidths[index] * root.effectiveDraggingWidth - leftMargin - rightMargin - (index === background.leftWidths.length - 1 ? handleWidth / 2 : 0) + (index === 0 ? leftPadding : 0)
-                height: root.height
+                height: Math.ceil(root.trackWidth * (1 + 2 * root.waveAmplitudeMultiplier)) + 2
                 active: root.wavy
                 sourceComponent: WavyLine {
-                    id: wavyFill
+                    animate: root.animateWave
                     frequency: root.waveFrequency
                     fullLength: root.width
                     color: root.highlightColor
-                    amplitudeMultiplier: root.wavy ? 0.5 : 0
-                    width: parent.width
-                    height: root.trackWidth
-                    Connections {
-                        target: root
-                        function onValueChanged() { wavyFill.requestPaint(); }
-                        function onHighlightColorChanged() { wavyFill.requestPaint(); }
-                    }
-                    FrameAnimation {
-                        running: root.animateWave
-                        onTriggered: {
-                            wavyFill.requestPaint()
-                        }
-                    }
+                    lineWidth: root.trackWidth
+                    amplitudeMultiplier: root.waveAmplitudeMultiplier
                 }
             }
         }
 
         // Fill right
         Repeater {
-            model: background.rightWidths.length
+            model: root.showHandle ? background.rightWidths.length : 0
 
             Rectangle {
                 required property int index
@@ -188,7 +200,7 @@ Slider {
 
         // Stop indicators
         Repeater {
-            model: root.stopIndicatorValues
+            model: root.showHandle ? root.stopIndicatorValues : []
             TrackDot {
                 required property real modelData
                 value: modelData
@@ -199,16 +211,16 @@ Slider {
 
     handle: Rectangle {
         id: handle
-
+        visible: root.showHandle || root.hovered
         implicitWidth: root.handleWidth
         implicitHeight: root.handleHeight
         x: root.leftPadding + (root.visualPosition * root.effectiveDraggingWidth) - (root.handleWidth / 2)
         anchors.verticalCenter: parent.verticalCenter
         radius: Appearance.rounding.full
-        color: root.handleColor
+        color: root.showHandle ? root.handleColor : "transparent"
 
         Behavior on implicitWidth {
-            animation: Appearance?.animation.elementMoveFast.numberAnimation.createObject(this)
+            animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
         }
 
         StyledToolTip {

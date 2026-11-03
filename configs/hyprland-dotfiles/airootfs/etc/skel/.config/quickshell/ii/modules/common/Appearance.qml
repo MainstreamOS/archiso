@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.modules.common.functions
+import qs.services
 pragma Singleton
 pragma ComponentBehavior: Bound
 
@@ -16,6 +17,45 @@ Singleton {
     property QtObject sizes
     property string syntaxHighlightingTheme
     property int themeRevision: 0
+
+    // The Dynamic Island's surfaces, for every panel drawn in its style: rows and tiles sit on `row`,
+    // buttons and raised tiles on `raised`.
+    readonly property QtObject surfaces: QtObject {
+        readonly property color row: ColorUtils.mix(root.colors.colLayer0, root.colors.colLayer1, 0.5)
+        readonly property color raised: ColorUtils.mix(root.colors.colLayer2, root.colors.colOnLayer0, 0.92)
+        readonly property color raisedHover: ColorUtils.mix(root.colors.colLayer2Hover, root.colors.colOnLayer0, 0.92)
+        readonly property color unread: ColorUtils.mix(root.colors.colPrimaryContainer, raised, 0.55)
+    }
+
+    // Chat bubbles in the AI Assistant tab and phone conversations, as the Dynamic Island draws its
+    // surfaces: your side in the accent it highlights with, the other side on its neutral raised
+    // surface, so the two sides never share a color family.
+    readonly property QtObject chatBubble: QtObject {
+        readonly property color mine: root.colors.colPrimaryContainer
+        readonly property color mineText: root.colors.colOnPrimaryContainer
+        readonly property color theirs: root.surfaces.raised
+        readonly property color theirsText: root.colors.colOnLayer1
+        readonly property color mineQuote: ColorUtils.mix(mine, root.colors.colLayer0Base, 0.72)
+        readonly property color theirsQuote: ColorUtils.mix(theirs, root.colors.colLayer0Base, 0.55)
+        readonly property color mineTextFaint: ColorUtils.transparentize(mineText, 0.3)
+        readonly property color theirsTextFaint: ColorUtils.transparentize(theirsText, 0.3)
+    }
+
+    // The dock inside the Activities overview.
+    readonly property QtObject overviewDock: QtObject {
+        readonly property int iconSize: 34
+        readonly property int buttonPadding: 4
+        readonly property int buttonSize: iconSize + buttonPadding * 2
+        readonly property int padding: 10
+        readonly property int spacing: 8
+        readonly property int radius: 20
+        readonly property int buttonRadius: 12
+        readonly property int edgeGap: 20
+        readonly property color background: root.colors.colDockBackground
+        readonly property color border: root.colors.colDockBackgroundBorder
+        readonly property color foreground: root.dockContent.colOnLayer0
+        readonly property color hover: ColorUtils.applyAlpha(foreground, 0.12)
+    }
 
     // Transparency. The quadratic functions were derived from analysis of hand-picked transparency values.
     readonly property string _wallpaperPath: Config.options.background.wallpaperPath
@@ -122,16 +162,16 @@ Singleton {
     function laidOver(surface, edge, shown) {
         return shown ? ColorUtils.composite(surface, wallpaperEdge(edge)) : wallpaperEdge(edge)
     }
-    readonly property color barBackdrop: laidOver(colors.colBarBackground, sizes.barEdge, Config.options?.bar.showBackground)
+    readonly property color barBackdrop: laidOver(colors.colBarBackground, sizes.barEdge, Config.options?.bar.showBackground || sizes.barIsIsland)
     readonly property color dockBackdrop: laidOver(colors.colDockBackground, sizes.dockEdge,
-        Config.options?.dock.showBackground)
+        root.sizes.dockShowBackground)
     // The same edges under the strip and the dock as they come. The palette's
     // inks were chosen to stand off these, so a surface the user has colored
     // is held to what they show here, and the stock one is left exactly as is.
     readonly property color barStockBackdrop: laidOver(ColorUtils.applyAlpha(colors.colLayer0, colors.barStockAlpha),
-        sizes.barEdge, Config.options?.bar.showBackground)
+        sizes.barEdge, Config.options?.bar.showBackground || sizes.barIsIsland)
     readonly property color dockStockBackdrop: laidOver(ColorUtils.applyAlpha(colors.colLayer0, colors.dockStockAlpha),
-        sizes.dockEdge, Config.options?.dock.showBackground)
+        sizes.dockEdge, root.sizes.dockShowBackground)
     // The bar and the dock read as one set, so while the dock is there it
     // decides which way the content on both is drawn: the bar's strip and the
     // groups in the palette's own color follow it. A group someone picked a
@@ -251,6 +291,39 @@ Singleton {
         adaptive: root.autoIconContrast
         flipped: root.followsDock(backdrops) ? root.dockContent.flipped : root.contentFlipped(backdrops, backdrops)
     }
+    // Borders share the surface recipe, but choose contrast against the bar
+    // itself rather than following the dock's optional contrast coordination.
+    readonly property SurfaceContent barOutlineContent: SurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [root.barBackdrop]
+        stockBackdrops: [root.barStockBackdrop]
+        adaptive: root.autoIconContrast
+        flipped: root.contentFlipped(backdrops, backdrops)
+    }
+    // Judge the Island's translucent cards over its strip, rather than over
+    // the traditional bar's widget pill, for its panels and shared widgets.
+    readonly property SurfaceContent islandContent: SurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [ColorUtils.composite(root.surfaces.raised, root.barBackdrop),
+            ColorUtils.composite(root.surfaces.row, root.barBackdrop)]
+        stockBackdrops: [ColorUtils.composite(root.surfaces.raised, root.barStockBackdrop),
+            ColorUtils.composite(root.surfaces.row, root.barStockBackdrop)]
+        adaptive: root.autoIconContrast && root._judgeLauncherEnabled
+        flipped: root.contentFlipped(backdrops, backdrops) || root.extremeFlipped(backdrops)
+    }
+    // System buttons need visible fills and readable ink over Glass: fills are judged against
+    // the Island, and text against the fill drawn, hover and press included.
+    readonly property LauncherSurfaceContent islandSystemContent: LauncherSurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [root.barBackdrop]
+        stockBackdrops: [root.barStockBackdrop]
+        adaptive: root.autoIconContrast && root._judgeLauncherEnabled
+        holdsFills: true
+        flipped: root.contentFlipped(backdrops, backdrops) || root.extremeFlipped(backdrops)
+    }
     readonly property SurfaceContent dockContent: SurfaceContent {
         m3: root.m3colors
         palette: root.colors
@@ -260,20 +333,14 @@ Singleton {
         flipped: root.dockJoinsBar ? !root.dockOwnFlipped : root.dockOwnFlipped
     }
 
-    // The dim is laid over its window's faint clear color, and both over
-    // whatever the dim frosts. The launcher and the dock raised above the
-    // dim both lie on it.
-    function dimOver(dim, picture) {
-        return ColorUtils.composite(ColorUtils.applyAlpha(dim, colors.launcherDimOpacity),
-            ColorUtils.composite(colors.colLauncherDimWindow, picture))
-    }
-    // A surface laid over the dim, and the dim over the picture it frosts.
+    // A surface laid over the blurred wallpaper the launcher stands on.
     // The launcher sits in the middle of the screen, so there the picture is
     // read as a whole rather than along an edge. A surface's shadow is drawn
     // under all of it, not only around it, so a see-through surface shows it
     // too.
-    function laidOverDim(surface, shadow, dim, shown, picture) {
-        const under = dimOver(dim, picture ?? wallpaperAverage)
+    function laidOverDim(surface, shadow, shown, picture) {
+        const pictureColor = picture ?? wallpaperAverage
+        const under = ColorUtils.composite(ColorUtils.applyAlpha(launcherDimColor, launcherDimOpacity), pictureColor)
         return shown ? ColorUtils.composite(surface, ColorUtils.composite(shadow, under)) : under
     }
     // The dock's surface and shadow as they come, for the places the dock's
@@ -290,9 +357,9 @@ Singleton {
     // launcher keeps its panels clear of the dock's band, so nothing of it
     // lies under the dock.
     readonly property color dockOverLauncherBackdrop: laidOverDim(colors.colDockBackground, dockOwnShadow,
-        colors.colLauncherDim, Config.options?.dock.showBackground, wallpaperEdge(sizes.dockEdge))
+        root.sizes.dockShowBackground, wallpaperEdge(sizes.dockEdge))
     readonly property color dockOverLauncherStockBackdrop: laidOverDim(dockStockSurface, dockOwnStockShadow,
-        colors.colLayer0Base, Config.options?.dock.showBackground, wallpaperEdge(sizes.dockEdge))
+        root.sizes.dockShowBackground, wallpaperEdge(sizes.dockEdge))
     // The dock as it is drawn while the launcher is open. The bar stays under
     // the dim and keeps following the dock at rest, so this one is judged by
     // itself alone.
@@ -304,14 +371,22 @@ Singleton {
         adaptive: root.autoIconContrast && root._judgeLauncherEnabled
         flipped: root.contentFlipped(backdrops, backdrops)
     }
-    readonly property color launcherBackdrop: laidOverDim(colors.colLauncherPanel, colors.colLauncherShadow,
-        colors.colLauncherDim, true)
-    readonly property color drawerBackdrop: laidOverDim(colors.colDockBackground, colors.colDockShadow,
-        colors.colLauncherDim, Config.options?.dock.showBackground)
+    // Under Frost the launcher's surfaces sample the wallpaper as the dock does, under its
+    // color. A video wallpaper has no still picture, so there they keep a flat color.
+    readonly property bool launcherSamplesWallpaper: BackdropPresets.dockIsFrost && !_wallpaperIsVideo
+    readonly property color launcherFrostBackdrop: ColorUtils.composite(colors.colDockBackground,
+        ColorUtils.composite(ColorUtils.applyAlpha("white", Config.options.dock.backdrop.haze), wallpaperAverage))
+    readonly property color launcherBackdrop: launcherSamplesWallpaper ? launcherFrostBackdrop
+        : laidOverDim(launcherSearchBackground, colors.colLauncherShadow, true)
+    // The app list is part of the launcher, so it takes the dock's color but not
+    // the see-through a dock preset or slider sets.
+    readonly property color drawerSurface: ColorUtils.applyAlpha(colors.colDockBackground, colors.dockStockAlpha)
+    readonly property color drawerBackdrop: launcherSamplesWallpaper && root.sizes.dockShowBackground ? launcherFrostBackdrop
+        : laidOverDim(launcherDrawerBackground, dockStockShadow, root.sizes.dockShowBackground)
     readonly property color launcherStockBackdrop: laidOverDim(ColorUtils.applyAlpha(m3colors.m3surfaceContainer, colors.layer0StockAlpha),
-        colors.colShadow, colors.colLayer0Base, true)
+        colors.colShadow, true)
     readonly property color drawerStockBackdrop: laidOverDim(dockStockSurface, dockStockShadow,
-        colors.colLayer0Base, Config.options?.dock.showBackground)
+        root.sizes.dockShowBackground)
     // The hairline around the dock's surface is its outline mixed into the
     // surface's own color at the surface's alpha, so it stands off the
     // surface only as far as the outline is from that color. Over the dim
@@ -329,11 +404,11 @@ Singleton {
     }
     function dockBorderOverDim(content, picture, shadow, stockShadow) {
         const outline = content.colOutlineVariant
-        if (!content.adaptive || !Config.options?.dock.showBackground)
+        if (!content.adaptive || !root.sizes.dockShowBackground)
             return colors.dockBorder(outline)
         const surface = colors.colDockBackground
-        const under = ColorUtils.composite(shadow, dimOver(colors.colLauncherDim, picture))
-        const stockUnder = ColorUtils.composite(stockShadow, dimOver(colors.colLayer0Base, picture))
+        const under = ColorUtils.composite(shadow, picture)
+        const stockUnder = ColorUtils.composite(stockShadow, picture)
         const need = Math.min(content.markContrast,
             borderStanding(content.onStock(colors.colOutlineVariant), dockStockSurface, stockUnder))
         const stands = o => borderStanding(o, surface, under)
@@ -363,6 +438,63 @@ Singleton {
         holdsFills: true
         flipped: root.followsDock(backdrops, textContrast, root.dockOverLauncherContent)
             ? root.dockOverLauncherContent.flipped : root.contentFlipped(backdrops, backdrops)
+    }
+    // These previews sit on the theme's opaque background, like Alt+Tab,
+    // rather than on the dock's configurable material.
+    readonly property LauncherSurfaceContent workspaceLauncherContent: LauncherSurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        adaptive: false
+    }
+    // Under the dock's Frost preset the launcher's surfaces take a thin white layer over
+    // a lighter color, so its own blur reads as the same frosted material.
+    function hazed(color, opacity, haze) {
+        const alpha = haze + opacity * (1 - haze);
+        const mix = channel => (haze + channel * opacity * (1 - haze)) / alpha;
+        return Qt.rgba(mix(color.r), mix(color.g), mix(color.b), alpha);
+    }
+    // Frost's flat stand-in for the dock's tint and haze, where no wallpaper is sampled.
+    readonly property color launcherSearchBackground: BackdropPresets.dockIsFrost
+        ? launcherDrawerBackground : colors.colLauncherPanel
+    readonly property color launcherDrawerBackground: BackdropPresets.dockIsFrost
+        ? hazed(colors.colDockBackground, colors.dockStockAlpha * 0.6, Config.options.dock.backdrop.haze) : drawerSurface
+    readonly property color launcherTileBackground: BackdropPresets.dockIsFrost
+        ? ColorUtils.applyAlpha(launcherWorkspaceContent.colSurfaceContainerLow, 0.28) : launcherWorkspaceContent.colSurfaceContainerLow
+    readonly property real launcherDimOpacity: m3colors.darkmode ? 0.90 : 0.85
+    readonly property color launcherDimColor: colors.launcherPick !== ""
+        ? ColorUtils.mix(colors.launcherPick, colors.colLayer0Base, 0.2) : colors.colLayer0Base
+    readonly property color launcherPanelBackground: BackdropPresets.dockIsFrost
+        ? hazed(Qt.color(m3colors.darkmode ? "black" : "white"), 0.5, 0.13)
+        : ColorUtils.applyAlpha(m3colors.darkmode ? "black" : "white", 0.65)
+    readonly property color launcherWorkspaceBackground: BackdropPresets.dockIsFrost
+        ? launcherDrawerBackground : colors.colLauncherPanel
+    readonly property LauncherSurfaceContent launcherWorkspaceContent: LauncherSurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [root.launcherSamplesWallpaper ? root.launcherFrostBackdrop
+            : root.laidOverDim(root.launcherWorkspaceBackground, root.colors.colLauncherShadow, true)]
+        stockBackdrops: [root.launcherStockBackdrop]
+        adaptive: root.autoIconContrast && root._judgeLauncherEnabled
+        holdsFills: true
+        flipped: root.contentFlipped(backdrops, backdrops)
+    }
+    readonly property LauncherSurfaceContent launcherPanelContent: LauncherSurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [ColorUtils.composite(root.launcherPanelBackground, root.wallpaperAverage)]
+        stockBackdrops: [root.m3colors.m3background]
+        adaptive: root._judgeLauncherEnabled && root.autoIconContrast
+        holdsFills: true
+        flipped: adaptive && ColorUtils.inkTurns(root.m3colors.m3onSurface, backdrops, backdrops)
+    }
+    readonly property LauncherSurfaceContent islandLauncherContent: LauncherSurfaceContent {
+        m3: root.m3colors
+        palette: root.colors
+        backdrops: [root.barBackdrop]
+        stockBackdrops: [root.barStockBackdrop]
+        adaptive: root.autoIconContrast && root._judgeLauncherEnabled && root.sizes.barIsIsland
+        holdsFills: true
+        flipped: root.barStripContent.flipped
     }
     readonly property LauncherSurfaceContent drawerContent: LauncherSurfaceContent {
         m3: root.m3colors
@@ -587,6 +719,8 @@ Singleton {
         readonly property color colOnPrimary: tone(palette.colOnPrimary)
         readonly property color colTertiary: tone(palette.colTertiary)
         readonly property color colError: tone(palette.colError)
+        // Text and icons drawn in the error color.
+        readonly property color colErrorMark: accent(palette.colError)
         readonly property color colSecondaryContainer: fill(palette.colSecondaryContainer, m3onSurface, m3.m3onSurface)
         readonly property color colSecondaryContainerHover: fill(palette.colSecondaryContainerHover, m3onSurface, m3.m3onSurface)
         readonly property color colSecondaryContainerActive: flash(palette.colSecondaryContainerActive, m3onSurface, m3.m3onSurface)
@@ -806,7 +940,8 @@ Singleton {
         // so the tile is what it has to stand off.
         readonly property color colSecondaryOnTile: markOnFill(palette.colSecondary, colSurfaceContainerLow, palette.colSurfaceContainerLow)
         // Its number, a faint wash of the ink, lies on the tile as well.
-        readonly property color colTileNumber: faded(colOnLayer1, 0.2, colSurfaceContainerLow, palette.colSurfaceContainerLow)
+        readonly property color colTileNumber: BackdropPresets.dockIsFrost ? ColorUtils.applyAlpha(colOnLayer1, 0.3)
+            : faded(colOnLayer1, 0.2, colSurfaceContainerLow, palette.colSurfaceContainerLow)
         readonly property color colSurfaceContainerHigh: fill(palette.colSurfaceContainerHigh, m3onSurface, m3.m3onSurface)
         readonly property color m3onSurfaceVariant: ink(m3.m3onSurfaceVariant)
         // The palette's subtext is this very color, so the two are held as one.
@@ -941,7 +1076,7 @@ Singleton {
         // The outline is the palette's own recipe, the outline tone laid over
         // the surface, made with the surface as drawn: a picked color gets an
         // edge in its own hue, and the outline tone follows the content's side.
-        property color colBarBackgroundBorder: surfaceBorder(root.barStripContent.colOutlineVariant, colBarBackground)
+        property color colBarBackgroundBorder: surfaceBorder(root.barOutlineContent.colOutlineVariant, colBarBackground)
         // The shadow the same way: a slab of shade around a strip that has
         // faded from sight reads as a decoration around nothing.
         property color colBarShadow: ColorUtils.applyAlpha(colShadow, colShadow.a * colBarBackground.a)
@@ -956,9 +1091,8 @@ Singleton {
         // the drop rather than on it.
         readonly property real surfaceOpacityFloor: Math.min(1, root.colors.blurFloor + 0.005)
         readonly property string dockPick: modePick(Config.options?.dock.backgroundColorDark, Config.options?.dock.backgroundColorLight)
-        // Every dock style, the notch and the Hug strip included, starts from
-        // the strip's alpha, so picking a shape never changes how solid the
-        // dock looks with it.
+        // Overview keeps the pill light enough for the compositor's blur to
+        // show through. An explicit opacity applies to every style.
         readonly property real dockStockAlpha: layer0StockAlpha
         property color colDockBackground: surfaceColor(dockPick, colLayer0, Config.options?.dock.backgroundOpacity, dockStockAlpha)
         // The dock's surface is also drawn over the launcher's dim, as the
@@ -992,7 +1126,8 @@ Singleton {
         // palette's tones, which were chosen for the palette's own surface,
         // and a pick made for the dock can bury them where names are read.
         readonly property string launcherPick: root.autoIconContrast ? dockPick : ""
-        readonly property real launcherOpacity: root.autoIconContrast ? (Config.options?.dock.backgroundOpacity ?? -1) : -1
+        readonly property real launcherOpacity: root.autoIconContrast && !BackdropPresets.dockIsGlass
+            ? (Config.options?.dock.backgroundOpacity ?? -1) : -1
         property color colLauncherPanel: surfaceColor(launcherPick, m3colors.m3surfaceContainer, launcherOpacity, layer0StockAlpha)
         // Drawn under the whole panel, so a see-through one shows it as a
         // gray slab. It keeps its full strength under the stock panel and
@@ -1000,20 +1135,6 @@ Singleton {
         // does with the dock.
         property color colLauncherShadow: ColorUtils.applyAlpha(colShadow, colShadow.a
             * (layer0StockAlpha > 0 ? Math.min(1, colLauncherPanel.a / layer0StockAlpha) : 1))
-        // What shows through a near-white layer reads as less than the same
-        // share through a near-black one, so light mode lets a little more of
-        // the frosted windows through to look as open.
-        readonly property real launcherDimOpacity: m3colors.darkmode ? 0.90 : 0.85
-        // A fifth of the way to the pick reads plainly in its hue, and it is
-        // about as far as the dim can go before a white pick in dark mode
-        // leaves the palette's text under 7:1 on it. Past that the dim stops
-        // reading as the mode's backdrop and starts reading as the pick's.
-        readonly property real launcherDimTint: 0.2
-        property color colLauncherDim: launcherPick !== "" ? ColorUtils.mix(launcherPick, colLayer0Base, launcherDimTint) : colLayer0Base
-        // The dim's window is cleared to a faint black under the dim, and the
-        // launcher is laid over that as well, so the window and the backdrop
-        // its content is judged against both take it from here.
-        readonly property color colLauncherDimWindow: Qt.rgba(0, 0, 0, 0.01)
         // Layer 1
         property color colLayer1Base: m3colors.m3surfaceContainerLow
         property color colLayer1: ColorUtils.solveOverlayColor(colLayer0Base, colLayer1Base, 1 - root.contentTransparency);
@@ -1397,10 +1518,14 @@ Singleton {
         // land in the screen's corners and the curves beside them have
         // nowhere to go. It stops a little short of that by default, which is
         // also as far as its slider goes.
-        readonly property bool barIsNotch: Config.options?.bar.cornerStyle === 3
+        readonly property string islandShape: ["float", "rect"].includes(Config.options?.bar.island.shape)
+            ? Config.options.bar.island.shape : "notch"
+        readonly property bool barIsNotch: barIsIsland ? islandShape === "notch" : Config.options?.bar.cornerStyle === 3
+        // The Dynamic Island replaces the bar only on a horizontal bar.
+        readonly property bool barIsIsland: (Config.options?.bar.mode === "island" || Config.options?.bar.cornerStyle === 4) && !Config.options?.bar.vertical
         // The styles that draw a strip of their own rather than dressing the
         // whole window: they share the width, the split and the shadow.
-        readonly property bool barFloats: barIsNotch || Config.options?.bar.cornerStyle === 1
+        readonly property bool barFloats: barIsIsland ? islandShape !== "rect" : barIsNotch || Config.options?.bar.cornerStyle === 1
         // How far the style may be asked to reach, which is also where it
         // starts. The notch is set down on the edge, so at the whole width its
         // ends land in the screen's corners with nowhere to put the curves
@@ -1427,6 +1552,14 @@ Singleton {
         // to cross, and any edge will do. Every process goes by the shell's
         // word on whether its bar is up (barShownOnFile above).
         readonly property bool dockSpans: Config.options?.dock.cornerStyle === "span"
+        readonly property string dockHoverEffect: Config.options?.dock.hoverEffect ?? ""
+        readonly property bool dockShowBackground: Config.options?.dock.showBackground ?? true
+        readonly property real dockEdgePaddingMax: root.overviewDock.edgeGap
+        readonly property real dockEdgePaddingStock: Config.options.dock.cornerStyle === "float" ? dockEdgePaddingMax : 0
+        readonly property real dockEdgeGap: Config.options?.dock.cornerStyle !== "float" ? 0
+            : (Config.options?.dock.edgePadding ?? -1) >= 0
+            ? Math.min(dockEdgePaddingMax, Config.options.dock.edgePadding) : dockEdgePaddingStock
+        readonly property real dockDeskInset: elevationMargin
         property bool barShown: root.barShownOnFile
         property string dockEdge: {
             const pos = Config.options.dock.position;
@@ -1438,17 +1571,27 @@ Singleton {
                 return root.sizes.barShown ? root.sizes.oppositeEdge(root.sizes.barEdge) : want;
             return want === root.sizes.barEdge ? root.sizes.oppositeEdge(want) : want;
         }
-        // Whether the dock may be set on an edge in the style it has now.
+        // Whether the dock may be set on an edge in the style it has now. The Hug dock
+        // never runs down a side, even with the bar away.
         function dockEdgeAllowed(edge) {
-            return !root.sizes.dockSpans || !root.sizes.barShown
-                || edge === root.sizes.oppositeEdge(root.sizes.barEdge);
+            if (!root.sizes.dockSpans)
+                return true;
+            if (edge === "left" || edge === "right")
+                return false;
+            return !root.sizes.barShown || edge === root.sizes.oppositeEdge(root.sizes.barEdge);
         }
+        // A bar on a side would carry a Hug dock onto the side facing it, and a bar
+        // already on one leaves the Hug dock no edge to take.
+        readonly property bool barSidesAllowed: !dockSpans
+        readonly property bool dockCanSpan: barEdge !== "left" && barEdge !== "right"
         // Every page that moves the bar or the dock, or changes the dock's
         // style, does it through these three, so the Hug dock is carried
         // across with the bar however the bar was moved. The saved edge is
         // kept as the one on screen, so the next style starts from it rather
         // than from wherever the dock was before it hugged.
         function placeBar(bottom, vertical) {
+            if (vertical && !root.sizes.barSidesAllowed)
+                return;
             // A Hug dock facing the bar keeps facing it even while the bar is
             // put away. Left behind, it would share the bar's new edge and be
             // sent across the screen each time the bar came and went. One set
@@ -1480,11 +1623,13 @@ Singleton {
             Config.options.dock.enable = true;
         }
         function setDockStyle(style) {
+            if (style === "span" && !root.sizes.dockCanSpan)
+                return;
             const onScreen = root.sizes.dockEdge;
             const previous = Config.options.dock.cornerStyle;
             Config.options.dock.cornerStyle = style;
             if (style === "span")
-                Config.options.dock.position = root.sizes.barShown
+                Config.options.dock.position = root.sizes.barShown || onScreen === "left" || onScreen === "right"
                     ? root.sizes.oppositeEdge(root.sizes.barEdge) : onScreen;
             else if (previous === "span")
                 Config.options.dock.position = onScreen;
@@ -1498,13 +1643,13 @@ Singleton {
         function pickDockStyle(style) {
             const dock = Config.options.dock;
             const previous = dock.cornerStyle;
-            if (previous === style)
+            if (previous === style || (style === "span" && !root.sizes.dockCanSpan))
                 return;
             if (previous === "float")
                 dock.radiusFloat = dock.radius;
             else if (previous === "rect")
                 dock.topRadiusRect = dock.topRadius;
-            else if (previous !== "span") {
+            else if (previous === "hug") {
                 dock.radiusNotch = dock.radius;
                 dock.topRadiusNotch = dock.topRadius;
             }
@@ -1515,7 +1660,7 @@ Singleton {
             } else if (style === "rect") {
                 if (dock.topRadiusRect >= -1)
                     dock.topRadius = dock.topRadiusRect;
-            } else if (style !== "span") {
+            } else if (style === "hug") {
                 if (dock.radiusNotch >= -1)
                     dock.radius = dock.radiusNotch;
                 if (dock.topRadiusNotch >= -1)
@@ -1550,6 +1695,14 @@ Singleton {
         // meaning on every screen.
         property real dockIconSize: (Config.options?.dock.iconSize ?? -1) >= 0
             ? Config.options.dock.iconSize : root.sizes.dockIconDefault
+        // A third of the button, which is the icon plus 15, with gaps an eighth of the grid.
+        readonly property real dockLauncherScale: (Config.options?.dock.launcherScale ?? -1) >= 0
+            ? Config.options.dock.launcherScale : 1
+        readonly property real dockLauncherIconSize: (dockIconSize + 15) / 3 * dockLauncherScale
+        readonly property real dockLauncherDotGapStock: 0.125
+        readonly property real dockLauncherDotGap: (Config.options?.dock.launcherDotGap ?? -1) >= 0
+            ? Config.options.dock.launcherDotGap : dockLauncherDotGapStock
+        readonly property real dockLauncherDotSpacing: dockLauncherIconSize * dockLauncherDotGap
         // The bottom of the settings track. A screen too short even for this
         // has nothing left to give up, so it truncates rather than drawing
         // icons no slider could have asked for.
@@ -1561,7 +1714,7 @@ Singleton {
             return iconSize + 25;
         }
         function dockExtentFor(iconSize) {
-            return root.sizes.dockHeightFor(iconSize) + root.sizes.elevationMargin + root.sizes.hyprlandGapsOut;
+            return root.sizes.dockHeightFor(iconSize) + root.sizes.dockDeskInset + root.sizes.dockEdgeGap;
         }
         property real dockHeight: root.sizes.dockHeightFor(root.sizes.dockIconSize)
         property real dockExtent: root.sizes.dockExtentFor(root.sizes.dockIconSize)
@@ -1572,9 +1725,9 @@ Singleton {
         // so the halo reads as attention rather than motion, and swapping
         // effects swaps back to what each had. The clamp still stands
         // between a hand-edited value and the track.
-        readonly property real dockHoverMagnifyMax: Config.options?.dock.hoverEffect === "glow" ? 100 : 200
-        readonly property real dockHoverMagnifyStock: Config.options?.dock.hoverEffect === "glow" ? 25 : 100
-        readonly property real dockHoverMagnifyKey: Config.options?.dock.hoverEffect === "glow"
+        readonly property real dockHoverMagnifyMax: root.sizes.dockHoverEffect === "glow" ? 100 : 200
+        readonly property real dockHoverMagnifyStock: root.sizes.dockHoverEffect === "glow" ? 25 : 100
+        readonly property real dockHoverMagnifyKey: root.sizes.dockHoverEffect === "glow"
             ? (Config.options?.dock.glowMagnify ?? -1) : (Config.options?.dock.hoverMagnify ?? -1)
         readonly property real dockHoverMagnify: dockHoverMagnifyKey >= 0
             ? Math.min(dockHoverMagnifyKey, dockHoverMagnifyMax) : dockHoverMagnifyStock
@@ -1585,11 +1738,11 @@ Singleton {
         // How far the halo reaches past the icon it grows from, which is the
         // blur's own radius and nothing at all for the effects that draw none.
         readonly property real dockGlowReachMax: 28
-        readonly property real dockGlowReach: Config.options?.dock.hoverEffect === "glow"
+        readonly property real dockGlowReach: root.sizes.dockHoverEffect === "glow"
             ? dockGlowReachMax * dockGlowIntensity / 100 : 0
         // Growing nothing needs no room: off collapses the scale, and with it
         // the headroom the dock reserves and the size its icons rasterize at.
-        property real dockMaxScale: Config.options?.dock.hoverEffect === "off" ? 1
+        property real dockMaxScale: ["off", "bubble"].includes(root.sizes.dockHoverEffect) ? 1
             : 1 + dockHoverMagnify / 100
         // The room a magnified icon needs beyond the dock to be drawn whole.
         // It grows away from the screen from the edge it sits on, so it climbs
@@ -1607,15 +1760,15 @@ Singleton {
         // transparent, masked out of the pointer, and the space the dock
         // claims from other windows is measured from its own height elsewhere.
         function dockMagnifyHeadroomFor(iconSize) {
-            if (Config.options?.dock.hoverEffect === "off") return 0;
+            if (["off", "bubble"].includes(root.sizes.dockHoverEffect)) return 0;
             const peak = 1 + root.sizes.dockHoverMagnifyMax / 100;
-            return iconSize * (peak - 1) + (Config.options?.dock.hoverEffect === "glow" ? root.sizes.dockGlowReachMax * peak : 0);
+            return iconSize * (peak - 1) + (root.sizes.dockHoverEffect === "glow" ? root.sizes.dockGlowReachMax * peak : 0);
         }
         property real dockMagnifyHeadroom: root.sizes.dockMagnifyHeadroomFor(root.sizes.dockIconSize)
         Behavior on dockMagnifyHeadroom {
             animation: root.animation.elementMoveFast.numberAnimation.createObject(this)
         }
-        property real barHeight: Config.options.bar.cornerStyle === 1 ? 
+        property real barHeight: (barIsIsland ? islandShape === "float" : Config.options.bar.cornerStyle === 1) ?
             (baseBarHeight + root.sizes.hyprlandGapsOut * 2) : baseBarHeight
         property real barCenterSideModuleWidth: Config.options?.bar.verbose ? 360 : 140
         property real barCenterSideModuleWidthShortened: 280
@@ -1643,6 +1796,7 @@ Singleton {
         property real hyprlandGapsOut: 5
         property real mediaControlsWidth: 440
         property real mediaControlsHeight: 160
+        property real wavySliderHeight: 24
         property real notificationPopupWidth: 410
         // Where notification popups sit, read by the popup and by the picker in
         // Settings so the spot shown picked is always the one in use. A

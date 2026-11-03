@@ -1,3 +1,4 @@
+import qs
 import qs.services
 import qs.modules.common
 import qs.modules.common.functions
@@ -6,6 +7,7 @@ import Qt5Compat.GraphicalEffects
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Widgets
 
 DockButton {
@@ -14,8 +16,11 @@ DockButton {
     property var appListRoot
     property int delegateIndex: -1
     property real iconSize: dockRoot.fittedIconSize
-    property real countDotWidth: 10
-    property real countDotHeight: 4
+    // The window marks keep their stock proportions to the icon at any icon size.
+    readonly property real markScale: root.iconSize / Appearance.sizes.dockIconStock
+    readonly property real markGap: Math.max(2, Math.round(3 * markScale))
+    property real countDotWidth: Math.max(5, Math.round(10 * markScale))
+    property real countDotHeight: Math.max(2, Math.round(4 * markScale))
     property bool appIsActive: appToplevel?.toplevels?.find(t => (t.activated == true)) !== undefined
 
     // How many windows this button stands for. A delegate goes on answering
@@ -25,6 +30,7 @@ DockButton {
 
     readonly property bool isSeparator: appToplevel?.appId === "SEPARATOR"
     readonly property bool isFolder: appToplevel?.isFolder === true
+    readonly property bool isSidebar: root.lookupAppId === "mainstream-sidebar" || root.lookupAppId === "sidebar"
     // Which of the two ways of showing window count this button is drawing.
     // Both name the styles they want rather than the ones they do not, so a
     // style added later stays off until it is asked for, instead of switching
@@ -36,6 +42,7 @@ DockButton {
             || Config.options.dock.indicatorStyle === "dots-badge")
     readonly property bool showsBadge: !isFolder
         && (Config.options.dock.indicatorStyle === "badge"
+            || Config.options.dock.indicatorStyle === "minimal-badge"
             || Config.options.dock.indicatorStyle === "dashes-badge"
             || Config.options.dock.indicatorStyle === "dots-badge")
         && windowCount >= 2
@@ -59,13 +66,14 @@ DockButton {
 
     readonly property var desktopEntry: {
         // guessDesktopEntry() resolves through DesktopEntries.byId(), a plain
-        // function call that registers no dependency, so read AppSearch's
-        // records to make the database itself one. They are replaced after
-        // every rescan, when a .desktop change can alter an app while the
-        // count stays the same, and when the copy of a looked-up entry lands.
-        AppSearch.records;
+        // function call that registers no dependency, so read the entry list to
+        // make the database itself one. The list value, not its length: a
+        // rescan after a .desktop change replaces entry objects while the
+        // count stays the same, and a length dependency would leave this
+        // binding holding a dead object showing the pre-rescan icon.
+        DesktopEntries.applications.values;
         root.lookupAttempt;
-        if (root.isFolder) return null;
+        if (root.isFolder || root.isSidebar) return null;
         return AppSearch.guessDesktopEntry(root.lookupAppId);
     }
 
@@ -75,7 +83,7 @@ DockButton {
         // here is what broke the binding in the first place.
         property int retryCount: 5
         interval: 1000
-        running: !root.isSeparator && !root.isFolder && root.desktopEntry === null && retryCount > 0
+        running: !root.isSeparator && !root.isFolder && !root.isSidebar && root.desktopEntry === null && retryCount > 0
         repeat: true
         onTriggered: {
             retryCount--;
@@ -138,10 +146,11 @@ DockButton {
     }
     // Set by the list, not by a MouseArea here — see pointerIsOver in DockApps.
     property bool pointerOver: false
+    bubbleHovered: root.pointerOver
     // How much of the halo is showing. The button owns this rather than the
     // loader that draws it, because its own stacking has to follow the fade
     // out as well as the fade in.
-    property real glowFade: root.pointerOver ? 1 : 0
+    property real glowFade: Appearance.sizes.dockHoverEffect === "glow" && root.pointerOver ? 1 : 0
     Behavior on glowFade {
         animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
     }
@@ -156,24 +165,21 @@ DockButton {
         x: dockRoot.dockVertical ? 0 : root.dragTranslate
         y: dockRoot.dockVertical ? root.dragTranslate : 0
         Behavior on x {
-            enabled: !root.isDragged && !appListRoot._suppressTranslateAnim
+            enabled: !root.isDragged && !!appListRoot && !appListRoot._suppressTranslateAnim
             animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
         }
         Behavior on y {
-            enabled: !root.isDragged && !appListRoot._suppressTranslateAnim
+            enabled: !root.isDragged && !!appListRoot && !appListRoot._suppressTranslateAnim
             animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
         }
     }
 
     Loader {
         active: isSeparator
-        anchors {
-            fill: parent
-            topMargin: dockRoot.dockVertical ? 0 : dockVisualBackground.margin + dockRow.padding + Appearance.rounding.normal
-            bottomMargin: dockRoot.dockVertical ? 0 : dockVisualBackground.margin + dockRow.padding + Appearance.rounding.normal
-            leftMargin: dockRoot.dockVertical ? dockVisualBackground.margin + dockRow.padding + Appearance.rounding.normal : 0
-            rightMargin: dockRoot.dockVertical ? dockVisualBackground.margin + dockRow.padding + Appearance.rounding.normal : 0
-        }
+        anchors.centerIn: parent
+        anchors.alignWhenCentered: false
+        width: item?.implicitWidth ?? 0
+        height: item?.implicitHeight ?? 0
         sourceComponent: DockSeparator {}
     }
 
@@ -204,7 +210,7 @@ DockButton {
                 var mapped = mapToItem(appListRoot, event.x, event.y);
                 appListRoot.dragStartCursorPos = dockRoot.dockVertical ? mapped.y : mapped.x;
                 appListRoot.dragCursorPos = appListRoot.dragStartCursorPos;
-                appListRoot.slotSize = (dockRoot.dockVertical ? root.height : root.width) + 2;
+                appListRoot.slotSize = (dockRoot.dockVertical ? root.height : root.width) + appListRoot.listViewRef.spacing;
                 appListRoot.dragging = true;
             }
             if (dragActive) {
@@ -233,6 +239,11 @@ DockButton {
     }
 
     onClicked: {
+        // Over the Alt+Tab overview an app picks among its windows there.
+        if (dockRoot.overWindowOverview && !root.isFolder && !root.isSidebar) {
+            GlobalStates.windowOverviewAppClicked(root.appToplevel);
+            return;
+        }
         if (root.isFolder) {
             // Toggle folder popup directly above this icon
             if (appListRoot.folderPopupShow && appListRoot.clickedButton === root) {
@@ -241,6 +252,13 @@ DockButton {
                 const folderId = appToplevel.appId.substring(TaskbarApps.folderPrefix.length);
                 const folder = AppFolderManager.getFolder(folderId);
                 if (folder) appListRoot.showFolderPopup(root, folder);
+            }
+        } else if (root.isSidebar) {
+            if (root.windowCount > 0) {
+                appListRoot.focusToplevel(root.appToplevel?.toplevels?.[0]);
+            } else {
+                launchAnims.play(Config.options.dock.launchAnimation);
+                Hyprland.dispatch('hl.dsp.global("quickshell:sidebarLeftOpenDetached")');
             }
         } else if (root.windowCount > 1) {
             // Multiple windows: toggle the preview so there's something to pick between
@@ -257,6 +275,7 @@ DockButton {
         } else {
             // Only here: opening a folder or toggling a window preview is not a
             // launch, and animating those would say something happened that did not.
+            GlobalStates.overviewOpen = false;
             launchAnims.play(Config.options.dock.launchAnimation);
             root.desktopEntry?.execute();
         }
@@ -281,7 +300,11 @@ DockButton {
     }
 
     middleClickAction: () => {
-        if (!root.isFolder) root.desktopEntry?.execute();
+        if (root.isSidebar) {
+            Hyprland.dispatch('hl.dsp.global("quickshell:sidebarLeftOpenDetached")');
+        } else if (!root.isFolder) {
+            root.desktopEntry?.execute();
+        }
     }
 
     altAction: () => {
@@ -290,7 +313,12 @@ DockButton {
 
     contentItem: Loader {
         active: !isSeparator
-        sourceComponent: Item {
+        sourceComponent: regularIcon
+    }
+
+    Component {
+        id: regularIcon
+        Item {
             anchors.centerIn: parent
             width: root.iconSize
             height: root.iconSize
@@ -301,6 +329,27 @@ DockButton {
 
             Behavior on scale {
                 NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
+            }
+
+            // One small mark for any number of windows, clipped at the screen
+            // edge just like the running mark in the Activities overview dock.
+            Item {
+                anchors.centerIn: parent
+                width: root.iconSize + 8
+                height: width
+                clip: true
+                visible: (Config.options.dock.indicatorStyle === "minimal" || Config.options.dock.indicatorStyle === "minimal-badge") && root.windowCount > 0 && !root.isFolder
+
+                Rectangle {
+                    width: 4
+                    height: 4
+                    radius: Appearance.rounding.full
+                    color: dockRoot.content.colOnLayer0
+                    x: dockRoot.dockEdge === "left" ? 1 - width
+                        : dockRoot.dockEdge === "right" ? parent.width - 1 : (parent.width - width) / 2
+                    y: dockRoot.dockEdge === "top" ? 1 - height
+                        : dockRoot.dockEdge === "bottom" ? parent.height - 1 : (parent.height - height) / 2
+                }
             }
 
             // Hover glow. Declared before the icon so it is drawn behind it —
@@ -387,37 +436,15 @@ DockButton {
                     verticalCenter: parent.verticalCenter
                 }
                 active: root.isFolder
-                sourceComponent: Rectangle {
-                    implicitWidth: root.iconSize
-                    implicitHeight: root.iconSize
-                    radius: Appearance.rounding.small
+                sourceComponent: DockFolderTile {
+                    size: root.iconSize
+                    appIds: root.folderAppIds
                     color: dockRoot.content.colLayer1
-                    border.width: 1
                     border.color: dockRoot.content.colLayer0BorderOnLayer1
-
-                    Grid {
-                        anchors.centerIn: parent
-                        columns: 2
-                        spacing: 1
-
-                        Repeater {
-                            model: root.folderAppIds
-
-                            IconImage {
-                                id: folderTileIcon
-                                required property var modelData
-                                source: Quickshell.iconPath(AppSearch.guessIcon(modelData), "image-missing")
-                                implicitSize: root.iconSize * 0.4
-                                mipmap: true
-                                // Folder tiles live in the same scaled Item
-                                // as the main app icon, so they need the
-                                // same maxScale-bumped sourceSize to stay
-                                // crisp through the hover animation.
-                                backer.sourceSize.width: root.rasterFor(root.iconSize * 0.4)
-                                backer.sourceSize.height: root.rasterFor(root.iconSize * 0.4)
-                            }
-                        }
-                    }
+                    // Folder tiles live in the same scaled Item as the main app
+                    // icon, so they need the same maxScale-bumped sourceSize to
+                    // stay crisp through the hover animation.
+                    rasterSize: root.rasterFor(root.iconSize * 0.4)
                 }
             }
 
@@ -491,8 +518,8 @@ DockButton {
             }
 
             GridLayout {
-                columnSpacing: 3
-                rowSpacing: 3
+                columnSpacing: root.markGap
+                rowSpacing: root.markGap
                 columns: dockRoot.dockVertical ? 1 : -1
                 rows: dockRoot.dockVertical ? -1 : 1
                 anchors {
@@ -506,10 +533,10 @@ DockButton {
                     // them into stretched slivers.
                     left: dockRoot.dockEdge === "right" ? parent.horizontalCenter : undefined
                     right: dockRoot.dockEdge === "left" ? parent.horizontalCenter : undefined
-                    topMargin: dockRoot.dockEdge === "bottom" ? 2 : 0
-                    bottomMargin: dockRoot.dockEdge === "top" ? 2 : 0
-                    leftMargin: dockRoot.dockEdge === "right" ? root.iconSize / 2 + 3 : 0
-                    rightMargin: dockRoot.dockEdge === "left" ? root.iconSize / 2 + 3 : 0
+                    topMargin: dockRoot.dockEdge === "bottom" ? root.markGap - 1 : 0
+                    bottomMargin: dockRoot.dockEdge === "top" ? root.markGap - 1 : 0
+                    leftMargin: dockRoot.dockEdge === "right" ? root.iconSize / 2 + root.markGap : 0
+                    rightMargin: dockRoot.dockEdge === "left" ? root.iconSize / 2 + root.markGap : 0
                     horizontalCenter: dockRoot.dockVertical ? undefined : parent.horizontalCenter
                     verticalCenter: dockRoot.dockVertical ? parent.verticalCenter : undefined
                 }

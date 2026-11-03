@@ -10,10 +10,24 @@ import qs.modules.common.functions
 
 RowLayout {
     id: root
-    spacing: 6
+    property var contentColors: Appearance.launcherContent
+    property bool quietStyle: false
+    property real uiScale: 1
+    spacing: 6 * root.uiScale
+    readonly property real actionSize: 40 * uiScale
+    readonly property real searchIconSize: 22 * uiScale
+    readonly property real preferredWidth: searchInput.implicitWidth + searchIconSize
+        + 8 * uiScale + actionSize * 3 + spacing * 4 + 4 * uiScale
     property bool animateWidth: false
     property alias searchInput: searchInput
     property string searchingText
+    property bool inputFocused: GlobalStates.overviewOpen
+    property bool fillSearchWidth: false
+    property bool synchronizeQuery: true
+    property bool completeFirstResult: true
+    property var dismiss: () => { GlobalStates.overviewOpen = false; }
+    signal accepted()
+    signal keyPressed(var event)
 
     function forceFocus() {
         searchInput.forceActiveFocus();
@@ -34,10 +48,12 @@ RowLayout {
     
     MaterialShapeWrappedMaterialSymbol {
         id: searchIcon
+        visible: !root.quietStyle
         Layout.alignment: Qt.AlignVCenter
-        iconSize: Appearance.font.pixelSize.huge
-        color: Appearance.launcherContent.colSecondaryContainer
-        colSymbol: Appearance.launcherContent.colOnSecondaryContainer
+        iconSize: Appearance.font.pixelSize.huge * root.uiScale
+        padding: 6 * root.uiScale
+        color: root.contentColors.colSecondaryContainer
+        colSymbol: root.contentColors.colOnSecondaryContainer
         shape: switch(root.searchPrefixType) {
             case SearchBar.SearchPrefixType.Action: return MaterialShape.Shape.Pill;
             case SearchBar.SearchPrefixType.App: return MaterialShape.Shape.Clover4Leaf;
@@ -60,21 +76,36 @@ RowLayout {
             default: return "search";
         }
     }
+    MaterialSymbol {
+        visible: root.quietStyle
+        Layout.minimumWidth: root.searchIconSize
+        Layout.maximumWidth: root.searchIconSize
+        Layout.minimumHeight: root.searchIconSize
+        Layout.maximumHeight: root.searchIconSize
+        Layout.leftMargin: 8 * root.uiScale
+        Layout.alignment: Qt.AlignVCenter
+        text: searchIcon.text
+        iconSize: 22 * root.uiScale
+        color: root.contentColors.colOnLayer0
+    }
     ToolbarTextField { // Search box
         id: searchInput
-        Layout.topMargin: 4
-        Layout.bottomMargin: 4
-        implicitHeight: 40
-        focus: GlobalStates.overviewOpen
-        font.pixelSize: Appearance.font.pixelSize.small
-        colBackground: Appearance.launcherContent.colLayer1
-        radius: RoundedCorners.on ? Appearance.rounding.full : 0
-        color: Appearance.launcherContent.colOnLayer1Field
-        placeholderTextColor: Appearance.launcherContent.colSubtextField
-        selectedTextColor: Appearance.launcherContent.colOnSecondaryContainer
-        selectionColor: Appearance.launcherContent.colSecondaryContainer
+        Layout.topMargin: 4 * root.uiScale
+        Layout.bottomMargin: 4 * root.uiScale
+        Layout.fillWidth: root.fillSearchWidth
+        Layout.minimumWidth: root.fillSearchWidth ? 0 : -1
+        implicitHeight: 40 * root.uiScale
+        focus: root.inputFocused
+        font.pixelSize: Appearance.font.pixelSize.small * root.uiScale
+        padding: 10 * root.uiScale
+        colBackground: root.quietStyle ? "transparent" : root.contentColors.colLayer1
+        radius: RoundedCorners.on ? Appearance.rounding.full * root.uiScale : 0
+        color: root.quietStyle ? root.contentColors.colOnLayer0 : root.contentColors.colOnLayer1Field
+        placeholderTextColor: root.quietStyle ? root.contentColors.colSubtext : root.contentColors.colSubtextField
+        selectedTextColor: root.contentColors.colOnSecondaryContainer
+        selectionColor: root.contentColors.colSecondaryContainer
         placeholderText: Translation.tr("Search, calculate or run")
-        implicitWidth: root.searchingText == "" ? Appearance.sizes.searchWidthCollapsed : Appearance.sizes.searchWidth
+        implicitWidth: (root.searchingText == "" ? Appearance.sizes.searchWidthCollapsed : Appearance.sizes.searchWidth) * root.uiScale
 
         Behavior on implicitWidth {
             id: searchWidthBehavior
@@ -86,20 +117,13 @@ RowLayout {
             }
         }
 
-        onTextChanged: LauncherSearch.query = text
-
-        onAccepted: {
-            if (appResults.count > 0) {
-                // Get the first visible delegate and trigger its click
-                let firstItem = appResults.itemAtIndex(0);
-                if (firstItem && firstItem.clicked) {
-                    firstItem.clicked();
-                }
-            }
-        }
+        onTextChanged: if (root.synchronizeQuery) LauncherSearch.query = text
+        onAccepted: root.accepted()
 
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_Tab) {
+            root.keyPressed(event);
+            if (event.accepted) return;
+            if (event.key === Qt.Key_Tab && root.completeFirstResult) {
                 if (LauncherSearch.results.length === 0) return;
                 const tabbedText = LauncherSearch.results[0].name;
                 LauncherSearch.query = tabbedText;
@@ -109,14 +133,16 @@ RowLayout {
         }
     }
 
-    IconToolbarButton {
-        Layout.topMargin: 4
-        Layout.bottomMargin: 4
-        colBackgroundHover: Appearance.launcherContent.colLayer1Hover
-        colRipple: Appearance.launcherContent.colLayer1Active
-        colText: (hovered || down) ? Appearance.launcherContent.colOnSurfaceVariantHover : Appearance.launcherContent.colOnSurfaceVariant
+    SearchActionButton {
+        uiScale: root.uiScale
+        fixedWidth: root.quietStyle ? root.actionSize : 0
+        Layout.topMargin: 4 * root.uiScale
+        Layout.bottomMargin: 4 * root.uiScale
+        colBackgroundHover: root.contentColors.colLayer1Hover
+        colRipple: root.contentColors.colLayer1Active
+        colText: (hovered || down) ? root.contentColors.colOnSurfaceVariantHover : root.contentColors.colOnSurfaceVariant
         onClicked: {
-            GlobalStates.overviewOpen = false;
+            root.dismiss();
             lensDelayTimer.start();
         }
         text: "image_search"
@@ -132,10 +158,12 @@ RowLayout {
         }
     }
 
-    IconToolbarButton {
+    SearchActionButton {
+        uiScale: root.uiScale
+        fixedWidth: root.quietStyle ? root.actionSize : 0
         id: songRecButton
-        Layout.topMargin: 4
-        Layout.bottomMargin: 4
+        Layout.topMargin: 4 * root.uiScale
+        Layout.bottomMargin: 4 * root.uiScale
         toggled: SongRec.running
         onClicked: SongRec.toggleRunning()
         text: "music_cast"
@@ -144,8 +172,8 @@ RowLayout {
             text: Translation.tr("Recognize music")
         }
 
-        colText: toggled ? Appearance.launcherContent.colOnPrimaryToggle
-            : hovered ? Appearance.launcherContent.colOnSurfaceVariantHigh : Appearance.launcherContent.colOnSurfaceVariant
+        colText: toggled ? root.contentColors.colOnPrimaryToggle
+            : hovered ? root.contentColors.colOnSurfaceVariantHigh : root.contentColors.colOnSurfaceVariant
         background: MaterialShape {
             RotationAnimation on rotation {
                 running: songRecButton.toggled
@@ -164,9 +192,9 @@ RowLayout {
             }
             color: {
                 if (songRecButton.toggled) {
-                    return songRecButton.hovered ? Appearance.launcherContent.colPrimaryToggleHover : Appearance.launcherContent.colPrimary
+                    return songRecButton.hovered ? root.contentColors.colPrimaryToggleHover : root.contentColors.colPrimary
                 } else {
-                    return songRecButton.hovered ? Appearance.launcherContent.colSurfaceContainerHigh : ColorUtils.transparentize(Appearance.launcherContent.colSurfaceContainerHigh)
+                    return songRecButton.hovered ? root.contentColors.colSurfaceContainerHigh : ColorUtils.transparentize(root.contentColors.colSurfaceContainerHigh)
                 }
             }
             Behavior on color {
@@ -175,15 +203,17 @@ RowLayout {
         }
     }
 
-    IconToolbarButton {
-        Layout.topMargin: 4
-        Layout.bottomMargin: 4
-        Layout.rightMargin: 4
-        colBackgroundHover: Appearance.launcherContent.colLayer1Hover
-        colRipple: Appearance.launcherContent.colLayer1Active
-        colText: (hovered || down) ? Appearance.launcherContent.colOnSurfaceVariantHover : Appearance.launcherContent.colOnSurfaceVariant
+    SearchActionButton {
+        uiScale: root.uiScale
+        fixedWidth: root.quietStyle ? root.actionSize : 0
+        Layout.topMargin: 4 * root.uiScale
+        Layout.bottomMargin: 4 * root.uiScale
+        Layout.rightMargin: 4 * root.uiScale
+        colBackgroundHover: root.contentColors.colLayer1Hover
+        colRipple: root.contentColors.colLayer1Active
+        colText: (hovered || down) ? root.contentColors.colOnSurfaceVariantHover : root.contentColors.colOnSurfaceVariant
         onClicked: {
-            GlobalStates.overviewOpen = false;
+            root.dismiss();
             GlobalStates.sessionOpen = true;
         }
         text: "power_settings_new"

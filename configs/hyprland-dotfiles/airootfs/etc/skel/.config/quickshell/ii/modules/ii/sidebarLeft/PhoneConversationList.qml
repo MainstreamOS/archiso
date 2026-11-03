@@ -1,0 +1,422 @@
+import qs.services
+import qs.modules.common
+import qs.modules.common.widgets
+import qs.modules.common.functions
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Quickshell.Widgets
+
+// The phone's conversations, newest first.
+Item {
+    id: root
+    signal opened(int thread)
+    signal newMessage()
+    signal sendFilesRequested()
+
+    property string searchQuery: ""
+    property bool showHidden: false
+    property var deleteThreads: []
+    onShowHiddenChanged: root.deleteThreads = []
+    readonly property var displayedConversations: root.showHidden ? Phone.hiddenConversations : Phone.visibleConversations
+
+    Connections {
+        target: Phone
+        function onDeviceIdChanged() {
+            root.showHidden = false;
+            root.deleteThreads = [];
+            conversationMenu.close();
+        }
+    }
+
+    readonly property var filteredConversations: {
+        const all = root.displayedConversations;
+        const deduped = [];
+        const seenThreads = new Set();
+        for (const item of all) {
+            if (!item) continue;
+            if (item.thread !== undefined && item.thread !== null && item.thread >= 0) {
+                if (seenThreads.has(item.thread)) continue;
+                seenThreads.add(item.thread);
+                deduped.push(item);
+            } else {
+                const hasReal = all.some(c => c && c.thread >= 0 && Phone.sameAddresses(c.addresses, item.addresses));
+                if (!hasReal) deduped.push(item);
+            }
+        }
+        const q = root.searchQuery.trim().toLowerCase();
+        if (q.length === 0) return deduped;
+        return deduped.filter(item => {
+            const privacy = Config.options.sidebar.phone.privacy;
+            const title = Phone.privateTitle(item).toLowerCase();
+            const preview = privacy.showMessage ? String(Phone.previewText(item) ?? "").toLowerCase() : "";
+            const addr = privacy.showPhoneNumber ? Phone.addressText(item.addresses?.[0] ?? item.sender).toLowerCase() : "";
+            return title.includes(q) || preview.includes(q) || addr.includes(q);
+        });
+    }
+
+    // Today shows the time, this week the day, older the date.
+    function when(ms): string {
+        const date = new Date(ms);
+        const now = new Date();
+        if (date.toDateString() === now.toDateString())
+            return date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat);
+        if (now - date < 6 * 24 * 3600 * 1000)
+            return date.toLocaleDateString(Qt.locale(), "ddd");
+        return date.toLocaleDateString(Qt.locale(), Locale.ShortFormat);
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 8
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 38
+                radius: 10
+                color: Appearance.surfaces.raised
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    MaterialSymbol {
+                        text: "search"
+                        iconSize: 17
+                        color: Appearance.colors.colSubtext
+                    }
+
+                    TextField {
+                        id: searchInput
+                        Layout.fillWidth: true
+                        placeholderText: Translation.tr("Search conversations…")
+                        color: Appearance.colors.colOnLayer1
+                        placeholderTextColor: Appearance.colors.colSubtext
+                        font.family: Appearance.font.family.main
+                        font.pixelSize: Appearance.font.pixelSize.small
+                        background: null
+                        onTextChanged: root.searchQuery = text
+                        Keys.onEscapePressed: {
+                            if (text.length > 0) text = "";
+                            else focus = false;
+                        }
+                    }
+
+                    RippleButton {
+                        visible: searchInput.text.length > 0
+                        implicitWidth: 22
+                        implicitHeight: 22
+                        buttonRadius: Appearance.rounding.full
+                        onClicked: {
+                            searchInput.text = "";
+                            searchInput.forceActiveFocus();
+                        }
+                        contentItem: MaterialSymbol {
+                            anchors.centerIn: parent
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "close"
+                            iconSize: 14
+                            color: Appearance.colors.colSubtext
+                        }
+                    }
+                }
+            }
+
+            RippleButton {
+                implicitHeight: 38
+                implicitWidth: 38
+                buttonRadius: Appearance.rounding.small
+                colBackground: root.showHidden ? Appearance.colors.colPrimaryContainer : Appearance.surfaces.raised
+                Accessible.name: root.showHidden ? Translation.tr("Show conversations") : Translation.tr("Show hidden conversations")
+                onClicked: root.showHidden = !root.showHidden
+                contentItem: MaterialSymbol {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: root.showHidden ? "visibility" : "visibility_off"
+                    iconSize: 18
+                    color: root.showHidden ? Appearance.colors.colOnPrimaryContainer : Appearance.colors.colSubtext
+                }
+                StyledToolTip {
+                    text: parent.Accessible.name
+                }
+            }
+
+            RippleButton {
+                visible: root.showHidden
+                implicitHeight: 38
+                implicitWidth: 38
+                buttonRadius: Appearance.rounding.small
+                enabled: Phone.connected && !Phone.deletingConversations && Phone.hiddenConversations.length > 0
+                Accessible.name: Translation.tr("Delete hidden messages from this desktop")
+                onClicked: root.deleteThreads = Phone.hiddenConversations.map(message => message.thread)
+                contentItem: MaterialSymbol {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: "delete_sweep"
+                    iconSize: 18
+                    color: Appearance.colors.colSubtext
+                }
+                StyledToolTip { text: parent.Accessible.name }
+            }
+
+            RippleButton {
+                implicitHeight: 38
+                implicitWidth: composeRow.implicitWidth + 24
+                buttonRadius: Appearance.rounding.small
+                enabled: Phone.reachable
+                colBackground: Appearance.colors.colPrimaryContainer
+                colBackgroundHover: Appearance.colors.colPrimaryContainerHover
+                colRipple: Appearance.colors.colPrimaryContainerActive
+                onClicked: root.newMessage()
+
+                contentItem: RowLayout {
+                    id: composeRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    MaterialSymbol {
+                        text: "edit_square"
+                        iconSize: 16
+                        color: Appearance.colors.colOnPrimaryContainer
+                    }
+                    StyledText {
+                        text: Translation.tr("Compose")
+                        font.pixelSize: Appearance.font.pixelSize.small
+                        font.weight: Font.DemiBold
+                        color: Appearance.colors.colOnPrimaryContainer
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: deleteConfirmation.implicitHeight + 24
+            visible: root.deleteThreads.length > 0
+            radius: Appearance.rounding.small
+            color: Appearance.surfaces.raised
+
+            ColumnLayout {
+                id: deleteConfirmation
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 10
+                StyledText {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: Translation.tr("Delete messages in hidden conversations from this desktop? Messages on your phone are kept.")
+                    font.pixelSize: Appearance.font.pixelSize.small
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignRight
+                    IslandButton {
+                        contentColors: Appearance.colors
+                        text: Translation.tr("Cancel")
+                        onClicked: root.deleteThreads = []
+                    }
+                    IslandButton {
+                        contentColors: Appearance.colors
+                        text: Translation.tr("Delete")
+                        symbol: "delete"
+                        enabled: Phone.connected && !Phone.deletingConversations
+                        onClicked: {
+                            Phone.deleteHiddenConversations(Phone.deviceId, root.deleteThreads);
+                            root.deleteThreads = [];
+                        }
+                    }
+                }
+            }
+        }
+
+        StyledListView {
+            id: list
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            spacing: 2
+            cacheBuffer: 2000
+            popin: false
+            animateAppearance: false
+            model: root.filteredConversations
+
+            delegate: Item {
+                id: row
+                required property int index
+                required property var modelData
+                readonly property string title: Phone.privateTitle(row.modelData)
+                readonly property bool unread: !Phone.isOutgoing(row.modelData) && !row.modelData.read
+
+                width: list.width
+                implicitHeight: 64
+
+                GroupedRowBackground {
+                    id: rowBg
+                    anchors.fill: parent
+                    // The Dynamic Island's grouped rows, raised on the page frame.
+                    index: row.index
+                    count: list.count
+                    color: {
+                        if (rowMouse.pressed) {
+                            return row.unread
+                                ? ColorUtils.mix(Appearance.colors.colPrimaryContainerActive, Appearance.colors.colLayer2Active, 0.55)
+                                : Appearance.colors.colLayer2Active;
+                        }
+                        if (rowMouse.containsMouse) {
+                            return row.unread
+                                ? ColorUtils.mix(Appearance.colors.colPrimaryContainerHover, Appearance.colors.colLayer2Hover, 0.55)
+                                : Appearance.colors.colLayer2Hover;
+                        }
+                        return row.unread ? Appearance.surfaces.unread : Appearance.surfaces.raised;
+                    }
+
+                    Behavior on color {
+                        animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                    }
+                }
+
+                MouseArea {
+                    id: rowMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: mouse => {
+                        if (mouse.button === Qt.RightButton) {
+                            conversationMenu.thread = row.modelData.thread;
+                            const point = rowMouse.mapToItem(root, mouse.x, mouse.y);
+                            conversationMenu.openAt(point.x, point.y);
+                        } else root.opened(row.modelData.thread);
+                    }
+                }
+
+                RowLayout {
+                    id: rowLayout
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 14
+                    spacing: 12
+
+                    ClippingRectangle {
+                        implicitWidth: 42
+                        implicitHeight: 42
+                        radius: 21
+                        color: ColorUtils.mix(Appearance.colors.colLayer3, Appearance.colors.colLayer2, 0.65)
+
+                        Image {
+                            id: avatarImg
+                            anchors.fill: parent
+                            source: Config.options.sidebar.phone.privacy.showContactPicture ? Phone.conversationPicture(row.modelData) : ""
+                            fillMode: Image.PreserveAspectCrop
+                            sourceSize: Qt.size(84, 84)
+                            asynchronous: true
+                            visible: Config.options.sidebar.phone.privacy.showContactPicture && status === Image.Ready
+                        }
+
+                        StyledText {
+                            anchors.centerIn: parent
+                            visible: !avatarImg.visible
+                            text: Phone.privateInitial(row.title)
+                            font.pixelSize: Appearance.font.pixelSize.normal
+                            font.weight: Font.DemiBold
+                            color: Appearance.colors.colOnLayer2
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 3
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: row.title
+                                elide: Text.ElideRight
+                                font.pixelSize: Appearance.font.pixelSize.normal
+                                font.weight: row.unread ? Font.DemiBold : Font.Medium
+                                color: Appearance.colors.colOnLayer1
+                            }
+                            StyledText {
+                                text: root.when(row.modelData.date)
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                color: Appearance.colors.colSubtext
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: !Config.options.sidebar.phone.privacy.showMessage
+                                    ? Translation.tr("Message contents hidden")
+                                    : (Phone.isOutgoing(row.modelData) ? Translation.tr("You: ") : "") + Phone.previewText(row.modelData)
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                                font.pixelSize: Appearance.font.pixelSize.small
+                                color: row.unread ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
+                            }
+                            Rectangle {
+                                visible: row.unread
+                                implicitWidth: 8
+                                implicitHeight: 8
+                                radius: 4
+                                color: Appearance.colors.colPrimary
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        IslandButton {
+            Layout.fillWidth: true
+            contentColors: Appearance.colors
+            enabled: Phone.reachable
+            symbol: "send_to_mobile"
+            text: Translation.tr("Drop files anywhere to send to %1").arg(Phone.device?.name ?? Translation.tr("your phone"))
+            onClicked: root.sendFilesRequested()
+        }
+    }
+
+    ContextMenuPopup {
+        id: conversationMenu
+        property int thread: -1
+        width: 260
+        implicitHeight: menuColumn.implicitHeight + topPadding + bottomPadding
+        focus: true
+        contentItem: ColumnLayout {
+            id: menuColumn
+            spacing: 2
+            ContextMenuItem {
+                enabled: conversationMenu.thread >= 0
+                iconName: root.showHidden ? "visibility" : "visibility_off"
+                label: root.showHidden ? Translation.tr("Unhide conversation") : Translation.tr("Hide on this desktop")
+                Accessible.name: label
+                onClicked: {
+                    conversationMenu.close();
+                    Phone.setConversationHidden(conversationMenu.thread, !root.showHidden);
+                }
+                StyledToolTip {
+                    text: Translation.tr("Only affects this desktop. New incoming messages show the conversation again.")
+                }
+            }
+        }
+    }
+
+    PagePlaceholder {
+        shown: root.displayedConversations.length === 0
+        icon: root.showHidden ? "visibility_off" : "sms"
+        title: root.showHidden ? Translation.tr("No hidden conversations")
+            : Phone.conversationsLoaded ? Translation.tr("No conversations") : Translation.tr("Loading conversations")
+        description: Phone.reachable ? "" : Translation.tr("Your phone is not reachable right now.")
+    }
+}

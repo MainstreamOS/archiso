@@ -43,7 +43,13 @@ RowLayout {
     // up with the sliders around it: the swatch starts where their tracks
     // start and the button ends where their tracks end.
     property real sliderWidth: 0
+    // A transparency slider in the picker, for the one color that wants it.
+    property bool showsOpacity: false
+    property real opacityValue: 1
+    property real opacityFrom: 0
+    property real defaultOpacity: 1
     signal edited(string newValue)
+    signal opacityEdited(real newValue)
 
     // StyledToolTip reads `hovered` off its parent and counts a parent that
     // has no such property as hovered, so a field without this shows an
@@ -148,6 +154,7 @@ RowLayout {
                 // at open is the state a walked-away audition returns to, and
                 // only Accept or Reset makes the change a decision.
                 property string valueAtOpen: ""
+                property real opacityAtOpen: 1
                 property bool decided: false
                 // Every value the picker has sent out while open. A drag commits
                 // many in a row and each comes back through the config a beat
@@ -169,6 +176,7 @@ RowLayout {
                     sat = c.hsvSaturation
                     bright = c.hsvValue
                     valueAtOpen = root.value
+                    opacityAtOpen = root.opacityValue
                     emitted = ({})
                     decided = false
                     open()
@@ -177,6 +185,8 @@ RowLayout {
                 onClosed: {
                     if (!decided && root.value !== valueAtOpen)
                         root.edited(valueAtOpen)
+                    if (!decided && root.showsOpacity && root.opacityValue !== opacityAtOpen)
+                        root.opacityEdited(opacityAtOpen)
                 }
                 // Every drag goes out the same door a typed hex does, so the
                 // swatch, the box and whatever is being colored all follow the
@@ -309,6 +319,26 @@ RowLayout {
 
                     RowLayout {
                         Layout.fillWidth: true
+                        visible: root.showsOpacity
+                        spacing: 8
+                        MaterialSymbol {
+                            text: "opacity"
+                            iconSize: Appearance.font.pixelSize.larger
+                            color: Appearance.colors.colOnLayer1
+                            StyledToolTip { text: Translation.tr("Transparency") }
+                        }
+                        StyledSlider {
+                            Layout.fillWidth: true
+                            configuration: StyledSlider.Configuration.XS
+                            from: root.opacityFrom
+                            to: 1
+                            value: root.opacityValue
+                            onMoved: root.opacityEdited(value)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
                         spacing: 10
 
                         // Only where an absent color means something: a field
@@ -322,6 +352,8 @@ RowLayout {
                                 picker.emitted[""] = true
                                 if (root.value !== "")
                                     root.edited("")
+                                if (root.showsOpacity && root.opacityValue !== root.defaultOpacity)
+                                    root.opacityEdited(root.defaultOpacity)
                                 picker.close()
                             }
                             StyledToolTip { text: Translation.tr("Hand this color back to the palette") }

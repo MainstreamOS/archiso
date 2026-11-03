@@ -28,6 +28,28 @@ Scope { // Scope
             id: perScreen
             required property var modelData
 
+            // Keep the reserved strip on Top while the interactive Dock rises
+            // over a launcher. Moving the reservation between layers makes
+            // pinned sidebars get arranged before it and grow behind the UI.
+            PanelWindow {
+                screen: perScreen.modelData
+                visible: root.pinned && !GlobalStates.screenLocked
+                color: "transparent"
+                implicitWidth: 1
+                implicitHeight: 1
+                anchors {
+                    top: Appearance.sizes.dockEdge !== "bottom"
+                    bottom: Appearance.sizes.dockEdge !== "top"
+                    left: Appearance.sizes.dockEdge !== "right"
+                    right: Appearance.sizes.dockEdge !== "left"
+                }
+                exclusiveZone: dockWindowLoader.item?.reservedThickness ?? 0
+                WlrLayershell.namespace: "quickshell:dockReservation"
+                WlrLayershell.layer: WlrLayer.Top
+                WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+                mask: Region {}
+            }
+
             Loader {
                 id: dockWindowLoader
                 active: true
@@ -47,15 +69,24 @@ Scope { // Scope
                     // Window
                     screen: perScreen.modelData
                     visible: !GlobalStates.screenLocked
+                    contentItem.visible: !GlobalStates.scrollOverviewOpen
 
             // The dock never shares an edge with the bar: a dock stacked on
             // it gets displaced by the bar's exclusive zone and the hover
             // strip lands on the bar instead of the screen edge. The shared
             // resolver flips a configured edge the bar holds.
             readonly property string dockEdge: Appearance.sizes.dockEdge
+            readonly property bool showIconSeparators: Config.options.dock.showIconSeparators
+            readonly property bool showPinButton: Config.options.dock.showPinButton
+            readonly property bool showOverviewButton: Config.options.dock.showOverviewButton
+            readonly property bool showBackground: Appearance.sizes.dockShowBackground
+            readonly property real bodyPadding: 5
+            readonly property real rowSpacing: 3
+            readonly property real listSpacing: 2
+            readonly property real buttonInset: Appearance.sizes.hyprlandGapsOut + dockRow.padding
             // Which corners face the screen and which face the desktop, and
             // whether the pair on the edge curves outward into it.
-            // Every style but float sets the dock down on the edge. Between the
+            // Float leaves a gap from the edge. Between the
             // notch ("hug") and rect what differs is the pair of corners that
             // touches it, curving outward or squared off, and the pair facing
             // the desktop keeps its own roundness either way. The Hug strip
@@ -76,14 +107,14 @@ Scope { // Scope
             // The strip's outline overlaps its fill, which only shows through
             // a see-through surface, and there the two are painted opaque and
             // faded together the way the notch's pieces are.
-            readonly property bool spanSeamFix: dockSpans && Config.options.dock.showBackground
+            readonly property bool spanSeamFix: dockSpans && dockRoot.showBackground
                 && Appearance.colors.colDockBackground.a < 1
             // Only the notch draws pieces beside the body, so only it needs the
             // group flattened before the surface is faded, and only it needs the
             // room outside the body that those pieces occupy.
             // The lap the fix hides only shows through a see-through surface,
             // so a fully opaque one skips the flattening pass and its texture.
-            readonly property bool notchSeamFix: dockFlares && Config.options.dock.showBackground
+            readonly property bool notchSeamFix: dockFlares && dockRoot.showBackground
                 && Appearance.colors.colDockBackground.a < 1
             readonly property real flareBleed: notchSeamFix ? Appearance.rounding.dock : 0
             // The notch and the Hug strip never show together; either way their
@@ -96,15 +127,15 @@ Scope { // Scope
             // fractional scale can leave between them; the body's outline is a
             // pixel of its own, so the lap has to clear that too or a stub of it
             // is left standing at the join.
-            readonly property int flareLap: 1 + (Config.options.dock.showBackground ? 1 : 0)
+            readonly property int flareLap: 1 + (dockRoot.showBackground ? 1 : 0)
             // The screen gap sits on the edge side, the shadow's breathing room
             // on the center side. Hugging leaves no gap on the edge side: the
             // concave corners have nothing to curve into if the dock floats
             // away from it.
-            readonly property real edgeGap: dockHugging ? 0 : Appearance.sizes.hyprlandGapsOut
+            readonly property real edgeGap: Appearance.sizes.dockEdgeGap
             // The room between the body and the desktop-facing side of the
             // part that slides, which the Hug strip's curves hang in.
-            readonly property real deskInset: Appearance.sizes.elevationMargin + spanOverhang
+            readonly property real deskInset: Appearance.sizes.dockDeskInset + spanOverhang
             // The Hug strip runs a pixel past both ends of the window, so the
             // screen's own sides never show an edge of it.
             readonly property real endInset: dockSpans ? -1 : flareBleed
@@ -127,14 +158,21 @@ Scope { // Scope
                 : dockEdge === "top" ? Edges.Bottom
                 : dockEdge === "left" ? Edges.Right : Edges.Left
 
-            property bool reveal: root.pinned || (Config.options?.dock.hoverToReveal && dockMouseArea.containsMouse) || dockApps.requestDockShow || (!ToplevelManager.activeToplevel?.activated) || GlobalStates.overviewOpen || revealGrace.running
+            // Closing the launcher leaves its blurred surface mapped through
+            // the fade and shrink. Stay above it until its configured size lands.
+            readonly property bool overLauncher: GlobalStates.overviewOpen
+                || (GlobalStates.launcherDimWindows[dockRoot.screen?.name ?? ""]?.surfaceShown ?? false)
+            readonly property bool overWindowOverview: GlobalStates.windowOverviewScreen === (dockRoot.screen?.name ?? "")
+            property bool reveal: root.pinned || (Config.options?.dock.hoverToReveal && dockMouseArea.containsMouse) || dockApps.requestDockShow || (!ToplevelManager.activeToplevel?.activated) || overLauncher || overWindowOverview || revealGrace.running
 
             // The dock is raised above the launcher's dim while the launcher
             // is open, and there it takes the colors that read over the dim.
             // Only on the screen the dim is shown on: a dock on another screen
-            // keeps its own.
+            // keeps its own. A Frost dock looks the same over the dim as anywhere
+            // else, so it keeps its own too.
             readonly property DockContent content: DockContent {
                 dimmed: GlobalStates.launcherDimScreens.includes(dockRoot.screen?.name ?? "")
+                    && (!Config.options.dock.backdrop.enable || BackdropPresets.dockIsGlass || !(backdropSource.item?.available ?? false))
             }
             // The content colors as this dock draws them. A button's fill
             // already eases to a new color on the curve the dim fades on, so
@@ -185,16 +223,20 @@ Scope { // Scope
                 right: dockRoot.dockEdge !== "left"
             }
 
-            // Raised over the overview, the dock is arranged after a pinned
-            // left sidebar and would give up that strip, though the overview
-            // covers the sidebar; reaching back over it keeps the dock where
-            // it sits the rest of the time.
-            readonly property real sidebarReach: GlobalStates.overviewOpen
-                && GlobalStates.sidebarLeftScreen === (perScreen.modelData?.name ?? "")
-                ? GlobalStates.sidebarLeftZone : 0
+            // Ignoring other reservations is what keeps the Dock still as a pinned
+            // sidebar opens: it never waits on the compositor to move that room.
+            // Only the bar's own strip along the Dock's axis is kept clear.
+            exclusionMode: ExclusionMode.Ignore
+            function axisClearance(edge, index) {
+                if (edge === Appearance.sizes.sidebarLeftEdge)
+                    return Appearance.sizes.barEdge === edge && !Config.options.bar.autoHide.enable ? Appearance.sizes.verticalBarWidth : 0;
+                return dockRoot.monitorData?.reserved?.[index] ?? 0;
+            }
             margins {
-                left: Appearance.sizes.sidebarLeftEdge === "left" && dockRoot.anchors.left ? -dockRoot.sidebarReach : 0
-                right: Appearance.sizes.sidebarLeftEdge === "right" && dockRoot.anchors.right ? -dockRoot.sidebarReach : 0
+                left: dockRoot.dockVertical ? 0 : dockRoot.axisClearance("left", 0)
+                right: dockRoot.dockVertical ? 0 : dockRoot.axisClearance("right", 2)
+                top: dockRoot.dockVertical ? dockRoot.axisClearance("top", 1) : 0
+                bottom: dockRoot.dockVertical ? dockRoot.axisClearance("bottom", 3) : 0
             }
 
             // How much of this screen the row may run along. The surface is
@@ -220,18 +262,19 @@ Scope { // Scope
             // ring is animated, so it would settle as a pulse rather than fail
             // as an error. The constants below mirror the row further down and
             // are named for the lines they come from.
-            readonly property int appButtonCount: TaskbarApps.apps.filter(a => a?.appId !== "SEPARATOR").length
-            readonly property int hairlineCount: TaskbarApps.apps.length - dockRoot.appButtonCount
+            readonly property int appButtonCount: TaskbarApps.appsWithoutSeparator.length
+            readonly property int hairlineCount: showIconSeparators ? TaskbarApps.apps.length - dockRoot.appButtonCount : 0
             readonly property real fittedIconSize: {
-                const showPin = Config.options?.dock.showPinButton ?? true;
-                const showOverview = Config.options?.dock.showOverviewButton ?? true;
+                const showPin = dockRoot.showPinButton;
+                const showOverview = dockRoot.showOverviewButton;
                 // Each app button runs 15 past its icon, from the dock's own
                 // thickness less the row padding, and carries listView.spacing
                 // twice. The ends bring a hairline and two dockRow gaps each,
                 // and the overview button its own 15. Plus the row padding and
                 // the one hairline inside the list.
                 const perButton = 17;
-                const fixed = 5 * 2 + 1 + dockRoot.appButtonCount * perButton + dockRoot.hairlineCount * 3 + (showPin ? 1 + 6 : 0) + (showOverview ? 15 + 1 + 6 : 0);
+                const separatorSpace = dockRoot.showIconSeparators ? 7 : 3;
+                const fixed = 5 * 2 + 1 + dockRoot.appButtonCount * perButton + dockRoot.hairlineCount * 3 + (showPin ? separatorSpace : 0) + (showOverview ? 15 + separatorSpace : 0);
                 const slots = (showPin ? 1 : 0) + (showOverview ? 1 : 0) + dockRoot.appButtonCount;
                 if (slots <= 0)
                     return Appearance.sizes.dockIconSize;
@@ -255,13 +298,24 @@ Scope { // Scope
             // actually resize takes all the others down with it.
             readonly property real magnifyHeadroom: Appearance.sizes.dockMagnifyHeadroomFor(dockRoot.fittedIconSize)
 
-            exclusiveZone: root.pinned ? Appearance.sizes.dockHeightFor(dockRoot.fittedIconSize) + Appearance.sizes.hyprlandGapsOut : 0
+            readonly property real reservedThickness: root.pinned
+                ? Appearance.sizes.dockHeightFor(dockRoot.fittedIconSize) + Appearance.sizes.dockEdgeGap : 0
 
             Component.onCompleted: {
                 GlobalFocusGrab.addPersistent(dockRoot);
+                registeredScreen = screen.name;
+                GlobalStates.dockWindows = Object.assign({}, GlobalStates.dockWindows, {[registeredScreen]: dockRoot});
             }
+            property string registeredScreen: ""
+            // The part of the wallpaper behind the dock, which the launcher shows under Frost too.
+            readonly property rect backdropSample: dockBackdrop.sampledRect
             Component.onDestruction: {
                 GlobalFocusGrab.removePersistent(dockRoot);
+                if (GlobalStates.dockWindows[registeredScreen] === dockRoot) {
+                    const windows = Object.assign({}, GlobalStates.dockWindows);
+                    delete windows[registeredScreen];
+                    GlobalStates.dockWindows = windows;
+                }
             }
 
             // Keep revealed briefly after the overview closes: its full-screen
@@ -273,19 +327,27 @@ Scope { // Scope
                 function onOverviewOpenChanged() {
                     if (!GlobalStates.overviewOpen) revealGrace.restart();
                 }
+                function onWindowOverviewScreenChanged() {
+                    if (!dockRoot.overWindowOverview) revealGrace.restart();
+                }
             }
 
             implicitWidth: dockRoot.dockVertical ? dockRoot.dockExtent + dockRoot.magnifyHeadroom : dockBackground.implicitWidth
             implicitHeight: dockRoot.dockVertical ? dockBackground.implicitHeight : dockRoot.dockExtent + dockRoot.magnifyHeadroom
             WlrLayershell.namespace: "quickshell:dock" + (dockRoot.dockEdge === "bottom" ? ""
                 : dockRoot.dockEdge.charAt(0).toUpperCase() + dockRoot.dockEdge.slice(1))
-            WlrLayershell.layer: GlobalStates.overviewOpen ? WlrLayer.Overlay : WlrLayer.Top
+            WlrLayershell.layer: dockRoot.overLauncher || dockRoot.overWindowOverview ? WlrLayer.Overlay : WlrLayer.Top
             color: "transparent"
 
             mask: Region {
                 item: dockRoot.dockSpans ? spanStripMask : dockMouseArea
                 Region { item: dockRoot.dockSpans ? spanIconBand : null }
                 Region { item: dockRoot.dockSpans && Config.options.dock.hoverToReveal ? spanRevealSliver : null }
+                Region {
+                    intersection: Intersection.Intersect
+                    width: GlobalStates.scrollOverviewOpen ? 0 : dockRoot.width
+                    height: dockRoot.height
+                }
             }
 
             // How far along the edge the icons reach, with the room every
@@ -296,7 +358,7 @@ Scope { // Scope
             // the pointer only as far along the edge as they reach, the way
             // every other style does, rather than across an edge that shows
             // nothing.
-            readonly property real spanInputLength: Config.options.dock.showBackground ? -1 : spanIconLength
+            readonly property real spanInputLength: dockRoot.showBackground ? -1 : spanIconLength
             // Where a run this long starts, centered in that much room and
             // rounded the way anchors round a centered item, so what takes the
             // pointer lines up to the pixel with the icons and with the other
@@ -461,8 +523,8 @@ Scope { // Scope
                             }
                         ]
 
-                        implicitWidth: dockRow.implicitWidth + 5 * 2
-                        implicitHeight: dockRow.implicitHeight + 5 * 2
+                        implicitWidth: dockRow.implicitWidth + dockRoot.bodyPadding * 2
+                        implicitHeight: dockRow.implicitHeight + dockRoot.bodyPadding * 2
                         width: dockRoot.dockVertical ? parent.width - Appearance.sizes.elevationMargin - Appearance.sizes.hyprlandGapsOut
                             : dockRoot.dockSpans ? parent.width : implicitWidth
                         height: dockRoot.dockVertical ? (dockRoot.dockSpans ? parent.height : implicitHeight)
@@ -475,7 +537,7 @@ Scope { // Scope
                         // longer being a sibling of this loader. The Hug strip casts
                         // none, lying flat along its edge the way the Hug bar does.
                         Loader {
-                            active: Config.options.dock.showBackground && !dockRoot.dockSpans
+                            active: dockRoot.showBackground && !dockRoot.dockSpans
                             anchors.fill: dockSurface
                             anchors.topMargin: dockRoot.bodyInsetTop
                             anchors.bottomMargin: dockRoot.bodyInsetBottom
@@ -494,6 +556,39 @@ Scope { // Scope
                         // body because the curves hang outside it and flattening clips to the
                         // bounds; the body is pushed back in by the same amount, so it lands
                         // where it always did.
+                        Loader {
+                            id: backdropSource
+                            active: dockRoot.showBackground && (Config.options.dock.backdrop.enable || Appearance.colors.colDockBackground.a < 1)
+                            sourceComponent: ScreenWallpaperSource {}
+                        }
+                        // Over the launcher's dim, Solid and Glass fade to their plain see-through
+                        // surface, which the dim's own colors are worked out for. The backdrop stays
+                        // loaded, since a new one shows a frame of unplaced wallpaper before its sample.
+                        SurfaceBackdrop {
+                            id: dockBackdrop
+                            settings: Config.options.dock.backdrop
+                            source: backdropSource.item
+                            opacity: (!Config.options.dock.backdrop.enable || BackdropPresets.dockIsGlass)
+                                && (dockRoot.overLauncher || dockRoot.overWindowOverview) ? 0 : 1
+                            Behavior on opacity {
+                                animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
+                            }
+                            x: dockSurface.x + dockVisualBackground.x
+                            y: dockSurface.y + dockVisualBackground.y
+                            width: dockVisualBackground.width
+                            height: dockVisualBackground.height
+                            topLeftRadius: dockRoot.dockSpans ? 0 : dockVisualBackground.topLeftRadius
+                            topRightRadius: dockRoot.dockSpans ? 0 : dockVisualBackground.topRightRadius
+                            bottomLeftRadius: dockRoot.dockSpans ? 0 : dockVisualBackground.bottomLeftRadius
+                            bottomRightRadius: dockRoot.dockSpans ? 0 : dockVisualBackground.bottomRightRadius
+                            trackX: dockMouseArea.x + dockBackground.x
+                            trackY: dockMouseArea.y + dockBackground.y
+                            notchEdge: dockRoot.dockFlares ? dockRoot.dockEdge : ""
+                            notchSize: Math.min(Appearance.rounding.dock, Appearance.rounding.dockFlareFit)
+                            notchLap: dockRoot.flareLap
+                            hugEdge: dockRoot.dockSpans ? dockRoot.dockEdge : ""
+                            hugSize: dockRoot.spanCorner
+                        }
                         Item {
                             id: dockSurface
                             anchors.fill: parent
@@ -508,7 +603,7 @@ Scope { // Scope
                             // The outward curves, drawn beside the surface the way
                             // the bar draws the ones under its own hug corners.
                             Loader {
-                                active: dockRoot.dockFlares && Config.options.dock.showBackground
+                                active: dockRoot.dockFlares && dockRoot.showBackground
                                 anchors.fill: dockVisualBackground
                                 // Over the body rather than under it, so the body's
                                 // outline along the sides it shares with these is
@@ -538,7 +633,7 @@ Scope { // Scope
                                 implicitSize: Math.min(Appearance.rounding.dock,
                                     Appearance.rounding.dockFlareFit)
                                 color: dockRoot.surfaceFill
-                                outlineWidth: Config.options.dock.showBackground ? 1 : 0
+                                outlineWidth: dockRoot.showBackground ? 1 : 0
                                 outlineColor: dockRoot.surfaceOutline
                             }
 
@@ -591,7 +686,7 @@ Scope { // Scope
                             // The Hug strip, reaching out past the body by the
                             // curves at its two ends.
                             Loader {
-                                active: dockRoot.dockSpans && Config.options.dock.showBackground
+                                active: dockRoot.dockSpans && dockRoot.showBackground
                                 anchors.fill: dockVisualBackground
                                 anchors.topMargin: dockRoot.dockEdge === "bottom" ? -dockRoot.spanCorner : 0
                                 anchors.bottomMargin: dockRoot.dockEdge === "top" ? -dockRoot.spanCorner : 0
@@ -705,13 +800,13 @@ Scope { // Scope
                                 anchors.rightMargin: dockRoot.bodyInsetRight
                                 // The Hug strip draws its own surface and outline,
                                 // and this is left only as where the strip lies.
-                                color: !Config.options.dock.showBackground || dockRoot.dockSpans ? "transparent"
+                                color: !dockRoot.showBackground || dockRoot.dockSpans ? "transparent"
                                     : dockRoot.surfaceFill
                                 // The outward curves take the outline on along
                                 // their sweep and are drawn over the sides they
                                 // share with the body, so what is left of this one
                                 // is the top, which is the only part on show.
-                                border.width: Config.options.dock.showBackground && !dockRoot.dockSpans ? 1 : 0
+                                border.width: dockRoot.showBackground && !dockRoot.dockSpans ? 1 : 0
                                 border.color: dockRoot.surfaceOutline
                                 // The pair facing the screen edge answers to the
                                 // edge roundness; the pair facing the desktop to
@@ -738,42 +833,21 @@ Scope { // Scope
                             id: dockRow
                             columns: dockRoot.dockVertical ? 1 : -1
                             rows: dockRoot.dockVertical ? -1 : 1
-                            columnSpacing: 3
-                            rowSpacing: 3
-                            // The row keeps to the room the other styles have,
-                            // clear of the Hug strip's curves, so the icons sit
-                            // where they would on any other dock.
-                            anchors.topMargin: dockRoot.dockEdge === "bottom" ? dockRoot.spanOverhang : 0
-                            anchors.bottomMargin: dockRoot.dockEdge === "top" ? dockRoot.spanOverhang : 0
-                            anchors.leftMargin: dockRoot.dockEdge === "right" ? dockRoot.spanOverhang : 0
-                            anchors.rightMargin: dockRoot.dockEdge === "left" ? dockRoot.spanOverhang : 0
-                            states: [
-                                State {
-                                    name: "horizontal"
-                                    when: !dockRoot.dockVertical
-                                    AnchorChanges {
-                                        target: dockRow
-                                        anchors { top: dockRow.parent.top; bottom: dockRow.parent.bottom; left: undefined; right: undefined; horizontalCenter: dockRow.parent.horizontalCenter; verticalCenter: undefined }
-                                    }
-                                },
-                                State {
-                                    name: "vertical"
-                                    when: dockRoot.dockVertical
-                                    AnchorChanges {
-                                        target: dockRow
-                                        anchors { top: undefined; bottom: undefined; left: dockRow.parent.left; right: dockRow.parent.right; horizontalCenter: undefined; verticalCenter: dockRow.parent.verticalCenter }
-                                    }
-                                }
-                            ]
+                            columnSpacing: dockRoot.rowSpacing
+                            rowSpacing: dockRoot.rowSpacing
+                            // Center the button band on the painted body, not on the window's room
+                            // for the edge gap and shadow; the launcher and list share it on every edge.
+                            readonly property real crossSize: Appearance.sizes.dockHeightFor(dockRoot.fittedIconSize)
+                                - padding * 2 + dockRoot.buttonInset * 2
+                            width: dockRoot.dockVertical ? crossSize : implicitWidth
+                            height: dockRoot.dockVertical ? implicitHeight : crossSize
+                            x: (parent.width - width + dockRoot.bodyInsetLeft - dockRoot.bodyInsetRight) / 2
+                            y: (parent.height - height + dockRoot.bodyInsetTop - dockRoot.bodyInsetBottom) / 2
                             property real padding: 5
 
                             VerticalButtonGroup {
-                                visible: Config.options.dock.showPinButton
+                                visible: dockRoot.showPinButton
                                 Layout.alignment: dockRoot.dockVertical ? Qt.AlignHCenter : Qt.AlignVCenter
-                                Layout.topMargin: dockRoot.dockEdge === "bottom" ? Appearance.sizes.hyprlandGapsOut : 0 // why does this work
-                                Layout.bottomMargin: dockRoot.dockEdge === "top" ? Appearance.sizes.hyprlandGapsOut : 0
-                                Layout.leftMargin: dockRoot.dockEdge === "right" ? Appearance.sizes.hyprlandGapsOut : 0
-                                Layout.rightMargin: dockRoot.dockEdge === "left" ? Appearance.sizes.hyprlandGapsOut : 0
                                 GroupButton {
                                     // Pin button. Sized off the icons like the
                                     // overview button at the far end, so the two
@@ -806,27 +880,34 @@ Scope { // Scope
                                     }
                                 }
                             }
-                            DockSeparator { visible: Config.options.dock.showPinButton }
+                            DockSeparator { visible: dockRoot.showPinButton && dockRoot.showIconSeparators }
                             DockApps {
                                 id: dockApps
                                 buttonPadding: dockRow.padding
                             }
-                            DockSeparator { visible: Config.options.dock.showOverviewButton }
+                            DockSeparator { visible: dockRoot.showOverviewButton && dockRoot.showIconSeparators }
                             DockButton {
-                                visible: Config.options.dock.showOverviewButton
-                                Layout.fillHeight: !dockRoot.dockVertical
-                                Layout.fillWidth: dockRoot.dockVertical
+                                id: applicationsDockButton
+                                visible: dockRoot.showOverviewButton
+                                // Like the list delegates, keep a fixed size rather than
+                                // stretching into the dock's edge and shadow space.
+                                Layout.fillHeight: false
+                                Layout.fillWidth: false
+                                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                                 onClicked: GlobalStates.overviewOpen = !GlobalStates.overviewOpen
-                                topInset: dockRoot.dockVertical ? 0 : Appearance.sizes.hyprlandGapsOut + dockRow.padding
-                                bottomInset: dockRoot.dockVertical ? 0 : Appearance.sizes.hyprlandGapsOut + dockRow.padding
-                                leftInset: dockRoot.dockVertical ? Appearance.sizes.hyprlandGapsOut + dockRow.padding : 0
-                                rightInset: dockRoot.dockVertical ? Appearance.sizes.hyprlandGapsOut + dockRow.padding : 0
-                                contentItem: MaterialSymbol {
-                                    anchors.fill: parent
-                                    horizontalAlignment: Text.AlignHCenter
-                                    font.pixelSize: Math.min(parent.width, parent.height) / 2
-                                    text: "apps"
-                                    color: dockRoot.content.colOnLayer0
+                                topInset: dockRoot.dockVertical ? 0 : dockRoot.buttonInset
+                                bottomInset: topInset
+                                leftInset: !dockRoot.dockVertical ? 0 : dockRoot.buttonInset
+                                rightInset: leftInset
+                                contentItem: Item {
+                                    DockLauncherIcon {
+                                        x: (parent.width - width) / 2
+                                        y: (parent.height - height) / 2
+                                        dotSpacing: Appearance.sizes.dockLauncherDotSpacing
+                                        size: Math.min(Appearance.sizes.dockLauncherIconSize,
+                                            Math.min(parent.width, parent.height))
+                                        color: dockRoot.content.colOnLayer0
+                                    }
                                 }
                             }
                         }

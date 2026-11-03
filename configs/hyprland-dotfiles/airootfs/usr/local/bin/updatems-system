@@ -12,9 +12,10 @@
 # Deliberately NOT done here:
 #   - mkinitcpio rebuild (1–2 min per kernel × N kernels). Plymouth
 #     reads its theme dir at boot, so a refreshed theme becomes active
-#     on the next mkinitcpio run that the user triggers anyway. The one
-#     exception is a boot image that would hibernate memory, disk key
-#     included, onto an unencrypted swap; see that step below.
+#     on the next mkinitcpio run that the user triggers anyway. The
+#     exceptions are a boot image that would hibernate memory, disk key
+#     included, onto an unencrypted swap, and one that still prints the TPM
+#     setup error at startup; see those steps below.
 #   - plymouth-set-default-theme (one-time install-time concern; already
 #     pointing at "mainstream").
 #   - /etc/kernel/cmdline rewrites for splash/quiet flags (set once at
@@ -41,16 +42,24 @@ set -u
 # writing into it, so the helper running this keeps reading the copy it
 # started with.
 ROOT_FILES=(
+    "0755|sdata/dist-arch/mainstream-system/mainstream-update-direct|/usr/bin/mainstream-update-direct"
+    "0755|sdata/dist-arch/mainstream-system/update-pacman-guard|/usr/lib/mainstream/update-pacman-guard"
+    "0644|sdata/dist-arch/mainstream-system/00-mainstream-update-guard.hook|/usr/share/libalpm/hooks/00-mainstream-update-guard.hook"
     "0755|sdata/update/mainstream-update-helper|/usr/local/bin/mainstream-update-helper"
     "0755|sdata/update/updatems|/usr/local/bin/updatems"
     "0755|sdata/update/updatems-system|/usr/local/bin/updatems-system"
     "0644|sdata/lib/tr.sh|/usr/local/lib/mainstream-tr.sh"
     "0644|sdata/lib/provision-user.sh|/usr/local/lib/mainstream-provision-user.sh"
     "0644|sdata/lib/venv-common.sh|/usr/local/lib/mainstream-venv-common.sh"
+    "0644|sdata/lib/mac-config.sh|/usr/local/lib/mac-config.sh"
+    "0644|sdata/lib/gpu-config.sh|/usr/local/lib/gpu-config.sh"
+    "0755|scripts/gpu-drivers/gpu-drivers|/usr/local/bin/gpu-drivers"
     "0755|sdata/provision/dotfiles-first-login|/usr/local/bin/dotfiles-first-login"
     "0755|sdata/polkit/user-manager|/usr/local/bin/user-manager"
     "0644|sdata/polkit/org.mainstreamos.user-manager.policy|/usr/share/polkit-1/actions/org.mainstreamos.user-manager.policy"
     "0644|sdata/polkit/50-user-manager.rules|/usr/share/polkit-1/rules.d/50-user-manager.rules"
+    "0755|sdata/polkit/change-own-password|/usr/local/bin/change-own-password"
+    "0644|sdata/polkit/org.mainstreamos.change-own-password.policy|/usr/share/polkit-1/actions/org.mainstreamos.change-own-password.policy"
     "0755|sdata/polkit/app-remover|/usr/local/bin/app-remover"
     "0644|sdata/polkit/org.mainstreamos.app-remover.policy|/usr/share/polkit-1/actions/org.mainstreamos.app-remover.policy"
     "0644|sdata/polkit/50-app-remover.rules|/usr/share/polkit-1/rules.d/50-app-remover.rules"
@@ -61,6 +70,8 @@ ROOT_FILES=(
     "0644|sdata/polkit/50-power-key.rules|/usr/share/polkit-1/rules.d/50-power-key.rules"
     "0755|sdata/polkit/gaming-tuning|/usr/local/bin/gaming-tuning"
     "0644|sdata/polkit/org.mainstreamos.gaming-tuning.policy|/usr/share/polkit-1/actions/org.mainstreamos.gaming-tuning.policy"
+    "0755|sdata/polkit/mainstream-wifi-country|/usr/local/bin/mainstream-wifi-country"
+    "0644|sdata/polkit/org.mainstreamos.wifi-country.policy|/usr/share/polkit-1/actions/org.mainstreamos.wifi-country.policy"
     "0755|sdata/polkit/ollama-setup|/usr/local/bin/ollama-setup"
     "0644|sdata/polkit/org.mainstreamos.ollama-setup.policy|/usr/share/polkit-1/actions/org.mainstreamos.ollama-setup.policy"
     "0755|sdata/polkit/ai-cli-install|/usr/local/bin/ai-cli-install"
@@ -95,6 +106,29 @@ elif [[ -n "${SUDO_USER:-}" ]]; then
 else
     REPO_DIR="$HOME/.cache/dots-hyprland"
 fi
+
+CURRENT_DOTFILES_TAG=""
+[[ -f "$REPO_DIR/.updatems-applied-tag" ]] && CURRENT_DOTFILES_TAG=$(<"$REPO_DIR/.updatems-applied-tag")
+
+# Track the release tag the system assets were last refreshed for.
+# On routine package updates where the dotfiles tag did not bump, heavy asset
+# refreshes (Plymouth theme, /etc/skel rsync, SDDM greeter lua, and Pixie git pull)
+# are skipped unless forced with UPDATEMS_SYS_FORCE=1.
+SYSTEM_TAG_FILE="/var/lib/mainstream/system-applied-tag"
+DOTFILES_TAG_BUMPED=1
+if [[ -n "$CURRENT_DOTFILES_TAG" && "${UPDATEMS_SYS_FORCE:-0}" -ne 1 ]]; then
+    if [[ -f "$SYSTEM_TAG_FILE" ]] && [[ "$(<"$SYSTEM_TAG_FILE")" == "$CURRENT_DOTFILES_TAG" ]]; then
+        DOTFILES_TAG_BUMPED=0
+    fi
+fi
+
+# A best-effort refresh that failed gets another try on the next run.
+_retry_assets=0
+
+_asset_matches_release() {
+    # Returns 0 (true) if already up to date for this release tag and destination exists
+    [[ $DOTFILES_TAG_BUMPED -eq 0 && -e "$1" ]]
+}
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
     echo "updatems-system: no dots-hyprland clone at $REPO_DIR" >&2
@@ -149,6 +183,7 @@ fi
 # (return 1). We DON'T abort on the first failure — best effort, refresh
 # what we can.
 RC=0
+_unit_installed=0
 # Everything installed here runs as root later, and it comes out of a tree the
 # user owns. A symlink or a file others can write is how a checkout that looks
 # like a release turns into something else on the way in.
@@ -178,11 +213,18 @@ _install_file() {
         return 0
     fi
     if install -D -m "$mode" -o root -g root "$src" "$dst"; then
+        [[ "$dst" == */systemd/* ]] && _unit_installed=1
         ok "$(tf "%s refreshed -> %s" "$label" "$dst")"
     else
         warn "$(tf "%s install failed (src=%s dst=%s)" "$label" "$src" "$dst")"
         RC=1
     fi
+}
+# Without pipefail a pipeline's status is sed's, which succeeds on any input,
+# so a pacman that could not install anything would read as a success.
+_pacman_needed() {
+    pacman -S --noconfirm --needed "$@" 2>&1 | sed 's/^/    /'
+    return "${PIPESTATUS[0]}"
 }
 
 for _entry in "${ROOT_FILES[@]}"; do
@@ -205,7 +247,9 @@ _relogin_note() {  # $1 = user  $2 = reason, in English
 # ── Plymouth theme files (no rebuild — see header) ─────────────────────────
 PLY_SRC="$REPO_DIR/sdata/plymouth/mainstream"
 PLY_DST="/usr/share/plymouth/themes/mainstream"
-if [[ -d "$PLY_SRC" ]]; then
+if _asset_matches_release "$PLY_DST"; then
+    : # Already matches current release tag; skip Plymouth theme refresh
+elif [[ -d "$PLY_SRC" ]]; then
     say "$(tf "Refreshing Plymouth theme -> %s" "$PLY_DST")"
     if rm -rf "$PLY_DST" && cp -r "$PLY_SRC" "$PLY_DST"; then
         chown -R root:root "$PLY_DST"
@@ -229,7 +273,9 @@ fi
 #
 # The same tree build.sh uses when it seeds skel for the image, and the one
 # exclusion list, shared with provisioning so the two cannot drift.
-if [[ ! -d "$REPO_DIR/dots" ]] || ! command -v rsync >/dev/null 2>&1; then
+if _asset_matches_release /etc/skel; then
+    : # Already matches current release tag; skip /etc/skel refresh
+elif [[ ! -d "$REPO_DIR/dots" ]] || ! command -v rsync >/dev/null 2>&1; then
     warn "$(t "Cannot refresh /etc/skel; a new account would be set up from an older desktop.")"
     RC=1
 elif ! _src_ok "$REPO_DIR/sdata/lib/provision-user.sh"; then
@@ -267,8 +313,12 @@ fi
 GREETER_DIR=/var/lib/sddm/.config/hypr
 GREETER_SRC="$REPO_DIR/sdata/sddm/hyprland.lua"
 if [[ -d "$GREETER_DIR" ]]; then
-    if [[ ! -f "$GREETER_SRC" ]]; then
+    if _asset_matches_release "$GREETER_DIR/hyprland.lua"; then
+        : # Already matches current release tag; skip greeter config reinstall
+    elif [[ ! -f "$GREETER_SRC" ]]; then
         warn "$(tf "SDDM greeter config source missing at %s — skipping" "$GREETER_SRC")"
+    elif cmp -s "$GREETER_SRC" "$GREETER_DIR/hyprland.lua" 2>/dev/null && [[ "${UPDATEMS_SYS_FORCE:-0}" -ne 1 ]]; then
+        : # File is already identical; nothing to reinstall
     elif install -m 600 -o sddm -g sddm "$GREETER_SRC" "$GREETER_DIR/hyprland.lua"; then
         if [[ -f "$GREETER_DIR/hyprland.conf" ]]; then
             mv "$GREETER_DIR/hyprland.conf" "$GREETER_DIR/hyprland.conf.old"
@@ -337,18 +387,21 @@ if getent passwd sddm >/dev/null 2>&1; then
         fi
     done
 
-    # The theme itself: an install clones it from GitHub once and nothing
-    # refreshed it since, so a machine kept the login screen it was installed
-    # with, picker and all. Best effort: no network means the old theme stays.
-    # The wallpaper copy the desktop keeps under assets/backgrounds is merged
-    # over, not removed.
+    # The theme itself: an install clones it from GitHub once. Refreshed only
+    # when a new dotfiles release tag is applied (or under UPDATEMS_SYS_FORCE=1),
+    # avoiding a multi-second remote GitHub network check on every routine package update.
+    # Best effort: no network means the old theme stays. The wallpaper copy the
+    # desktop keeps under assets/backgrounds is merged over, not removed.
     PIXIE_DIR=/usr/share/sddm/themes/pixie
     if [[ -d "$PIXIE_DIR" ]]; then
-        if [[ -d "$PIXIE_DIR/.git" ]]; then
+        if _asset_matches_release "$PIXIE_DIR" && [[ -f "$PIXIE_DIR/metadata.desktop" ]]; then
+            : # Already at current release tag; skip remote network pull
+        elif [[ -d "$PIXIE_DIR/.git" ]]; then
             if git -C "$PIXIE_DIR" pull --ff-only -q 2>/dev/null; then
                 ok "$(t "SDDM theme refreshed")"
             else
                 warn "$(t "SDDM theme not refreshed (no network, or local changes in it)")"
+                _retry_assets=1
             fi
         else
             PIXIE_TMP=$(mktemp -d)
@@ -361,6 +414,7 @@ if getent passwd sddm >/dev/null 2>&1; then
                 ok "$(t "SDDM theme refreshed")"
             else
                 warn "$(t "SDDM theme not refreshed (no network)")"
+                _retry_assets=1
             fi
             rm -rf "$PIXIE_TMP"
         fi
@@ -441,10 +495,11 @@ if [[ -f /etc/cups/cups-browsed.conf ]] \
     rm -f /etc/cups/cups-browsed.conf
 fi
 udevadm control --reload 2>/dev/null || true
-systemctl daemon-reload 2>/dev/null || true
 # A printer already plugged in gets its permanent queue on this run rather
 # than at the next replug; with no printer this is a quiet no-op.
-systemctl start mainstream-printer-setup.service 2>/dev/null || true
+if systemctl is-active --quiet ipp-usb.service 2>/dev/null; then
+    systemctl start --no-block mainstream-printer-setup.service 2>/dev/null || true
+fi
 
 # ── pacman keyring + [mainstream] repo self-healing ───────────────────────
 # This lands over git rather than over pacman, which is the only delivery path
@@ -452,15 +507,21 @@ systemctl start mainstream-printer-setup.service 2>/dev/null || true
 # pacman -Syu fails for every repo, core and extra included, so a fix shipped
 # as a package could never arrive. The key, the tools and the units themselves
 # are in ROOT_FILES.
-systemctl daemon-reload 2>/dev/null || true
-# Installs made while the unit disabled its own timer after one success have
-# no watchdog left, so enabling here is what puts a stranded machine back
-# under one.
-if systemctl enable --now pacman-keyring-init.timer 2>/dev/null; then
-    ok "$(t "Keyring check timer enabled")"
+if [[ "${UPDATEMS_SYS_FORCE:-0}" -ne 1 && "${_unit_installed:-0}" -ne 1 ]] \
+   && systemctl is-enabled --quiet pacman-keyring-init.timer 2>/dev/null \
+   && systemctl is-active --quiet pacman-keyring-init.timer 2>/dev/null; then
+    : # Already enabled and active; avoid expensive multi-second daemon-reload
 else
-    warn "$(t "Could not enable pacman-keyring-init.timer")"
-    RC=1
+    systemctl daemon-reload 2>/dev/null || true
+    # Installs made while the unit disabled its own timer after one success have
+    # no watchdog left, so enabling here is what puts a stranded machine back
+    # under one.
+    if systemctl enable --now pacman-keyring-init.timer 2>/dev/null; then
+        ok "$(t "Keyring check timer enabled")"
+    else
+        warn "$(t "Could not enable pacman-keyring-init.timer")"
+        RC=1
+    fi
 fi
 
 if [[ -x /usr/local/bin/mainstream-keyring-init ]] \
@@ -555,11 +616,7 @@ if [[ -r "$MAC_LIB_SRC" && -r "$GPU_LIB_SRC" ]] && [[ "$(cat /sys/class/dmi/id/s
     mac_report 2>/dev/null | sed 's/^/    /' || true
     if mac_needs_wl_driver; then
         # shellcheck disable=SC2046
-        pacman -S --noconfirm --needed $(mac_wl_packages) 2>&1 | sed 's/^/    /'
-        # Without pipefail the status here would be sed's, which succeeds on
-        # any input, so a pacman that could not install anything would be
-        # reported as a driver that is now present.
-        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+        if _pacman_needed $(mac_wl_packages); then
             ok "$(t "Broadcom wl driver installed")"
         else
             warn "$(t "Could not install the Broadcom wl driver")"
@@ -573,8 +630,7 @@ if [[ -r "$MAC_LIB_SRC" && -r "$GPU_LIB_SRC" ]] && [[ "$(cat /sys/class/dmi/id/s
         for f in "$REPO_DIR"/sdata/mac/asahi_firmware/*.py; do
             _install_file 0644 "$f" "/usr/local/lib/mainstream-mac/asahi_firmware/$(basename "$f")" "asahi_firmware/$(basename "$f")"
         done
-        pacman -S --noconfirm --needed 7zip 2>&1 | sed 's/^/    /'
-        [[ ${PIPESTATUS[0]} -eq 0 ]] || { warn "$(t "Could not install 7zip")"; RC=1; }
+        _pacman_needed 7zip || { warn "$(t "Could not install 7zip")"; RC=1; }
     fi
     if mac_apply_autoconfig; then
         ok "$(t "Mac quirks applied")"
@@ -586,6 +642,43 @@ if [[ -r "$MAC_LIB_SRC" && -r "$GPU_LIB_SRC" ]] && [[ "$(cat /sys/class/dmi/id/s
     mac_fetch_firmware_now 2>&1 | sed 's/^/    /' || true
 fi
 
+# NVML bindings for GPU monitors such as TRCC, on NVIDIA machines. Seeded once per
+# machine, so a user who removes the package keeps it removed.
+NVML_STAMP=/var/lib/mainstream/nvml-seeded
+if [[ -r "$GPU_LIB_SRC" && ! -e "$NVML_STAMP" ]]; then
+    # shellcheck source=/dev/null
+    source "$GPU_LIB_SRC"
+    gpu_detect >/dev/null 2>&1 || true
+    mapfile -t _nv_extra < <(nvidia_extra_pkgs)
+    if (( ${#_nv_extra[@]} )); then
+        if _pacman_needed "${_nv_extra[@]}"; then
+            mkdir -p "${NVML_STAMP%/*}" && : > "$NVML_STAMP"
+            ok "$(t "NVIDIA monitoring library installed")"
+        else
+            warn "$(t "Could not install the NVIDIA monitoring library")"
+        fi
+    fi
+fi
+
+# ── Wi-Fi country ──────────────────────────────────────────────────────────
+# Runs on every update: a country guessed from the time zone follows later
+# time zone changes until one is chosen in Settings.
+WIFI_LIB_SRC="$REPO_DIR/sdata/lib/wifi-country.sh"
+if _src_ok "$WIFI_LIB_SRC"; then
+    # shellcheck source=/dev/null
+    source "$WIFI_LIB_SRC"
+    if _wifi_cc="$(wifi_country_seed)"; then
+        if [[ "$_wifi_cc" == 00 ]]; then
+            ok "$(t "Wi-Fi country cleared because the time zone no longer names one")"
+        elif [[ -n "$_wifi_cc" ]]; then
+            ok "$(tf "Wi-Fi country set to %s from the time zone" "$_wifi_cc")"
+        fi
+        [[ -z "$_wifi_cc" ]] || wifi_country_apply "$_wifi_cc" >/dev/null 2>&1 || true
+    else
+        warn "$(t "Could not set the Wi-Fi country from the time zone")"
+    fi
+fi
+
 # A machine that gained a Windows install after the first boot never had
 # anything look for it again, and the installers only ever checked the one ESP
 # they mounted. Refreshed with ROOT_FILES and re-run on every update so the
@@ -593,6 +686,20 @@ fi
 if [[ -x /usr/local/bin/mainstream-limine-windows ]]; then
     /usr/local/bin/mainstream-limine-windows || true
 fi
+
+# Held against shutdown and sleep, its output kept in a file until it ends: a Settings
+# window closed mid-build would otherwise cut the pipe and stop it halfway.
+_rebuild_boot_images() {
+    local inhibit=() log rc
+    command -v systemd-inhibit >/dev/null 2>&1 \
+        && inhibit=(systemd-inhibit --what=shutdown:sleep --mode=block --who="Mainstream OS" --why="Rebuilding the boot image")
+    log="$(mktemp)" || log=/dev/null
+    "${inhibit[@]}" limine-mkinitcpio </dev/null >"$log" 2>&1
+    rc=$?
+    [[ "$log" == /dev/null ]] || { sed 's/^/    /' "$log"; rm -f "$log"; }
+    (( rc == 0 )) || _BOOT_REBUILD_FAILED=1
+    return "$rc"
+}
 
 # ── Hibernation beside an encrypted root ──────────────────────────────────
 # Installs before 3.0.0 could name a plain swap partition in resume= beside an
@@ -651,8 +758,17 @@ if [[ ! -e "$HIB_STAMP" && ! -e "$HIB_DROPIN" && -f /etc/kernel/cmdline ]] \
                 > "$HIB_DROPIN"; then
             ok "$(t "Hibernation is off, so memory is no longer written to that swap unencrypted.")"
             mkdir -p "${HIB_STAMP%/*}" && : > "$HIB_STAMP"
-            GPU_SUDO='' KERNEL_CMDLINE=/etc/kernel/cmdline cmdline_remove resume
-            if grep -Eq '(^|[[:space:]])resume=' /etc/kernel/cmdline; then
+            # Built beside the file and checked before it takes its place, so a
+            # short write cannot reach the boot entries.
+            _hib_new=/etc/kernel/cmdline.mainstream-new
+            _hib_want="$(awk '{ for (i = 1; i <= NF; i++) { k = $i; sub(/=.*/, "", k)
+                                 if (k != "resume") o = o (o == "" ? "" : " ") $i } }
+                              END { print o }' /etc/kernel/cmdline)"
+            if ! { cp /etc/kernel/cmdline "$_hib_new" \
+                   && GPU_SUDO='' KERNEL_CMDLINE="$_hib_new" cmdline_remove resume \
+                   && [[ -n "$_hib_want" && "$(cat "$_hib_new")" == "$_hib_want" ]] \
+                   && mv -f "$_hib_new" /etc/kernel/cmdline; }; then
+                rm -f "$_hib_new"
                 warn "$(t "Could not take resume= out of /etc/kernel/cmdline.")"
                 RC=1
             elif [[ " $(cat /proc/cmdline 2>/dev/null) " == *" $_hib_tok "* ]] \
@@ -660,17 +776,7 @@ if [[ ! -e "$HIB_STAMP" && ! -e "$HIB_DROPIN" && -f /etc/kernel/cmdline ]] \
                 # The boot images carry their command line, so they would keep
                 # looking for an image on that swap until the next kernel update.
                 say "$(t "Rebuilding the boot images without resume=...")"
-                _inhibit=()
-                command -v systemd-inhibit >/dev/null 2>&1 \
-                    && _inhibit=(systemd-inhibit --what=shutdown:sleep --mode=block --who="Mainstream OS" --why="Rebuilding the boot image")
-                # Into a file, and shown once it is done: straight into the
-                # page's pipe, a Settings window closed partway through would
-                # end the build halfway through writing a boot image.
-                _hib_log="$(mktemp)" || _hib_log=/dev/null
-                "${_inhibit[@]}" limine-mkinitcpio </dev/null >"$_hib_log" 2>&1
-                _hib_rc=$?
-                [[ "$_hib_log" == /dev/null ]] || { sed 's/^/    /' "$_hib_log"; rm -f "$_hib_log"; }
-                if [[ $_hib_rc -eq 0 ]]; then
+                if _rebuild_boot_images; then
                     ok "$(t "Boot images rebuilt without resume=.")"
                 else
                     warn "$(t "The boot images were not rebuilt; the next kernel update rebuilds them without resume=.")"
@@ -681,6 +787,62 @@ if [[ ! -e "$HIB_STAMP" && ! -e "$HIB_DROPIN" && -f /etc/kernel/cmdline ]] \
             warn "$(tf "Could not write %s; hibernation stays on." "$HIB_DROPIN")"
             RC=1
         fi
+    fi
+fi
+
+# ── TPM setup error at startup ─────────────────────────────────────────────
+# mainstream-system's drop-in keeps "Failed to start Early TPM SRK Setup" off the
+# screen, but a boot image built before it lands still prints it; rebuilt once.
+TPM_UNIT=systemd-tpm2-setup-early.service
+TPM_DROPIN=50-mainstream-nvpcr.conf
+TPM_STAMP=/var/lib/mainstream/tpm2-early-setup-rebuilt
+_tpm_stale_image() {  # 0 when an image limine-mkinitcpio builds runs the unit without the drop-in
+    local esp name f kernel img list
+    { IFS= read -r esp; IFS= read -r name; } < <(
+        source /usr/lib/limine/limine-common-functions >/dev/null 2>&1 \
+            && load_config >/dev/null 2>&1 && printf '%s\n%s\n' "$ESP_PATH" "${CUSTOM_UKI_NAME-}")
+    [[ "$name" =~ ^[a-z0-9]+$ ]] || name="$(cat /etc/machine-id 2>/dev/null)"
+    [[ -n "$esp" && -n "$name" ]] || return 1
+    for f in /usr/lib/modules/*/pkgbase; do
+        kernel="$(tr -d '[:space:]' <"$f" 2>/dev/null)"
+        [[ -n "$kernel" ]] || continue
+        for img in "$esp/EFI/Linux/${name}_$kernel.efi" "$esp/EFI/Linux/${name}_$kernel-fallback.efi"; do
+            [[ -f "$img" ]] && list="$(lsinitcpio "$img" 2>/dev/null)" || continue
+            grep -qxF -e "usr/lib/systemd/system/$TPM_UNIT" -e "./usr/lib/systemd/system/$TPM_UNIT" <<<"$list" \
+                && ! grep -qxF -e "usr/lib/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" \
+                               -e "./usr/lib/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" <<<"$list" \
+                && return 0
+        done
+    done
+    return 1
+}
+# mainstream-luks-keyfile.service can still be rebuilding after the package update, and
+# limine-mkinitcpio's lock gives up after 10 s, so two builds would write the same images.
+_luks_keyfile_idle() {
+    local i
+    for (( i = 0; i < 120; i++ )); do
+        [[ "$(systemctl is-active mainstream-luks-keyfile.service 2>/dev/null)" == activating ]] || return 0
+        sleep 5
+    done
+    return 1
+}
+# A file of the same name in /etc overrides the drop-in, so the user has taken it over.
+# After a failed rebuild this run, the next update tries instead of spending the stamp.
+if [[ ! -e "$TPM_STAMP" && -f "/usr/lib/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" ]] \
+   && [[ ! -e "/etc/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" && ! -L "/etc/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" ]] \
+   && [[ -z "${_BOOT_REBUILD_FAILED-}" ]] \
+   && command -v limine-mkinitcpio >/dev/null 2>&1 \
+   && journalctl -b -q -n 1 -o cat --no-pager "UNIT=$TPM_UNIT" EXIT_CODE=exited EXIT_STATUS=1 PRIORITY=5 2>/dev/null | grep -q . \
+   && _luks_keyfile_idle \
+   && _tpm_stale_image; then
+    say "$(t "Rebuilding the boot images so the Early TPM SRK Setup error stops showing at startup...")"
+    mkdir -p "${TPM_STAMP%/*}" && : > "$TPM_STAMP"
+    # limine-mkinitcpio exits 0 even when a kernel's image failed, so the images decide.
+    if _rebuild_boot_images && ! _tpm_stale_image; then
+        ok "$(t "Boot images rebuilt; the Early TPM SRK Setup error no longer shows at startup.")"
+    else
+        warn "$(t "The boot images were not rebuilt; the next kernel update rebuilds them without the Early TPM SRK Setup error.")"
+        RC=1
     fi
 fi
 
@@ -807,6 +969,10 @@ LIVE_LEFTOVERS
 fi
 
 if [[ $RC -eq 0 ]]; then
+    if [[ -n "$CURRENT_DOTFILES_TAG" && $_retry_assets -eq 0 ]]; then
+        mkdir -p "$(dirname "$SYSTEM_TAG_FILE")"
+        echo "$CURRENT_DOTFILES_TAG" > "$SYSTEM_TAG_FILE" 2>/dev/null || true
+    fi
     ok "$(t "System-level refresh complete.")"
 else
     warn "$(t "System-level refresh finished with errors (see above).")"

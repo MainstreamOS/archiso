@@ -25,7 +25,8 @@ Scope {
         }
         LazyLoader {
             id: barLoader
-            active: GlobalStates.barOpen && !GlobalStates.screenLocked
+            // In island style the Dynamic Island takes the bar's place.
+            active: GlobalStates.barOpen && !GlobalStates.screenLocked && !Appearance.sizes.barIsIsland
             required property ShellScreen modelData
             component: PanelWindow { // Bar window
                 id: barRoot
@@ -51,17 +52,29 @@ Scope {
                     }
                 }
                 property bool superShow: false
-                property bool mustShow: hoverRegion.containsMouse || superShow
+                property bool mustShow: hoverRegion.containsMouse || hoverGrace.running || superShow
+                // Opening a sidebar from the bar starts a focus grab, and Hyprland
+                // answers a grab by sending the pointer out and straight back in.
+                // A leave counts only once it has held this long, so that round
+                // trip does not slide the bar away and back, windows and all.
+                Timer {
+                    id: hoverGrace
+                    interval: 150
+                }
                 // Hidden, the surfaces ride off the window with the strip, so a
                 // surfaces-only mask would go empty and the pointer could never
                 // reach the sliver that brings the bar back.
                 readonly property bool concealed: Config.options.bar.autoHide.enable && !barRoot.mustShow
                 readonly property HyprlandMonitor monitor: Hyprland.monitorFor(barRoot.screen)
-                property list<HyprlandWorkspace> workspacesForMonitor: Hyprland.workspaces.values.filter(w => w.monitor && w.monitor.name === monitor.name)
-                property bool hasFullscreenWindow: workspacesForMonitor.some(w => w.active && w.toplevels.values.some(t => t.wayland?.fullscreen))
+                property bool hasFullscreenWindow: HyprlandData.activeWorkspaceHasFullscreen(monitor?.name)
                 visible: !hasFullscreenWindow
+                // Keep the reserved area while the native overview hides the
+                // chrome, so its workspace previews retain their geometry.
+                contentItem.visible: !GlobalStates.scrollOverviewOpen
                 exclusionMode: ExclusionMode.Ignore
-                exclusiveZone: (Config?.options.bar.autoHide.enable && (!mustShow || !Config?.options.bar.autoHide.pushWindows)) ? 0 :
+                // Reserving nothing, the bar also ignores the zones others
+                // reserve (-1), so a pinned sidebar cannot push it aside.
+                exclusiveZone: (Config?.options.bar.autoHide.enable && (!mustShow || !Config?.options.bar.autoHide.pushWindows)) ? -1 :
                     Appearance.sizes.baseBarHeight + (Config.options.bar.cornerStyle === 1 ? Appearance.sizes.hyprlandGapsOut : 0)
                 WlrLayershell.namespace: "quickshell:bar"
                 // The compositor subtracts Top-layer exclusive zones before it
@@ -91,6 +104,11 @@ Scope {
                     Region { item: barContent.floatSurfaces[0] ?? null }
                     Region { item: barContent.floatSurfaces[1] ?? null }
                     Region { item: barContent.floatSurfaces[2] ?? null }
+                    Region {
+                        intersection: Intersection.Intersect
+                        width: GlobalStates.scrollOverviewOpen ? 0 : barRoot.width
+                        height: barRoot.height
+                    }
                 }
                 color: "transparent"
 
@@ -107,17 +125,28 @@ Scope {
                     bottom: (Config.options.interactions.deadPixelWorkaround.enable && barRoot.anchors.bottom) * -1
                 }
 
+                readonly property bool overlapsSidebar: visible && Config.options.bar.autoHide.enable && mustShow && !Config.options.bar.autoHide.pushWindows
+                function publishOverlap(overlaps) {
+                    const name = barRoot.screen?.name ?? "";
+                    const others = GlobalStates.barOverlapScreens.filter(s => s !== name);
+                    GlobalStates.barOverlapScreens = overlaps ? others.concat([name]) : others;
+                }
+                onOverlapsSidebarChanged: publishOverlap(overlapsSidebar)
+
                 // Include in focus grab
                 Component.onCompleted: {
                     GlobalFocusGrab.addPersistent(barRoot);
+                    barRoot.publishOverlap(barRoot.overlapsSidebar);
                 }
                 Component.onDestruction: {
                     GlobalFocusGrab.removePersistent(barRoot);
+                    barRoot.publishOverlap(false);
                 }
 
                 MouseArea  {
                     id: hoverRegion
                     hoverEnabled: true
+                    onContainsMouseChanged: if (!containsMouse) hoverGrace.restart()
                     anchors {
                         fill: parent
                         rightMargin: (Config.options.interactions.deadPixelWorkaround.enable && barRoot.anchors.right) * 1
@@ -142,7 +171,6 @@ Scope {
 
                     BarContent {
                         id: barContent
-                        
                         implicitHeight: Appearance.sizes.barHeight
                         anchors {
                             right: parent.right

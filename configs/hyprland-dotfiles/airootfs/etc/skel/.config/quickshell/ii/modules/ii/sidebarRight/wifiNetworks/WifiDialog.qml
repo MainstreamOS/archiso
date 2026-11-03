@@ -2,15 +2,21 @@ import qs
 import qs.services
 import qs.services.network
 import qs.modules.common
+import qs.modules.common.models
 import qs.modules.common.widgets
 import qs.modules.common.functions as CF
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Widgets
 
 WindowDialog {
     id: root
     backgroundHeight: 600
+
+    ShownWifiNetworks {
+        id: shownNetworks
+    }
 
     WindowDialogTitle {
         text: Translation.tr("Connect to Wi-Fi")
@@ -26,24 +32,25 @@ WindowDialog {
         Layout.leftMargin: -Appearance.rounding.large
         Layout.rightMargin: -Appearance.rounding.large
     }
-    ListView {
+    // A grouped list, as in the Dynamic Island: rows 2 px apart, the group's ends rounded by the clip.
+    ClippingRectangle {
         Layout.fillHeight: true
         Layout.fillWidth: true
-        Layout.topMargin: -15
-        Layout.bottomMargin: -16
-        Layout.leftMargin: -Appearance.rounding.large
-        Layout.rightMargin: -Appearance.rounding.large
+        radius: Appearance.rounding.normal - 3
+        color: "transparent"
+        ListView {
+            anchors.fill: parent
+            clip: true
+            spacing: 2
 
-        clip: true
-        spacing: 0
-
-        model: ScriptModel {
-            values: Network.friendlyWifiNetworks
-        }
-        delegate: WifiNetworkItem {
-            required property WifiAccessPoint modelData
-            wifiNetwork: modelData
-            width: ListView.view.width
+            model: ScriptModel {
+                values: shownNetworks.networks
+            }
+            delegate: WifiNetworkItem {
+                required property WifiAccessPoint modelData
+                wifiNetwork: modelData
+                width: ListView.view.width
+            }
         }
     }
     WindowDialogSeparator {}
@@ -51,8 +58,7 @@ WindowDialog {
         DialogButton {
             buttonText: Translation.tr("Details")
             onClicked: {
-                const settingsPath = CF.FileUtils.trimFileProtocol(Directories.config) + "/quickshell/ii/settings.qml";
-                Quickshell.execDetached(["sh", "-c", "QS_SETTINGS_PAGE=WifiConfig.qml quickshell -p '" + settingsPath + "'"]);
+                CF.Session.openSettings("WifiConfig.qml");
                 GlobalStates.sidebarRightOpen = false;
             }
         }

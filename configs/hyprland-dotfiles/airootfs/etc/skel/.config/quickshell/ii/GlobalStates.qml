@@ -58,8 +58,14 @@ Singleton {
     // Written by the dock; a pinned dock reserves an exclusive zone, an
     // unpinned one reveals over other surfaces.
     property bool dockPinned: false
+    // Live dock windows by output, including auto-hidden docks when revealed.
+    property var dockWindows: ({})
     // Written by the left sidebar; pinned, it reserves an exclusive zone.
     property bool sidebarLeftPinned: false
+    // Written by the left sidebar: whether it is currently detached into a floating window.
+    property bool sidebarLeftDetached: false
+    // Written by the left sidebar: current sidebar target width.
+    property real sidebarLeftWidth: Appearance.sizes.sidebarWidth
     // Written by the left sidebar: how far it reaches in from its edge while
     // open without reserving that room. Pinned, its exclusive zone moves
     // popups instead.
@@ -68,6 +74,9 @@ Singleton {
     // and the screen that strip is on.
     property real sidebarLeftZone: 0
     property string sidebarLeftScreen: ""
+    // Written by the bars: screens where an auto-hidden bar is showing
+    // without reserving its room, so the left sidebar makes that room itself.
+    property var barOverlapScreens: []
     property var mediaTransferUrls: []
     property bool mediaReceiveActive: false
     property bool osdBrightnessOpen: false
@@ -75,6 +84,13 @@ Singleton {
     property bool oskOpen: false
     property bool overlayOpen: false
     property bool overviewOpen: false
+    // The screen the Alt+Tab overview has opened on, by name; the dock there is drawn over it.
+    property string windowOverviewScreen: ""
+    // A dock app clicked over the Alt+Tab overview, which picks among its windows there.
+    signal windowOverviewAppClicked(var app)
+    // Live dim surfaces by output; the dock stays above them until the
+    // compositor has finished shrinking the closing surface.
+    property var launcherDimWindows: ({})
     // The screens the launcher's dim is shown on, by name, as the dim sets
     // them when it starts to fade in or out. It covers the focused screen
     // alone, and only once its surface spans that screen, which can land a
@@ -91,6 +107,9 @@ Singleton {
     // corner re-entry (e.g. the workspaceNumber overlay on a Super press) doesn't
     // re-ripple / re-dispatch while the plugin overview is already up.
     property bool scrollOverviewOpen: false
+    // Older plugins also draw sidebar layers at full size. Only keep those
+    // layers painted when the plugin advertises its in-card-only rendering.
+    property bool scrollOverviewSidebarPreviews: false
     // Where the right click on the desktop landed, and whether its menu is up.
     property bool desktopMenuOpen: false
     property var desktopMenuScreen: null
@@ -129,6 +148,23 @@ Singleton {
     }
     property bool regionSelectorOpen: false
     property bool screenLocked: false
+    // Any locker holding the session, including hyprlock, which useHyprlock and
+    // hypridle start without screenLocked. Kept current only while watched.
+    readonly property bool sessionLocked: root.screenLocked || root._compositorLocked
+    property bool sessionLockWatched: false
+    property bool _compositorLocked: false
+    // Nothing focused is assumed until Hyprland reports focus: a lock then posts no event.
+    property bool _focusEmpty: true
+    onSessionLockWatchedChanged: {
+        if (root.sessionLockWatched)
+            sessionLockCheckProc.running = true;
+        else
+            root._compositorLocked = false;
+    }
+    onScreenLockedChanged: {
+        if (!root.screenLocked && root.sessionLockWatched)
+            sessionLockCheckProc.running = true;
+    }
     property bool screenLockContainsCharacters: false
     property bool screenUnlockFailed: false
     property bool screenTranslatorOpen: false
@@ -142,7 +178,12 @@ Singleton {
     property string wallpaperSelectorMonitor: ""
     property var wallpaperSelectorScreen: null
     onWallpaperSelectorOpenChanged: {
-        if (root.wallpaperSelectorOpen) return;
+        if (root.wallpaperSelectorOpen) {
+            // Release the launcher's exclusive surface before the picker grabs
+            // focus. The scrolling launcher also skips restoring focus here.
+            root.overviewOpen = false;
+            return;
+        }
         root.wallpaperSelectorMonitor = "";
         root.wallpaperSelectorScreen = null;
     }
@@ -276,12 +317,48 @@ Singleton {
             // this flag, so the screen corners hide for the overview's lifetime
             // without anything having to be saved and put back.
             if (event.name === "scrolloverview") {
-                if (event.data === "open") {
+                if (event.data === "sidebar-previews") {
+                    root.scrollOverviewSidebarPreviews = true;
+                } else if (event.data === "open") {
                     root.scrollOverviewOpen = true;
                 } else if (event.data === "close") {
                     root.scrollOverviewOpen = false;
+                    root.scrollOverviewSidebarPreviews = false;
                 }
             }
+
+            // Hyprland sends no lock event, but a lock drops keyboard focus to
+            // nothing and an unlock hands it back.
+            if (event.name === "activewindowv2") {
+                root._focusEmpty = event.data === "";
+                if (root.sessionLockWatched && (root._focusEmpty || root._compositorLocked))
+                    sessionLockCheckProc.running = true;
+            }
+        }
+    }
+
+    // With nothing focused a lock drops nothing, so Hyprland is asked instead.
+    Timer {
+        interval: root._compositorLocked ? 3000 : 1000
+        repeat: true
+        running: root.sessionLockWatched && !root.screenLocked && (root._compositorLocked || root._focusEmpty)
+        onTriggered: sessionLockCheckProc.running = true
+    }
+
+    // Asked again while running, it runs once more when done.
+    Process {
+        id: sessionLockCheckProc
+        command: ["hyprctl", "-i", "0", "locked"]
+        property string output: ""
+        stdout: SplitParser {
+            onRead: data => sessionLockCheckProc.output += data
+        }
+        onExited: {
+            const answer = sessionLockCheckProc.output.trim();
+            sessionLockCheckProc.output = "";
+            // No answer, as when Hyprland cannot be reached, keeps the last one.
+            if (root.sessionLockWatched && (answer === "true" || answer === "false"))
+                root._compositorLocked = answer === "true";
         }
     }
 

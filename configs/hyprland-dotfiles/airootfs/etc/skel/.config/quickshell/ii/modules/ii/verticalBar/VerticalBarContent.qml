@@ -77,6 +77,10 @@ Item { // Bar content region
     // flattening pass and the texture it costs.
     readonly property bool notchSeamFix: notchFlares
         && Appearance.colors.colBarBackground.a < 1
+    // Fade the outline with the notch, using the bar's own material.
+    readonly property color surfaceOutline: root.notchSeamFix
+        ? ColorUtils.applyAlpha(Appearance.colors.colBarBackgroundBorder, 1)
+        : Appearance.colors.colBarBackgroundBorder
     readonly property bool floatSplit: root.floatStyles
         && Config.options.bar.floatSplit
     readonly property real floatPad: Appearance.rounding.screenRounding
@@ -107,13 +111,15 @@ Item { // Bar content region
     }
 
     // Modules that render without a surrounding pill.
-    readonly property var chromelessModules: ["sidebarButton"]
+    readonly property bool sidebarButtonInTop: Array.from(Config.options.bar.layout.left ?? [])
+        .some(g => ObjectUtils.layoutGroupWidgets(g).some(w => w.id === "sidebarButton"))
 
     function moduleComponent(name) {
         switch (name) {
         case "sidebarButton": return comp_sidebarButton;
         case "resources": return comp_resources;
         case "network": return comp_network;
+        case "phone": return comp_phone;
         case "media": return comp_media;
         case "workspaces": return comp_workspaces;
         case "clock": return comp_clock;
@@ -140,6 +146,7 @@ Item { // Bar content region
     function moduleVisible(name) {
         switch (name) {
         case "battery": return Battery.available;
+        case "phone": return Phone.device !== null && Config.options.bar.island.phoneIntegration;
         default: return true;
         }
     }
@@ -156,10 +163,6 @@ Item { // Bar content region
             return g.items.map(x => (typeof x === "string") ? ({ id: x, enabled: true }) : x);
         return [];
     }
-    function groupChromeless(g) {
-        const ws = root.groupWidgets(g).filter(w => root.moduleActive(w.id));
-        return ws.length > 0 && ws.every(w => root.chromelessModules.indexOf(w.id) !== -1);
-    }
     function entryActive(w) {
         return w.enabled !== false && root.moduleActive(w.id);
     }
@@ -171,67 +174,35 @@ Item { // Bar content region
     component BarModule: Loader {
         required property string moduleName
         property bool entryEnabled: true
-        // A module in a group with no pill sits bare on the strip.
-        property bool onStrip: false
         Layout.alignment: Qt.AlignHCenter
-        // The button used to be inset from the top by half the room left over
-        // beside it, so the gap above matched the gaps either side. Sitting
-        // flush against the top instead puts its round highlight over the
-        // bar's rounded corner.
-        Layout.topMargin: moduleName === "sidebarButton"
-            ? (Appearance.sizes.baseVerticalBarWidth - implicitWidth) / 2 : 0
         Layout.fillWidth: root.moduleFillWidth(moduleName)
         active: entryEnabled && root.moduleActive(moduleName)
         visible: active && root.moduleVisible(moduleName)
         sourceComponent: root.moduleComponent(moduleName)
     }
 
-    // One group = one vertical pill (or a bare column for chromeless-only groups).
+    // One group = one vertical pill.
     component GroupPill: Item {
         id: pill
         required property var group
         readonly property var gw: root.groupWidgets(group)
-        readonly property bool chromeless: root.groupChromeless(group)
         visible: root.groupHasVisible(group)
         implicitWidth: Appearance.sizes.baseVerticalBarWidth
-        implicitHeight: pillLoader.implicitHeight
+        implicitHeight: pillGroup.implicitHeight
         Layout.alignment: Qt.AlignHCenter
         Layout.fillWidth: true
 
-        Loader {
-            id: pillLoader
+        Bar.BarGroup {
+            id: pillGroup
             anchors.fill: parent
-            sourceComponent: pill.chromeless ? chromelessColumn : normalPill
-        }
-
-        Component {
-            id: chromelessColumn
-            ColumnLayout {
-                spacing: 8
-                Repeater {
-                    model: pill.gw
-                    delegate: BarModule {
-                        required property var modelData
-                        moduleName: modelData.id
-                        entryEnabled: modelData.enabled
-                        onStrip: true
-                    }
-                }
-            }
-        }
-
-        Component {
-            id: normalPill
-            Bar.BarGroup {
-                vertical: true
-                padding: 8
-                Repeater {
-                    model: pill.gw
-                    delegate: BarModule {
-                        required property var modelData
-                        moduleName: modelData.id
-                        entryEnabled: modelData.enabled
-                    }
+            vertical: true
+            padding: 8
+            Repeater {
+                model: pill.gw
+                delegate: BarModule {
+                    required property var modelData
+                    moduleName: modelData.id
+                    entryEnabled: modelData.enabled
                 }
             }
         }
@@ -242,8 +213,7 @@ Item { // Bar content region
         id: comp_sidebarButton
         Bar.LeftSidebarButton {
             Layout.alignment: Qt.AlignHCenter
-            tones: (parent?.onStrip ?? false) ? Appearance.barStripContent : Appearance.barContent
-            colBackground: barTopSectionMouseArea.hovered ? tones.colLayer1Hover : ColorUtils.transparentize(tones.colLayer1Hover, 1)
+            colBackground: root.sidebarButtonInTop && barTopSectionMouseArea.hovered ? tones.colLayer1Hover : ColorUtils.transparentize(tones.colLayer1Hover, 1)
         }
     }
 
@@ -264,6 +234,11 @@ Item { // Bar content region
     }
 
     Component {
+        id: comp_phone
+        Bar.PhoneStatus {}
+    }
+
+    Component {
         id: comp_media
         VerticalMedia {
             Layout.fillWidth: true
@@ -276,15 +251,6 @@ Item { // Bar content region
         Bar.Workspaces {
             vertical: true
             Layout.fillHeight: false
-            MouseArea { // Right-click to toggle overview
-                anchors.fill: parent
-                acceptedButtons: Qt.RightButton
-                onPressed: event => {
-                    if (event.button === Qt.RightButton) {
-                        GlobalStates.overviewOpen = !GlobalStates.overviewOpen;
-                    }
-                }
-            }
         }
     }
 
@@ -464,12 +430,14 @@ Item { // Bar content region
         implicitSize: Appearance.rounding.barFloat
         color: root.notchSeamFix ? Appearance.colors.colBarBackgroundOpaque
             : Appearance.colors.colBarBackground
+        outlineWidth: Config.options.bar.showBackground ? 1 : 0
+        outlineColor: root.surfaceOutline
     }
 
     component BarEndFlares: Item {
         BarFlare { // Above the strip
             anchors.bottom: parent.top
-            anchors.bottomMargin: -1
+            anchors.bottomMargin: -2
             anchors.left: !Config.options.bar.bottom ? parent.left : undefined
             anchors.right: Config.options.bar.bottom ? parent.right : undefined
             corner: Config.options.bar.bottom ? RoundCorner.CornerEnum.BottomRight
@@ -477,7 +445,7 @@ Item { // Bar content region
         }
         BarFlare { // Below it
             anchors.top: parent.bottom
-            anchors.topMargin: -1
+            anchors.topMargin: -2
             anchors.left: !Config.options.bar.bottom ? parent.left : undefined
             anchors.right: Config.options.bar.bottom ? parent.right : undefined
             corner: Config.options.bar.bottom ? RoundCorner.CornerEnum.TopRight
@@ -519,6 +487,18 @@ Item { // Bar content region
         // with the body has to reach further that way: flattening one clips to
         // its bounds. The body is pushed back in by the same amount, so the
         // surface's own edges stay where everything else expects them.
+        SurfaceBackdrop {
+            anchors.fill: parent
+            source: backdropSource.item
+            topLeftRadius: Config.options.bar.bottom ? floatSurface.topEndRadius : floatSurface.edgeCornerRadius
+            bottomLeftRadius: Config.options.bar.bottom ? floatSurface.bottomEndRadius : floatSurface.edgeCornerRadius
+            topRightRadius: Config.options.bar.bottom ? floatSurface.edgeCornerRadius : floatSurface.topEndRadius
+            bottomRightRadius: Config.options.bar.bottom ? floatSurface.edgeCornerRadius : floatSurface.bottomEndRadius
+            trackX: root.x
+            trackY: floatSurface.y
+            notchEdge: root.notchFlares ? (Config.options.bar.bottom ? "right" : "left") : ""
+            notchSize: Appearance.rounding.barFloat
+        }
         Item {
             anchors.fill: parent
             anchors.topMargin: -floatSurface.radius
@@ -538,11 +518,9 @@ Item { // Bar content region
                 bottomLeftRadius: Config.options.bar.bottom ? floatSurface.bottomEndRadius : floatSurface.edgeCornerRadius
                 topRightRadius: Config.options.bar.bottom ? floatSurface.edgeCornerRadius : floatSurface.topEndRadius
                 bottomRightRadius: Config.options.bar.bottom ? floatSurface.edgeCornerRadius : floatSurface.bottomEndRadius
-                // The curves are drawn as their own pieces and carry no outline,
-                // so an outline on the body would stop in mid air where each one
-                // begins. Hugging means one continuous surface or none.
-                border.width: Config.options.bar.showBackground && !root.isNotch ? 1 : 0
-                border.color: Appearance.colors.colBarBackgroundBorder
+                // The end curves continue this outline around the notch.
+                border.width: Config.options.bar.showBackground ? 1 : 0
+                border.color: root.surfaceOutline
 
                 Loader {
                     anchors.fill: parent
@@ -614,6 +592,28 @@ Item { // Bar content region
     // body's ends fall inside it, since flattening one clips to its bounds. The
     // fade lives here rather than in the colours, so the lap between body and
     // curve is blended once instead of twice.
+    Loader {
+        id: backdropSource
+        active: Config.options.bar.showBackground && (Config.options.bar.backdrop.enable || Appearance.colors.colBarBackground.a < 1)
+        sourceComponent: ScreenWallpaperSource {}
+    }
+    SurfaceBackdrop {
+        visible: !root.floatSplit
+        source: backdropSource.item
+        x: barBackground.x
+        y: barBackground.y
+        width: barBackground.width
+        height: barBackground.height
+        topLeftRadius: barBackground.topLeftRadius
+        topRightRadius: barBackground.topRightRadius
+        bottomLeftRadius: barBackground.bottomLeftRadius
+        bottomRightRadius: barBackground.bottomRightRadius
+        trackX: root.x
+        notchEdge: root.notchFlares ? (Config.options.bar.bottom ? "right" : "left") : ""
+        notchSize: Appearance.rounding.barFloat
+        hugEdge: Config.options.bar.cornerStyle === 0 ? (Config.options.bar.bottom ? "right" : "left") : ""
+        hugSize: Appearance.rounding.screenRounding
+    }
     Item {
         id: barSurface
         anchors.fill: parent
@@ -649,11 +649,9 @@ Item { // Bar content region
         bottomLeftRadius: Config.options.bar.bottom ? barBackground.endRadius : barBackground.edgeCornerRadius
         topRightRadius: Config.options.bar.bottom ? barBackground.edgeCornerRadius : barBackground.endRadius
         bottomRightRadius: Config.options.bar.bottom ? barBackground.edgeCornerRadius : barBackground.endRadius
-        // No outline while the curves at the ends are drawn beside the body:
-        // they carry none of their own, so the body's would stop in mid air
-        // where each one begins.
-        border.width: Config.options.bar.cornerStyle === 1 && Config.options.bar.showBackground ? 1 : 0
-        border.color: Appearance.colors.colBarBackgroundBorder
+        // The end curves continue this outline around the notch.
+        border.width: root.floatStyles && Config.options.bar.showBackground ? 1 : 0
+        border.color: root.surfaceOutline
 
         Loader {
             anchors.fill: parent

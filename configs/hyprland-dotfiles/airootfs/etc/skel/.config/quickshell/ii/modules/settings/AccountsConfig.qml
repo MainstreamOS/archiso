@@ -28,28 +28,63 @@ ContentPage {
     // that bring this page, and a command that cannot start never reports
     // back, so without this check the page would sit empty and say nothing.
     property bool helperMissing: false
+    // change-own-password arrives the same way. Until it has, your own
+    // password goes through user-manager, behind an administrator.
+    property bool ownPasswordHelper: false
+    // Off with an older user-manager, which has no autologin-status to answer.
+    property bool autologinAvailable: false
+    property string autologinUser: ""
+    property string gamingBootUser: ""
 
     Component.onCompleted: {
         currentUserProc.running = true
     }
 
+    // Setting running on a check or list in flight lets it finish, then runs
+    // it again. Stopping it first would report the SIGTERM as a failure.
     function refresh() {
-        helperCheck.running = false
         helperCheck.running = true
     }
 
     Process {
         id: helperCheck
-        command: ["sh", "-c", "test -x /usr/local/bin/user-manager"]
+        command: ["sh", "-c", "test -x /usr/local/bin/user-manager || exit 1; test -x /usr/local/bin/change-own-password || exit 2"]
         onExited: (code) => {
-            root.helperMissing = (code !== 0)
+            root.helperMissing = (code !== 0 && code !== 2)
+            root.ownPasswordHelper = (code === 0)
             if (root.helperMissing) {
                 root.accounts = []
                 return
             }
-            accountListProc.running = false
             accountListProc.running = true
+            autologinStatusProc.running = true
         }
+    }
+
+    Process {
+        id: autologinStatusProc
+        command: ["/usr/local/bin/user-manager", "autologin-status"]
+        stdout: StdioCollector { id: autologinStatusOut }
+        onExited: (code) => {
+            let status = { available: false, user: "", bootUser: "" }
+            if (code === 0) {
+                try { status = JSON.parse(autologinStatusOut.text) } catch (e) {}
+            }
+            root.autologinAvailable = status.available
+            root.autologinUser = status.user
+            root.gamingBootUser = status.bootUser
+        }
+    }
+
+    // What a switch for this account does, said beside it because the choice
+    // gives up the password at startup and can take the setting from someone else.
+    function autologinNote(name) {
+        const notes = [Translation.tr("When this computer starts, it opens this account without asking for a password.")]
+        if (root.autologinUser.length > 0 && root.autologinUser !== name)
+            notes.push(Translation.tr("Only one account can do this, so this turns it off for %1.").arg(root.autologinUser))
+        if (root.gamingBootUser.length > 0)
+            notes.push(Translation.tr("This computer starts in Gaming Mode as %1 without a password, whichever account is set here. Gaming Mode Setup changes that.").arg(root.gamingBootUser))
+        return notes.join(" ")
     }
 
     // The helper writes "ERROR: <reason>" to stderr before it exits, and that
@@ -58,14 +93,30 @@ ContentPage {
     //
     // The LAST such line is the one that ended the run: the provisioning
     // library logs to the same stream, so an earlier warning would otherwise
-    // win. The reason is shown beside the translated sentence rather than in
-    // place of it, because it comes back in English whatever the locale.
+    // win.
+    function helperError(raw) {
+        const all = String(raw ?? "").match(/ERROR:\s*([^\n]+)/g)
+        if (!all || all.length === 0) return ""
+        return all[all.length - 1].replace(/^ERROR:\s*/, "").trim()
+    }
+
+    // The reason is shown beside the translated sentence rather than in place
+    // of it, because it comes back in English whatever the locale.
     function helperReason(raw, fallback) {
-        if (!raw) return fallback
-        const all = String(raw).match(/ERROR:\s*([^\n]+)/g)
-        if (!all || all.length === 0) return fallback
-        const last = all[all.length - 1].replace(/^ERROR:\s*/, "").trim()
+        const last = root.helperError(raw)
         return last.length > 0 ? fallback + " (" + last + ")" : fallback
+    }
+
+    // What still stops Create, or "". One copy for the hint under the form
+    // and for the button, so the two cannot disagree.
+    function createProblem() {
+        const login = newUserField.text.trim()
+        if (login.length === 0) return Translation.tr("Choose a login name to continue.")
+        if (login.includes(" ")) return Translation.tr("A login name cannot contain spaces.")
+        if (!/^[a-z_][a-z0-9_-]*$/.test(login)) return Translation.tr("A login name can use lowercase letters, digits, dashes and underscores, and cannot start with a digit.")
+        if (login.length > 31) return Translation.tr("That login name is too long.")
+        if (newUserPassField.text.length === 0) return Translation.tr("Set a password so they can sign in.")
+        return ""
     }
 
     function showStatus(msg, isError) {
@@ -169,6 +220,7 @@ ContentPage {
                 }
             }
             onExited: (code) => {
+                const refusal = HelperUtils.pkexecRefusal(code)
                 if (code === 0) {
                     root.showStatus(Translation.tr("Done! Changes have been saved."), false)
                     item.showChangePassword = false
@@ -176,6 +228,12 @@ ContentPage {
                     item.showRemove = false
                     root.refresh()
                     item.expanded = false
+                } else if (refusal) {
+                    root.showStatus(refusal, true)
+                } else if (root.helperError(actionErr.text) === "the current password is not correct") {
+                    // user-manager exits 22 for every refusal, so its reason is
+                    // the only thing that tells a mistyped password apart.
+                    root.showStatus(Translation.tr("Incorrect password"), true)
                 } else {
                     root.showStatus(root.helperReason(actionErr.text,
                         Translation.tr("Something went wrong. Please try again.")), true)
@@ -183,6 +241,22 @@ ContentPage {
             }
         }
 
+
+        Process {
+            id: autologinProc
+            stderr: StdioCollector { id: autologinErr }
+            onExited: (code) => {
+                const refusal = HelperUtils.pkexecRefusal(code)
+                if (code === 0)
+                    root.showStatus(Translation.tr("Done! Changes have been saved."), false)
+                else
+                    root.showStatus(refusal || root.helperReason(autologinErr.text,
+                        Translation.tr("Could not change automatic login.")), true)
+                // The click moved the switch, so it goes back to saying what the machine does.
+                autologinSwitch.checked = Qt.binding(() => root.autologinUser === account.name)
+                root.refresh()
+            }
+        }
 
         Process {
             id: imagePickerProc
@@ -538,6 +612,30 @@ ContentPage {
                     }
                 }
 
+                ConfigSwitch {
+                    id: autologinSwitch
+                    visible: root.autologinAvailable
+                    enabled: !item.working && !autologinProc.running
+                    buttonIcon: "login"
+                    text: Translation.tr("Log in automatically")
+                    tooltipText: Translation.tr("Apps that keep saved passwords may ask for this account's password after it starts.")
+                    checked: root.autologinUser === account.name
+                    onClicked: {
+                        autologinProc.command = ["pkexec", "/usr/local/bin/user-manager",
+                            "set-autologin", account.name, root.autologinUser === account.name ? "off" : "on"]
+                        autologinProc.running = true
+                    }
+                }
+
+                StyledText {
+                    visible: root.autologinAvailable
+                    text: root.autologinNote(account.name)
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colSubtext
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
                 // Can't remove yourself note
                 StyledText {
                     visible: account.isCurrent
@@ -619,8 +717,11 @@ ContentPage {
                                     : newPassField.text
                                 oldPassField.text = ""; newPassField.text = ""; confirmPassField.text = ""
                                 actionProc.pendingPassword = pass
-                                actionProc.command = ["pkexec", "/usr/local/bin/user-manager",
-                                    "set-password", user].concat(account.isCurrent ? ["verify"] : [])
+                                actionProc.command = !account.isCurrent
+                                    ? ["pkexec", "/usr/local/bin/user-manager", "set-password", user]
+                                    : root.ownPasswordHelper
+                                        ? ["pkexec", "/usr/local/bin/change-own-password"]
+                                        : ["pkexec", "/usr/local/bin/user-manager", "set-password", user, "verify"]
                                 actionProc.stdinEnabled = true
                                 actionProc.running = true
                             }
@@ -786,6 +887,7 @@ ContentPage {
                 anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 10 }
                 spacing: 8
                 MaterialSymbol {
+                    id: statusIcon
                     text: root.busy ? "progress_activity" : (root.statusIsError ? "error" : "check_circle")
                     iconSize: 14
                     color: root.busy ? Appearance.m3colors.m3primary
@@ -794,6 +896,9 @@ ContentPage {
                         running: root.busy
                         loops: Animation.Infinite
                         from: 0; to: 360; duration: 1100
+                        // A stop keeps the angle it reached, which would tilt
+                        // the check or error icon that replaces the spinner.
+                        onStopped: statusIcon.rotation = 0
                     }
                 }
                 StyledText {
@@ -825,8 +930,13 @@ ContentPage {
             StyledText { Layout.alignment: Qt.AlignHCenter; text: Translation.tr("No accounts found"); font.pixelSize: Appearance.font.pixelSize.normal; color: Appearance.colors.colSubtext }
         }
 
+        // Keyed by login name: a reload updates cards in place, where a rebuild
+        // would kill their running commands and clear their open forms.
         Repeater {
-            model: root.accounts
+            model: ScriptModel {
+                values: root.accounts
+                objectProp: "name"
+            }
             AccountItem {
                 required property var modelData
                 account: modelData
@@ -844,6 +954,9 @@ ContentPage {
 
         ConfigRow {
             uniform: true
+            // Held while a create runs, because its success clears the form and
+            // would take anything typed in the meantime with it.
+            enabled: !createAccountProc.running
             MaterialTextField {
                 id: fullNameField
                 Layout.fillWidth: true
@@ -866,9 +979,29 @@ ContentPage {
 
         ConfigSwitch {
             id: makeAdminSwitch
+            enabled: !createAccountProc.running
             buttonIcon: "shield_person"
             text: Translation.tr("Let this person administer the computer")
             checked: false
+        }
+
+        ConfigSwitch {
+            id: newAutologinSwitch
+            visible: root.autologinAvailable
+            enabled: !createAccountProc.running
+            buttonIcon: "login"
+            text: Translation.tr("Log in automatically")
+            tooltipText: Translation.tr("Apps that keep saved passwords may ask for this account's password after it starts.")
+            checked: false
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            visible: newAutologinSwitch.visible && newAutologinSwitch.checked
+            text: root.autologinNote("")
+            font.pixelSize: Appearance.font.pixelSize.smaller
+            color: Appearance.colors.colSubtext
+            wrapMode: Text.WordWrap
         }
 
         // Says what is still missing instead of leaving the button dead and
@@ -876,15 +1009,7 @@ ContentPage {
         StyledText {
             Layout.fillWidth: true
             visible: text.length > 0
-            text: {
-                if (createAccountProc.running) return ""
-                const login = newUserField.text.trim()
-                if (login.length === 0) return Translation.tr("Choose a login name to continue.")
-                if (newUserField.text.includes(" ")) return Translation.tr("A login name cannot contain spaces.")
-                if (!/^[a-z_][a-z0-9_-]*$/.test(login)) return Translation.tr("A login name can use lowercase letters, digits, dashes and underscores, and cannot start with a digit.")
-                if (newUserPassField.text.length === 0) return Translation.tr("Set a password so they can sign in.")
-                return ""
-            }
+            text: createAccountProc.running ? "" : root.createProblem()
             font.pixelSize: Appearance.font.pixelSize.smaller
             color: Appearance.colors.colSubtext
             wrapMode: Text.WordWrap
@@ -900,43 +1025,26 @@ ContentPage {
                 colBackground: Appearance.colors.colPrimary
                 colBackgroundHover: Appearance.colors.colPrimaryHover
                 onClicked: {
+                    const problem = root.createProblem()
+                    if (problem.length > 0) {
+                        root.showStatus(problem, true); return
+                    }
                     const username = newUserField.text.trim()
-                    const password = newUserPassField.text
-                    if (username.length === 0) {
-                        root.showStatus(Translation.tr("Choose a login name first."), true); return
-                    }
-                    if (!(new RegExp("^[a-z_][a-z0-9_-]*$")).test(username)) {
-                        root.showStatus(Translation.tr("A login name can use lowercase letters, digits, dashes and underscores, and cannot start with a digit."), true); return
-                    }
-                    if (username.length > 31) {
-                        root.showStatus(Translation.tr("That login name is too long."), true); return
-                    }
-                    if (password.length === 0) {
-                        root.showStatus(Translation.tr("Set a password so they can sign in."), true); return
-                    }
                     // Nothing is copied out of this account. useradd -m seeds the new
                     // home from /etc/skel, and the helper provisions it the same way
                     // the installer provisions the first user, so the person who
                     // signs in gets a fresh desktop rather than a copy of this one.
-                    createAccountProc.pendingPassword = password
-                    // Held on the process, because the fields below are cleared
-                    // the moment this returns and the result arrives later.
-                    createAccountProc.pendingUser = username
+                    createAccountProc.pendingPassword = newUserPassField.text
                     // Asked for as part of create, so there is no second
                     // authentication to dismiss and no window in which the
                     // account is usable but not an administrator.
                     createAccountProc.command = ["pkexec", "/usr/local/bin/user-manager",
-                        "create", username, fullNameField.text.trim()]
-                        .concat(makeAdminSwitch.checked ? ["admin"] : [])
+                        "create", username, fullNameField.text.trim(),
+                        makeAdminSwitch.checked ? "admin" : "",
+                        newAutologinSwitch.visible && newAutologinSwitch.checked ? "autologin" : ""]
                     createAccountProc.stdinEnabled = true
                     createAccountProc.running = true
                     root.showStatus(Translation.tr("Creating %1 and setting up their desktop…").arg(username), false)
-                    newUserField.text = ""
-                    newUserPassField.text = ""
-                    fullNameField.text = ""
-                    // Cleared with the rest, or the next account made here
-                    // becomes an administrator without anyone choosing it.
-                    makeAdminSwitch.checked = false
                 }
                 contentItem: RowLayout {
                     anchors.centerIn: parent; spacing: 6
@@ -971,6 +1079,8 @@ ContentPage {
             if (code !== 0)
                 root.showStatus(root.helperReason(adminErr.text,
                     Translation.tr("Could not change who administers this computer.")), true)
+            else
+                root.showStatus(Translation.tr("Done! Changes have been saved."), false)
             accountListProc.running = true
         }
     }
@@ -990,7 +1100,6 @@ ContentPage {
     Process {
         id: createAccountProc
         property string pendingPassword: ""
-        property string pendingUser: ""
         stderr: StdioCollector { id: createErr }
         // stdinEnabled has to be on before running goes true, or the write
         // lands after the helper has already read. Closing the stream is what
@@ -1003,10 +1112,19 @@ ContentPage {
             }
         }
         onExited: (code) => {
+            const refusal = HelperUtils.pkexecRefusal(code)
             if (code === 0) {
-                createAccountProc.pendingUser = ""
                 root.showStatus(Translation.tr("Account created. They can sign in now, and the desktop finishes setting itself up the first time they do."), false)
+                // Cleared only once it worked, so a dismissed prompt or a taken name
+                // needs no retyping.
+                newUserField.text = ""
+                newUserPassField.text = ""
+                fullNameField.text = ""
+                makeAdminSwitch.checked = false
+                newAutologinSwitch.checked = false
                 postCreateRefreshTimer.start()
+            } else if (refusal) {
+                root.showStatus(refusal, true)
             } else {
                 root.showStatus(root.helperReason(createErr.text,
                     Translation.tr("Could not create the account. That login name may already be taken, or it contained invalid characters.")), true)

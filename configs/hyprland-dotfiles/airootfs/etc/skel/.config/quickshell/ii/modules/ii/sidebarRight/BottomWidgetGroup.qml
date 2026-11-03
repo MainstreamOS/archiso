@@ -11,7 +11,8 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     radius: Appearance.rounding.normal
-    color: Appearance.colors.colLayer1
+    // A card on the Dynamic Island's raised surface, as its panels' cards are.
+    color: Appearance.surfaces.raised
     clip: true
     implicitHeight: collapsed ? collapsedBottomWidgetGroupRow.implicitHeight : 350
     property int selectedTab: Persistent.states.sidebar.bottomGroup.tab
@@ -95,18 +96,13 @@ Rectangle {
 
         spacing: 15
 
-        CalendarHeaderButton {
+        IslandButton {
             Layout.margins: 10
             Layout.rightMargin: 0
-            forceCircle: true
+            contentColors: Appearance.colors
+            symbol: "keyboard_arrow_up"
             downAction: () => {
                 root.setCollapsed(false);
-            }
-            contentItem: MaterialSymbol {
-                text: "keyboard_arrow_up"
-                iconSize: Appearance.font.pixelSize.larger
-                horizontalAlignment: Text.AlignHCenter
-                color: Appearance.colors.colOnLayer1
             }
         }
 
@@ -172,18 +168,13 @@ Rectangle {
                 }
             }
             // Collapse button
-            CalendarHeaderButton {
+            IslandButton {
                 anchors.left: parent.left
                 anchors.top: parent.top
-                forceCircle: true
+                contentColors: Appearance.colors
+                symbol: "keyboard_arrow_down"
                 downAction: () => {
                     root.setCollapsed(true);
-                }
-                contentItem: MaterialSymbol {
-                    text: "keyboard_arrow_down"
-                    iconSize: Appearance.font.pixelSize.larger
-                    horizontalAlignment: Text.AlignHCenter
-                    color: Appearance.colors.colOnLayer1
                 }
             }
         }

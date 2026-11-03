@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import qs
 import qs.modules.common
 import qs.modules.common.utils
 import qs.modules.common.functions
@@ -88,25 +89,89 @@ PanelWindow {
     // mid-drag shift presses are honoured.
     property bool _shiftHeld: false
     property var imageRegions: []
+    // Taken once with the frozen screenshot, so the targets keep matching
+    // the image when a sidebar opens or closes while the selector is up.
+    property list<var> sidebarRegions: []
+    property var sidebarStates: null
+    // The layer list asked for on open can land after the screenshot.
+    property bool layersRefreshed: false
+    Connections {
+        target: HyprlandData
+        enabled: !root.layersRefreshed
+        function onLayersChanged() {
+            root.layersRefreshed = true;
+            if (root.sidebarStates) root.updateSidebarRegions();
+        }
+    }
+    function captureSidebarRegions(): void {
+        root.sidebarStates = {
+            leftOpen: GlobalStates.sidebarLeftOpen,
+            leftDetached: GlobalStates.sidebarLeftDetached,
+            leftScreen: GlobalStates.sidebarLeftScreen,
+            leftWidth: GlobalStates.sidebarLeftWidth,
+            rightOpen: GlobalStates.sidebarRightOpen,
+        };
+        root.updateSidebarRegions();
+    }
+    // Each card is placed inside its own layer, which Hyprland already put
+    // beside any bar or dock reserving that edge.
+    function updateSidebarRegions(): void {
+        const states = root.sidebarStates;
+        const topLayers = HyprlandData.layers[root.hyprlandMonitor.name]?.levels["2"] ?? [];
+        const gap = Appearance.sizes.hyprlandGapsOut;
+        const elev = Appearance.sizes.elevationMargin;
+        const radius = RoundedCorners.on ? (Appearance.rounding.screenRounding - gap + 1) : 0;
+        const regions = [];
+        const pushCard = (namespace, width, onLeftEdge) => {
+            const layer = topLayers.find(l => l.namespace === namespace);
+            if (!layer) return;
+            const cardW = width - gap - elev;
+            regions.push({
+                at: [layer.x - root.monitorOffsetX + (onLeftEdge ? gap : layer.w - gap - cardW), layer.y - root.monitorOffsetY + gap],
+                size: [cardW, layer.h - gap * 2],
+                class: "quickshell",
+                namespace: namespace,
+                radius: radius,
+            });
+        };
+        if (states.leftOpen && !states.leftDetached
+            && (states.leftScreen === "" || states.leftScreen === root.screen.name)) {
+            const width = states.leftWidth > 0 ? states.leftWidth : Appearance.sizes.sidebarWidth;
+            pushCard("quickshell:sidebarLeft", width, Appearance.sizes.sidebarLeftEdge !== "right");
+        }
+        if (states.rightOpen)
+            pushCard("quickshell:sidebarRight", Appearance.sizes.sidebarWidth, Appearance.sizes.sidebarRightEdge === "left");
+        root.sidebarRegions = regions;
+    }
     // Windows move into this monitor's coordinates before they are compared
     // with the layers, which are already in them.
-    readonly property list<var> windowRegions: RegionFunctions.filterWindowRegionsByLayers(
-        root.windows.filter(w => w.workspace.id === root.activeWorkspaceId).map(window => {
-            return {
-                at: [window.at[0] - root.monitorOffsetX, window.at[1] - root.monitorOffsetY],
-                size: [window.size[0], window.size[1]],
-                class: window.class,
-                title: window.title,
-            }
-        }),
-        root.layerRegions
-    )
+    readonly property list<var> windowRegions: [
+        ...root.sidebarRegions,
+        ...RegionFunctions.filterWindowRegionsByLayers(
+            root.windows.filter(w => w.workspace.id === root.activeWorkspaceId).map(window => {
+                return {
+                    at: [window.at[0] - root.monitorOffsetX, window.at[1] - root.monitorOffsetY],
+                    size: [window.size[0], window.size[1]],
+                    class: window.class,
+                    title: window.title,
+                }
+            }),
+            [...root.layerRegions, ...root.sidebarRegions]
+        )
+    ]
     readonly property list<var> layerRegions: {
         const layersOfThisMonitor = root.layers[root.hyprlandMonitor.name]
         const topLayers = layersOfThisMonitor?.levels["2"]
         if (!topLayers) return [];
         const nonBarTopLayers = topLayers
-            .filter(layer => !(layer.namespace.includes(":bar") || layer.namespace.includes(":verticalBar") || layer.namespace.includes(":dock")))
+            .filter(layer => !(
+                layer.namespace.includes(":bar") ||
+                layer.namespace.includes(":verticalBar") ||
+                layer.namespace.includes(":dynamicIsland") ||
+                layer.namespace.includes(":dock") ||
+                layer.namespace.includes(":sidebarLeft") ||
+                layer.namespace.includes(":sidebarRight")
+            ))
             .map(layer => {
             return {
                 at: [layer.x, layer.y],
@@ -123,6 +188,10 @@ PanelWindow {
         });
         return offsetAdjustedLayers;
     }
+    // The sidebars are window targets, but with window targets off they stay
+    // pickable as layers, ahead of the layers beneath them.
+    readonly property list<var> layerTargetRegions: (root.enableLayerRegions && !root.enableWindowRegions)
+        ? [...root.sidebarRegions, ...root.layerRegions] : root.layerRegions
 
     // Config
     property bool isCircleSelection: (root.selectionMode === RegionSelection.SelectionMode.Circle)
@@ -163,7 +232,7 @@ PanelWindow {
         // and where a layer's surface reaches over a window beside it, the
         // smaller of the two is the more specific target.
         const underPointer = region => region.at[0] <= x && x <= region.at[0] + region.size[0] && region.at[1] <= y && y <= region.at[1] + region.size[1];
-        const clickedLayer = root.enableLayerRegions ? root.layerRegions.find(underPointer) : undefined;
+        const clickedLayer = root.enableLayerRegions ? root.layerTargetRegions.find(underPointer) : undefined;
         const clickedWindow = root.enableWindowRegions ? root.windowRegions.find(underPointer) : undefined;
         const area = region => region.size[0] * region.size[1];
         const clickedTarget = (clickedLayer && clickedWindow)
@@ -196,6 +265,7 @@ PanelWindow {
         screenshotDir: root.screenshotDir
         screenshotPath: root.screenshotPath
         onExited: (exitCode, exitStatus) => {
+            root.captureSidebarRegions();
             if (root.enableContentRegions) imageDetectionProcess.running = true;
             root.preparationDone = !checkRecordingProc.running;
         }
@@ -257,7 +327,7 @@ PanelWindow {
             default:
                 console.warn("[Region Selector] Unknown snip action, skipping snip.");
                 root.dismiss();
-                return;
+                return null;
         }
     }
 
@@ -267,6 +337,7 @@ PanelWindow {
         if (root.regionWidth <= 0 || root.regionHeight <= 0) {
             console.warn("[Region Selector] Invalid region size, skipping snip.");
             root.dismiss();
+            return;
         }
 
         // Clamp region to screen bounds
@@ -294,11 +365,17 @@ PanelWindow {
         const screenshotDir = Config.options.screenSnip.savePath !== "" ? //
             Config.options.screenSnip.savePath : "";
         var screenshotAction = root.getScreenshotAction();
+        if (screenshotAction === null) return;
+        // Recording takes global logical coordinates; the other actions crop
+        // this monitor's capture in pixels.
+        const scale = root.isRecording ? 1 : root.monitorScale;
+        const offsetX = root.isRecording ? root.monitorOffsetX : 0;
+        const offsetY = root.isRecording ? root.monitorOffsetY : 0;
         const command = ScreenshotAction.getCommand(
-            root.regionX * root.monitorScale, //
-            root.regionY * root.monitorScale, //
-            root.regionWidth * root.monitorScale,// 
-            root.regionHeight * root.monitorScale, //
+            (root.regionX + offsetX) * scale, //
+            (root.regionY + offsetY) * scale, //
+            root.regionWidth * scale,// 
+            root.regionHeight * scale, //
             root.screenshotPath, //
             screenshotAction, //
             screenshotDir
@@ -456,7 +533,7 @@ PanelWindow {
                 borderColor: root.windowBorderColor
                 fillColor: targeted ? root.windowFillColor : "transparent"
                 text: `${modelData.class}`
-                radius: RoundedCorners.on ? Appearance.rounding.windowRounding : 0
+                radius: modelData.radius !== undefined ? modelData.radius : (RoundedCorners.on ? Appearance.rounding.windowRounding : 0)
             }
         }
 
@@ -465,7 +542,7 @@ PanelWindow {
             model: ScriptModel {
                 values: {
                     if (root.phase === RegionSelection.Phase.Select && root.enableLayerRegions) {
-                        return root.layerRegions
+                        return root.layerTargetRegions
                     } else {
                         return []
                     }
@@ -487,7 +564,7 @@ PanelWindow {
                 borderColor: root.windowBorderColor
                 fillColor: targeted ? root.windowFillColor : "transparent"
                 text: `${modelData.namespace}`
-                radius: RoundedCorners.on ? Appearance.rounding.windowRounding : 0
+                radius: modelData.radius !== undefined ? modelData.radius : (RoundedCorners.on ? Appearance.rounding.windowRounding : 0)
             }
         }
 

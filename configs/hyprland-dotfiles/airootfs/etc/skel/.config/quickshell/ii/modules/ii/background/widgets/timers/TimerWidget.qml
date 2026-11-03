@@ -40,18 +40,11 @@ AbstractBackgroundWidget {
         radius: Appearance.rounding?.verylarge ?? 30
         color: timerCard.bgColor
 
-        Loader {
-            anchors.fill: parent
-            active: Config.options.background.widgets.blur.enable && root.wallpaperItem !== null
-            sourceComponent: FastBlurred {
-                anchors.fill: parent
-                blurSource: root.wallpaperItem
-                cardRadius: timerCard.radius
-                tint: Appearance.colors.colLayer1
-                tintOpacity: 0.55
-                trackX: root.x
-                trackY: root.y
-            }
+        WidgetBackdrop {
+            wallpaperItem: root.wallpaperItem
+            cardRadius: timerCard.radius
+            trackX: root.x
+            trackY: root.y
         }
 
         StyledRectangularShadow {
@@ -142,7 +135,7 @@ AbstractBackgroundWidget {
         // Pomodoro
         TimerCard {
             icon: TimerService.pomodoroBreak ? "coffee" : "visibility"
-            value: TimerService.formatSeconds(TimerService.pomodoroSecondsLeft)
+            value: TimerService.formatCountdown(TimerService.pomodoroSecondsLeft)
             label: TimerService.pomodoroBreak ? "Break" : "Focus"
             running: TimerService.pomodoroRunning
             bgColor: Appearance.colors.colTertiaryContainer
@@ -168,7 +161,7 @@ AbstractBackgroundWidget {
         // Countdown
         TimerCard {
             icon: "hourglass_top"
-            value: TimerService.formatSeconds(TimerService.countdownSecondsLeft)
+            value: TimerService.formatCountdown(TimerService.countdownSecondsLeft)
             label: "Countdown"
             running: TimerService.countdownRunning
             shape: MaterialShape.Shape.Bun

@@ -11,55 +11,147 @@ import qs.modules.common.functions
 
 MouseArea {
     id: root
+    property var contentColors: Appearance.barContent
     required property SystemTrayItem item
     property bool targetMenuOpen: false
-    // What the icon is drawn on, as drawn: the group it sits in on the bar,
-    // or the surface of the popup that holds the rest.
-    property color backdrop: Appearance.barContent.backdrops[0]
-    // The icon's own pixels, read once per image, so the judgement below can
-    // be made again against a new surface without reading them again.
-    property var iconPixels: []
-    // Use an unambiguous foreground while an icon cannot be sampled. This is
-    // deliberately based on the drawn bar surface rather than the global
-    // theme, so every tray client works on light and dark bar variants.
-    readonly property bool fallbackMonochrome: Appearance.autoIconContrast && iconPixels.length === 0
-    readonly property color fallbackInk: {
-        const bg = Qt.color(root.backdrop);
-        const luminance = ColorUtils.luminanceOfRgb(bg.r, bg.g, bg.b);
-        return ColorUtils.contrastOfLuminances(luminance, 0)
-            >= ColorUtils.contrastOfLuminances(luminance, 1) ? "black" : "white";
+    // The color the icon sits on, as drawn: its bar group, or the overflow popup.
+    property color backdrop: root.contentColors.backdrops[0]
+    readonly property real backdropLuminance: ColorUtils.relativeLuminance(root.backdrop)
+    // Read once per image, so a new backdrop is judged without a new read.
+    property var iconSample: null
+    // What shows of the current icon, as shares of its square. Apps pad their icons
+    // differently, so each is drawn at the size that makes this match the others.
+    property var iconBounds: null
+    function snapped(value) {
+        const dpr = root.QsWindow.window?.devicePixelRatio ?? 1;
+        return Math.round(value * dpr) / dpr;
     }
-    // An icon with nothing of its own standing off the surface, the way a
-    // plain white glyph vanishes into a light group, is drawn inverted. One
-    // with enough luminance contrast is left as the app drew it. Hue alone
-    // is not enough: saturated icons can still vanish against a dark,
-    // differently colored bar.
-    readonly property bool iconLost: {
-        if (!Appearance.autoIconContrast)
-            return false;
-        const bg = Qt.color(root.backdrop);
-        const lbg = ColorUtils.luminanceOfRgb(bg.r, bg.g, bg.b);
-        if (iconPixels.length === 0)
-            return false;
-        const configuredRatio = Number(Config.options.tray.autoContrastMinimumRatio);
-        const configuredShare = Number(Config.options.tray.autoContrastMinimumVisibleShare);
-        const minimumRatio = configuredRatio >= 1 && configuredRatio <= 21 ? configuredRatio : 3;
-        const minimumVisibleShare = configuredShare >= 0 && configuredShare <= 1 ? configuredShare : 0.65;
+    // Judged by area, so a tall thin icon doesn't come out smaller than a square.
+    readonly property real iconSize: {
+        const bounds = root.iconBounds;
+        if (!bounds)
+            return root.implicitWidth;
+        return root.snapped(Math.min(17.5 / bounds.span, root.implicitWidth / Math.max(bounds.width, bounds.height), 2 * root.implicitWidth));
+    }
+    // Each pixel that shows, as r, g, b, a in 0..1, their summed alpha, whether
+    // the icon is one plain white or gray, and the bounds of its solid part.
+    function sampleOf(data) {
+        const px = [];
         let total = 0;
-        let standing = 0;
-        for (let i = 0; i < iconPixels.length; i += 4) {
-            const a = iconPixels[i + 3] / 255;
+        let mr = 0;
+        let mg = 0;
+        let mb = 0;
+        const side = Math.sqrt(data.length / 4);
+        let left = side;
+        let right = -1;
+        let top = side;
+        let bottom = -1;
+        for (let i = 0; i < data.length; i += 4) {
+            const a = data[i + 3] / 255;
             if (a < 0.1)
                 continue;
-            const r = iconPixels[i] / 255 * a + bg.r * (1 - a);
-            const g = iconPixels[i + 1] / 255 * a + bg.g * (1 - a);
-            const b = iconPixels[i + 2] / 255 * a + bg.b * (1 - a);
-            const l = ColorUtils.luminanceOfRgb(r, g, b);
+            if (a >= 0.3) {
+                const x = (i / 4) % side;
+                const y = Math.floor(i / 4 / side);
+                left = Math.min(left, x);
+                right = Math.max(right, x);
+                top = Math.min(top, y);
+                bottom = Math.max(bottom, y);
+            }
+            const r = data[i] / 255;
+            const g = data[i + 1] / 255;
+            const b = data[i + 2] / 255;
+            px.push(r, g, b, a);
             total += a;
-            if (ColorUtils.contrastOfLuminances(l, lbg) >= minimumRatio)
+            mr += r * a;
+            mg += g * a;
+            mb += b * a;
+        }
+        mr /= total;
+        mg /= total;
+        mb /= total;
+        let oneColor = 0;
+        for (let i = 0; i < px.length; i += 4) {
+            if (Math.hypot(px[i] - mr, px[i + 1] - mg, px[i + 2] - mb) < 0.15)
+                oneColor += px[i + 3];
+        }
+        const plain = oneColor / total >= 0.85 && Math.max(mr, mg, mb) - Math.min(mr, mg, mb) < 0.15;
+        const width = (right - left + 1) / side;
+        const height = (bottom - top + 1) / side;
+        const bounds = right < 0 ? null : {
+            width, height,
+            span: Math.sqrt(width * height),
+            centerX: (left + right + 1) / 2 / side,
+            centerY: (top + bottom + 1) / 2 / side
+        };
+        return { px, total, plain, bounds };
+    }
+    // True when almost nothing stands off the backdrop (a white glyph on a light
+    // group). An outline or a color of its own keeps the icon as the app drew it.
+    readonly property bool iconLost: {
+        const sample = root.iconSample;
+        if (!Appearance.autoIconContrast || Config.options.tray.monochromeIcons || !sample)
+            return false;
+        const bg = Qt.color(root.backdrop);
+        const lbg = root.backdropLuminance;
+        const px = sample.px;
+        let standing = 0;
+        for (let i = 0; i < px.length; i += 4) {
+            const a = px[i + 3];
+            const r = px[i] * a + bg.r * (1 - a);
+            const g = px[i + 1] * a + bg.g * (1 - a);
+            const b = px[i + 2] * a + bg.b * (1 - a);
+            const l = ColorUtils.luminanceOfRgb(r, g, b);
+            if (ColorUtils.contrastOfLuminances(l, lbg) >= 1.5
+                    || Math.hypot(r - bg.r, g - bg.g, b - bg.b) >= 0.35)
                 standing += a;
         }
-        return total > 0 && standing / total < minimumVisibleShare;
+        return sample.total > 0 && standing / sample.total < 0.1;
+    }
+    // The color a lost icon is drawn toward.
+    readonly property color ink: {
+        const own = root.contentColors.colOnLayer0;
+        if (ColorUtils.contrastRatio(own, root.backdrop) >= root.contentColors.markContrast)
+            return own;
+        const lbg = root.backdropLuminance;
+        return ColorUtils.contrastOfLuminances(lbg, 0) >= ColorUtils.contrastOfLuminances(lbg, 1) ? "black" : "white";
+    }
+    // A plain white or gray glyph takes the ink outright. A colored icon moves
+    // only until most of it stands off the surface, so it keeps its hue.
+    readonly property real inkShare: {
+        const sample = root.iconSample;
+        if (!iconLost || !sample)
+            return 0;
+        if (sample.plain)
+            return 1;
+        const px = sample.px;
+        const bg = Qt.color(root.backdrop);
+        const lbg = root.backdropLuminance;
+        const ink = Qt.color(root.ink);
+        const need = root.contentColors.markContrast;
+        const toInk = [];
+        const under = [];
+        for (let i = 0; i < px.length; i += 4) {
+            const a = px[i + 3];
+            toInk.push(ink.r - px[i], ink.g - px[i + 1], ink.b - px[i + 2]);
+            under.push(bg.r * (1 - a), bg.g * (1 - a), bg.b * (1 - a));
+        }
+        for (let step = 1; step < 20; step++) {
+            const k = step / 20;
+            let standing = 0;
+            for (let i = 0, j = 0; i < px.length; i += 4, j += 3) {
+                const a = px[i + 3];
+                const r = (px[i] + toInk[j] * k) * a + under[j];
+                const g = (px[i + 1] + toInk[j + 1] * k) * a + under[j + 1];
+                const b = (px[i + 2] + toInk[j + 2] * k) * a + under[j + 2];
+                if (ColorUtils.contrastOfLuminances(ColorUtils.luminanceOfRgb(r, g, b), lbg) >= need) {
+                    standing += a;
+                    if (standing / sample.total >= 0.6)
+                        return k;
+                }
+            }
+        }
+        return 1;
     }
 
     signal menuOpened(qsWindow: var)
@@ -116,155 +208,103 @@ MouseArea {
         }
     }
 
-    // Capture the already-rendered icon, rather than asking the image provider
-    // for it again. Some tray clients send malformed icon updates, and a second
-    // request at this reader's size can race the normal tray request.
-    Item {
-        id: iconSnapshot
-        readonly property bool wanted: Appearance.autoIconContrast && !Config.options.tray.monochromeIcons
-        property var result: null
-        // Each change makes every earlier capture stale. A grab cannot be
-        // cancelled, so its callback checks this number before it writes.
-        property int generation: 0
-        property bool captureInFlight: false
-
-        function refresh() {
-            generation += 1;
-            retry.stop();
-            settle.stop();
-            if (!wanted || trayIcon.status !== Image.Ready) {
-                result = null;
+    // Grabbed from the drawn icon, never re-requested: a canvas request runs on
+    // Qt's image reader thread, where QIcon::fromTheme races the bar's own icon
+    // loads and corrupts the shell's memory.
+    property var grab: null
+    // A grab cannot be cancelled, so its callback drops stale generations.
+    property int grabGeneration: 0
+    property bool grabPending: false
+    function capture(retrying = false) {
+        const g = ++grabGeneration;
+        if (!retrying)
+            captureRetry.left = 20;
+        if (trayIcon.status === Image.Null || trayIcon.status === Image.Error) {
+            grabPending = false;
+            grab = null;
+            iconSample = null;
+            return;
+        }
+        // Old pixels stand until the new image is read, so a state change
+        // does not flash back to the app's own colors.
+        grabPending = true;
+        if (trayIcon.status !== Image.Ready || !(root.QsWindow.window?.visible ?? false))
+            return;
+        const started = TrayIconCapture.grab(trayIcon, result => {
+            if (g !== root.grabGeneration)
                 return;
-            }
-            take();
-            // Some clients replace icon pixels after emitting the change
-            // signal while retaining the same icon URL. Capture again after
-            // the next rendered frame instead of preserving the stale grab.
-            settle.restart();
+            root.grabPending = false;
+            root.grab = result;
+            iconReader.requestPaint();
+        }, Qt.size(iconReader.width, iconReader.height));
+        // Refused while the window is not yet shown to the compositor.
+        if (!started && captureRetry.left-- > 0)
+            captureRetry.restart();
+    }
+    Component.onCompleted: capture()
+    Connections {
+        target: root.QsWindow.window
+        function onVisibleChanged() {
+            if (root.grabPending)
+                root.capture();
         }
-
-        function take() {
-            if (!wanted || trayIcon.status !== Image.Ready) {
-                result = null;
-                return;
-            }
-
-            if (trayIcon.width <= 0 || trayIcon.height <= 0 || !trayIcon.window) {
-                retry.restart();
-                return;
-            }
-
-            // Keep one grab outstanding. If the icon changed while it ran,
-            // its callback drops the old result and starts the latest capture.
-            if (captureInFlight)
-                return;
-
-            const captureGeneration = generation;
-            captureInFlight = true;
-            const started = trayIcon.grabToImage(function(grab) {
-                captureInFlight = false;
-                if (captureGeneration !== generation) {
-                    take();
-                    return;
-                }
-                if (!wanted || trayIcon.status !== Image.Ready) {
-                    result = null;
-                    return;
-                }
-                result = grab;
-            }, Qt.size(24, 24));
-            if (!started) {
-                captureInFlight = false;
-                if (captureGeneration !== generation)
-                    take();
-                else
-                    retry.restart();
-            }
-        }
-
-        Timer {
-            id: retry
-            interval: 150
-            onTriggered: iconSnapshot.take()
-        }
-
-        Timer {
-            id: settle
-            interval: 150
-            onTriggered: iconSnapshot.take()
-        }
-
-        onWantedChanged: refresh()
-
-        Connections {
-            target: trayIcon
-            function onStatusChanged() { iconSnapshot.refresh(); }
-            function onSourceChanged() { iconSnapshot.refresh(); }
-            function onWidthChanged() { iconSnapshot.refresh(); }
-            function onWindowChanged() { iconSnapshot.refresh(); }
-        }
-
-        Connections {
-            target: root.item
-            function onIconChanged() { iconSnapshot.refresh(); }
-        }
-
-        Component.onCompleted: refresh()
+    }
+    Timer {
+        id: captureRetry
+        property int left: 0
+        interval: 250
+        onTriggered: root.capture(true)
     }
 
-    // Canvas cannot load an itemgrabber: URL directly, but Image can. Keeping
-    // this invisible image between the grab result and Canvas lets the contrast
-    // reader see the same pixels that are already on screen without a second
-    // status-notifier image request.
-    Image {
-        id: snapshotImage
-        visible: false
-        property var snapshot: iconSnapshot.result
-        source: snapshot ? snapshot.url : ""
-        onStatusChanged: iconReader.requestPaint()
-    }
-
+    // The grab comes from Qt's pixmap store, so this draws it at once with no provider.
     Canvas {
         id: iconReader
         width: 24
         height: 24
         opacity: 0
-        property var snapshot: iconSnapshot.result
-        onSnapshotChanged: requestPaint()
         onPaint: {
+            const shot = root.grab;
+            if (!shot)
+                return;
+            const src = String(shot.url);
             const ctx = getContext("2d");
             ctx.clearRect(0, 0, width, height);
-            if (!snapshot || snapshotImage.snapshot !== snapshot || snapshotImage.status !== Image.Ready) {
-                root.iconPixels = [];
-                return;
-            }
-            ctx.drawImage(snapshotImage, 0, 0, width, height);
-            root.iconPixels = Array.from(ctx.getImageData(0, 0, width, height).data);
+            ctx.drawImage(src, 0, 0, width, height);
+            const sample = root.sampleOf(ctx.getImageData(0, 0, width, height).data);
+            // An unchanged image keeps the judgment made for it.
+            const old = root.iconSample?.px;
+            if (!old || old.length !== sample.px.length || sample.px.some((v, i) => v !== old[i]))
+                root.iconSample = sample;
+            // A badge or an animation frame doesn't make it a different icon.
+            const was = root.iconBounds;
+            if (sample.bounds && (!was || Math.abs(sample.bounds.span - was.span) > 0.15 * was.span))
+                root.iconBounds = sample.bounds;
+            unloadImage(src);
+            root.grab = null;
         }
     }
 
     Item {
         anchors.fill: parent
-        layer.enabled: root.iconLost
-        // Channels turned end for end, with the alpha left as it is.
-        layer.effect: LevelAdjust {
-            minimumOutput: "#00ffffff"
-            maximumOutput: "#ff000000"
+        layer.enabled: root.inkShare > 0
+        layer.effect: ColorOverlay {
+            color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, root.inkShare)
         }
 
         IconImage {
             id: trayIcon
             visible: !Config.options.tray.monochromeIcons
             source: root.item.icon
-            anchors.centerIn: parent
-            width: parent.width
-            height: parent.height
+            x: root.snapped((parent.width - width) / 2 + (0.5 - (root.iconBounds?.centerX ?? 0.5)) * width)
+            y: root.snapped((parent.height - height) / 2 + (0.5 - (root.iconBounds?.centerY ?? 0.5)) * height)
+            width: root.iconSize
+            height: root.iconSize
+            onStatusChanged: root.capture()
+            onSourceChanged: root.capture()
         }
 
         Loader {
-            // A tray client with no readable pixel data is explicitly drawn
-            // in the best-contrasting ink until a usable sample arrives.
-            active: Config.options.tray.monochromeIcons || root.fallbackMonochrome
+            active: Config.options.tray.monochromeIcons
             anchors.fill: trayIcon
             sourceComponent: Item {
                 Desaturate {
@@ -277,9 +317,7 @@ MouseArea {
                 ColorOverlay {
                     anchors.fill: desaturatedIcon
                     source: desaturatedIcon
-                    color: root.fallbackMonochrome
-                        ? root.fallbackInk
-                        : ColorUtils.transparentize(Appearance.barContent.colOnLayer0, 0.9)
+                    color: ColorUtils.transparentize(root.contentColors.colOnLayer0, 0.9)
                 }
             }
         }

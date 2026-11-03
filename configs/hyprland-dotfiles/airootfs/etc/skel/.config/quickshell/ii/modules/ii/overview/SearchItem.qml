@@ -13,6 +13,8 @@ import Quickshell.Hyprland
 
 RippleButton {
     id: root
+    property var contentColors: Appearance.launcherContent
+    property real uiScale: 1
     property LauncherSearchResult entry
     property string query
     property bool isSeparator: entry?.isSeparator ?? false
@@ -38,41 +40,43 @@ RippleButton {
     visible: root.entryShown
     enabled: !root.isSeparator
     focusPolicy: root.isSeparator ? Qt.NoFocus : Qt.StrongFocus
-    property int horizontalMargin: 10
-    property int buttonHorizontalPadding: 10
-    property int buttonVerticalPadding: 6
+    property real horizontalMargin: 10 * uiScale
+    property real buttonHorizontalPadding: 10 * uiScale
+    property real buttonVerticalPadding: 6 * uiScale
     property bool keyboardDown: false
-    readonly property bool selected: (root.hovered || root.focus)
+    property bool keyboardSelected: false
+    property var dismiss: () => { GlobalStates.overviewOpen = false; }
+    readonly property bool selected: root.hovered || root.focus || root.keyboardSelected
 
     implicitHeight: root.isSeparator ? separatorItem.implicitHeight : (rowLayout.implicitHeight + root.buttonVerticalPadding * 2)
     implicitWidth: root.isSeparator ? separatorItem.implicitWidth : (rowLayout.implicitWidth + root.buttonHorizontalPadding * 2)
-    buttonRadius: root.isSeparator ? 0 : Appearance.rounding.normal
+    buttonRadius: root.isSeparator ? 0 : Appearance.rounding.normal * root.uiScale
     // A press that does not hover the row, as a touch does, paints the
     // ripple's own color, so the text keeps the fills it is held on.
     colBackground: root.isSeparator ? "transparent" :
-        (root.down ? Appearance.launcherContent.colPrimaryContainerRipple :
-        root.keyboardDown ? Appearance.launcherContent.colPrimaryContainerActive :
-        (selected ? Appearance.launcherContent.colPrimaryContainer :
-        ColorUtils.transparentize(Appearance.launcherContent.colPrimaryContainer, 1)))
-    colBackgroundHover: root.isSeparator ? "transparent" : Appearance.launcherContent.colPrimaryContainer
-    colRipple: root.isSeparator ? "transparent" : Appearance.launcherContent.colPrimaryContainerRipple
+        (root.down ? root.contentColors.colPrimaryContainerRipple :
+        root.keyboardDown ? root.contentColors.colPrimaryContainerActive :
+        (selected ? root.contentColors.colPrimaryContainer :
+        ColorUtils.transparentize(root.contentColors.colPrimaryContainer, 1)))
+    colBackgroundHover: root.isSeparator ? "transparent" : root.contentColors.colPrimaryContainer
+    colRipple: root.isSeparator ? "transparent" : root.contentColors.colPrimaryContainerRipple
     // Held against the fills painted under it. The pointer on the row paints
     // the hover fill, which a pointer press spreads the ripple over; a key
     // pressed with the pointer elsewhere paints the pressed fill.
-    property color colOnFill: root.down ? Appearance.launcherContent.colOnPrimaryContainerActive
-        : (root.keyboardDown && !root.hovered) ? Appearance.launcherContent.colOnPrimaryContainerPressed
-        : Appearance.launcherContent.colOnPrimaryContainer
+    property color colOnFill: root.down ? root.contentColors.colOnPrimaryContainerActive
+        : (root.keyboardDown && !root.hovered) ? root.contentColors.colOnPrimaryContainerPressed
+        : root.contentColors.colOnPrimaryContainer
     property color colForeground: selected ? colOnFill
-        : root.down ? Appearance.launcherContent.m3onSurfaceOnRipple
-        : root.keyboardDown ? Appearance.launcherContent.m3onSurfacePressed : Appearance.launcherContent.m3onSurface
+        : root.down ? root.contentColors.m3onSurfaceOnRipple
+        : root.keyboardDown ? root.contentColors.m3onSurfacePressed : root.contentColors.m3onSurface
     // The copied entry's check disc and its glyph, held on the fills the
     // text is held on; off a picked or pressed row the disc keeps the accent.
-    property color colCheck: root.down ? Appearance.launcherContent.colPrimaryOnContainerActive
-        : (root.keyboardDown && !root.hovered) ? Appearance.launcherContent.colPrimaryOnContainerPressed
-        : root.selected ? Appearance.launcherContent.colPrimaryOnContainer : Appearance.launcherContent.colPrimary
-    property color colOnCheck: root.down ? Appearance.launcherContent.colOnPrimaryOnContainerActive
-        : (root.keyboardDown && !root.hovered) ? Appearance.launcherContent.colOnPrimaryOnContainerPressed
-        : root.selected ? Appearance.launcherContent.colOnPrimaryOnContainer : Appearance.launcherContent.m3onPrimary
+    property color colCheck: root.down ? root.contentColors.colPrimaryOnContainerActive
+        : (root.keyboardDown && !root.hovered) ? root.contentColors.colPrimaryOnContainerPressed
+        : root.selected ? root.contentColors.colPrimaryOnContainer : root.contentColors.colPrimary
+    property color colOnCheck: root.down ? root.contentColors.colOnPrimaryOnContainerActive
+        : (root.keyboardDown && !root.hovered) ? root.contentColors.colOnPrimaryOnContainerPressed
+        : root.selected ? root.contentColors.colOnPrimaryOnContainer : root.contentColors.m3onPrimary
 
     // Separator divider line
     Item {
@@ -80,13 +84,13 @@ RippleButton {
         visible: root.isSeparator
         anchors.left: parent.left
         anchors.right: parent.right
-        implicitHeight: 13
+        implicitHeight: 13 * root.uiScale
 
         Rectangle {
             anchors.centerIn: parent
-            width: parent.width - 40
-            height: 1
-            color: Appearance.launcherContent.colOutlineVariant
+            width: parent.width - 40 * root.uiScale
+            height: root.uiScale
+            color: root.contentColors.colOutlineVariant
         }
     }
 
@@ -94,9 +98,9 @@ RippleButton {
     // shows its name without them, so they are held only on the fills a row
     // that is not picked paints: the panel, the ripple's color under a
     // press, and the pressed fill under a key pressed on it.
-    readonly property color colHighlight: root.selected ? Appearance.launcherContent.colPrimaryInk
-        : root.down ? Appearance.launcherContent.colPrimaryInkOnRipple
-        : root.keyboardDown ? Appearance.launcherContent.colPrimaryInkPressed : Appearance.launcherContent.colPrimaryInk
+    readonly property color colHighlight: root.selected ? root.contentColors.colPrimaryInk
+        : root.down ? root.contentColors.colPrimaryInkOnRipple
+        : root.keyboardDown ? root.contentColors.colPrimaryInkPressed : root.contentColors.colPrimaryInk
     readonly property string highlightPrefix: `<u><font color="${root.colHighlight}">`
     readonly property string highlightSuffix: `</font></u>`
     // Note that this highlighting is independent from the search
@@ -149,8 +153,9 @@ RippleButton {
     }
 
     onClicked: {
-        GlobalStates.overviewOpen = false
-        root.itemExecute()
+        const execute = root.itemExecute;
+        root.dismiss();
+        if (execute) execute();
     }
     Keys.onPressed: (event) => {
         if (event.key === Qt.Key_Delete && event.modifiers === Qt.ShiftModifier) {
@@ -175,7 +180,7 @@ RippleButton {
     RowLayout {
         id: rowLayout
         visible: !root.isSeparator
-        spacing: iconLoader.sourceComponent === null ? 0 : 10
+        spacing: iconLoader.sourceComponent === null ? 0 : 10 * root.uiScale
         anchors.fill: parent
         anchors.leftMargin: root.horizontalMargin + root.buttonHorizontalPadding
         anchors.rightMargin: root.horizontalMargin + root.buttonHorizontalPadding
@@ -202,8 +207,8 @@ RippleButton {
             id: iconImageComponent
             IconImage {
                 source: Quickshell.iconPath(root.iconName, "image-missing")
-                width: 35
-                height: 35
+                width: 35 * root.uiScale
+                height: 35 * root.uiScale
             }
         }
 
@@ -211,7 +216,7 @@ RippleButton {
             id: materialSymbolComponent
             MaterialSymbol {
                 text: root.materialSymbol
-                iconSize: 30
+                iconSize: 30 * root.uiScale
                 color: root.colForeground
             }
         }
@@ -220,7 +225,7 @@ RippleButton {
             id: bigTextComponent
             StyledText {
                 text: root.bigText
-                font.pixelSize: Appearance.font.pixelSize.larger
+                font.pixelSize: Appearance.font.pixelSize.larger * root.uiScale
                 color: root.colForeground
             }
         }
@@ -232,10 +237,10 @@ RippleButton {
             Layout.alignment: Qt.AlignVCenter
             spacing: 0
             StyledText {
-                font.pixelSize: Appearance.font.pixelSize.smaller
+                font.pixelSize: Appearance.font.pixelSize.smaller * root.uiScale
                 color: root.selected ? root.colOnFill
-                    : root.down ? Appearance.launcherContent.colSubtextOnRipple
-                    : root.keyboardDown ? Appearance.launcherContent.colSubtextPressed : Appearance.launcherContent.colSubtextRead
+                    : root.down ? root.contentColors.colSubtextOnRipple
+                    : root.keyboardDown ? root.contentColors.colSubtextPressed : root.contentColors.colSubtextRead
                 visible: root.itemType && root.itemType != Translation.tr("App")
                 text: root.itemType
             }
@@ -252,7 +257,7 @@ RippleButton {
                             id: activeText
                             anchors.centerIn: parent
                             text: "check"
-                            font.pixelSize: Appearance.font.pixelSize.normal
+                            font.pixelSize: Appearance.font.pixelSize.normal * root.uiScale
                             color: root.colOnCheck
                         }
                     }
@@ -269,7 +274,7 @@ RippleButton {
                     Layout.fillWidth: true
                     id: nameText
                     textFormat: Text.StyledText // RichText also works, but StyledText ensures elide work
-                    font.pixelSize: Appearance.font.pixelSize.small
+                    font.pixelSize: Appearance.font.pixelSize.small * root.uiScale
                     font.family: Appearance.font.family[root.fontType]
                     color: root.colForeground
                     horizontalAlignment: Text.AlignLeft
@@ -283,7 +288,7 @@ RippleButton {
                     Layout.fillWidth: true
                     entry: root.cliphistRawString
                     maxWidth: contentColumn.width
-                    maxHeight: 140
+                    maxHeight: 140 * root.uiScale
                 }
             }
         }
@@ -293,7 +298,7 @@ RippleButton {
             Layout.fillWidth: false
             visible: root.selected
             id: clickAction
-            font.pixelSize: Appearance.font.pixelSize.normal
+            font.pixelSize: Appearance.font.pixelSize.normal * root.uiScale
             color: root.colOnFill
             horizontalAlignment: Text.AlignRight
             text: root.itemClickActionName
@@ -303,7 +308,7 @@ RippleButton {
             Layout.alignment: Qt.AlignTop
             Layout.topMargin: root.buttonVerticalPadding
             Layout.bottomMargin: -root.buttonVerticalPadding // Why is this necessary? Good question.
-            spacing: 4
+            spacing: 4 * root.uiScale
             Repeater {
                 model: (root.entry.actions ?? []).slice(0, 4)
                 delegate: RippleButton {
@@ -311,11 +316,11 @@ RippleButton {
                     required property var modelData
                     property var iconType: modelData.iconType
                     property string iconName: modelData.iconName ?? ""
-                    implicitHeight: 34
-                    implicitWidth: 34
+                    implicitHeight: 34 * root.uiScale
+                    implicitWidth: 34 * root.uiScale
 
-                    colBackgroundHover: Appearance.launcherContent.colActionHover
-                    colRipple: Appearance.launcherContent.colActionRipple
+                    colBackgroundHover: root.contentColors.colActionHover
+                    colRipple: root.contentColors.colActionRipple
 
                     contentItem: Item {
                         id: actionContentItem
@@ -325,9 +330,9 @@ RippleButton {
                             active: actionButton.iconType === LauncherSearchResult.IconType.Material || actionButton.iconName === ""
                             sourceComponent: MaterialSymbol {
                                 text: actionButton.iconName || "video_settings"
-                                font.pixelSize: Appearance.font.pixelSize.hugeass
-                                color: actionButton.down ? Appearance.launcherContent.colOnActionActive :
-                                    (actionButton.hovered ? Appearance.launcherContent.colOnActionHover : root.colForeground)
+                                font.pixelSize: Appearance.font.pixelSize.hugeass * root.uiScale
+                                color: actionButton.down ? root.contentColors.colOnActionActive :
+                                    (actionButton.hovered ? root.contentColors.colOnActionHover : root.colForeground)
                             }
                         }
                         Loader {
@@ -335,7 +340,7 @@ RippleButton {
                             active: actionButton.iconType === LauncherSearchResult.IconType.System && actionButton.iconName !== ""
                             sourceComponent: IconImage {
                                 source: Quickshell.iconPath(actionButton.iconName)
-                                implicitSize: 20
+                                implicitSize: 20 * root.uiScale
                             }
                         }
                     }

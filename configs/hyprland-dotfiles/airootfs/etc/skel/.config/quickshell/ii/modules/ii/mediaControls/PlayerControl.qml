@@ -3,7 +3,7 @@ import qs.modules.common
 import qs.modules.common.models
 import qs.modules.common.widgets
 import qs.services
-import "../../../services/MprisCapabilities.js" as Capabilities
+import "../../../services/mpris-capabilities.js" as Capabilities
 import qs.modules.common.functions
 import Qt5Compat.GraphicalEffects
 import QtQuick
@@ -371,23 +371,24 @@ Item { // Player instance
                 Item { Layout.fillHeight: true }
                 Item {
                     Layout.fillWidth: true
-                    implicitHeight: trackTime.implicitHeight + sliderRow.implicitHeight
+                    implicitHeight: trackTime.implicitHeight + sliderRow.implicitHeight + 4
 
                     StyledText {
                         id: trackTime
                         anchors.bottom: sliderRow.top
+                        anchors.bottomMargin: 4
                         anchors.left: parent.left
                         font.pixelSize: Appearance.font.pixelSize.small
+                        font.features: { "tnum": 1 }
                         color: blendedColors.colSubtext
                         elide: Text.ElideRight
-                        text: root.player?.length > 0
+                        text: Capabilities.hasLength(root.player)
                             ? `${StringUtils.friendlyTimeForSeconds(root.player?.position)} / ${StringUtils.friendlyTimeForSeconds(root.player?.length)}`
                             : Translation.tr("Live / unknown duration")
                     }
 
                     RowLayout {
-                        anchors.bottom: sliderRow.top
-                        anchors.bottomMargin: -7
+                        anchors.verticalCenter: trackTime.verticalCenter
 
                         anchors.left: trackTime.right
                         anchors.right: sliderRow.right
@@ -397,7 +398,7 @@ Item { // Player instance
                         visible: Capabilities.volume(root.player)
 
                         MaterialSymbol {
-                            iconSize: Appearance.font.pixelSize.medium
+                            iconSize: Appearance.font.pixelSize.normal
                             color: blendedColors.colSubtext
                             text: {
                                 const vol = root.player?.volume ?? 1.0
@@ -409,8 +410,9 @@ Item { // Player instance
 
                         StyledSlider {
                             Layout.preferredWidth: 120
-
+                            Layout.preferredHeight: Appearance.sizes.wavySliderHeight
                             configuration: StyledSlider.Configuration.Wavy
+                            animateWave: false
                             highlightColor: blendedColors.colPrimary
                             trackColor: blendedColors.colSecondaryContainer
                             handleColor: blendedColors.colPrimary
@@ -438,14 +440,15 @@ Item { // Player instance
                         Item {
                             id: progressBarContainer
                             Layout.fillWidth: true
-                            implicitHeight: Math.max(sliderLoader.implicitHeight, progressBarLoader.implicitHeight)
+                            implicitHeight: Appearance.sizes.wavySliderHeight
 
                             Loader {
                                 id: sliderLoader
                                 anchors.fill: parent
-                                active: (root.player?.canSeek ?? false) && root.player.length > 0
+                                active: Capabilities.hasLength(root.player) && (root.player?.canSeek ?? false)
                                 sourceComponent: StyledSlider { 
                                     configuration: StyledSlider.Configuration.Wavy
+                                    animateWave: root.player?.isPlaying ?? false
                                     highlightColor: blendedColors.colPrimary
                                     trackColor: blendedColors.colSecondaryContainer
                                     handleColor: blendedColors.colPrimary
@@ -463,12 +466,12 @@ Item { // Player instance
                                     left: parent.left
                                     right: parent.right
                                 }
-                                active: !((root.player?.canSeek ?? false) && root.player.length > 0)
+                                active: !(Capabilities.hasLength(root.player) && (root.player?.canSeek ?? false))
                                 sourceComponent: StyledProgressBar { 
                                     wavy: root.player?.isPlaying
                                     highlightColor: blendedColors.colPrimary
                                     trackColor: blendedColors.colSecondaryContainer
-                                    value: root.player?.position / root.player?.length
+                                    value: Capabilities.hasLength(root.player) ? root.player.position / root.player.length : 0
                                 }
                             }
 

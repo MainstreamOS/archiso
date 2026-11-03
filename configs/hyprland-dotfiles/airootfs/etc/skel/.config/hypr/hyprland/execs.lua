@@ -9,22 +9,31 @@ hl.on("hyprland.start", function ()
     -- session pulls in, and qs would not spawn until the slowest had started.
     -- The target itself activates immediately; only the wanted units keep
     -- starting.
-    --
-    -- An update can leave the shell's own files for after it has finished
-    -- (finish-deferred.sh in the dotfiles clone). When nothing got to them
-    -- before the session ended, they go in here, before the shell reads them,
-    -- bounded so the shell is never held back for long. This login is what
-    -- the Update page's "log out and back in" note asks for, so it goes too.
-    local finishUpdate = "rm -f \"${XDG_STATE_HOME:-$HOME/.local/state}/mainstream/relogin-needed\"; d=\"$HOME/.cache/dots-hyprland\"; if [ -s \"$d/.update-deferred\" ] && [ -f \"$d/sdata/subcmd-exp-update/finish-deferred.sh\" ]; then timeout -k 5 60 bash \"$d/sdata/subcmd-exp-update/finish-deferred.sh\" --login >/dev/null 2>&1; fi; true"
-    hl.exec_cmd("dbus-update-activation-environment --all && dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP && systemctl --user start --no-block hyprland-session.target && (systemctl --user try-restart xdg-desktop-portal-hyprland.service || true) && (" .. finishUpdate .. ") && qs -n -c $qsConfig")
-
-    -- Apps set to open at login start once the shell's tray is up. An app
-    -- that looks for a tray while there is none, as Discord does, gives up
-    -- and shows no icon for the rest of the session. Only the shell provides
-    -- the tray, and it starts last in the chain above, so this cannot run
-    -- ahead of the session target. Bounded, so a desktop without a tray
-    -- still gets its apps, a little later.
-    hl.exec_cmd("gdbus wait --session --timeout 10 org.kde.StatusNotifierWatcher; systemctl --user start --no-block hyprland-autostart.target")
+    hl.exec_cmd(table.concat({
+        -- Export session environment to dbus and systemd first so any service
+        -- spawned by systemd or dbus activation has WAYLAND_DISPLAY and DISPLAY.
+        "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DISPLAY",
+        "dbus-update-activation-environment --all",
+        -- A crash can leave these targets active, and starting an active target skips
+        -- what it wants, so the ones an earlier session left are stopped first.
+        "(\"$HOME/.config/hypr/hyprland/scripts/stop_stale_session.sh\" --login || true)",
+        -- Reset any portal failure state (e.g. start-limit-hit from early PAM activation before display was ready)
+        "(systemctl --user reset-failed xdg-desktop-portal.service xdg-desktop-portal-gtk.service xdg-desktop-portal-hyprland.service xdg-desktop-portal-xapp.service 2>/dev/null || true)",
+        "systemctl --user start --no-block hyprland-session.target",
+        -- Restart portals now that DISPLAY/WAYLAND_DISPLAY and session target are ready.
+        "(systemctl --user restart xdg-desktop-portal.service xdg-desktop-portal-gtk.service xdg-desktop-portal-hyprland.service xdg-desktop-portal-xapp.service 2>/dev/null || true)",
+        -- Apps wait, bounded, for the shell's tray, as Discord shows no icon if it
+        -- starts without one. Kept in the chain so they never start before the stop.
+        "{ (gdbus wait --session --timeout 10 org.kde.StatusNotifierWatcher; systemctl --user start --no-block hyprland-autostart.target) & }",
+        -- An update can leave the shell's own files for after it has finished
+        -- (finish-deferred.sh in the dotfiles clone). When nothing got to them
+        -- before the session ended, they go in here, before the shell reads them,
+        -- bounded so the shell is never held back for long. This login is what
+        -- the Update page's "log out and back in" note asks for, so it goes too,
+        -- unless some of those files are still waiting.
+        "(d=\"$HOME/.cache/dots-hyprland\"; if [ -s \"$d/.update-deferred\" ] && [ -f \"$d/sdata/subcmd-exp-update/finish-deferred.sh\" ]; then timeout -k 5 60 bash \"$d/sdata/subcmd-exp-update/finish-deferred.sh\" --login >/dev/null 2>&1; fi; [ -s \"$d/.update-deferred\" ] || rm -f \"${XDG_STATE_HOME:-$HOME/.local/state}/mainstream/relogin-needed\"; true)",
+        "qs -n -c $qsConfig",
+    }, " && "))
 
     -- Bar, wallpaper
     hl.exec_cmd("$HOME/.config/hypr/hyprland/scripts/start_geoclue_agent.sh")
@@ -54,8 +63,8 @@ hl.on("hyprland.start", function ()
     -- GTK/Qt interface fonts follow the shell's font choice (config.json).
     hl.exec_cmd("$HOME/.config/quickshell/ii/scripts/themes/apply-gtk-font.sh")
 
-    -- Gaming Mode: strip any autologin User= from /etc/sddm.conf so normal
-    -- boots/logouts reach the SDDM password greeter (no-op on a fresh desktop).
+    -- Gaming Mode: put /etc/sddm.conf back to the autologin the person chose, or
+    -- none, so normal boots never re-enter gaming (no-op on a fresh desktop).
     -- Redundant with the sddm.service ExecStartPre (gaming-mode-arm-check), the
     -- authoritative boot-time reset; this just closes the gap if the user logs
     -- straight out of a gaming-exit session without an intervening reboot.

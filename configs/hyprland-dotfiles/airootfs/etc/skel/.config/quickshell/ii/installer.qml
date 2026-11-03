@@ -13,6 +13,7 @@ import Quickshell.Io
 import qs.services
 import qs.services.network
 import qs.modules.common
+import qs.modules.common.models
 import qs.modules.common.widgets
 import "modules/settings/connectivity"
 
@@ -252,20 +253,7 @@ ApplicationWindow {
 
     Process {
         id: writeProc
-        // Quickshell emits no exited signal at all when a command cannot be
-        // started, only runningChanged, so hanging the rest of the chain on
-        // onExited alone left Start Install silently dead forever. Both the
-        // failure to start and a non-zero exit are handled here.
-        property bool sawExit: false
-        onRunningChanged: {
-            if (running) {
-                sawExit = false;
-            } else if (!sawExit) {
-                root.applyFailed(Translation.tr("Could not save the display settings."));
-            }
-        }
         onExited: (exitCode) => {
-            sawExit = true;
             if (exitCode === 0) {
                 reloadProc.running = true;
             } else {
@@ -316,6 +304,10 @@ ApplicationWindow {
         recenterTimer.restart();
     }
 
+    ShownWifiNetworks {
+        id: shownNetworks
+    }
+
     // ── Main content ──
     ColumnLayout {
         anchors {
@@ -361,13 +353,33 @@ ApplicationWindow {
                     }
 
                     // ── Internet notice ──
-                    NoticeBox {
-                        readonly property bool online: Network.ethernet || Network.active !== null
+                    // As tall as the taller message, so a change of connection during a password prompt cannot
+                    // move the Wi-Fi list below.
+                    Item {
+                        id: internetNotice
+                        // Limited counts, as it does for Ethernet: NetworkManager's check can fail on a working network.
+                        readonly property bool online: Network.ethernet || Network.wifiStatus === "connected" || Network.wifiStatus === "limited"
                         Layout.fillWidth: true
-                        materialIcon: online ? "check_circle" : "wifi"
-                        text: online
-                            ? Translation.tr("Internet connected — you're ready to install.")
-                            : Translation.tr("An internet connection is required for full installation. Please connect to Wi-Fi below before starting the installer.")
+                        implicitHeight: Math.max(onlineNotice.implicitHeight, offlineNotice.implicitHeight)
+
+                        NoticeBox {
+                            id: onlineNotice
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: internetNotice.online
+                            materialIcon: "check_circle"
+                            text: Translation.tr("Internet connected — you're ready to install.")
+                        }
+                        NoticeBox {
+                            id: offlineNotice
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !internetNotice.online
+                            materialIcon: "wifi"
+                            text: Translation.tr("An internet connection is required for full installation. Please connect to Wi-Fi below before starting the installer.")
+                        }
                     }
 
                     // ── Display section ──
@@ -723,14 +735,14 @@ ApplicationWindow {
 
                         // Connected network
                         ConnectivityWifiItem {
-                            visible: Network.wifiEnabled && Network.active !== null
-                            wifiNetwork: Network.active ?? null
+                            visible: Network.wifiEnabled && shownNetworks.active !== null
+                            wifiNetwork: shownNetworks.active
                             Layout.fillWidth: true
                         }
 
                         // Available networks (scrollable, fills remaining space)
                         Rectangle {
-                            visible: Network.wifiEnabled && Network.availableNetworks.length > 0
+                            visible: Network.wifiEnabled && shownNetworks.availableNetworks.length > 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             Layout.minimumHeight: 80
@@ -752,7 +764,9 @@ ApplicationWindow {
                                     spacing: 4
 
                                     Repeater {
-                                        model: Network.availableNetworks
+                                        model: ScriptModel {
+                                            values: shownNetworks.availableNetworks
+                                        }
 
                                         ConnectivityWifiItem {
                                             required property var modelData
@@ -770,7 +784,7 @@ ApplicationWindow {
 
                         // Empty state
                         ColumnLayout {
-                            visible: Network.wifiEnabled && Network.availableNetworks.length === 0 && !Network.wifiScanning && Network.active === null
+                            visible: Network.wifiEnabled && shownNetworks.availableNetworks.length === 0 && !Network.wifiScanning && shownNetworks.active === null
                             Layout.fillWidth: true
                             Layout.topMargin: 10
                             Layout.bottomMargin: 10

@@ -68,4 +68,30 @@ Singleton {
         parts.pop();
         return parts.join("/");
     }
+
+    /**
+     * A file:// URL for a path, each segment percent-encoded so a name holding '#', '?' or '%' stays part of the path
+     * @param {string} path
+     * @returns {string}
+     */
+    function fileUrl(path) {
+        return "file://" + String(path).split("/").map(encodeURIComponent).join("/");
+    }
+
+    // A file URL (or a plain path) as a local path; "" when its escapes are malformed.
+    function pathFromUrl(url) {
+        try {
+            return decodeURIComponent(trimFileProtocol(String(url ?? "")));
+        } catch (e) {
+            return "";
+        }
+    }
+
+    // A local path (with or without file://) as an encoded file URL; web, data and qrc URLs pass through.
+    function mediaUrl(path) {
+        const s = String(path ?? "");
+        if (!s.length) return "";
+        if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("qrc:/")) return s;
+        return fileUrl(trimFileProtocol(s));
+    }
 }

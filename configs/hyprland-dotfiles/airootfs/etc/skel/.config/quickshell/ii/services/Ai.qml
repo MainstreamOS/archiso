@@ -9,6 +9,8 @@ import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
 import qs.services.ai
+import "ai/sink.js" as Sink
+import "ai/sessions.js" as Sessions
 
 /**
  * Basic service to handle LLM chats. Supports Google's and OpenAI's API formats.
@@ -40,11 +42,27 @@ Singleton {
             // QML/JS doesn't support replaceAll, so use split/join
             prompt = prompt.split(key).join(root.promptSubstitutions[key]);
         }
+        if (AiModes.current === "plan") {
+            prompt += "\n\n## Mode: Plan\nYou are currently in Plan Mode. Focus on designing, architecting, and outlining a structured step-by-step plan. Do not execute destructive edits or commands without user confirmation.";
+        }
         return prompt;
     }
-    // property var messages: []
+    // Reassigned on every change. A message object is in messageByID before
+    // its id joins messageIDs, and leaves messageIDs before it is destroyed.
     property var messageIDs: []
     property var messageByID: ({})
+    onMessageIDsChanged: {
+        if (root._graveyard.length > 0) reaper.restart();
+    }
+    // True while a saved session is being read and rebuilt; sends, edits and
+    // saves wait for it.
+    property bool sessionLoading: false
+    property bool _startupRestored: false
+    property int _loadGeneration: 0
+    property var _restore: null
+    // What the chat looked like when it last matched a named session
+    property string _savedSignature: ""
+    property string _savedName: ""
     readonly property var apiKeys: KeyringStorage.keyringData?.apiKeys ?? {}
     readonly property var apiKeysLoaded: KeyringStorage.loaded
     readonly property bool currentModelHasApiKey: {
@@ -54,13 +72,22 @@ Singleton {
         const key = apiKeys[model.key_id];
         return (key?.length > 0);
     }
-    property var postResponseHook
     property real temperature: Persistent.states?.ai?.temperature ?? 0.5
+    property string thinkingLevel: Persistent.states?.ai?.thinkingLevel ?? ""
+    readonly property var thinkingLevels: [
+        "minimal", "low", "medium", "high", "extra", "max", "ultracode", "none"
+    ]
     property QtObject tokenCount: QtObject {
         property int input: -1
         property int output: -1
         property int total: -1
     }
+    // "idle", "starting", "streaming", "awaitingConfirmation" or "stopping"
+    property string requestState: "idle"
+    readonly property bool isGenerating: root.requestState === "starting"
+        || root.requestState === "streaming" || root.requestState === "stopping"
+    // null or a frozen Confirmation; replaced, never mutated
+    property var pendingConfirmation: null
 
     function idForMessage(message) {
         // Generate a unique ID using timestamp and random value
@@ -74,7 +101,7 @@ Singleton {
     property list<var> defaultPrompts: []
     property list<var> userPrompts: []
     property list<var> promptFiles: [...defaultPrompts, ...userPrompts]
-    property list<var> savedChats: []
+    property list<string> savedChats: []
 
     property var promptSubstitutions: {
         "{DISTRO}": SystemInfo.distroName,
@@ -256,7 +283,7 @@ Singleton {
     // The tool preference is global, but a model that cannot report a function
     // call must not be handed the definitions: it answers with a call instead
     // of prose and the reply arrives empty. Fall back rather than go silent.
-    readonly property string effectiveTool: (root.currentTool === "functions" && !(root.currentApiStrategy?.supportsFunctions ?? false)) ? "none" : root.currentTool
+    readonly property string effectiveTool: (root.currentTool === "functions" && !(root.currentApiStrategy?.supportsFunctions ?? false)) ? "none" : (root.currentTool ?? "search")
     property var toolDescriptions: {
         "functions": Translation.tr("Commands, edit configs, search.\nTakes an extra turn to switch to search mode if that's needed"),
         "search": Translation.tr("Gives the model search capabilities (immediately)"),
@@ -275,60 +302,104 @@ Singleton {
     // - key_get_description: Description of pricing and how to get an API key
     // - api_format: The API format of the model. Can be "openai" or "gemini". Default is "openai".
     // - extraParams: Extra parameters to be passed to the model. This is a JSON object.
-    property var models: Config.options.policies.ai === 2 ? {} : {
-        "gemini-2.5-flash": aiModelComponent.createObject(this, {
-            "name": "Gemini 2.5 Flash",
+    readonly property var geminiApiCatalog: ({
+        "gemini-flash-latest": {
+            "name": "Gemini Flash",
             "icon": "google-gemini-symbolic",
-            "description": Translation.tr("Online | Google's model\nNewer model that's slower than its predecessor but should deliver higher quality answers"),
+            "description": Translation.tr("Online | Google's model\nGoogle's current Flash model: fast and capable, with a free tier."),
             "homepage": "https://aistudio.google.com",
-            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",
-            "model": "gemini-2.5-flash",
+            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent",
+            "model": "gemini-flash-latest",
             "requires_key": true,
             "key_id": "gemini",
             "key_get_link": "https://aistudio.google.com/app/apikey",
-            "key_get_description": Translation.tr("**Pricing**: free. Data used for training.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project or whatever it asks, go back and click Get API key"),
+            "key_get_description": Translation.tr("**Pricing**: free tier, with data used for training. Web search needs billing turned on.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project or whatever it asks, go back and click Get API key"),
             "api_format": "gemini",
-        }),
-        "gemini-3-flash": aiModelComponent.createObject(this, {
-            "name": "Gemini 3 Flash",
+            "sendTemperature": false,
+            "thinkingLevel": "",
+        },
+        "gemini-pro-latest": {
+            "name": "Gemini Pro",
             "icon": "google-gemini-symbolic",
-            "description": Translation.tr("Online | Google's model\nPro-level intelligence at the speed and pricing of Flash."),
+            "description": Translation.tr("Online | Google's model\nGoogle's flagship Pro reasoning model: complex coding, mathematics, and research."),
             "homepage": "https://aistudio.google.com",
-            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent",
-            "model": "gemini-3-flash-preview",
+            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:streamGenerateContent",
+            "model": "gemini-pro-latest",
             "requires_key": true,
             "key_id": "gemini",
             "key_get_link": "https://aistudio.google.com/app/apikey",
-            "key_get_description": Translation.tr("**Pricing**: free. Data used for training.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project or whatever it asks, go back and click Get API key"),
+            "key_get_description": Translation.tr("**Pricing**: free tier and pay-as-you-go.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project, go to Get API key"),
             "api_format": "gemini",
+            "sendTemperature": false,
+            "thinkingLevel": "",
+        },
+        "gemini-4-argon": {
+            "name": "Gemini 4 Argon",
+            "icon": "google-gemini-symbolic",
+            "description": Translation.tr("Online | Google's frontier model\nGoogle's flagship frontier reasoning model: complex coding, mathematics, and research."),
+            "homepage": "https://aistudio.google.com",
+            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:streamGenerateContent",
+            "model": "gemini-4-argon",
+            "requires_key": true,
+            "key_id": "gemini",
+            "key_get_link": "https://aistudio.google.com/app/apikey",
+            "key_get_description": Translation.tr("**Pricing**: pay-as-you-go.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project, go to Get API key"),
+            "api_format": "gemini",
+            "sendTemperature": false,
+            "thinkingLevel": "",
+        }
+    })
+    function isGeminiApiModel(id) {
+        return root.geminiApiCatalog[id] !== undefined;
+    }
+
+    // Every model the service knows of, online or not. Only the functions
+    // that register or retire models write it; everything else reads models.
+    property var _registry: ({
+        "gemini": aiModelComponent.createObject(root, {
+            "name": "Gemini",
+            "icon": "google-gemini-symbolic",
+            "description": Translation.tr("Online | Google's model\nGoogle's Gemini models with a free tier: Gemini Flash, Gemini Pro, and Gemini 4 Argon."),
+            "homepage": "https://aistudio.google.com",
+            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent",
+            "model": "gemini-flash-latest",
+            "requires_key": true,
+            "key_id": "gemini",
+            "key_get_link": "https://aistudio.google.com/app/apikey",
+            "key_get_description": Translation.tr("**Pricing**: free tier, with data used for training. Web search needs billing turned on.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project or whatever it asks, go back and click Get API key"),
+            "api_format": "gemini",
+            "sendTemperature": false,
+            "thinkingLevel": "",
         }),
-        "mistral-medium-3": aiModelComponent.createObject(this, {
-            "name": "Mistral Medium 3",
+        "mistral-4": aiModelComponent.createObject(root, {
+            "name": "Mistral 4",
             "icon": "mistral-symbolic",
-            "description": Translation.tr("Online | %1's model | Delivers fast, responsive and well-formatted answers. Disadvantages: not very eager to do stuff; might make up unknown function calls").arg("Mistral"),
-            "homepage": "https://mistral.ai/news/mistral-medium-3",
+            "description": Translation.tr("Online | %1's 1T parameter flagship. Strong at coding, agentic workflows, and structured tool use. Disadvantages: higher initial latency and tends to be verbose").arg("Mistral"),
+            "homepage": "https://mistral.ai/news/mistral-large-4",
             "endpoint": "https://api.mistral.ai/v1/chat/completions",
-            "model": "mistral-medium-2505",
+            "model": "mistral-large-latest",
             "requires_key": true,
             "key_id": "mistral",
             "key_get_link": "https://console.mistral.ai/api-keys",
             "key_get_description": Translation.tr("**Instructions**: Log into Mistral account, go to Keys on the sidebar, click Create new key"),
             "api_format": "mistral",
         }),
-        "claude": aiModelComponent.createObject(this, {
+        "claude": aiModelComponent.createObject(root, {
             "name": "Claude",
             "icon": "claude-symbolic",
-            "description": Translation.tr("Online | Anthropic's Claude Opus 4.8 over the Messages API"),
+            "description": Translation.tr("Online | Anthropic's Claude Opus 5.5 over the Messages API"),
             "homepage": "https://www.anthropic.com/claude",
             "endpoint": "https://api.anthropic.com/v1/messages",
-            "model": "claude-opus-4-8",
+            "model": "claude-opus-5-5",
             "requires_key": true,
             "key_id": "anthropic",
             "key_get_link": "https://console.anthropic.com/settings/keys",
             "key_get_description": Translation.tr("**Instructions**: Log into your Anthropic account, go to API Keys, click Create Key"),
             "api_format": "anthropic",
+            "sendTemperature": false,
+            "thinkingLevel": "",
         }),
-        "codex": aiModelComponent.createObject(this, {
+        "codex": aiModelComponent.createObject(root, {
             "name": "Codex",
             "icon": "openai-symbolic",
             "description": Translation.tr("Online | OpenAI's GPT-5.6 over the Chat Completions API"),
@@ -342,11 +413,77 @@ Singleton {
             "key_get_description": Translation.tr("**Instructions**: Log into your OpenAI account, open the API keys page, click Create new secret key"),
             "api_format": "openai",
         }),
+    })
+    // What the picker offers and requests may use: the local-only policy
+    // hides online entries rather than dropping them, so they are back as
+    // soon as the policy allows them again.
+    readonly property var models: Config.options?.policies?.ai === 2 ? root._localModels(root._registry) : root._registry
+    function _isLocalModel(model) {
+        return String(model?.endpoint ?? "").includes("localhost");
+    }
+    function _localModels(map) {
+        const local = {};
+        for (const id of Object.keys(map)) {
+            if (root._isLocalModel(map[id])) local[id] = map[id];
+        }
+        return local;
+    }
+    // Judged by id so it also covers a plan model or a Gemini catalog entry
+    // that is not registered right now. An id nothing knows yet is a saved
+    // local model whose fetch has not answered.
+    function _isOnlineModelId(id) {
+        if (!id || id === root.ollamaSetupModelId) return false;
+        const model = root._registry[id] ?? (root.isGeminiApiModel(id) ? root.geminiApiCatalog[id] : null);
+        if (model) return !root._isLocalModel(model);
+        return root.planFormatFor(id) !== "";
     }
     // Only ever a view of the map. Readonly so no fetch handler can hand it
     // a snapshot that stops following the models registered afterwards.
     readonly property var modelList: Object.keys(root.models)
-    readonly property var currentModelId: Persistent.states?.ai?.model || modelList[0]
+    readonly property var retiredModels: ({
+        "claude-opus-4-8": "claude",
+        "mistral-medium-3": "mistral-4",
+        "mistral-3": "mistral-4",
+        "mistral-medium": "mistral-4",
+        "mistral": "mistral-4",
+        "gemini-3-flash": "gemini-flash-latest",
+        "gemini-2.5-flash": "gemini-flash-latest",
+        "gemini-3.5-flash-lite": "gemini-flash-latest",
+        "gemini-3.8-flash": "gemini-flash-latest",
+        "gemini": "gemini-flash-latest",
+        "gemini-flash": "gemini-flash-latest",
+        "gemini-pro": "gemini-pro-latest",
+        "gemini-3.1-pro": "gemini-pro-latest",
+        "gemini-3.1-pro-preview": "gemini-pro-latest",
+        "argon": "gemini-4-argon",
+        "gemini-argon": "gemini-4-argon",
+        "gemini-4": "gemini-4-argon",
+        "gemini-plan-default": "gemini-plan-3-8-flash",
+        "gemini-plan-3-8-flash-high": "gemini-plan-3-8-flash",
+        "gemini-plan-3-8-flash-medium": "gemini-plan-3-8-flash",
+        "gemini-plan-3-8-flash-low": "gemini-plan-3-8-flash",
+        "gemini-plan-3-1-pro-high": "gemini-plan-3-1-pro",
+        "gemini-plan-3-1-pro-low": "gemini-plan-3-1-pro",
+        "gemini-plan-argon": "gemini-plan-4-argon",
+        "gemini-plan-4": "gemini-plan-4-argon",
+    })
+    // The user's choice as saved in Persistent. Everything that talks to a
+    // model reads currentModelId instead.
+    readonly property var _savedModelId: {
+        const id = Persistent.states?.ai?.model || modelList[0];
+        return retiredModels[id] ?? id;
+    }
+    // Under the local-only policy an online choice stays saved for when the
+    // policy allows it again, and the first local model answers in its place.
+    // The two inputs are typed bindings of their own: the selection handler
+    // rewrites the map's online entries, and a binding reading the map
+    // directly would be re-entered by that write and abandoned as a loop.
+    readonly property bool _savedIsOnline: root._isOnlineModelId(root._savedModelId)
+    readonly property string _localFallbackId: Object.keys(root._registry).find(id => id !== root.ollamaSetupModelId
+        && root.retiredModels[id] === undefined && root._isLocalModel(root._registry[id])) ?? root.ollamaSetupModelId
+    readonly property var currentModelId: Config.options?.policies?.ai === 2 && root._savedIsOnline
+        ? root._localFallbackId
+        : root._savedModelId
     // Read by the input-box indicator. A plain getModel() call there never
     // re-evaluated, so the name sat on whatever was current when the chat was
     // built. Ollama's list arrives after that, so a saved local model showed as
@@ -358,22 +495,20 @@ Singleton {
     // being looked up, which is the truth of that moment. Readonly: every
     // selection writes Persistent, and both id and object derive from it, so
     // no imperative write can strand the id and the object apart again.
-    readonly property var currentModel: models[currentModelId] ?? null
+    readonly property var currentModel: models[currentModelId] ?? (root.isGeminiApiModel(currentModelId) ? models["gemini"] : null)
+    readonly property bool currentModelSupportsSessions: Boolean(currentModel && currentModel.supportsSessions !== false && currentModelId !== ollamaSetupModelId)
 
     property var apiStrategies: {
-        "openai": openaiApiStrategy.createObject(this),
-        "gemini": geminiApiStrategy.createObject(this),
-        "mistral": mistralApiStrategy.createObject(this),
-        "anthropic": anthropicApiStrategy.createObject(this),
-        "claude-code": claudeCodeApiStrategy.createObject(this),
-        "codex-cli": codexCliApiStrategy.createObject(this),
-        "antigravity-cli": antigravityCliApiStrategy.createObject(this, {
-            "workDir": root.antigravityDir,
-            "exitText": Translation.tr("Antigravity stopped with code %1"),
-            "lapsedText": Translation.tr("Gemini could not use your Google sign-in. Log in again to keep chatting."),
-        }),
+        "openai": openaiApiStrategy.createObject(root),
+        "gemini": geminiApiStrategy.createObject(root),
+        "mistral": mistralApiStrategy.createObject(root),
+        "anthropic": anthropicApiStrategy.createObject(root),
+        "claude-code": claudeCodeApiStrategy.createObject(root),
+        "codex-cli": codexCliApiStrategy.createObject(root),
+        "antigravity-cli": antigravityCliApiStrategy.createObject(root),
     }
     property ApiStrategy currentApiStrategy: apiStrategies[models[currentModelId]?.api_format || "openai"]
+    readonly property bool currentModelSupportsAttachments: Boolean(root.currentApiStrategy?.supportsAttachments)
 
     function addUserModels() {
         (Config?.options.ai?.extraModels ?? []).forEach(model => {
@@ -397,7 +532,10 @@ Singleton {
             "cmd": "claude",
             "install": "curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors https://claude.ai/install.sh | bash",
             "login": "claude auth login --claudeai",
-            "readyCheck": "claude auth status --json 2>/dev/null | grep -q '\"loggedIn\": *true'"
+            "readyCheck": "claude auth status --json 2>/dev/null | grep -q '\"loggedIn\": *true'",
+            // Print mode leaves thinking text out unless asked for it. Older CLIs
+            // refuse the flag before making any request, so empty input tells.
+            "features": "claude -p --thinking-display summarized 2>&1 | grep -q 'unknown option' || echo 'feature thinking-display'; claude -p --permission-prompt-tool stdio 2>&1 | grep -q 'unknown option' || echo 'feature permission-bridge'"
         },
         "codex-cli": {
             "name": "Codex",
@@ -409,7 +547,26 @@ Singleton {
             // a trip to a terminal.
             "installFallback": "codex",
             "login": "codex login",
-            "readyCheck": "codex login status >/dev/null 2>&1"
+            "readyCheck": "codex login status >/dev/null 2>&1",
+            // The CLI's own model list, read once signed in. The raw catalog
+            // runs to hundreds of KB, so only the fields used here reach QML.
+            "catalog": "timeout 30 codex debug models 2>/dev/null | python3 -I -c \"$1\"",
+            "catalogFilter": "import json, sys\n"
+                + "try:\n"
+                + "    out = []\n"
+                + "    for m in (json.load(sys.stdin).get('models') or [])[:200]:\n"
+                + "        if not isinstance(m, dict): continue\n"
+                + "        up = m.get('upgrade')\n"
+                + "        levels = m.get('supported_reasoning_levels') or []\n"
+                + "        out.append({'slug': m.get('slug'), 'name': m.get('display_name'), 'visibility': m.get('visibility'),\n"
+                + "            'priority': m.get('priority'), 'default': m.get('default_reasoning_level'),\n"
+                + "            'efforts': [l.get('effort') for l in levels if isinstance(l, dict)][:20],\n"
+                + "            'upgrade': up.get('model') if isinstance(up, dict) else None})\n"
+                + "    print('catalog ' + json.dumps(out, separators=(',', ':')))\n"
+                + "except Exception:\n"
+                + "    pass\n",
+            // Ask runs through the app server, which holds a step until it is approved.
+            "features": "codex app-server --help >/dev/null 2>&1 && echo 'feature app-server'"
         },
         "antigravity-cli": {
             "name": "Antigravity",
@@ -436,6 +593,7 @@ Singleton {
             "loginCodePipe": root.antigravityDir + "/code.fifo",
             "loginInBackground": true,
             "loginFailedCheck": "f=\"" + root.antigravityDir + "/login.exit\"; [ -s \"$f\" ] && [ \"$(cat \"$f\")\" != 0 ]",
+            "loginDoneCheck": "[ -e \"" + root.antigravityDir + "/login.exit\" ]",
             // The full app, for a sign-in the hidden one could not finish: it
             // shows any first-run screens and takes a pasted code.
             "terminalLogin": "dir=\"" + root.antigravityDir + "\"; mkdir -p \"$dir\" && cd \"$dir\" && rm -f login.exit && agy",
@@ -444,10 +602,107 @@ Singleton {
             "readyCheck": "timeout 20 agy models >/dev/null 2>&1"
         }
     })
-    // Left for bash to expand where it is used. The sign-in's code pipe and
-    // exit file and the chat's own runs all live here, so every use has to
-    // name this one folder.
-    readonly property string antigravityDir: "${XDG_STATE_HOME:-$HOME/.local/state}/quickshell/ai/antigravity-cli"
+    // The sign-in's code pipe and exit file and the chat's own runs all live
+    // here, so every use has to name this one folder.
+    readonly property string antigravityDir: root._stateHome + "/quickshell/ai/antigravity-cli"
+
+    // ── Codex plan models, from the CLI's own catalog ─────────────
+    // What the plan offers when the catalog cannot be read.
+    readonly property var _codexFallbackCatalog: [
+        { slug: "gpt-6.1-sol", name: "GPT-6.1-Sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "low" },
+        { slug: "gpt-6-astra", name: "GPT-6-Astra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "low" },
+        { slug: "gpt-6-sol", name: "GPT-6-Sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "medium" },
+        { slug: "gpt-6-luna", name: "GPT-6-Luna", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+    ]
+    // The last catalog the CLI answered with: { listed, upgrades }. A read
+    // that fails later keeps it.
+    property var _codexCatalog: null
+    readonly property var _codexListed: root._codexCatalog?.listed ?? root._codexFallbackCatalog
+    // Codex effort -> the tab's level id. Efforts the tab has no level for are not offered.
+    readonly property var codexEffortLevels: ({
+        "none": "none", "minimal": "minimal", "low": "low", "medium": "medium",
+        "high": "high", "xhigh": "extra", "max": "max", "ultra": "ultracode",
+    })
+    // Ids saved before the catalog named the models keep answering.
+    readonly property var _codexLegacyIds: ({ "gpt-5.6-terra": "codex-terra", "gpt-5.6-luna": "codex-luna" })
+    function codexModelId(slug: string): string {
+        return root._codexLegacyIds[slug] ?? ("codex-" + String(slug).toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    }
+    readonly property var _codexPlanModels: {
+        const out = {};
+        for (const entry of root._codexListed) {
+            const id = root.codexModelId(entry.slug);
+            if (out[id] !== undefined || id === "codex-plan") continue;
+            const level = root.codexEffortLevels[entry.defaultEffort] ?? "";
+            out[id] = {
+                alias: entry.slug,
+                name: entry.name,
+                thinkingLevel: entry.efforts.includes(entry.defaultEffort) ? level : "",
+            };
+        }
+        return out;
+    }
+    // The efforts a listed model accepts, or [] when it is not listed.
+    function codexEfforts(slug: string): var {
+        return root._codexListed.find(entry => entry.slug === slug)?.efforts ?? [];
+    }
+
+    // The filtered catalog line from the detector, or null when it holds no
+    // listed model.
+    function _parseCodexCatalog(text: string): var {
+        let raw = null;
+        try {
+            raw = JSON.parse(text);
+        } catch (e) {
+            return null;
+        }
+        if (!Array.isArray(raw)) return null;
+        const upgrades = {};
+        const listed = [];
+        raw.forEach((m, index) => {
+            const slug = typeof m?.slug === "string" ? m.slug : "";
+            if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(slug)) return;
+            if (typeof m.upgrade === "string" && m.upgrade.length > 0) upgrades[slug] = m.upgrade;
+            if (m.visibility !== "list") return;
+            const name = typeof m.name === "string" && m.name.trim().length > 0 ? m.name.trim().slice(0, 80) : slug;
+            const efforts = (Array.isArray(m.efforts) ? m.efforts : [])
+                .filter(effort => typeof effort === "string" && root.codexEffortLevels.hasOwnProperty(effort));
+            listed.push({
+                slug: slug,
+                name: name,
+                efforts: efforts,
+                defaultEffort: typeof m.default === "string" ? m.default : "",
+                priority: Number.isFinite(m.priority) ? m.priority : Infinity,
+                index: index,
+            });
+        });
+        if (listed.length === 0) return null;
+        listed.sort((a, b) => (a.priority - b.priority) || (a.index - b.index));
+        return { listed: listed, upgrades: upgrades };
+    }
+
+    // Where a saved pick the plan no longer lists goes: its catalog upgrade
+    // when that is listed, else the plan's first model.
+    function _planSuccessor(fmt: string, id: string): string {
+        const planModels = root.cliPlanModels[fmt] ?? {};
+        if (fmt === "codex-cli") {
+            const upgrades = root._codexCatalog?.upgrades ?? {};
+            let slug = Object.keys(upgrades).find(s => root.codexModelId(s) === id);
+            for (let hop = 0; slug !== undefined && hop < 5; hop++) {
+                slug = upgrades[slug];
+                if (slug === undefined) break;
+                if (planModels[root.codexModelId(slug)] !== undefined) return root.codexModelId(slug);
+            }
+        }
+        return root.cliPlans[fmt].firstPick;
+    }
+
+    readonly property var _antigravityPlanModels: ({
+        "gemini-plan-3-8-flash": { alias: "gemini-3.8-flash", name: "Gemini Flash", thinkingLevel: "" },
+        "gemini-plan-3-1-pro": { alias: "gemini-3.1-pro", name: "Gemini Pro", thinkingLevel: "" },
+        "gemini-plan-4-argon": { alias: "gemini-4-argon", name: "Gemini 4 Argon", thinkingLevel: "" },
+    })
+
     readonly property var cliPlanModels: ({
         "claude-code": {
             "claude-fable": { alias: "fable", name: "Claude Fable" },
@@ -456,18 +711,10 @@ Singleton {
             "claude-sonnet": { alias: "sonnet", name: "Claude Sonnet" },
             "claude-haiku": { alias: "haiku", name: "Claude Haiku" },
         },
-        // Sol is refused under ChatGPT-account auth (API key only), so the
-        // plan shelf carries the three the subscription actually serves.
-        "codex-cli": {
-            "codex-terra": { alias: "gpt-5.6-terra", name: "Codex Terra" },
-            "codex-luna": { alias: "gpt-5.6-luna", name: "Codex Luna" },
-            "codex-gpt-5-5": { alias: "gpt-5.5", name: "Codex GPT-5.5" },
-        },
-        // No alias: the CLI answers with the model the account uses by
-        // default until the list the signed-in account offers is known.
-        "antigravity-cli": {
-            "gemini-plan-default": { alias: "", name: "Gemini" },
-        }
+        "codex-cli": root._codexPlanModels,
+        // Google serves personal accounts through Antigravity; supports Gemini 3
+        // and Gemini 4 with dynamic reasoning effort.
+        "antigravity-cli": root._antigravityPlanModels,
     })
     readonly property var cliPlans: ({
         "claude-code": {
@@ -491,11 +738,11 @@ Singleton {
             readyDescription: Translation.tr("Plan | Your ChatGPT subscription. Pick it to use its models"),
             setupHomepage: "https://learn.chatgpt.com/docs/codex/cli",
             modelDescription: Translation.tr("Plan | %1 through your ChatGPT subscription. No API key needed"),
-            signedIn: Translation.tr("Signed in. The plan models are in the picker now: type /model to choose between Terra, Luna, and GPT-5.5."),
+            signedIn: Translation.tr("Signed in. The plan models are in the picker now: type /model to choose one."),
             icon: "openai-symbolic",
             endpoint: "https://chatgpt.com",
             homepage: "https://learn.chatgpt.com/docs/codex/cli",
-            firstPick: "codex-terra",
+            firstPick: Object.keys(root._codexPlanModels)[0] ?? "",
             idPrefix: "codex-",
         },
         // Google serves personal accounts through Antigravity now; the
@@ -508,11 +755,11 @@ Singleton {
             readyDescription: Translation.tr("Plan | Your Google account. Pick it to use its models"),
             setupHomepage: "https://antigravity.google/product/antigravity-cli",
             modelDescription: Translation.tr("Plan | %1 through your Google account. No API key needed"),
-            signedIn: Translation.tr("Signed in. Gemini is in the picker now and answers through your Google account."),
+            signedIn: Translation.tr("Signed in. Gemini Flash, Gemini Pro, and Gemini 4 Argon are in the picker now. Adjust thinking level with /think."),
             icon: "antigravity-symbolic",
             endpoint: "https://antigravity.google",
             homepage: "https://antigravity.google",
-            firstPick: "gemini-plan-default",
+            firstPick: "gemini-plan-3-8-flash",
             idPrefix: "gemini-plan",
         }
     })
@@ -526,6 +773,10 @@ Singleton {
     function planFormatFor(id) {
         for (const fmt of Object.keys(root.cliPlanModels))
             if (root.cliPlanModels[fmt][id] !== undefined) return fmt;
+        // Codex names its models from a catalog that may not have answered
+        // yet or may have dropped a saved one, so its whole id space counts.
+        const codex = root.cliPlans["codex-cli"];
+        if (String(id).startsWith(codex.idPrefix) && id !== codex.setupId) return "codex-cli";
         return "";
     }
     property string setupState: ""
@@ -539,22 +790,79 @@ Singleton {
     readonly property bool currentModelNeedsSetup: currentCliSetup !== null
         && (!cliReady(currentModel.api_format) || setupState !== "")
 
+    function syncGeminiApiModels(targetId) {
+        const current = targetId || root.currentModelId;
+        const isGeminiActive = root.isGeminiApiModel(current);
+        let next = Object.assign({}, root._registry);
+        let changed = false;
+
+        if (isGeminiActive) {
+            if (next["gemini"]) {
+                root._bury(next["gemini"]);
+                delete next["gemini"];
+                changed = true;
+            }
+            for (const id of Object.keys(root.geminiApiCatalog)) {
+                if (next[id]) continue;
+                next[id] = aiModelComponent.createObject(root, root.geminiApiCatalog[id]);
+                changed = true;
+            }
+        } else {
+            for (const id of Object.keys(root.geminiApiCatalog)) {
+                if (next[id]) {
+                    root._bury(next[id]);
+                    delete next[id];
+                    changed = true;
+                }
+            }
+            if (!next["gemini"]) {
+                next["gemini"] = aiModelComponent.createObject(root, {
+                    "name": "Gemini",
+                    "icon": "google-gemini-symbolic",
+                    "description": Translation.tr("Online | Google's model\nGoogle's Gemini models with a free tier: Gemini Flash, Gemini Pro, and Gemini 4 Argon."),
+                    "homepage": "https://aistudio.google.com",
+                    "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent",
+                    "model": "gemini-flash-latest",
+                    "requires_key": true,
+                    "key_id": "gemini",
+                    "key_get_link": "https://aistudio.google.com/app/apikey",
+                    "key_get_description": Translation.tr("**Pricing**: free tier, with data used for training. Web search needs billing turned on.\n\n**Instructions**: Log into Google account, allow AI Studio to create Google Cloud project or whatever it asks, go back and click Get API key"),
+                    "api_format": "gemini",
+                    "sendTemperature": false,
+                    "thinkingLevel": "",
+                });
+                changed = true;
+            }
+        }
+        if (changed) root._registry = next;
+    }
+
     function syncCliPlanModels(fmt) {
-        if (Config.options?.policies?.ai === 2) return;
         const plan = root.cliPlans[fmt];
         const planModels = root.cliPlanModels[fmt];
         if (!plan || !planModels) return;
-        let next = Object.assign({}, root.models);
+        let next = Object.assign({}, root._registry);
         let changed = false;
+        // What this plan registered before, in picker order. A catalog that
+        // changed since leaves entries that are gone, renamed or out of order.
+        const registered = Object.keys(next).filter(id => id !== plan.setupId
+            && next[id]?.api_format === fmt && !next[id].requires_key);
         // A plan shows its models only while it is the one being used. Two
         // signed-in plans would otherwise put nine entries in the picker at
         // once, most of them for the provider nobody is talking to.
         if (root.cliReady(fmt) && root.planFormatFor(root.currentModelId) === fmt) {
-            if (next[plan.setupId]) { delete next[plan.setupId]; changed = true; }
-            for (const id of Object.keys(planModels)) {
+            if (next[plan.setupId]) { root._bury(next[plan.setupId]); delete next[plan.setupId]; changed = true; }
+            const wantedIds = Object.keys(planModels);
+            const current = registered.length === wantedIds.length && wantedIds.every((id, i) => registered[i] === id
+                && next[id].name === planModels[id].name && next[id].model === planModels[id].alias
+                && next[id].thinkingLevel === (planModels[id].thinkingLevel ?? ""));
+            if (!current) {
+                for (const id of registered) { root._bury(next[id]); delete next[id]; changed = true; }
+            }
+            for (const id of wantedIds) {
                 if (next[id]) continue;
                 const planEntry = planModels[id];
-                next[id] = aiModelComponent.createObject(this, {
+                next[id] = aiModelComponent.createObject(root, {
                     "name": planEntry.name,
                     "icon": plan.icon,
                     "description": plan.modelDescription.arg(planEntry.name),
@@ -566,16 +874,17 @@ Singleton {
                     "model": planEntry.alias,
                     "requires_key": false,
                     "api_format": fmt,
+                    "sendTemperature": fmt !== "antigravity-cli",
+                    "thinkingLevel": planEntry.thinkingLevel ?? "",
                 });
                 changed = true;
             }
         } else {
-            for (const id of Object.keys(planModels)) {
-                if (next[id]) { delete next[id]; changed = true; }
-            }
+            for (const id of registered) { root._bury(next[id]); delete next[id]; changed = true; }
             const wanted = root.cliReady(fmt) ? plan.readyDescription : plan.setupDescription;
             if (!next[plan.setupId] || next[plan.setupId].description !== wanted) {
-                next[plan.setupId] = aiModelComponent.createObject(this, {
+                if (next[plan.setupId]) root._bury(next[plan.setupId]);
+                next[plan.setupId] = aiModelComponent.createObject(root, {
                     "name": plan.setupName,
                     "icon": plan.icon,
                     "description": wanted,
@@ -584,28 +893,56 @@ Singleton {
                     "model": plan.setupId,
                     "requires_key": false,
                     "api_format": fmt,
+                    "supportsSessions": false,
                 });
                 changed = true;
             }
         }
-        if (changed) root.models = next;
+        if (changed) root._registry = next;
     }
 
-    // One detector serves every CLI; requests that arrive while it is busy
-    // wait their turn in the queue.
+    // One detector serves every CLI. Requests that arrive while it is busy queue up,
+    // except a sign-in poll waiting on its exit file: the next tick asks again.
+    // Busy is tracked here: until the shell has finished loading, the Process
+    // holds a start back and still reads as not running.
     property var _detectQueue: []
-    function detectCli(fmt) {
+    property bool _detecting: false
+    // A plan's catalog is read once per need (startup, a sign-in, an explicit
+    // reread), not on every check: need and served are counters per plan.
+    property var _catalogNeed: ({})
+    property var _catalogServed: ({})
+    function detectCli(fmt, waitForLogin = false, rereadCatalog = false) {
         const entry = root.cliSetup[fmt];
         if (!entry) return;
-        if (cliDetectProc.running) {
-            if (!root._detectQueue.includes(fmt)) root._detectQueue.push(fmt);
+        if (rereadCatalog && entry.catalog) root._catalogNeed[fmt] = (root._catalogNeed[fmt] ?? 1) + 1;
+        if (root._detecting) {
+            if (waitForLogin || cliDetectProc.format === fmt) return;
+            // Asked again while waiting means it is wanted now, so it goes next.
+            const waiting = root._detectQueue.filter(f => f !== fmt);
+            root._detectQueue = waiting.length < root._detectQueue.length ? [fmt].concat(waiting) : waiting.concat([fmt]);
             return;
         }
-        let script = root.cliPathPrefix + `if command -v ${entry.cmd} >/dev/null 2>&1; then echo installed; if ${entry.readyCheck}; then echo ready; fi; fi < /dev/null`;
+        const readyCheck = waitForLogin && entry.loginDoneCheck
+            ? `${entry.loginDoneCheck} && ${entry.readyCheck}` : entry.readyCheck;
+        // The catalog is read with the sign-in it depends on, so a plan's
+        // models and its readiness always land together. Only while online AI
+        // is allowed, since the CLI may refresh it over the network.
+        const need = root._catalogNeed[fmt] ?? 1;
+        const catalog = entry.catalog && need !== (root._catalogServed[fmt] ?? 0)
+            && Config.options?.policies?.ai === 1 ? `; ${entry.catalog}` : "";
+        const features = entry.features ? `; ${entry.features}` : "";
+        let script = root.cliPathPrefix + `if command -v ${entry.cmd} >/dev/null 2>&1; then echo installed; if ${readyCheck}; then echo ready${catalog}${features}; fi; fi < /dev/null`;
         if (entry.loginFailedCheck) script += `; if ${entry.loginFailedCheck}; then echo loginfailed; fi`;
+        root._detecting = true;
         cliDetectProc.format = fmt;
-        cliDetectProc.command = ["bash", "-lc", script];
+        cliDetectProc.catalogNeed = catalog ? need : 0;
+        cliDetectProc.buf = "";
+        cliDetectProc.command = catalog ? ["bash", "-lc", script, "_", entry.catalogFilter] : ["bash", "-lc", script];
         cliDetectProc.running = true;
+    }
+    function _detectNext() {
+        const queued = root._detectQueue.shift();
+        if (queued) root.detectCli(queued);
     }
 
     function setupCurrentModel() {
@@ -641,6 +978,7 @@ Singleton {
         if (!entry) return;
         root.loginCodeSent = false;
         root.setupState = "loggingIn";
+        loginWatch.hiddenLogin = entry.loginInBackground === true;
         if (entry.loginInBackground) {
             Quickshell.execDetached(["bash", "-c", root.cliPathPrefix + entry.login]);
             loginWatch.triesLeft = 150;
@@ -763,6 +1101,7 @@ Singleton {
         // down, so the clipboard is left alone.
         root.loginCodeSent = true;
         root.setupState = "loggingIn";
+        loginWatch.hiddenLogin = false;
         const script = root.cliPathPrefix + entry.terminalLogin;
         Quickshell.execDetached(["bash", "-c",
             `${Config.options.apps.terminal} -e bash -c '${CF.StringUtils.shellSingleQuoteEscape(script)}'`]);
@@ -773,22 +1112,33 @@ Singleton {
         id: cliDetectProc
         property string format: ""
         property string buf: ""
+        property int catalogNeed: 0
         stdout: SplitParser { onRead: line => cliDetectProc.buf += line + "\n" }
-        onRunningChanged: if (running) buf = ""
         onExited: (code) => {
+            root._detecting = false;
             const fmt = cliDetectProc.format;
             const wasReady = root.cliReady(fmt);
+            const lines = cliDetectProc.buf.split("\n");
+            const catalogLine = lines.find(line => line.startsWith("catalog "));
+            const buf = lines.filter(line => !line.startsWith("catalog ") && !line.startsWith("feature ")).join("\n");
+            const catalog = fmt === "codex-cli" && catalogLine !== undefined ? root._parseCodexCatalog(catalogLine.slice(8)) : null;
+            if (catalog !== null) root._codexCatalog = catalog;
             const nextState = Object.assign({}, root.cliPlanState);
             nextState[fmt] = {
-                installed: cliDetectProc.buf.includes("installed"),
-                ready: cliDetectProc.buf.includes("ready"),
+                installed: buf.includes("installed"),
+                ready: buf.includes("ready"),
+                features: lines.filter(line => line.startsWith("feature ")).map(line => line.slice(8)),
             };
+            // A read that ran is spent even when it failed: the last good list
+            // stands until the next need. Signed out, the next sign-in reads again.
+            if (!nextState[fmt].ready) delete root._catalogServed[fmt];
+            else if (cliDetectProc.catalogNeed > 0) root._catalogServed[fmt] = cliDetectProc.catalogNeed;
             root.cliPlanState = nextState;
             if (nextState[fmt].ready && root.currentModel?.api_format === fmt) root.setupState = "";
             // A sign-in in the background that ended without a login is over,
             // so the banner offers the next step now rather than at the end
             // of the watch.
-            else if (cliDetectProc.buf.includes("loginfailed") && root.setupState === "loggingIn"
+            else if (buf.includes("loginfailed") && root.setupState === "loggingIn"
                     && root.currentModel?.api_format === fmt) root.setupState = "error";
             root.syncCliPlanModels(fmt);
             const plan = root.cliPlans[fmt];
@@ -799,11 +1149,17 @@ Singleton {
             // A selection this family no longer offers (a lapsed login, or a
             // model entry that was retired) falls to the best seat still open
             // rather than dangling on an id that no longer resolves.
-            if (root.models[root.currentModelId] === undefined && root.currentModelId.startsWith(plan.idPrefix)) {
-                Persistent.states.ai.model = nextState[fmt].ready ? plan.firstPick : plan.setupId;
+            // Until a catalog read has run, a pick the built-in list lacks may
+            // still be offered, so it waits for one.
+            const listUnknown = fmt === "codex-cli" && root._codexCatalog === null && root._catalogServed[fmt] === undefined;
+            if (root.models[root.currentModelId] === undefined && root.currentModelId.startsWith(plan.idPrefix)
+                    && !(nextState[fmt].ready && listUnknown)) {
+                Persistent.states.ai.model = nextState[fmt].ready ? root._planSuccessor(fmt, root.currentModelId) : plan.setupId;
             }
-            const queued = root._detectQueue.shift();
-            if (queued) root.detectCli(queued);
+            // A model's levels and default may have changed with the catalog.
+            if (catalog !== null && root.models[root.currentModelId]?.api_format === fmt)
+                root.restoreThinkingLevelForModel(root.currentModelId);
+            root._detectNext();
         }
     }
     // When the vendor download will not come, the same CLI is in the system
@@ -852,6 +1208,7 @@ Singleton {
     Timer {
         id: loginWatch
         property int triesLeft: 0
+        property bool hiddenLogin: false
         interval: 2000
         repeat: true
         running: triesLeft > 0 && root.setupState === "loggingIn"
@@ -859,7 +1216,9 @@ Singleton {
         onTriggered: {
             triesLeft--;
             const fmt = root.currentModel?.api_format;
-            if (fmt) root.detectCli(fmt);
+            // The CLI's own check is a large binary and a network request. Until
+            // the hidden sign-in writes its exit file, it runs only every 10 s.
+            if (fmt) root.detectCli(fmt, hiddenLogin && triesLeft % 5 !== 0);
             if (triesLeft <= 0) root.setupState = "error";
         }
     }
@@ -876,12 +1235,16 @@ Singleton {
     onCurrentModelIdChanged: {
         if (!root._startupDone) return;
         root.setupState = "";
+        root.syncGeminiApiModels();
         // Both plans re-read the selection: the one just entered brings its
         // models in, and the one just left puts its own away.
         for (const fmt of Object.keys(root.cliSetup)) root.syncCliPlanModels(fmt);
-        const fmt = root.planFormatFor(root.currentModelId)
-            || (root.cliSetup[root.currentModel?.api_format] !== undefined ? root.currentModel.api_format : "");
+        // By id: currentModel has not caught up with the new id yet here.
+        const format = root.models[root.currentModelId]?.api_format ?? "";
+        const fmt = root.planFormatFor(root.currentModelId) || (root.cliSetup[format] !== undefined ? format : "");
         if (fmt !== "") root.detectCli(fmt);
+        root.restoreThinkingLevelForModel(root.currentModelId);
+        root._resetTokenCount();
     }
 
     Connections {
@@ -892,10 +1255,56 @@ Singleton {
         }
     }
 
-    property string requestScriptFilePath: "/tmp/quickshell/ai/request.sh"
+    Connections {
+        target: Persistent
+        function onReadyChanged() {
+            if (!Persistent.ready) return;
+            root.restoreThinkingLevelForModel(root.currentModelId);
+            if (root._detectAllWhenReady) {
+                root._detectAllWhenReady = false;
+                root._detectAllPlans();
+            }
+        }
+    }
+
+    property bool _detectAllWhenReady: false
+    // Every plan is checked, one after another, the selected one first.
+    function _detectAllPlans() {
+        const selectedPlan = root.planFormatFor(root.currentModelId) || (root.models[root.currentModelId]?.api_format ?? "");
+        const plans = Object.keys(root.cliSetup).sort((a, b) => (b === selectedPlan) - (a === selectedPlan));
+        for (const fmt of plans) root.detectCli(fmt);
+    }
+
+    // The policy can change while a reply is running or a card is waiting,
+    // with the chat page gone (Off) or the model no longer allowed (Local).
+    Connections {
+        target: Config.options?.policies ?? null
+        function onAiChanged() { root._applyAiPolicy() }
+    }
+
+    function _applyAiPolicy() {
+        const policy = Config.options?.policies?.ai ?? 0;
+        if (policy === 1) {
+            // A catalog passed over while online AI was off is read now.
+            const fmt = root.planFormatFor(root.currentModelId);
+            if (root.cliSetup[fmt]?.catalog) root.detectCli(fmt);
+            return;
+        }
+        if (policy !== 0 && policy !== 2) return;
+        const disallowed = id => policy === 0 || root._isOnlineModelId(id);
+        // Stopped as Stop does: the process group is killed and a stopped
+        // request never continues into a function call.
+        if (root._req && disallowed(root._req.modelId)) root.cancelRequest();
+        if (root.pendingConfirmation && disallowed(root.pendingConfirmation.modelId)) {
+            root._dropConfirmation();
+            root._saveNow();
+        }
+    }
+
     property string pendingFilePath: ""
 
     Component.onCompleted: {
+        root.syncGeminiApiModels();
         // The default model is local AI, whose setup entry does not exist
         // until the first status answer arrives. Running it through setModel
         // here would start the walkthrough unprompted at every shell start;
@@ -903,14 +1312,32 @@ Singleton {
         if (currentModelId !== root.ollamaSetupModelId)
             setModel(currentModelId, false, false); // Do necessary setup for model
         root.addUserModels() // Config onReadyChanged above might not fire if config is loaded before this service
-        for (const fmt of Object.keys(root.cliSetup)) {
+        for (const fmt of Object.keys(root.cliSetup))
             root.syncCliPlanModels(fmt) // The setup entries exist before the CLIs answer
-            root.detectCli(fmt)
-        }
+        // The selection is only known once the saved state is read.
+        if (Persistent.ready) root._detectAllPlans();
+        else root._detectAllWhenReady = true;
         // Last: everything above is the work the selection handler skips while
         // the service is being built, and a selection made from here on is its
         // own to answer.
-        root._startupDone = true
+        root._startupDone = true;
+        root.restoreThinkingLevelForModel(root.currentModelId);
+        // The last session is read in the background once the shell is up;
+        // a New chat or a load before it lands wins.
+        root._loadGeneration++;
+        root.sessionLoading = true;
+        const generation = root._loadGeneration;
+        Qt.callLater(() => {
+            if (generation === root._loadGeneration)
+                root._startLoad(root.autoSaveFilePath, "startup", "");
+        });
+    }
+
+    Component.onDestruction: {
+        // Quickshell kills only the leader on teardown; the group goes too.
+        const pgid = root._req?.pgid;
+        if (Number.isInteger(pgid) && pgid > 1)
+            Quickshell.execDetached(["kill", "-TERM", "--", "-" + pgid]);
     }
 
     function guessModelLogo(model) {
@@ -935,9 +1362,11 @@ Singleton {
     }
 
     function addModel(modelName, data) {
-        root.models = Object.assign({}, root.models, {
-            [modelName]: aiModelComponent.createObject(this, data)
+        const replaced = root._registry[modelName];
+        root._registry = Object.assign({}, root._registry, {
+            [modelName]: aiModelComponent.createObject(root, data)
         });
+        if (replaced) root._bury(replaced);
     }
 
     // What the local Ollama install is currently able to do. The sidebar reads
@@ -1027,6 +1456,10 @@ Singleton {
         root.refreshOllama();
     }
 
+    function fetchOllamaModels(): void {
+        root.kickOllamaRefresh();
+    }
+
     Process {
         id: getOllamaModels
         running: true
@@ -1056,23 +1489,34 @@ Singleton {
                             root.selectOllamaSetupEntry();
                         return;
                     }
-                    dataJson.forEach(model => {
-                        const safeModelName = root.safeModelName(model);
-                        root.addModel(safeModelName, {
-                            "name": guessModelName(model),
-                            "icon": guessModelLogo(model),
+                    const next = Object.assign({}, root._registry);
+                    const replaced = [];
+                    let changed = false;
+                    let currentArrived = false;
+                    for (const model of dataJson) {
+                        const id = root.safeModelName(model);
+                        if (next[id] && next[id].model === model) continue;
+                        if (next[id]) replaced.push(next[id]);
+                        changed = true;
+                        next[id] = root.aiModelComponent.createObject(root, {
+                            "name": root.guessModelName(model),
+                            "icon": root.guessModelLogo(model),
                             "description": Translation.tr("Local Ollama model | %1").arg(model),
                             "homepage": `https://ollama.com/library/${model}`,
                             "endpoint": "http://localhost:11434/v1/chat/completions",
                             "model": model,
                             "requires_key": false,
-                        })
-                    });
+                        });
+                        if (id === root.currentModelId) currentArrived = true;
+                    }
+                    if (changed) root._registry = next;
+                    root._buryAll(replaced);
 
                     // The saved model may only now have become selectable, so
                     // take it up rather than leaving the default in place.
-                    if (root.modelList.includes(root.currentModelId)) {
+                    if (currentArrived) {
                         root.setModel(root.currentModelId, false, false);
+                        root.restoreThinkingLevelForModel(root.currentModelId);
                     }
 
                     // A model the user just downloaded on purpose outranks the
@@ -1093,12 +1537,12 @@ Singleton {
                         const firstLocal = root.safeModelName(dataJson[0]);
                         root.ollamaSelectWhenReady = false;
                         if (root.modelList.includes(firstLocal)) root.setModel(firstLocal);
-                    } else if (Persistent.ready && root.currentModelId === root.ollamaSetupModelId) {
+                    } else if (Persistent.ready && root._savedModelId === root.ollamaSetupModelId) {
                         // The saved model is the local AI default and a real
                         // local model just showed up: that is the machine this
                         // default was waiting for, so take the first one up.
                         // Only once the saved state has actually loaded: until
-                        // then currentModelId reads as that same default, and
+                        // then the saved id reads as that same default, and
                         // this would overwrite whichever model the user picked
                         // before the file arrived.
                         const firstLocal = root.safeModelName(dataJson[0]);
@@ -1139,11 +1583,14 @@ Singleton {
                 "endpoint": "http://localhost:11434/v1/chat/completions",
                 "model": "",
                 "requires_key": false,
+                "supportsSessions": false,
             });
-        } else if (root.models[root.ollamaSetupModelId]) {
-            const remaining = Object.assign({}, root.models);
+        } else if (root._registry[root.ollamaSetupModelId]) {
+            const removed = root._registry[root.ollamaSetupModelId];
+            const remaining = Object.assign({}, root._registry);
             delete remaining[root.ollamaSetupModelId];
-            root.models = remaining;
+            root._registry = remaining;
+            root._bury(removed);
         }
     }
 
@@ -1243,12 +1690,15 @@ Singleton {
         ollamaPullProc.running = true;
     }
 
-    function setOllamaPullMessage(body) {
-        const message = root.messageByID[root.ollamaPullMessageId];
+    function replaceMessage(id, body) {
+        const message = root.messageByID[id];
         if (!message) return false;
-        message.content = body;
-        message.rawContent = body;
+        root._setMessageText(message, body);
         return true;
+    }
+
+    function setOllamaPullMessage(body) {
+        return root.replaceMessage(root.ollamaPullMessageId, body);
     }
 
     Process {
@@ -1303,6 +1753,79 @@ Singleton {
         }
     }
 
+    property string ollamaListMessageId: ""
+
+    function listOllamaModels(filter = "") {
+        if (ollamaListProc.running) {
+            root.addMessage(Translation.tr("A model list is already being fetched."), root.interfaceRole);
+            return;
+        }
+        root.ollamaListMessageId = root.addMessage(Translation.tr("Fetching list of latest Ollama models..."), root.interfaceRole);
+        ollamaListProc.filter = (filter ?? "").trim();
+        ollamaListProc.command = ["python3", root._aiScriptsDir + "/ollama-list.py", ollamaListProc.filter];
+        ollamaListProc.running = true;
+    }
+
+    function ollamaListText(result, filter) {
+        const lines = [Translation.tr("### Installed models"), ""];
+        if (result.serverDown)
+            lines.push(Translation.tr("The local Ollama server is not running. Start it with %1.").arg("`/ollama status`"));
+        else if (result.installed.length === 0 && filter.length > 0 && result.library !== null)
+            lines.push(Translation.tr("No installed models match \"%1\".").arg(filter));
+        else if (result.installed.length === 0)
+            lines.push(Translation.tr("No local models installed yet."));
+        for (const model of result.installed) {
+            const details = [model.size, model.parameters].filter(s => s.length > 0).join(", ");
+            lines.push(`* **\`${model.name}\`** (${details})`);
+        }
+        if (result.library === null)
+            return lines.join("\n");
+        lines.push("", filter.length > 0 ? Translation.tr("### Library models matching \"%1\"").arg(filter) : Translation.tr("### Latest in the Ollama library"), "");
+        if (result.unreachable)
+            lines.push(Translation.tr("The Ollama library could not be reached."), "");
+        else if (result.library.length === 0)
+            lines.push(Translation.tr("No matching library models found."), "");
+        for (const model of result.library) {
+            const sizes = model.sizes.map(s => `\`${s}\``).join(", ");
+            const features = model.features.map(f => ` **[${f.charAt(0).toUpperCase()}${f.slice(1)}]**`).join("");
+            const pull = "`/ollama pull " + model.tag + "`";
+            lines.push(`* **${model.name}**${sizes.length > 0 ? ` (${sizes})` : ""}${features}`);
+            if (model.description.length > 0)
+                lines.push(`  *${model.description}*`);
+            lines.push("  " + Translation.tr("Download with %1").arg(pull), "");
+        }
+        lines.push(Translation.tr("Any model from [ollama.com/library](https://ollama.com/library) can be downloaded with `%1 MODEL_NAME`.").arg("/ollama pull"));
+        return lines.join("\n");
+    }
+
+    Process {
+        id: ollamaListProc
+        property string filter: ""
+        stdout: StdioCollector {
+            id: ollamaListOut
+        }
+        stderr: StdioCollector {
+            id: ollamaListErr
+        }
+        onExited: exitCode => {
+            let result = null;
+            try {
+                result = JSON.parse(ollamaListOut.text);
+            } catch (e) {}
+            let body;
+            if (exitCode === 0 && result) {
+                body = root.ollamaListText(result, ollamaListProc.filter);
+            } else {
+                const err = ollamaListErr.text.trim();
+                body = err.length > 0
+                    ? Translation.tr("Could not retrieve Ollama models.\n\n```\n%1\n```").arg(err)
+                    : Translation.tr("Could not retrieve Ollama models.");
+            }
+            if (!root.replaceMessage(root.ollamaListMessageId, body)) root.addMessage(body, root.interfaceRole);
+            root.ollamaListMessageId = "";
+        }
+    }
+
     Process {
         id: getDefaultPrompts
         running: true
@@ -1333,16 +1856,34 @@ Singleton {
 
     Process {
         id: getSavedChats
+        // A refresh asked for while one runs repeats once it ends, so a file
+        // written in between is not missed.
+        property bool again: false
         running: true
-        command: ["ls", "-1", Directories.aiChats]
+        command: ["find", Directories.aiChats, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-printf", "%f\\n"]
         stdout: StdioCollector {
             onStreamFinished: {
-                if (text.length === 0) return;
-                root.savedChats = text.split("\n")
-                    .filter(fileName => fileName.endsWith(".json"))
-                    .map(fileName => `${Directories.aiChats}/${fileName}`)
+                const names = this.text.split("\n")
+                    .filter(fileName => fileName.endsWith(".json") && fileName !== "lastSession.json");
+                names.sort((a, b) => {
+                    const x = a.toLowerCase();
+                    const y = b.toLowerCase();
+                    return x < y ? -1 : (x > y ? 1 : 0);
+                });
+                root.savedChats = names.map(fileName => `${Directories.aiChats}/${fileName}`);
             }
         }
+        onExited: {
+            if (getSavedChats.again) {
+                getSavedChats.again = false;
+                getSavedChats.running = true;
+            }
+        }
+    }
+
+    function reloadSavedChats(): void {
+        if (getSavedChats.running) getSavedChats.again = true;
+        else getSavedChats.running = true;
     }
 
     FileView {
@@ -1365,35 +1906,76 @@ Singleton {
         promptLoader.reload();
     }
 
-    function addMessage(message, role) {
-        if (message.length === 0) return;
-        const aiMessage = aiMessageComponent.createObject(root, {
-            "role": role,
-            "content": message,
-            "rawContent": message,
-            "thinking": false,
-            "done": true,
+    // options: {persist: bool, localFilePath: string}. Returns the new id, ""
+    // for empty text.
+    function addMessage(text: string, role: string, options): string {
+        if (!text || text.length === 0) return "";
+        const persist = options?.persist ?? true;
+        const aiMessage = root._createMessage(role, text, {
+            "persist": persist,
+            "localFilePath": options?.localFilePath ?? "",
+            "answer": options?.answer ?? "",
         });
-        const id = idForMessage(aiMessage);
-        root.messageIDs = [...root.messageIDs, id];
-        root.messageByID[id] = aiMessage;
+        root._insertMessage(aiMessage);
+        if (persist) root.scheduleSave();
         // Handed back so a caller reporting on something long-running can
         // rewrite the one message instead of appending a line per update.
-        return id;
+        return aiMessage.id;
     }
 
-    function removeMessage(index) {
-        if (index < 0 || index >= messageIDs.length) return;
-        const id = root.messageIDs[index];
-        root.messageIDs.splice(index, 1);
-        root.messageIDs = [...root.messageIDs];
-        delete root.messageByID[id];
+    function _createMessage(role, content, extra) {
+        return aiMessageComponent.createObject(root, Object.assign({
+            "id": root.idForMessage(),
+            "role": role,
+            "content": content,
+            "rawContent": content,
+            "thinking": false,
+            "done": true,
+        }, extra ?? {}));
+    }
+
+    function _insertMessage(message) {
+        root.messageByID[message.id] = message;
+        root.messageIDs = root.messageIDs.concat([message.id]);
+    }
+
+    // A string is a message id; a number is an index into messageIDs.
+    function removeMessage(idOrIndex): void {
+        if (root.sessionLoading) return;
+        const id = typeof idOrIndex === "number" ? root.messageIDs[idOrIndex] : String(idOrIndex ?? "");
+        const message = id ? root.messageByID[id] : undefined;
+        if (!message) return;
+        if (root._req && root._req.messageId === id) root.cancelRequest();
+        if (root.pendingConfirmation?.messageId === id) root._dropConfirmation(false);
+        root._setMessageIds(root.messageIDs.filter(other => other !== id));
+        root._saveNow();
+    }
+
+    // Sets the text of an edited message.
+    function updateMessageContent(id: string, text: string): void {
+        if (root.sessionLoading) return;
+        const message = root.messageByID[id];
+        if (!message) return;
+        root._setMessageText(message, text);
+        root._saveNow();
+    }
+
+    function _setMessageText(message, text) {
+        message.content = text;
+        message.rawContent = text;
+        message.contentRevision++;
+    }
+
+    // What a strategy sends back as an earlier reply: no thoughts, no markers.
+    function historyText(message): string {
+        return Sink.historyText(message?.content ?? "");
     }
 
     function addApiKeyAdvice(model) {
+        if (!model) return;
         root.addMessage(
             Translation.tr('To set an API key, pass it with the %4 command\n\nTo view the key, pass "get" with the command<br/>\n\n### For %1:\n\n**Link**: %2\n\n%3')
-                .arg(model.name).arg(model.key_get_link).arg(model.key_get_description ?? Translation.tr("<i>No further instruction provided</i>")).arg("/key"), 
+                .arg(model.name).arg(model.key_get_link).arg(model.key_get_description ?? Translation.tr("<i>No further instruction provided</i>")).arg("/key"),
             Ai.interfaceRole
         );
     }
@@ -1412,9 +1994,25 @@ Singleton {
         Persistent.states.ai.model = root.ollamaSetupModelId;
     }
 
-    function setModel(modelId, feedback = true, setPersistentState = true) {
+    function setModel(modelId, feedback = true, setPersistentState = true, keyAdvice = feedback) {
         if (!modelId) modelId = ""
         modelId = modelId.toLowerCase()
+        if (modelId === "gemini") {
+            modelId = "gemini-flash-latest";
+        }
+        modelId = root.retiredModels[modelId] ?? modelId
+        // Plan models and the Gemini catalog are switched to before they are
+        // listed, so the check below on the listed entry would miss them.
+        if (Config.options?.policies?.ai === 2 && root._isOnlineModelId(modelId)) {
+            root.addMessage(
+                Translation.tr("Only local models are allowed right now. To use online models, set AI to Yes in Settings > Interface > Left Sidebar."),
+                root.interfaceRole,
+                { "persist": feedback }
+            );
+            return;
+        }
+        // An approval asked for under another model no longer applies.
+        if (root.pendingConfirmation && modelId !== root.currentModelId) root._dropConfirmation();
         // The setup entry is a prompt wearing a model's clothes. Picking it
         // starts the walkthrough and leaves the working model in place, so a
         // user who was mid-conversation does not lose the model answering it.
@@ -1427,43 +2025,59 @@ Singleton {
         // lands on the plan's first model.
         for (const fmt of Object.keys(root.cliPlans)) {
             if (modelId === root.cliPlans[fmt].setupId && root.cliReady(fmt)) {
-                root.setModel(root.cliPlans[fmt].firstPick, feedback, setPersistentState);
+                root.setModel(root.cliPlans[fmt].firstPick, feedback, setPersistentState, keyAdvice);
                 return;
             }
         }
+        // A CLI's session holds none of the turns answered under another model.
+        if (modelId !== root.currentModelId) root._resetCliSessions();
         // A plan's own models are absent from the picker until that plan is in
         // use, so a switch into one writes the selection and lets the models
         // follow it in rather than failing the membership check below.
         const wantedPlan = root.planFormatFor(modelId);
+        if (wantedPlan !== "" && root.cliReady(wantedPlan) && root.cliPlanModels[wantedPlan][modelId] === undefined)
+            modelId = root._planSuccessor(wantedPlan, modelId);
         if (wantedPlan !== "" && root.cliReady(wantedPlan) && !root.models[modelId]) {
-            if (setPersistentState) Persistent.states.ai.model = modelId;
+            if (setPersistentState) {
+                Persistent.states.ai.model = modelId;
+                root.restoreThinkingLevelForModel(modelId);
+            }
             if (feedback) root.addMessage(Translation.tr("Model set to %1").arg(root.cliPlanModels[wantedPlan][modelId].name), root.interfaceRole);
             return;
         }
-        if (modelList.indexOf(modelId) !== -1) {
+        if (root.isGeminiApiModel(modelId)) {
+            root.syncGeminiApiModels(modelId);
+        }
+        if (models[modelId] !== undefined) {
             const model = models[modelId]
             // See if policy prevents online models
             if (Config.options.policies.ai === 2 && !model.endpoint.includes("localhost")) {
                 root.addMessage(
-                    Translation.tr("Online models disallowed\n\nControlled by `policies.ai` config option"),
-                    root.interfaceRole
+                    Translation.tr("Only local models are allowed right now. To use online models, set AI to Yes in Settings > Interface > Left Sidebar."),
+                    root.interfaceRole,
+                    { "persist": feedback }
                 );
                 return;
             }
-            if (setPersistentState) Persistent.states.ai.model = modelId;
+            // Only a real selection carries its reasoning level along; a
+            // re-apply must not hand this model's level to the active one.
+            if (setPersistentState) {
+                Persistent.states.ai.model = modelId;
+                root.restoreThinkingLevelForModel(modelId, model);
+            }
             if (feedback) root.addMessage(Translation.tr("Model set to %1").arg(model.name), root.interfaceRole);
             // Advice belongs to somebody who just chose this model. Callers
-            // passing feedback=false are re-applying a model the user already
+            // passing keyAdvice=false are re-applying a model the user already
             // had, and a silent re-apply that answers with a page about API
             // keys reads as though it is talking about whatever just happened.
-            if (feedback && model.requires_key) {
+            if (keyAdvice && model.requires_key) {
                 // If key not there show advice
                 if (root.apiKeysLoaded && (!root.apiKeys[model.key_id] || root.apiKeys[model.key_id].length === 0)) {
                     root.addApiKeyAdvice(model)
                 }
             }
         } else {
-            if (feedback) root.addMessage(Translation.tr("Invalid model. Supported: \n```\n") + modelList.join("\n```\n```\n"), Ai.interfaceRole) + "\n```"
+            if (feedback) root.addMessage(Translation.tr("Invalid model. Supported: \n```\n") + modelList.join("\n```\n```\n") + "\n```", Ai.interfaceRole)
         }
     }
 
@@ -1476,18 +2090,65 @@ Singleton {
         return true;
     }
     
+    function responseStyleId(temp): string {
+        const t = (temp !== undefined) ? temp : root.temperature;
+        if (t <= 0.35) return "precise";
+        if (t <= 0.65) return "balanced";
+        return "creative";
+    }
+
+    function getResponseStyleName(temp) {
+        switch (root.responseStyleId(temp)) {
+        case "precise":
+            return Translation.tr("Precise");
+        case "balanced":
+            return Translation.tr("Balanced");
+        default:
+            return Translation.tr("Creative");
+        }
+    }
+
+    function cycleResponseStyle(): void {
+        const next = { "precise": 0.5, "balanced": 0.8, "creative": 0.2 };
+        root.setTemperature(next[root.responseStyleId()], false);
+    }
+
     function getTemperature() {
         return root.temperature;
     }
 
-    function setTemperature(value) {
-        if (value == NaN || value < 0 || value > 2) {
-            root.addMessage(Translation.tr("Temperature must be between 0 and 2"), Ai.interfaceRole);
+    function setResponseStyle(style) {
+        const norm = (style || "").toString().trim().toLowerCase();
+        if (norm === "precise" || norm === "code" || norm === "exact") {
+            root.setTemperature(0.2);
+        } else if (norm === "balanced" || norm === "default" || norm === "normal") {
+            root.setTemperature(0.5);
+        } else if (norm === "creative" || norm === "ideas" || norm === "imaginative") {
+            root.setTemperature(0.8);
+        } else {
+            const num = parseFloat(style);
+            if (!isNaN(num)) {
+                root.setTemperature(num);
+            } else {
+                root.addMessage(Translation.tr("Invalid style '%1'. Valid styles: precise, balanced, creative").arg(style), Ai.interfaceRole);
+            }
+        }
+    }
+
+    function setTemperature(value, feedback = true) {
+        if (isNaN(value) || value < 0 || value > 2) {
+            if (feedback) root.addMessage(Translation.tr("Temperature must be between 0 and 2"), Ai.interfaceRole);
             return;
         }
         Persistent.states.ai.temperature = value;
         root.temperature = value;
-        root.addMessage(Translation.tr("Temperature set to %1").arg(value), Ai.interfaceRole);
+        if (!feedback) return;
+        const styleName = root.getResponseStyleName(value);
+        if (root.currentModel?.sendTemperature === false) {
+            root.addMessage(Translation.tr("Response style set to %1 (%2). (Note: %3 uses default sampling; adjust thinking level with /think instead)").arg(styleName).arg(value).arg(root.currentModel.name), Ai.interfaceRole);
+        } else {
+            root.addMessage(Translation.tr("Response style set to %1 (%2)").arg(styleName).arg(value), Ai.interfaceRole);
+        }
     }
 
     function setApiKey(key) {
@@ -1510,7 +2171,7 @@ Singleton {
         if (model.requires_key) {
             const key = root.apiKeys[model.key_id];
             if (key) {
-                root.addMessage(Translation.tr("API key:\n\n```txt\n%1\n```").arg(key), Ai.interfaceRole);
+                root.addMessage(Translation.tr("API key:\n\n```txt\n%1\n```").arg(key), Ai.interfaceRole, { "persist": false });
             } else {
                 root.addMessage(Translation.tr("No API key set for %1").arg(model.name), Ai.interfaceRole);
             }
@@ -1520,191 +2181,1237 @@ Singleton {
     }
 
     function printTemperature() {
-        root.addMessage(Translation.tr("Temperature: %1").arg(root.temperature), Ai.interfaceRole);
+        const styleName = root.getResponseStyleName(root.temperature);
+        if (root.currentModel?.sendTemperature === false) {
+            root.addMessage(Translation.tr("Response style: %1 (%2) (Not used by %3; adjust thinking level with /think instead)").arg(styleName).arg(root.temperature).arg(root.currentModel.name), Ai.interfaceRole);
+        } else {
+            root.addMessage(Translation.tr("Response style: %1 (%2)").arg(styleName).arg(root.temperature), Ai.interfaceRole);
+        }
     }
 
-    function clearMessages() {
-        root.messageIDs = [];
-        root.messageByID = ({});
+    function printResponseStyle() {
+        root.printTemperature();
+    }
+
+    function getModelThinkingLevels(model) {
+        const m = model || root.currentModel;
+        const fmt = m?.api_format || "";
+        const mid = (m?.model || m?.name || "").toLowerCase();
+        // Generic fallback for any other models, and for local Ollama
+        // models, which speak the OpenAI format but take only these.
+        const generic = () => [
+            { id: "auto", name: Translation.tr("Auto"), desc: Translation.tr("Model default reasoning") },
+            { id: "low", name: Translation.tr("Low"), desc: Translation.tr("Light reasoning effort") },
+            { id: "medium", name: Translation.tr("Medium"), desc: Translation.tr("Standard balanced reasoning") },
+            { id: "high", name: Translation.tr("High"), desc: Translation.tr("Deep reasoning effort") },
+        ];
+        if ((m?.endpoint ?? "").includes("localhost:11434")) return generic();
+
+        // Claude (Claude Code CLI, Anthropic API, or Claude-named models)
+        if (fmt === "claude-code" || fmt === "anthropic" || mid.includes("claude")) {
+            return [
+                { id: "auto", name: Translation.tr("Auto"), desc: Translation.tr("Model default reasoning budget") },
+                { id: "low", name: Translation.tr("Low"), desc: Translation.tr("Quick reasoning for routine edits and questions") },
+                { id: "medium", name: Translation.tr("Medium"), desc: Translation.tr("Balanced reasoning for standard coding and debugging") },
+                { id: "high", name: Translation.tr("High"), desc: Translation.tr("Deep reasoning for complex logic and tricky bugs") },
+                { id: "extra", name: Translation.tr("Extra"), desc: Translation.tr("Extended thinking across large contexts and refactors") },
+                { id: "max", name: Translation.tr("Max"), desc: Translation.tr("Maximum reasoning budget for exhaustive verification") },
+                { id: "ultracode", name: Translation.tr("UltraCode"), desc: Translation.tr("Full extended thinking & autonomous multi-pass reasoning") },
+            ];
+        }
+
+        // Codex plan models: the levels the catalog lists for that model.
+        const codexEfforts = fmt === "codex-cli" ? root.codexEfforts(m?.model ?? "") : [];
+        if (codexEfforts.length > 0) {
+            const rows = [
+                { id: "none", name: Translation.tr("None"), desc: Translation.tr("Disable reasoning for instantaneous output") },
+                { id: "minimal", name: Translation.tr("Minimal"), desc: Translation.tr("Minimal thinking for lowest latency") },
+                { id: "low", name: Translation.tr("Low"), desc: Translation.tr("Light reasoning with high throughput") },
+                { id: "medium", name: Translation.tr("Medium"), desc: Translation.tr("Standard balanced reasoning effort") },
+                { id: "high", name: Translation.tr("High"), desc: Translation.tr("Deep reasoning for complex math and architecture") },
+                { id: "extra", name: Translation.tr("Extra"), desc: Translation.tr("Extended thinking across large contexts and refactors") },
+                { id: "max", name: Translation.tr("Max"), desc: Translation.tr("Maximum reasoning budget for exhaustive verification") },
+                { id: "ultracode", name: Translation.tr("UltraCode"), desc: Translation.tr("Full extended thinking & autonomous multi-pass reasoning") },
+            ];
+            const offered = codexEfforts.map(effort => root.codexEffortLevels[effort]);
+            return [{ id: "auto", name: Translation.tr("Auto"), desc: Translation.tr("Model default reasoning effort") }]
+                .concat(rows.filter(row => offered.includes(row.id)));
+        }
+
+        // Codex (Codex CLI or OpenAI reasoning models)
+        if (fmt === "codex-cli" || fmt === "openai" || mid.includes("codex") || mid.startsWith("o1") || mid.startsWith("o3") || mid.startsWith("gpt-5")) {
+            return [
+                { id: "auto", name: Translation.tr("Auto"), desc: Translation.tr("Model default reasoning effort") },
+                { id: "none", name: Translation.tr("None"), desc: Translation.tr("Disable reasoning for instantaneous output") },
+                { id: "low", name: Translation.tr("Low"), desc: Translation.tr("Light reasoning with high throughput") },
+                { id: "medium", name: Translation.tr("Medium"), desc: Translation.tr("Standard balanced reasoning effort") },
+                { id: "high", name: Translation.tr("High"), desc: Translation.tr("Deep reasoning for complex math and architecture") },
+                { id: "extra", name: Translation.tr("Extra"), desc: Translation.tr("Maximum reasoning effort for hard problems") },
+            ];
+        }
+
+        // Gemini (Gemini API or Antigravity CLI)
+        if (fmt === "gemini" || fmt === "antigravity-cli" || mid.includes("gemini")) {
+            return [
+                { id: "auto", name: Translation.tr("Auto"), desc: Translation.tr("Model default dynamic reasoning") },
+                { id: "minimal", name: Translation.tr("Minimal"), desc: Translation.tr("Minimal thinking for lowest latency") },
+                { id: "low", name: Translation.tr("Low"), desc: Translation.tr("Standard reasoning effort") },
+                { id: "medium", name: Translation.tr("Medium"), desc: Translation.tr("Balanced reasoning for coding and analysis") },
+                { id: "high", name: Translation.tr("High"), desc: Translation.tr("Deep thinking and complex mathematics") },
+            ];
+        }
+
+        return generic();
+    }
+
+    function canonicalModelId(modelId) {
+        const id = (modelId || root.currentModelId || "").toLowerCase();
+        return root.retiredModels[id] ?? id;
+    }
+
+    function getModelObject(modelId) {
+        if (!modelId) return root.currentModel;
+        const id = modelId.toLowerCase();
+        const norm = root.canonicalModelId(id);
+        if (root.models[norm]) return root.models[norm];
+        if (root.models[id]) return root.models[id];
+        if (root.isGeminiApiModel(norm)) return root.geminiApiCatalog[norm] ?? root.models["gemini"];
+        if (root.isGeminiApiModel(id)) return root.geminiApiCatalog[id] ?? root.models["gemini"];
+        for (const fmt of Object.keys(root.cliPlanModels)) {
+            if (root.cliPlanModels[fmt][norm]) {
+                const entry = root.cliPlanModels[fmt][norm];
+                return { api_format: fmt, model: entry.alias || norm, name: entry.name, thinkingLevel: entry.thinkingLevel || "" };
+            }
+            if (root.cliPlanModels[fmt][id]) {
+                const entry = root.cliPlanModels[fmt][id];
+                return { api_format: fmt, model: entry.alias || id, name: entry.name, thinkingLevel: entry.thinkingLevel || "" };
+            }
+        }
+        return root.currentModel;
+    }
+
+    function getStoredThinkingLevel(modelId) {
+        const id = (modelId || root.currentModelId || "").toLowerCase();
+        const norm = root.canonicalModelId(id);
+        const map = Persistent.states?.ai?.modelThinkingLevels ?? ({});
+        if (map[norm] !== undefined) return map[norm];
+        if (map[id] !== undefined) return map[id];
+        if (norm === "gemini-flash-latest" && map["gemini"] !== undefined) return map["gemini"];
+        if (norm === "gemini" && map["gemini-flash-latest"] !== undefined) return map["gemini-flash-latest"];
+        const legacyLevel = (Persistent.states?.ai?.thinkingLevel || "").toLowerCase();
+        if (legacyLevel === "ultracode" && (norm === "claude" || norm.startsWith("claude-"))) {
+            return "ultracode";
+        }
+        return undefined;
+    }
+
+    function restoreThinkingLevelForModel(modelId, targetModelObj) {
+        const id = (modelId || root.currentModelId || "").toLowerCase();
+        const norm = root.canonicalModelId(id);
+        const modelObj = targetModelObj || root.getModelObject(norm);
+
+        const stored = root.getStoredThinkingLevel(norm);
+        const defaultLevel = (modelObj?.thinkingLevel || "").toLowerCase();
+
+        let targetLevel = "";
+        if (stored !== undefined && stored !== null) {
+            const storedNorm = stored.toString().trim().toLowerCase();
+            if (storedNorm === "" || storedNorm === "auto" || storedNorm === "default" || storedNorm === "off") {
+                targetLevel = "";
+            } else {
+                const validLevels = root.getModelThinkingLevels(modelObj).map(item => item.id.toLowerCase());
+                if (validLevels.includes(storedNorm)) {
+                    targetLevel = storedNorm;
+                } else {
+                    targetLevel = defaultLevel === "auto" ? "" : defaultLevel;
+                }
+            }
+        } else {
+            targetLevel = defaultLevel === "auto" ? "" : defaultLevel;
+        }
+
+        root.thinkingLevel = targetLevel;
+        try {
+            if (Persistent.states?.ai) {
+                Persistent.states.ai.thinkingLevel = targetLevel;
+            }
+        } catch (e) {
+            console.warn("[Ai] Failed to update active thinkingLevel in persistent state:", e);
+        }
+    }
+
+    function setThinkingLevel(value, feedback = true): void {
+        const norm = (value || "").toString().trim().toLowerCase();
+        const modelKey = root.canonicalModelId(root.currentModelId);
+        const validItems = root.getModelThinkingLevels(root.currentModel);
+        const validIds = validItems.map(item => item.id.toLowerCase());
+
+        if (norm === "off" || norm === "default" || norm === "auto" || norm === "") {
+            try {
+                if (Persistent.states?.ai) {
+                    const next = Object.assign({}, Persistent.states.ai.modelThinkingLevels ?? {});
+                    next[modelKey] = "";
+                    if (modelKey === "gemini-flash-latest") next["gemini"] = "";
+                    else if (modelKey === "gemini") next["gemini-flash-latest"] = "";
+                    Persistent.states.ai.modelThinkingLevels = next;
+                    Persistent.states.ai.thinkingLevel = "";
+                }
+            } catch (e) {
+                console.warn("[Ai] Failed to clear thinkingLevel in persistent state:", e);
+            }
+            root.thinkingLevel = "";
+            if (feedback) root.addMessage(Translation.tr("Thinking level set to default (%1)").arg(root.defaultThinkingLevelLabel()), Ai.interfaceRole);
+        } else if (validIds.includes(norm)) {
+            try {
+                if (Persistent.states?.ai) {
+                    const next = Object.assign({}, Persistent.states.ai.modelThinkingLevels ?? {});
+                    next[modelKey] = norm;
+                    if (modelKey === "gemini-flash-latest") next["gemini"] = norm;
+                    else if (modelKey === "gemini") next["gemini-flash-latest"] = norm;
+                    Persistent.states.ai.modelThinkingLevels = next;
+                    Persistent.states.ai.thinkingLevel = norm;
+                }
+            } catch (e) {
+                console.warn("[Ai] Failed to save thinkingLevel to persistent state:", e);
+            }
+            root.thinkingLevel = norm;
+            if (feedback) root.addMessage(Translation.tr("Thinking level set to %1").arg(root.thinkingLevelName(norm)), Ai.interfaceRole);
+        } else {
+            if (feedback) root.addMessage(Translation.tr("Invalid thinking level '%1'. Valid levels: %2").arg(value).arg(validIds.join(", ")), Ai.interfaceRole);
+        }
+    }
+
+    // Display name of a level id, translated.
+    function thinkingLevelName(id: string): string {
+        const norm = String(id ?? "").trim().toLowerCase();
+        if (norm === "" || norm === "auto" || norm === "default" || norm === "off") return Translation.tr("Auto");
+        const names = {
+            "minimal": Translation.tr("Minimal"),
+            "low": Translation.tr("Low"),
+            "medium": Translation.tr("Medium"),
+            "high": Translation.tr("High"),
+            "extra": Translation.tr("Extra"),
+            "max": Translation.tr("Max"),
+            "ultracode": Translation.tr("UltraCode"),
+            "none": Translation.tr("None"),
+        };
+        return names.hasOwnProperty(norm) ? names[norm] : norm.charAt(0).toUpperCase() + norm.slice(1);
+    }
+
+    function defaultThinkingLevelLabel() {
+        const level = root.currentModel?.thinkingLevel;
+        return level ? Translation.tr("%1 (model default)").arg(root.thinkingLevelName(level)) : Translation.tr("Auto (model default)");
+    }
+
+    function printThinkingLevel() {
+        const current = root.thinkingLevel || root.defaultThinkingLevelLabel();
+        root.addMessage(Translation.tr("Thinking level: %1").arg(current), Ai.interfaceRole);
+    }
+
+    function _resetTokenCount() {
         root.tokenCount.input = -1;
         root.tokenCount.output = -1;
         root.tokenCount.total = -1;
-        // A CLI strategy resumes its session on every request; keeping the id
-        // across a clear would quietly thread the old conversation back in.
+    }
+
+    // A CLI strategy resumes its session on every request; keeping the id
+    // across a clear would quietly thread the old conversation back in.
+    function _resetCliSessions() {
         for (const strategy of Object.values(root.apiStrategies)) {
-            if (strategy.isCliStrategy && strategy.sessionId !== undefined)
-                strategy.sessionId = "";
+            if (strategy?.isCliStrategy) strategy.sessionId = "";
+        }
+        root._shownNotices = [];
+    }
+
+    // Warnings that do not stop a reply, shown once per conversation as a
+    // notice of their own instead of inside every reply they come with.
+    property var _shownNotices: []
+    function _showNotices(notices) {
+        for (const text of notices) {
+            if (root._shownNotices.includes(text)) continue;
+            root._shownNotices = root._shownNotices.concat([text]);
+            root.addMessage(`**${Translation.tr("Note")}**: ${text}`, root.interfaceRole, { "persist": false });
         }
     }
 
-    FileView {
-        id: requesterScriptFile
+    function clearMessages(): void {
+        root._bumpLoad();
+        root._abandonRequest();
+        root._dropConfirmation(false);
+        root._setMessageIds([]);
+        root._resetTokenCount();
+        root._resetCliSessions();
+        root._saveNow();
     }
 
-    Process {
-        id: requester
-        property list<string> baseCommand: ["bash"]
-        property AiMessageData message
-        property ApiStrategy currentStrategy
-
-        function markDone() {
-            requester.message.done = true;
-            if (root.postResponseHook) {
-                root.postResponseHook();
-                root.postResponseHook = null; // Reset hook after use
-            }
-            root.responseFinished()
+    function _setMessageIds(next) {
+        const previous = root.messageIDs;
+        root.messageIDs = next;
+        const kept = new Set(next);
+        const dead = [];
+        for (const id of previous) {
+            if (kept.has(id)) continue;
+            dead.push(root.messageByID[id]);
+            delete root.messageByID[id];
         }
+        root._buryAll(dead);
+    }
 
-        function makeRequest() {
-            const model = models[currentModelId];
+    // ── Graveyard ──────────────────────────────────────────────────
+    // Views release their delegates with deleteLater, so objects that left a
+    // list are destroyed a while later rather than at once.
+    property var _graveyard: []
 
-            // Fetch API keys if needed
-            if (model?.requires_key && !KeyringStorage.loaded) KeyringStorage.fetchKeyringData();
-            
-            requester.currentStrategy = root.currentApiStrategy;
-            requester.currentStrategy.reset(); // Reset strategy state
+    function _bury(object) {
+        root._buryAll([object]);
+    }
 
-            /* Put API key in environment variable */
-            if (model.requires_key) requester.environment[`${root.apiKeyEnvVarName}`] = root.apiKeys ? (root.apiKeys[model.key_id] ?? "") : ""
+    function _buryAll(objects) {
+        const dead = objects.filter(object => object);
+        if (dead.length === 0) return;
+        root._graveyard = root._graveyard.concat(dead);
+        reaper.restart();
+    }
 
-            /* Build endpoint, request data */
-            const endpoint = root.currentApiStrategy.buildEndpoint(model);
-            const messageArray = root.messageIDs.map(id => root.messageByID[id]);
-            const filteredMessageArray = messageArray.filter(message => message.role !== Ai.interfaceRole);
-            const data = root.currentApiStrategy.buildRequestData(model, filteredMessageArray, root.systemPrompt, root.temperature, root.tools[model.api_format]?.[root.effectiveTool] ?? [], root.pendingFilePath);
-            // console.log("[Ai] Request data: ", JSON.stringify(data, null, 2));
-
-            let requestHeaders = {
-                "Content-Type": "application/json",
-            }
-            
-            /* Create local message object */
-            requester.message = root.aiMessageComponent.createObject(root, {
-                "role": "assistant",
-                "model": currentModelId,
-                "content": "",
-                "rawContent": "",
-                "thinking": true,
-                "done": false,
-            });
-            const id = idForMessage(requester.message);
-            root.messageIDs = [...root.messageIDs, id];
-            root.messageByID[id] = requester.message;
-
-            /* Build header string for curl */ 
-            let headerString = Object.entries(requestHeaders)
-                .filter(([k, v]) => v && v.length > 0)
-                .map(([k, v]) => `-H '${k}: ${v}'`)
-                .join(' ');
-
-            // console.log("Request headers: ", JSON.stringify(requestHeaders));
-            // console.log("Header string: ", headerString);
-
-            /* Get authorization header from strategy */
-            const authHeader = requester.currentStrategy.buildAuthorizationHeader(root.apiKeyEnvVarName);
-            
-            /* Script shebang */
-            const scriptShebang = "#!/usr/bin/env bash\n";
-
-            /* Create extra setup when there's an attached file */
-            let scriptFileSetupContent = ""
-            if (root.pendingFilePath && root.pendingFilePath.length > 0) {
-                requester.message.localFilePath = root.pendingFilePath;
-                scriptFileSetupContent = requester.currentStrategy.buildScriptFileSetup(root.pendingFilePath);
-                root.pendingFilePath = ""
-            }
-
-            /* Create command string */
-            // A strategy backed by a local command writes its own invocation.
-            // There is no endpoint to post to in that case, so the curl form
-            // below would be addressed at an empty URL.
-            let scriptRequestContent = ""
-            if (requester.currentStrategy.isCliStrategy) {
-                scriptRequestContent = requester.currentStrategy.buildScriptRequestContent(model, filteredMessageArray, root.systemPrompt, root.temperature);
-            } else {
-                scriptRequestContent += `curl --no-buffer "${endpoint}"`
-                    + ` ${headerString}`
-                    + (authHeader ? ` ${authHeader}` : "")
-                    + ` --data '${CF.StringUtils.shellSingleQuoteEscape(JSON.stringify(data))}'`
-                    + "\n"
-            }
-            
-            /* Send the request */
-            const scriptContent = requester.currentStrategy.finalizeScriptContent(scriptShebang + scriptFileSetupContent + scriptRequestContent)
-            const shellScriptPath = CF.FileUtils.trimFileProtocol(root.requestScriptFilePath)
-            requesterScriptFile.path = Qt.resolvedUrl(shellScriptPath)
-            requesterScriptFile.setText(scriptContent)
-            requester.command = baseCommand.concat([shellScriptPath]);
-            requester.running = true
-        }
-
-        stdout: SplitParser {
-            onRead: data => {
-                if (data.length === 0) return;
-                if (requester.message.thinking) requester.message.thinking = false;
-                // console.log("[Ai] Raw response line: ", data);
-
-                // Handle response line
+    Timer {
+        id: reaper
+        interval: 500
+        repeat: false
+        onTriggered: {
+            const dead = new Set(root._graveyard);
+            root._graveyard = [];
+            for (const object of dead) {
                 try {
-                    const result = requester.currentStrategy.parseResponseLine(data, requester.message);
-                    // console.log("[Ai] Parsed response result: ", JSON.stringify(result, null, 2));
-
-                    if (result.functionCall) {
-                        requester.message.functionCall = result.functionCall;
-                        root.handleFunctionCall(result.functionCall.name, result.functionCall.args, requester.message);
-                    }
-                    if (result.tokenUsage) {
-                        root.tokenCount.input = result.tokenUsage.input;
-                        root.tokenCount.output = result.tokenUsage.output;
-                        root.tokenCount.total = result.tokenUsage.total;
-                    }
-                    if (result.finished) {
-                        requester.markDone();
-                    }
-                    
-                } catch (e) {
-                    console.log("[AI] Could not parse response: ", e);
-                    requester.message.rawContent += data;
-                    requester.message.content += data;
-                }
-            }
-        }
-
-        onExited: (exitCode, exitStatus) => {
-            const result = requester.currentStrategy.onRequestFinished(requester.message);
-            
-            if (result.finished) {
-                requester.markDone();
-            } else if (!requester.message.done) {
-                requester.markDone();
-            }
-
-            // A plan whose sign-in stopped working is checked again, which
-            // swaps its models back for the setup entry and its Log in button
-            // rather than failing every later message the same way.
-            if (requester.currentStrategy.loginLapsed) {
-                requester.currentStrategy.loginLapsed = false;
-                const fmt = root.models[requester.message.model]?.api_format ?? root.currentModel?.api_format;
-                if (fmt) root.detectCli(fmt);
-            }
-
-            // Handle error responses
-            if (requester.message.content.includes("API key not valid")) {
-                root.addApiKeyAdvice(models[requester.message.model]);
+                    object.destroy();
+                } catch (e) {}
             }
         }
     }
 
-    function sendUserMessage(message) {
-        if (message.length === 0) return;
-        root.addMessage(message, "user");
+    // ── Requests ───────────────────────────────────────────────────
+    // One request at a time. Every callback carries the request it belongs to
+    // and does nothing once that request is no longer root._req.
+    property var _req: null
+    property int _requestCounter: 0
+    property int _confirmationCounter: 0
+    property var _pendingKills: []
+    property var _postResponseHook: null
+    readonly property string _home: Quickshell.env("HOME") || ""
+    readonly property string _stateHome: Quickshell.env("XDG_STATE_HOME") || (root._home + "/.local/state")
+    readonly property var _dirs: ({
+        "antigravity": root.antigravityDir,
+        "claude": root._stateHome + "/quickshell/ai/claude-code",
+        "codex": root._stateHome + "/quickshell/ai/codex-cli",
+        "home": root._home,
+        "runtime": Quickshell.env("XDG_RUNTIME_DIR") || "/tmp",
+    })
+    readonly property string _aiScriptsDir: CF.FileUtils.trimFileProtocol(String(Directories.scriptPath)) + "/ai"
+    readonly property var _scripts: ({
+        "filter": root._aiScriptsDir + "/stream-diff-filter.py",
+        "runRequest": root._aiScriptsDir + "/run-request.sh",
+    })
+    readonly property var _sinkHost: ({
+        "isActive": req => req === root._req && !req.finalized,
+        "now": () => Date.now(),
+        "scheduleFlush": req => root._scheduleFlush(req),
+        "setSessionId": (req, id) => {
+            if (req.strategy) req.strategy.sessionId = id;
+        },
+        "recordFunctionCall": (req, call) => root._recordFunctionCall(req, call),
+        "uploadedFile": (req, uri, mime) => root._recordUploadedFile(req, uri, mime),
+        "askPermission": (req, fields) => root._askPermission(req, fields),
+        "writeInput": (req, line) => root._writeInput(req, line),
+        "endInput": req => {
+            if (!req.keepStdin) return;
+            req.keepStdin = false;
+            if (req.proc) req.proc.stdinEnabled = false;
+        },
+        "actionFallback": Translation.tr("Action"),
+    })
+
+    Component {
+        id: requestProcessComponent
+        Process {
+            id: requestProc
+            property var req: null
+            // Lines are only queued here: a backlog arrives in one burst, and
+            // anything slower per line would stall the shell for its length.
+            stdout: SplitParser {
+                onRead: line => root._onRequestLine(requestProc.req, line)
+            }
+            onStarted: root._onProcessStarted(requestProc, requestProc.req)
+            onExited: (exitCode, exitStatus) => root._onRequestExited(requestProc, requestProc.req, exitCode)
+        }
+    }
+
+    Component {
+        id: commandProcessComponent
+        Process {
+            id: commandProc
+            property var req: null
+            stdout: StdioCollector {
+                waitForEnd: true
+                onStreamFinished: root._onCommandOutput(commandProc.req, this.text)
+            }
+            onStarted: root._onProcessStarted(commandProc, commandProc.req)
+            onExited: (exitCode, exitStatus) => root._onRequestExited(commandProc, commandProc.req, exitCode)
+        }
+    }
+
+    Timer {
+        id: drainTimer
+        interval: 0
+        repeat: false
+        onTriggered: root._drain()
+    }
+
+    Timer {
+        id: flushTimer
+        interval: 50
+        repeat: false
+        onTriggered: {
+            if (root._req) root._flushReq(root._req);
+        }
+    }
+
+    Timer {
+        id: stopWatchdog
+        interval: 5000
+        repeat: false
+        onTriggered: {
+            const req = root._req;
+            if (req && req.stopped && !req.finalized) root._finalize(req);
+        }
+    }
+
+    // Sends the KILL that follows every Stop's TERM, whether or not the leader
+    // is still there: the group can outlive it.
+    Timer {
+        id: groupKillTimer
+        interval: 500
+        repeat: true
+        running: root._pendingKills.length > 0
+        onTriggered: {
+            const now = Date.now();
+            const keep = [];
+            for (const entry of root._pendingKills) {
+                if (entry.due <= now) Quickshell.execDetached(["kill", "-KILL", "--", "-" + entry.pgid]);
+                else keep.push(entry);
+            }
+            root._pendingKills = keep;
+        }
+    }
+
+    function _newRequest(kind, message, strategy) {
+        root._requestCounter++;
+        const model = root.currentModel;
+        return {
+            "id": root._requestCounter,
+            "kind": kind,
+            "messageId": message.id,
+            "message": message,
+            "strategy": strategy,
+            "modelId": root.currentModelId,
+            "apiFormat": model?.api_format ?? "",
+            "grant": null,
+            "regenerate": false,
+            "mode": AiModes.current,
+            "proc": null,
+            "pgid": null,
+            "killSent": false,
+            "cancelPending": false,
+            "stopped": false,
+            "started": false,
+            "failedToStart": false,
+            "lineQueue": [],
+            "qHead": 0,
+            "exited": false,
+            "exitCode": null,
+            "stderrTail": "",
+            "finalized": false,
+            "sink": null,
+            "buf": null,
+            "stdin": "",
+            // Open until the result: approvals are answered on it mid-reply.
+            "keepStdin": false,
+            "allowSteps": false,
+            "startTime": Date.now(),
+            "attachmentMessageId": "",
+            "functionCall": null,
+            "confirmationDraft": null,
+            "loginLapsed": false,
+            "searchRefused": false,
+            "sessionLost": false,
+            "notices": [],
+            "output": "",
+        };
+    }
+
+    function _msgAlive(req) {
+        return Boolean(req && req.message && root.messageByID[req.messageId] === req.message);
+    }
+
+    function _guessMime(path) {
+        const ext = (String(path).split("/").pop().split(".").pop() || "").toLowerCase();
+        const types = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+            "gif": "image/gif", "pdf": "application/pdf",
+        };
+        return types[ext] ?? "";
+    }
+
+    function _resolvedThinkingLevel(model) {
+        const level = String(root.thinkingLevel || model?.thinkingLevel || "").toLowerCase();
+        return level === "auto" ? "" : level;
+    }
+
+    // Message ids whose function call has no later output message of the same
+    // function. Gemini and Mistral refuse a call turn that has no answer.
+    function _unansweredCalls(messages) {
+        const unanswered = Object.create(null);
+        const answers = Object.create(null);
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const message = messages[i];
+            if (!message.functionName) continue;
+            if (message.functionCall !== undefined && message.functionCall !== null) {
+                if ((answers[message.functionName] ?? 0) > 0) answers[message.functionName]--;
+                else unanswered[message.id] = true;
+            } else {
+                answers[message.functionName] = (answers[message.functionName] ?? 0) + 1;
+            }
+        }
+        return unanswered;
+    }
+
+    // options: {attachment: null | {path, mime, messageId}, grant, regenerate}
+    function _startModelRequest(options) {
+        const opts = options ?? {};
+        const policy = Config.options?.policies?.ai ?? 0;
+        if (policy === 0) return false;
+        if (policy === 2 && root._isOnlineModelId(root.currentModelId)) {
+            root.addMessage(
+                Translation.tr("Only local models are allowed right now. To use online models, set AI to Yes in Settings > Interface > Left Sidebar."),
+                root.interfaceRole
+            );
+            return false;
+        }
+        const model = root.currentModel;
+        const strategy = root.currentApiStrategy;
+        if (!model || !strategy) {
+            root.startOllamaWalkthrough();
+            return false;
+        }
+        if (model.requires_key && !KeyringStorage.loaded) KeyringStorage.fetchKeyringData();
+        const history = root.messageIDs.map(id => root.messageByID[id])
+            .filter(message => message && message.role !== root.interfaceRole);
+        const unanswered = root._unansweredCalls(history);
+
+        const message = root._createMessage("assistant", "", {
+            "model": root.currentModelId,
+            "thinking": true,
+            "done": false,
+        });
+        root._insertMessage(message);
+
+        const req = root._newRequest("model", message, strategy);
+        req.grant = opts.grant ?? null;
+        req.regenerate = opts.regenerate === true;
+        req.attachmentMessageId = opts.attachment?.messageId ?? "";
+        root._req = req;
+        root.requestState = "starting";
+        req.sink = Sink.createSink(req, root._sinkHost);
+
+        const apiKey = model.requires_key ? (root.apiKeys?.[model.key_id] ?? "") : "";
+        let built = null;
+        let failure = "";
+        try {
+            built = strategy.buildRequest({
+                "requestId": req.id,
+                "model": model,
+                "messages": history,
+                "unansweredCalls": unanswered,
+                "systemPrompt": root.systemPrompt,
+                "temperature": root.temperature,
+                "tools": root.tools[model.api_format]?.[root.effectiveTool] ?? [],
+                "thinkingLevel": root._resolvedThinkingLevel(model),
+                "mode": req.mode,
+                "grant": req.grant,
+                "attachment": opts.attachment ? { "path": opts.attachment.path, "mime": opts.attachment.mime } : null,
+                "regenerate": req.regenerate,
+                "apiKey": apiKey,
+                "scripts": root._scripts,
+                "dirs": root._dirs,
+            });
+            // After the build: strategies carry values from it into the state.
+            req.sink.state = strategy.newState();
+        } catch (e) {
+            failure = e?.message ?? String(e);
+        }
+        if (!built || !Array.isArray(built.argv) || built.argv.length === 0) {
+            req.sink.error(Translation.tr("Error starting request: %1").arg(failure || model.name));
+            root._finalize(req);
+            return true;
+        }
+
+        const env = Object.assign({}, built.env ?? {});
+        if (model.requires_key) env[root.apiKeyEnvVarName] = apiKey;
+        req.stdin = typeof built.stdin === "string" ? built.stdin : "";
+        req.keepStdin = built.keepStdin === true;
+        const command = ["setsid", "bash", root._scripts.runRequest]
+            .concat((built.options ?? []).map(String), ["--"], built.argv.map(String));
+        req.proc = requestProcessComponent.createObject(root, {
+            "command": command,
+            "environment": env,
+            "stdinEnabled": req.stdin.length > 0 || req.keepStdin,
+        });
+        root._launch(req);
+        return true;
+    }
+
+    // Runs a command the model asked for, as a request of its own: Stop ends
+    // it, and its output reaches QML once, already cut to its last 64 KB.
+    function _startCommandRequest(command) {
+        root._saveNow();
+        const output = root._createCommandOutputMessage(command);
+        root._insertMessage(output);
+        const req = root._newRequest("command", output, null);
+        root._req = req;
+        root.requestState = "starting";
+        req.proc = commandProcessComponent.createObject(root, {
+            "command": ["setsid", "bash", root._scripts.runRequest, "--workdir", root._home,
+                "--tail-bytes", "65536", "--timeout", "120", "--", "bash", "-c", command],
+        });
+        root._launch(req);
+    }
+
+    // The request object is handed over by assignment: initial properties
+    // pass through a QVariantMap, which would copy it.
+    function _launch(req) {
+        if (!req.proc) {
+            req.failedToStart = true;
+            if (req.kind === "model") req.sink.error(Translation.tr("Error starting request: %1").arg("setsid"));
+            root._finalize(req);
+            return;
+        }
+        req.proc.req = req;
+        req.proc.running = true;
+    }
+
+    function _onProcessStarted(proc, req) {
+        if (!req) return;
+        req.started = true;
+        const pid = Number(proc.processId);
+        req.pgid = Number.isInteger(pid) && pid > 1 ? pid : null;
+        if (req !== root._req || req.cancelPending) {
+            req.stdin = "";
+            proc.stdinEnabled = false;
+            root._killGroup(req);
+            return;
+        }
+        if (req.stdin.length > 0) proc.write(req.stdin);
+        req.stdin = "";
+        // Closing stdin sends EOF once the written data is flushed.
+        if (!req.keepStdin) proc.stdinEnabled = false;
+        if (root.requestState === "starting") root.requestState = "streaming";
+    }
+
+    function _onRequestLine(req, line) {
+        if (req !== root._req || req.stopped || line.length === 0) return;
+        req.lineQueue.push(line);
+        if (!drainTimer.running) drainTimer.start();
+    }
+
+    function _onCommandOutput(req, text) {
+        if (req === root._req && !req.stopped) req.output = text;
+    }
+
+    function _onRequestExited(proc, req, exitCode) {
+        root._bury(proc);
+        if (!req) return;
+        if (!req.started) {
+            req.failedToStart = true;
+            if (req !== root._req || req.finalized) return;
+            if (req.kind === "model" && !req.stopped)
+                req.sink.error(Translation.tr("Error starting request: %1").arg(proc.command[0] ?? ""));
+            root._finalize(req);
+            return;
+        }
+        req.exited = true;
+        if (req.exitCode === null) req.exitCode = exitCode;
+        if (req !== root._req || req.finalized) return;
+        if (req.kind === "command" || req.stopped || req.qHead >= req.lineQueue.length) root._finalize(req);
+        else if (!drainTimer.running) drainTimer.start();
+    }
+
+    // Parses queued lines for at most 8 ms, then yields to the event loop.
+    function _drain() {
+        const req = root._req;
+        if (!req || req.stopped || req.finalized) return;
+        const deadline = Date.now() + 8;
+        while (req.qHead < req.lineQueue.length) {
+            const line = req.lineQueue[req.qHead];
+            req.lineQueue[req.qHead] = undefined;
+            req.qHead++;
+            root._handleLine(req, line);
+            if (req !== root._req || req.stopped) return;
+            if (Date.now() >= deadline) break;
+        }
+        if (req.qHead >= req.lineQueue.length) {
+            req.lineQueue = [];
+            req.qHead = 0;
+            if (req.exited) root._finalize(req);
+            return;
+        }
+        if (req.qHead > 4096) {
+            req.lineQueue = req.lineQueue.slice(req.qHead);
+            req.qHead = 0;
+        }
+        drainTimer.restart();
+    }
+
+    function _handleLine(req, line) {
+        if (line.startsWith('{"event":"cli_exit"')) {
+            try {
+                const exit = JSON.parse(line);
+                if (exit.event === "cli_exit") {
+                    if (Number.isInteger(exit.code)) req.exitCode = exit.code;
+                    req.stderrTail = String(exit.stderr ?? "");
+                    return;
+                }
+            } catch (e) {}
+        }
+        try {
+            req.strategy.parseLine(line, req.sink);
+        } catch (e) {
+            console.warn("[Ai] Could not parse a response line:", e);
+            req.sink.raw(line);
+        }
+    }
+
+    function _scheduleFlush(req) {
+        if (req !== root._req || flushTimer.running) return;
+        const length = root._msgAlive(req) ? req.message.content.length : 0;
+        flushTimer.interval = Math.max(50, Math.min(250, Math.round(length / 400)));
+        flushTimer.start();
+    }
+
+    function _flushReq(req) {
+        if (!req.buf) return;
+        if (!root._msgAlive(req)) {
+            Sink.discard(req.buf);
+            return;
+        }
+        const usage = Sink.flush(req.buf, req.message);
+        if (usage) {
+            root.tokenCount.input = usage.input;
+            root.tokenCount.output = usage.output;
+            root.tokenCount.total = usage.total;
+        }
+    }
+
+    function _recordFunctionCall(req, call) {
+        if (req.functionCall || !root._msgAlive(req)) return false;
+        const message = req.message;
+        message.functionName = call.name;
+        message.functionArgs = call.args;
+        message.functionCallId = call.id;
+        message.functionThoughtSignature = call.thoughtSignature;
+        message.functionCall = { "name": call.name, "args": call.args, "id": call.id };
+        req.functionCall = { "name": call.name, "args": call.args };
+        return true;
+    }
+
+    // The uploaded file belongs to the user turn that attached it, so later
+    // requests send it with that turn.
+    function _recordUploadedFile(req, uri, mime) {
+        const target = root.messageByID[req.attachmentMessageId] ?? (root._msgAlive(req) ? req.message : null);
+        if (!target) return;
+        target.fileUri = uri;
+        target.fileMimeType = mime;
+    }
+
+    function _killGroup(req) {
+        const pgid = req?.pgid;
+        if (!Number.isInteger(pgid) || pgid <= 1 || req.killSent) return;
+        req.killSent = true;
+        Quickshell.execDetached(["kill", "-TERM", "--", "-" + pgid]);
+        root._pendingKills = root._pendingKills.concat([{ "pgid": pgid, "due": Date.now() + 3000 }]);
+    }
+
+    function cancelRequest(): void {
+        const req = root._req;
+        if (!req || req.stopped || req.finalized) return;
+        req.stopped = true;
+        if (root.pendingConfirmation?.live) root.pendingConfirmation = null;
+        root.requestState = "stopping";
+        drainTimer.stop();
+        req.lineQueue = [];
+        req.qHead = 0;
+        stopWatchdog.restart();
+        root._stopProcess(req);
+    }
+
+    // A process that has not started yet is killed by its own start.
+    function _stopProcess(req) {
+        if (req.started) root._killGroup(req);
+        else req.cancelPending = true;
+    }
+
+    // The timers serve only the active request.
+    function _detach(req) {
+        if (req !== root._req) return;
+        drainTimer.stop();
+        flushTimer.stop();
+        stopWatchdog.stop();
+        root._req = null;
+        root.requestState = "idle";
+    }
+
+    // Drops the active request without waiting for it; its late output is
+    // ignored because it is no longer root._req.
+    function _abandonRequest() {
+        const req = root._req;
+        if (!req) return;
+        req.stopped = true;
+        root._detach(req);
+        if (req.buf) Sink.discard(req.buf);
+        root._stopProcess(req);
+        if (root._msgAlive(req)) {
+            req.message.done = true;
+            req.message.thinking = false;
+        }
+        root._runPostResponseHook();
+    }
+
+    function _runPostResponseHook() {
+        const hook = root._postResponseHook;
+        root._postResponseHook = null;
+        if (hook) hook();
+    }
+
+    // The end of a reply, function continuations included.
+    function _finishChain() {
+        root._runPostResponseHook();
+        root.responseFinished();
+        root._saveNow();
+    }
+
+    function _finalize(req) {
+        if (!req || req.finalized) return;
+        if (req.kind === "command") {
+            root._finalizeCommand(req);
+            return;
+        }
+        if (req !== root._req) {
+            req.finalized = true;
+            return;
+        }
+        if (root.pendingConfirmation?.live && root.pendingConfirmation.requestId === req.id) root.pendingConfirmation = null;
+        if (!req.stopped) {
+            try {
+                req.strategy.finish(req.sink, req.exitCode ?? 0, req.stderrTail ?? "");
+            } catch (e) {
+                console.warn("[Ai] Could not finish the response:", e);
+            }
+        }
+        req.sink.close();
+        root._flushReq(req);
+        req.finalized = true;
+        root._detach(req);
+
+        const message = root._msgAlive(req) ? req.message : null;
+        if (message) {
+            message.rawContent = message.content;
+            message.done = true;
+            message.thinking = false;
+        }
+
+        // A chat whose CLI session is not where the CLI looks (started in another
+        // folder, or removed) goes on in a fresh one that carries the conversation.
+        if (req.sessionLost && !req.regenerate && !req.stopped && message) {
+            root._finishChain();
+            Qt.callLater(() => root.regenerate(req.messageId));
+            return;
+        }
+
+        // History must never hold a call without an answer.
+        let call = req.functionCall;
+        if (req.stopped && call) {
+            if (message) root._addFunctionOutputMessage(call.name, Translation.tr("[[ Command stopped by user ]]"));
+            call = null;
+        }
+
+        // A plan whose sign-in stopped working is checked again, which
+        // swaps its models back for the setup entry and its Log in button
+        // rather than failing every later message the same way.
+        if (req.loginLapsed || req.strategy?.loginLapsed) {
+            if (req.strategy) req.strategy.loginLapsed = false;
+            const fmt = req.apiFormat || root.currentModel?.api_format;
+            if (fmt) root.detectCli(fmt);
+        }
+
+        // Handle error responses
+        if (message) {
+            if (message.content.includes("API key not valid")) {
+                root.addApiKeyAdvice(root.models[message.model] ?? null);
+            }
+            if (/^\*\*Error \d+\*\*/.test(message.content) && message.content.includes("no longer available to new users")) {
+                root.addMessage(Translation.tr("This Google account can no longer use this model. Pick another one with %1.").arg("/model"), Ai.interfaceRole);
+            }
+        }
+        root._showNotices(req.notices);
+        if (req.searchRefused) {
+            root.addMessage(Translation.tr("Web search with Gemini 3 needs a Google AI Studio project with billing turned on. Ask again without searching, or switch to Gemini 2.5 Flash with %1 if your account can still use it.").arg("/model"), Ai.interfaceRole);
+        }
+
+        if (!req.stopped && message && req.confirmationDraft && req.mode === "ask") {
+            root._raiseConfirmation(Object.assign({}, req.confirmationDraft, {
+                "type": "cli",
+                "requestId": req.id,
+                "provider": req.apiFormat,
+                "modelId": req.modelId,
+                "messageId": req.messageId,
+                "sessionId": req.strategy?.sessionId ?? "",
+            }));
+        } else if (!req.stopped && message && call) {
+            if (root._handleFunctionCall(req, call.name, call.args ?? {}, message)) return;
+        }
+        root._finishChain();
+    }
+
+    function _commandResponse(text, exitCode) {
+        let body = text;
+        let code = exitCode ?? 0;
+        let timedOut = false;
+        const trimmed = body.endsWith("\n") ? body.slice(0, -1) : body;
+        const lineStart = trimmed.lastIndexOf("\n") + 1;
+        const trailer = /^ms-exit (\d+) ([01])$/.exec(trimmed.slice(lineStart));
+        if (trailer) {
+            body = trimmed.slice(0, lineStart);
+            code = Number(trailer[1]);
+            timedOut = trailer[2] === "1";
+        }
+        if (timedOut) return body + Translation.tr("[[ Command timed out after %1 s ]]").arg(120);
+        return body + `[[ Command exited with code ${code} ]]`;
+    }
+
+    function _finalizeCommand(req) {
+        if (req.finalized) return;
+        req.finalized = true;
+        const output = root._msgAlive(req) ? req.message : null;
+        const ran = !req.stopped && !req.failedToStart;
+        if (output) {
+            if (req.failedToStart) output.functionResponse = Translation.tr("Error starting request: %1").arg("setsid");
+            else if (req.stopped) output.functionResponse = Translation.tr("[[ Command stopped by user ]]");
+            else output.functionResponse = root._commandResponse(req.output, req.exitCode);
+            const blocks = (output.thinkBlocks ?? []).slice();
+            if (blocks.length > 0) {
+                blocks[0] = Object.assign({}, blocks[0], {
+                    "duration": Math.max(1, Math.round((Date.now() - req.startTime) / 1000)),
+                });
+                output.thinkBlocks = blocks;
+            }
+        }
+        req.output = "";
+        root._detach(req);
+        if (ran && output && root._continueRequest()) return;
+        root._finishChain();
+    }
+
+    // ── Function calls ─────────────────────────────────────────────
+    function _createFunctionOutputMessage(name, output) {
+        const content = `[[ Output of ${name} ]]` + Sink.THINK_OPEN + Sink.cleanModelText(output) + Sink.THINK_CLOSE;
+        return root._createMessage("user", content, {
+            "functionName": name,
+            "functionResponse": output,
+            "thinkBlocks": [{ "start": Date.now(), "duration": 1, "collapsed": null }],
+        });
+    }
+
+    function _createCommandOutputMessage(command) {
+        const record = Sink.normalizeActivity({
+            "kind": "command",
+            "verb": "Ran",
+            "target": command,
+            "copyText": command,
+        }, root._sinkHost.actionFallback);
+        const content = "[[ Output of run_shell_command ]]" + Sink.THINK_OPEN + "\n" + Sink.marker(0) + "\n" + Sink.THINK_CLOSE;
+        return root._createMessage("user", content, {
+            "functionName": "run_shell_command",
+            "functionResponse": "",
+            "activities": [record],
+            "thinkBlocks": [{ "start": Date.now(), "duration": 0, "collapsed": null }],
+        });
+    }
+
+    function _addFunctionOutputMessage(name, output) {
+        root._insertMessage(root._createFunctionOutputMessage(name, String(output ?? "")));
+    }
+
+    function _continueRequest() {
+        root._saveNow();
+        return root._startModelRequest({});
+    }
+
+    function _configValueText(value) {
+        return typeof value === "string" ? value : JSON.stringify(value);
+    }
+
+    function _applyShellConfig(name, key, value) {
+        // Every call needs its answer, an unknown key included, or the next request
+        // is refused or comes back empty.
+        try {
+            Config.setNestedValue(key, value);
+            root._addFunctionOutputMessage(name, Translation.tr("Set %1 to %2.").arg(key).arg(JSON.stringify(value)));
+        } catch (e) {
+            root._addFunctionOutputMessage(name, `${e}`);
+        }
+    }
+
+    // Returns true when it started another request; false ends the reply.
+    function _handleFunctionCall(req, name, args, message) {
+        const mode = AiModes.current;
+        const confirm = (command) => {
+            message.functionPending = true;
+            root._raiseConfirmation({
+                "type": "function",
+                "requestId": req.id,
+                "provider": req.apiFormat,
+                "modelId": req.modelId,
+                "messageId": message.id,
+                "action": name,
+                "command": command,
+                "scope": "once",
+            });
+        };
+        if (name === "switch_to_search_mode") {
+            root.currentTool = "search";
+            root._postResponseHook = () => { root.currentTool = "functions"; };
+            root._addFunctionOutputMessage(name, Translation.tr("Switched to search mode. Continue with the user's request."));
+            return root._continueRequest();
+        }
+        if (name === "get_shell_config") {
+            root._addFunctionOutputMessage(name, JSON.stringify(CF.ObjectUtils.toPlainObject(Config.options)));
+            return root._continueRequest();
+        }
+        if (name === "set_shell_config") {
+            if (!args.key || args.value === undefined || args.value === null) {
+                root._addFunctionOutputMessage(name, Translation.tr("Invalid arguments. Must provide `key` and `value`."));
+                return root._continueRequest();
+            }
+            const key = String(args.key);
+            if (mode === "plan") {
+                root._addFunctionOutputMessage(name, Translation.tr("Config change skipped: Plan mode is active."));
+                return root._continueRequest();
+            }
+            // Commands the shell runs, model endpoints and modes, and policy
+            // switches always ask, in Auto mode too.
+            const sensitive = /^(apps|ai|policies)(\.|$)/.test(key);
+            if (mode === "auto" && !sensitive) {
+                root._applyShellConfig(name, key, args.value);
+                return root._continueRequest();
+            }
+            confirm(key + " = " + root._configValueText(args.value));
+            return false;
+        }
+        if (name === "run_shell_command") {
+            const command = typeof args.command === "string" ? args.command : "";
+            if (command.length === 0) {
+                root._addFunctionOutputMessage(name, Translation.tr("Invalid arguments. Must provide `command`."));
+                return root._continueRequest();
+            }
+            if (mode === "auto") {
+                root._startCommandRequest(command);
+                return true;
+            }
+            if (mode === "plan") {
+                root._addFunctionOutputMessage(name, Translation.tr("Command execution skipped: Plan mode is active."));
+                return root._continueRequest();
+            }
+            message.content = message.content + `\n\n**Command execution request**\n\n\`\`\`command\n${command}\n\`\`\``;
+            message.rawContent = message.content;
+            confirm(command);
+            return false;
+        }
+        root.addMessage(Translation.tr("Unknown function call: %1").arg(name), "assistant");
+        return false;
+    }
+
+    // ── Confirmations ──────────────────────────────────────────────
+    function _raiseConfirmation(fields) {
+        root._confirmationCounter++;
+        const scopes = ["once", "all"];
+        root.pendingConfirmation = Object.freeze({
+            "id": `confirm-${Date.now().toString(36)}-${root._confirmationCounter}`,
+            "requestId": Number(fields.requestId ?? 0),
+            "type": fields.type === "cli" ? "cli" : "function",
+            "provider": String(fields.provider ?? ""),
+            "modelId": String(fields.modelId ?? ""),
+            "messageId": String(fields.messageId ?? ""),
+            "action": String(fields.action ?? ""),
+            "command": String(fields.command ?? ""),
+            "target": String(fields.target ?? ""),
+            "scope": scopes.includes(fields.scope) ? fields.scope : "once",
+            "grantNote": String(fields.grantNote ?? ""),
+            "sessionId": String(fields.sessionId ?? ""),
+            // Asked in the middle of a reply that waits for the answer.
+            "live": fields.live === true,
+            "controlId": String(fields.controlId ?? ""),
+        });
+        if (!root.pendingConfirmation.live) root.requestState = "awaitingConfirmation";
+    }
+
+    // A step the CLI holds until the user answers; one approval covers the
+    // rest of the reply, as it did when approving restarted the reply.
+    function _askPermission(req, fields) {
+        if (req !== root._req || req.stopped) return;
+        if (req.allowSteps) {
+            root._answerPermission(req, fields.controlId, true);
+            return;
+        }
+        root._raiseConfirmation(Object.assign({}, fields, {
+            "type": "cli",
+            "live": true,
+            "requestId": req.id,
+            "provider": req.apiFormat,
+            "modelId": req.modelId,
+            "messageId": req.messageId,
+            "sessionId": req.strategy?.sessionId ?? "",
+        }));
+    }
+
+    function _answerPermission(req, controlId, allow) {
+        root._writeInput(req, req.strategy?.permissionAnswer(String(controlId ?? ""), allow,
+            Translation.tr("The user declined this step.")) ?? "");
+    }
+
+    function _writeInput(req, line) {
+        if (req.keepStdin && req.proc && typeof line === "string" && line.length > 0) req.proc.write(line);
+    }
+
+    // Clears the pending confirmation. A function call it leaves unanswered
+    // gets the rejected output unless the caller is discarding that message.
+    function _dropConfirmation(addRejected = true) {
+        const conf = root.pendingConfirmation;
+        if (root.requestState === "awaitingConfirmation") root.requestState = "idle";
+        if (!conf) return;
+        root.pendingConfirmation = null;
+        // Unanswered, a paused reply cannot go on.
+        if (conf.live) {
+            if (root._req?.id === conf.requestId) root.cancelRequest();
+            return;
+        }
+        if (conf.type !== "function") return;
+        const message = root.messageByID[conf.messageId];
+        if (!message || !message.functionPending) return;
+        message.functionPending = false;
+        if (addRejected) root._addFunctionOutputMessage(message.functionName, Translation.tr("Command rejected by user"));
+    }
+
+    function approvePendingAction(confirmationId = root.pendingConfirmation?.id): bool {
+        const conf = root.pendingConfirmation;
+        if (conf?.live && conf.id === confirmationId) {
+            root.pendingConfirmation = null;
+            const req = root._req;
+            if (!req || req.id !== conf.requestId || req.stopped) return false;
+            req.allowSteps = true;
+            root._answerPermission(req, conf.controlId, true);
+            return true;
+        }
+        const valid = conf !== null && conf.id === confirmationId
+            && root.requestState === "awaitingConfirmation"
+            && root.currentModelId === conf.modelId
+            && (conf.type !== "cli" || (root.currentApiStrategy?.sessionId ?? "") === conf.sessionId);
+        if (!valid) {
+            root._dropConfirmation();
+            root.addMessage(Translation.tr("This approval is out of date, so nothing was run."), root.interfaceRole);
+            return false;
+        }
+        root.pendingConfirmation = null;
+        root.requestState = "idle";
+        if (conf.type === "cli") {
+            // The grant lives only on the request this starts.
+            return root._sendInternal(Translation.tr("Approved. Proceed."), "approved", {
+                "grant": { "scope": conf.scope },
+            });
+        }
+        const message = root.messageByID[conf.messageId];
+        if (!message) {
+            root._saveNow();
+            return false;
+        }
+        message.functionPending = false;
+        const args = message.functionArgs ?? {};
+        if (conf.action === "run_shell_command") {
+            root._startCommandRequest(typeof args.command === "string" ? args.command : conf.command);
+        } else if (conf.action === "set_shell_config") {
+            root._applyShellConfig(conf.action, String(args.key ?? ""), args.value);
+            root._continueRequest();
+        }
+        return true;
+    }
+
+    function rejectPendingAction(confirmationId = root.pendingConfirmation?.id): bool {
+        const conf = root.pendingConfirmation;
+        const matches = Boolean(conf) && conf.id === confirmationId;
+        // The model hears the decline and goes on with the same reply.
+        if (matches && conf.live) {
+            root.pendingConfirmation = null;
+            const req = root._req;
+            if (req && req.id === conf.requestId && !req.stopped) root._answerPermission(req, conf.controlId, false);
+            return true;
+        }
+        root._dropConfirmation();
+        // The decline is a message of its own, which saves.
+        if (matches && conf.type === "cli") {
+            root._sendInternal(Translation.tr("Declined. Do not run the command."), "declined", {});
+            return true;
+        }
+        root._saveNow();
+        return matches;
+    }
+
+    // For the buttons inside a command request block.
+    function approveCommand(message) {
+        const conf = root.pendingConfirmation;
+        if (!conf || !message || conf.messageId !== message.id) return false;
+        return root.approvePendingAction(conf.id);
+    }
+
+    function rejectCommand(message) {
+        const conf = root.pendingConfirmation;
+        if (!conf || !message || conf.messageId !== message.id) return false;
+        return root.rejectPendingAction(conf.id);
+    }
+
+    // ── Sending ────────────────────────────────────────────────────
+    // An approval or decline answer: not sendUserMessage, which would reject
+    // the confirmation it answers.
+    function _sendInternal(text, answer, options) {
+        if (root.isGenerating || root.sessionLoading) return false;
+        root.addMessage(text, "user", { "answer": answer });
+        root._saveNow();
+        return root._startModelRequest(options);
+    }
+
+    function sendUserMessage(text: string): bool {
+        const content = String(text ?? "");
+        if (content.length === 0 || root.isGenerating || root.sessionLoading) return false;
+        const attachmentPath = root.pendingFilePath;
+        if (attachmentPath.length > 0 && !(root.currentApiStrategy?.acceptsAttachment(attachmentPath) ?? false)) {
+            root.addMessage(Translation.tr("This model can't read that file type. Remove the attachment to send your message."), root.interfaceRole, { "persist": false });
+            return false;
+        }
+        if (root.requestState === "awaitingConfirmation") root._dropConfirmation();
+        const messageId = root.addMessage(content, "user", { "localFilePath": attachmentPath });
+        root.pendingFilePath = "";
+        root._saveNow();
         // The setup entry names no model, so a request built from it would post
         // an empty one and come back as a failure the user cannot act on. Say
         // what local AI is still waiting for instead.
         if (root.currentModelId === root.ollamaSetupModelId) {
             root.startOllamaWalkthrough();
-            return;
+            return true;
         }
         // A saved local model has no object until the fetch answers, and a
         // request without one dies somewhere less explainable than here.
@@ -1717,205 +3424,398 @@ Singleton {
         }
         if (!root.currentModel) {
             root.startOllamaWalkthrough();
+            return true;
+        }
+        root._startModelRequest({
+            "attachment": attachmentPath.length > 0
+                ? { "path": attachmentPath, "mime": root._guessMime(attachmentPath), "messageId": messageId }
+                : null,
+        });
+        return true;
+    }
+
+    // "" clears. file:// URLs are decoded; anything else is taken literally.
+    function attachFile(pathOrUrl): bool {
+        if (!pathOrUrl) {
+            root.pendingFilePath = "";
+            return true;
+        }
+        let path = String(pathOrUrl);
+        if (path.startsWith("file://")) {
+            path = path.slice(7);
+            if (path.startsWith("localhost/")) path = path.slice(9);
+            try {
+                path = decodeURIComponent(path);
+            } catch (e) {
+                path = "";
+            }
+        } else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path)) {
+            path = "";
+        }
+        if (!path.startsWith("/")) {
+            root.addMessage(Translation.tr("Only local files can be attached."), root.interfaceRole, { "persist": false });
+            return false;
+        }
+        root.pendingFilePath = path;
+        return true;
+    }
+
+    function regenerate(idOrIndex): bool {
+        if (root.isGenerating || root.sessionLoading || !root.currentModel) return false;
+        const index = typeof idOrIndex === "number" ? idOrIndex : root.messageIDs.indexOf(String(idOrIndex ?? ""));
+        if (index < 0 || index >= root.messageIDs.length) return false;
+        const message = root.messageByID[root.messageIDs[index]];
+        if (!message || message.role !== "assistant") return false;
+        root._dropConfirmation(false);
+        root._setMessageIds(root.messageIDs.slice(0, index));
+        root._saveNow();
+        root._startModelRequest({ "regenerate": true });
+        return true;
+    }
+
+    // ── Sessions ───────────────────────────────────────────────────
+    readonly property string autoSaveFilePath: `${Directories.aiChats}/lastSession.json`
+    property bool _saveInFlight: false
+    property bool _savePending: false
+    readonly property var _sessionOptions: ({
+        "retiredModels": root.retiredModels,
+        "isAntigravityModel": id => root.planFormatFor(id) === "antigravity-cli" || String(id).startsWith("gemini-plan"),
+        "newId": () => root.idForMessage(),
+    })
+
+    // Written only, never read: the restore reads through a loader of its own.
+    FileView {
+        id: autoSaveFileView
+        path: root.autoSaveFilePath
+        preload: false
+        blockLoading: false
+        blockWrites: false
+        atomicWrites: true
+        printErrors: false
+        watchChanges: false
+        onSaved: root._onAutoSaveDone()
+        onSaveFailed: error => root._onAutoSaveDone()
+    }
+
+    Timer {
+        id: saveDebounce
+        interval: 1500
+        repeat: false
+        onTriggered: {
+            if (!root.isGenerating) root._saveNow();
+        }
+    }
+
+    Timer {
+        id: restoreTimer
+        interval: 0
+        repeat: false
+        onTriggered: root._restoreChunk()
+    }
+
+    Component {
+        id: sessionLoaderComponent
+        FileView {
+            id: loaderView
+            property int generation: 0
+            property string kind: ""
+            property string chatName: ""
+            preload: true
+            blockLoading: false
+            printErrors: false
+            watchChanges: false
+            onLoaded: root._onSessionLoaded(loaderView)
+            onLoadFailed: error => root._onSessionLoadFailed(loaderView)
+        }
+    }
+
+    Component {
+        id: namedSaveComponent
+        FileView {
+            id: saveView
+            property string chatName: ""
+            preload: false
+            blockLoading: false
+            blockWrites: false
+            atomicWrites: true
+            printErrors: false
+            watchChanges: false
+            onSaved: {
+                root.reloadSavedChats();
+                root._bury(saveView);
+            }
+            onSaveFailed: error => {
+                if (root._savedName === saveView.chatName)
+                    root._savedSignature = "";
+                root._bury(saveView);
+            }
+        }
+    }
+
+    Component {
+        id: removeProcessComponent
+        Process {
+            id: removeProc
+            onExited: (exitCode, exitStatus) => {
+                root.reloadSavedChats();
+                root._bury(removeProc);
+            }
+        }
+    }
+
+    function scheduleSave(): void {
+        if (!root._startupRestored || root.sessionLoading || root.isGenerating) return;
+        saveDebounce.restart();
+    }
+
+    function _serializeSession() {
+        const cliSessions = {};
+        for (const [key, strategy] of Object.entries(root.apiStrategies)) {
+            if (strategy?.isCliStrategy && strategy.sessionId) cliSessions[key] = strategy.sessionId;
+        }
+        return Sessions.serialize(root.messageIDs.map(id => root.messageByID[id]), root.currentModelId, cliSessions, Date.now());
+    }
+
+    // Writes lastSession.json. One write at a time: a new text is never handed
+    // over while a write runs, since that would block on it.
+    function _saveNow() {
+        if (!root._startupRestored || root.sessionLoading) return;
+        saveDebounce.stop();
+        if (root._saveInFlight) {
+            root._savePending = true;
             return;
         }
-        requester.makeRequest();
+        const text = root._serializeSession();
+        root._saveInFlight = true;
+        autoSaveFileView.setText(text);
     }
 
-    function attachFile(filePath: string) {
-        root.pendingFilePath = CF.FileUtils.trimFileProtocol(filePath);
-    }
-
-    function regenerate(messageIndex) {
-        if (messageIndex < 0 || messageIndex >= messageIDs.length) return;
-        const id = root.messageIDs[messageIndex];
-        const message = root.messageByID[id];
-        if (message.role !== "assistant") return;
-        // Remove all messages after this one
-        for (let i = root.messageIDs.length - 1; i >= messageIndex; i--) {
-            root.removeMessage(i);
+    function _onAutoSaveDone() {
+        root._saveInFlight = false;
+        if (root._savePending) {
+            root._savePending = false;
+            // The FileView still counts the finished write as live until this
+            // signal returns, and a write started now would be dropped.
+            Qt.callLater(root._saveNow);
         }
-        requester.makeRequest();
     }
 
-    function createFunctionOutputMessage(name, output, includeOutputInChat = true) {
-        return aiMessageComponent.createObject(root, {
-            "role": "user",
-            "content": `[[ Output of ${name} ]]${includeOutputInChat ? ("\n\n<think>\n" + output + "\n</think>") : ""}`,
-            "rawContent": `[[ Output of ${name} ]]${includeOutputInChat ? ("\n\n<think>\n" + output + "\n</think>") : ""}`,
-            "functionName": name,
-            "functionResponse": output,
-            "thinking": false,
-            "done": true,
-            // "visibleToUser": false,
+    function _cleanChatName(chatName) {
+        let cleanName = String(chatName ?? "").trim();
+        if (cleanName.endsWith(".json")) cleanName = cleanName.slice(0, -5).trim();
+        if (cleanName.includes("/")) cleanName = cleanName.split("/").pop().replace(".json", "");
+        return cleanName;
+    }
+
+    function _savedChatName(chatName) {
+        const cleanName = root._cleanChatName(chatName);
+        return cleanName.toLowerCase() === "lastsession" ? "saved-session" : cleanName;
+    }
+
+    function sessionNameExists(name): bool {
+        const cleanName = root._savedChatName(name);
+        return cleanName.length > 0 && root.savedChats.includes(`${Directories.aiChats}/${cleanName}.json`);
+    }
+
+    /**
+     * Saves the chat under a name, in the background.
+     * @param chatName name of the chat
+     * @returns the name saved under, or "" when nothing was saved
+     */
+    function saveChat(chatName): string {
+        const cleanName = root._savedChatName(chatName);
+        if (cleanName.length === 0) return "";
+        if (!root.messageIDs.some(id => root.messageByID[id]?.role === "user")) return "";
+        const writer = namedSaveComponent.createObject(root, { "chatName": cleanName });
+        if (!writer) return "";
+        writer.path = `${Directories.aiChats}/${cleanName}.json`;
+        writer.setText(root._serializeSession());
+        root._savedSignature = root._chatSignature();
+        root._savedName = cleanName;
+        return cleanName;
+    }
+
+    // Changes whenever a message is added, removed, edited or still streaming.
+    function _chatSignature() {
+        const ids = root.messageIDs;
+        const parts = [];
+        for (let i = 0; i < ids.length; i++) {
+            const msg = root.messageByID[ids[i]];
+            parts.push(ids[i] + ":" + (msg?.contentRevision ?? 0) + ":" + (msg?.content?.length ?? 0) + ":" + (msg?.done ?? true));
+        }
+        return parts.join("|");
+    }
+
+    /**
+     * True when the chat has a user message and is not the named session
+     * it last matched, so loading over it would lose it.
+     */
+    function chatIsUnsaved(): bool {
+        if (!root.messageIDs.some(id => root.messageByID[id]?.role === "user")) return false;
+        return root._chatSignature() !== root._savedSignature || !root.sessionNameExists(root._savedName);
+    }
+
+    /**
+     * Deletes saved chat file.
+     * @param chatName name of the chat
+     */
+    function deleteChat(chatName): void {
+        const cleanName = root._cleanChatName(chatName);
+        if (cleanName.length === 0 || cleanName === "lastSession") return;
+        const filePath = `${Directories.aiChats}/${cleanName}.json`;
+        root.savedChats = root.savedChats.filter(path => path !== filePath);
+        removeProcessComponent.createObject(root, {
+            "command": ["rm", "-f", "--", filePath],
+            "running": true,
         });
     }
 
-    function addFunctionOutputMessage(name, output) {
-        const aiMessage = createFunctionOutputMessage(name, output);
-        const id = idForMessage(aiMessage);
-        root.messageIDs = [...root.messageIDs, id];
-        root.messageByID[id] = aiMessage;
-    }
-
-    function rejectCommand(message: AiMessageData) {
-        if (!message.functionPending) return;
-        message.functionPending = false; // User decided, no more "thinking"
-        addFunctionOutputMessage(message.functionName, Translation.tr("Command rejected by user"))
-    }
-
-    function approveCommand(message: AiMessageData) {
-        if (!message.functionPending) return;
-        message.functionPending = false; // User decided, no more "thinking"
-
-        const responseMessage = createFunctionOutputMessage(message.functionName, "", false);
-        const id = idForMessage(responseMessage);
-        root.messageIDs = [...root.messageIDs, id];
-        root.messageByID[id] = responseMessage;
-
-        commandExecutionProc.message = responseMessage;
-        commandExecutionProc.baseMessageContent = responseMessage.content;
-        commandExecutionProc.shellCommand = message.functionCall.args.command;
-        commandExecutionProc.running = true; // Start the command execution
-    }
-
-    Process {
-        id: commandExecutionProc
-        property string shellCommand: ""
-        property AiMessageData message
-        property string baseMessageContent: ""
-        command: ["bash", "-c", shellCommand]
-        stdout: SplitParser {
-            onRead: (output) => {
-                commandExecutionProc.message.functionResponse += output + "\n\n";
-                const updatedContent = commandExecutionProc.baseMessageContent + `\n\n<think>\n<tt>${commandExecutionProc.message.functionResponse}</tt>\n</think>`;
-                commandExecutionProc.message.rawContent = updatedContent;
-                commandExecutionProc.message.content = updatedContent;
-            }
-        }
-        onExited: (exitCode, exitStatus) => {
-            commandExecutionProc.message.functionResponse += `[[ Command exited with code ${exitCode} (${exitStatus}) ]]\n`;
-            requester.makeRequest(); // Continue
-        }
-    }
-
-    function handleFunctionCall(name, args: var, message: AiMessageData) {
-        if (name === "switch_to_search_mode") {
-            const modelId = root.currentModelId;
-            root.currentTool = "search"
-            root.postResponseHook = () => { root.currentTool = "functions" }
-            addFunctionOutputMessage(name, Translation.tr("Switched to search mode. Continue with the user's request."))
-            requester.makeRequest();
-        } else if (name === "get_shell_config") {
-            const configJson = CF.ObjectUtils.toPlainObject(Config.options)
-            addFunctionOutputMessage(name, JSON.stringify(configJson));
-            requester.makeRequest();
-        } else if (name === "set_shell_config") {
-            if (!args.key || !args.value) {
-                addFunctionOutputMessage(name, Translation.tr("Invalid arguments. Must provide `key` and `value`."));
-                return;
-            }
-            const key = args.key;
-            const value = args.value;
-            Config.setNestedValue(key, value);
-        } else if (name === "run_shell_command") {
-            if (!args.command || args.command.length === 0) {
-                addFunctionOutputMessage(name, Translation.tr("Invalid arguments. Must provide `command`."));
-                return;
-            }
-            const contentToAppend = `\n\n**Command execution request**\n\n\`\`\`command\n${args.command}\n\`\`\``;
-            message.rawContent += contentToAppend;
-            message.content += contentToAppend;
-            message.functionPending = true; // Use thinking to indicate the command is waiting for approval
-        }
-        else root.addMessage(Translation.tr("Unknown function call: %1").arg(name), "assistant");
-    }
-
-    function chatToJson() {
-        return root.messageIDs.map(id => {
-            const message = root.messageByID[id]
-            return ({
-                "role": message.role,
-                "rawContent": message.rawContent,
-                "fileMimeType": message.fileMimeType,
-                "fileUri": message.fileUri,
-                "localFilePath": message.localFilePath,
-                "model": message.model,
-                "thinking": false,
-                "done": true,
-                "annotations": message.annotations,
-                "annotationSources": message.annotationSources,
-                "functionName": message.functionName,
-                "functionCall": message.functionCall,
-                "functionResponse": message.functionResponse,
-                "visibleToUser": message.visibleToUser,
-            })
-        })
-    }
-
-    FileView {
-        id: chatSaveFile
-        property string chatName: ""
-        path: chatName.length > 0 ? `${Directories.aiChats}/${chatName}.json` : ""
-        blockLoading: true // Prevent race conditions
-    }
-
-    FileView {
-        id: chatWriter
-    }
-
     /**
-     * Saves chat to a JSON list of message objects.
+     * Starts loading a saved chat. True means the load has started; a
+     * failure arrives later as a message.
      * @param chatName name of the chat
      */
-    function saveChat(chatName) {
-        const filePath = `${Directories.aiChats}/${chatName.trim()}.json`
-        chatWriter.path = filePath
-        const saveContent = JSON.stringify(root.chatToJson())
-        chatWriter.setText(saveContent)
-        getSavedChats.running = true;
+    function loadChat(chatName): bool {
+        const cleanName = root._cleanChatName(chatName);
+        if (cleanName.length === 0) return false;
+        root._bumpLoad();
+        root._abandonRequest();
+        root._dropConfirmation(false);
+        root._startLoad(`${Directories.aiChats}/${cleanName}.json`, "named", cleanName);
+        return true;
     }
 
-    /**
-     * Loads chat from a JSON list of message objects.
-     * @param chatName name of the chat
-     */
-    function loadChat(chatName) {
+    // Abandons any load in progress; its late callbacks see another generation.
+    function _bumpLoad() {
+        root._loadGeneration++;
+        restoreTimer.stop();
+        if (root._restore) {
+            root._buryAll(root._restore.created);
+            root._restore = null;
+        }
+        root._endLoad();
+    }
+
+    // Every load ends here, and the first one to end settles the startup restore.
+    function _endLoad() {
+        root.sessionLoading = false;
+        root._startupRestored = true;
+    }
+
+    function _startLoad(path, kind, chatName) {
+        root.sessionLoading = true;
+        const loader = sessionLoaderComponent.createObject(root, {
+            "generation": root._loadGeneration,
+            "kind": kind,
+            "chatName": chatName,
+        });
+        if (!loader) {
+            root._loadFailed(kind, chatName);
+            return;
+        }
+        // Assigning the path starts the read in the background.
+        loader.path = path;
+    }
+
+    function _onSessionLoaded(loader) {
+        const generation = loader.generation;
+        const kind = loader.kind;
+        const chatName = loader.chatName;
+        const current = generation === root._loadGeneration;
+        const text = current ? loader.text() : "";
+        root._bury(loader);
+        if (!current) return;
+        let parsed = null;
         try {
-            chatSaveFile.chatName = chatName.trim()
-            chatSaveFile.reload()
-            const saveContent = chatSaveFile.text()
-            // console.log(saveContent)
-            const saveData = JSON.parse(saveContent)
-            root.clearMessages()
-            root.messageIDs = saveData.map((_, i) => {
-                return i
-            })
-            // console.log(JSON.stringify(messageIDs))
-            for (let i = 0; i < saveData.length; i++) {
-                const message = saveData[i];
-                root.messageByID[i] = root.aiMessageComponent.createObject(root, {
-                    "role": message.role,
-                    "rawContent": message.rawContent,
-                    "content": message.rawContent,
-                    "fileMimeType": message.fileMimeType,
-                    "fileUri": message.fileUri,
-                    "localFilePath": message.localFilePath,
-                    "model": message.model,
-                    "thinking": message.thinking,
-                    "done": message.done,
-                    "annotations": message.annotations,
-                    "annotationSources": message.annotationSources,
-                    "functionName": message.functionName,
-                    "functionCall": message.functionCall,
-                    "functionResponse": message.functionResponse,
-                    "visibleToUser": message.visibleToUser,
-                });
-            }
+            parsed = Sessions.parse(JSON.parse(text));
         } catch (e) {
-            console.log("[AI] Could not load chat: ", e);
-        } finally {
-            getSavedChats.running = true;
+            parsed = null;
         }
+        if (!parsed || !parsed.ok || (kind === "named" && parsed.items.length === 0)) {
+            root._loadFailed(kind, chatName);
+            return;
+        }
+        root._restore = {
+            "generation": generation,
+            "kind": kind,
+            "chatName": chatName,
+            "parsed": parsed,
+            "index": 0,
+            "ids": [],
+            "byId": ({}),
+            "created": [],
+        };
+        restoreTimer.start();
+    }
+
+    function _onSessionLoadFailed(loader) {
+        const current = loader.generation === root._loadGeneration;
+        const kind = loader.kind;
+        const chatName = loader.chatName;
+        root._bury(loader);
+        if (current) root._loadFailed(kind, chatName);
+    }
+
+    function _loadFailed(kind, chatName) {
+        root._endLoad();
+        if (kind === "startup") return;
+        root.addMessage(Translation.tr("Could not load the saved session %1.").arg(chatName), root.interfaceRole, { "persist": false });
+    }
+
+    // Builds 25 message objects per event loop pass.
+    function _restoreChunk() {
+        const r = root._restore;
+        if (!r || r.generation !== root._loadGeneration) return;
+        const items = r.parsed.items;
+        const end = Math.min(r.index + 25, items.length);
+        for (; r.index < end; r.index++) {
+            const props = Sessions.messageProps(items[r.index], r.parsed.version, root._sessionOptions);
+            if (!props) continue;
+            if (r.byId[props.id] || root.messageByID[props.id]) props.id = root.idForMessage();
+            const message = aiMessageComponent.createObject(root, props);
+            if (!message) continue;
+            r.created.push(message);
+            r.ids.push(props.id);
+            r.byId[props.id] = message;
+        }
+        if (r.index < items.length) {
+            restoreTimer.restart();
+            return;
+        }
+        root._restore = null;
+        root._completeLoad(r);
+    }
+
+    function _completeLoad(r) {
+        if (r.kind === "startup") {
+            // Notices posted while the restore ran stay after it.
+            const byId = Object.assign({}, r.byId);
+            for (const id of root.messageIDs) byId[id] = root.messageByID[id];
+            root.messageByID = byId;
+            root.messageIDs = r.ids.concat(root.messageIDs);
+        } else {
+            root.messageByID = Object.assign({}, root.messageByID, r.byId);
+            root._setMessageIds(r.ids);
+            root._resetTokenCount();
+        }
+        root._resetCliSessions();
+        const cliSessions = r.parsed.cliSessions;
+        for (const key of Object.keys(cliSessions)) {
+            const strategy = root.apiStrategies[key];
+            if (strategy?.isCliStrategy && typeof cliSessions[key] === "string") strategy.sessionId = cliSessions[key];
+        }
+        root._endLoad();
+        // At startup the selection the user has now stands over the one saved.
+        // Picking the setup entry starts the Ollama walkthrough, so a chat saved
+        // on it keeps the current model instead.
+        const savedModel = root.retiredModels[r.parsed.model] ?? r.parsed.model;
+        if (r.kind !== "startup" && savedModel.length > 0 && savedModel !== root.ollamaSetupModelId)
+            root.setModel(savedModel, false, true, false);
+        // Taken after the model switch, which can post a notice of its own.
+        if (r.kind !== "startup") {
+            root._savedSignature = root._chatSignature();
+            root._savedName = r.chatName;
+        }
+        root._saveNow();
     }
 }

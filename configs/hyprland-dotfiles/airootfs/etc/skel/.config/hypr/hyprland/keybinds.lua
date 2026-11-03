@@ -22,10 +22,24 @@ end
 --#!
 --##! Desktop
 -- These absolutely need to be on top, or they won't work consistently
-hl.bind("SUPER + SUPER_L", hl.dsp.global("quickshell:searchToggleRelease"), {description = "Toggle search"} )
-hl.bind("SUPER + SUPER_R", hl.dsp.global("quickshell:searchToggleRelease"))
-hl.bind("SUPER + SUPER_L", hl.dsp.exec_cmd(qsIsAlive.." || pkill fuzzel || fuzzel") )
-hl.bind("SUPER + SUPER_R", hl.dsp.exec_cmd(qsIsAlive.." || pkill fuzzel || fuzzel") )
+-- Tapping Super opens the launcher. A release bind already stays quiet after another
+-- key or button, because Hyprland tracks those as presses, but it never tracks the
+-- wheel. So the wheel cancels the tap itself, with any other modifiers held too.
+local superTapped = false
+local function superDown() superTapped = true end
+local function superWheel() superTapped = false end
+local function superUp()
+ if not superTapped then return end
+ hl.dispatch(hl.dsp.global("quickshell:searchToggleRelease"))
+ hl.dispatch(hl.dsp.exec_cmd(qsIsAlive.." || pkill fuzzel || fuzzel"))
+end
+hl.bind("SUPER + SUPER_L", superDown, {non_consuming = true, transparent = true} )
+hl.bind("SUPER + SUPER_R", superDown, {non_consuming = true, transparent = true} )
+hl.bind("SUPER + SUPER_L", superUp, {release = true, description = "Toggle search"} )
+hl.bind("SUPER + SUPER_R", superUp, {release = true} )
+for _, wheel in ipairs({"mouse_up", "mouse_down", "mouse_left", "mouse_right"}) do
+ hl.bind(wheel, superWheel, {non_consuming = true, transparent = true, ignore_mods = true} )
+end
 
 hl.bind("SUPER_L", hl.dsp.global("quickshell:workspaceNumber"), {ignore_mods = true, transparent = true} )
 hl.bind("SUPER_R", hl.dsp.global("quickshell:workspaceNumber"), {ignore_mods = true, transparent = true} )
@@ -41,6 +55,13 @@ hl.bind("SUPER + A", hl.dsp.global("quickshell:sidebarLeftToggle"), {description
 hl.bind("SUPER + ALT + A", hl.dsp.global("quickshell:sidebarLeftToggleDetach") )
 hl.bind("SUPER + N", hl.dsp.global("quickshell:sidebarRightToggle"), {description = "Toggle right sidebar"} )
 hl.bind("SUPER + Tab", hl.dsp.global("quickshell:cheatsheetToggle"), {description = "Toggle cheatsheet"} )
+-- Activities-style window spread. Alt release selects; the toggle stays open
+-- for browsing workspaces with the wheel, Page Up/Down, or Ctrl+Left/Right.
+hl.bind("ALT + Tab", hl.dsp.global("quickshell:windowOverviewNext"), {description = "Next window in Activities overview"})
+hl.bind("ALT + SHIFT + Tab", hl.dsp.global("quickshell:windowOverviewPrevious"), {description = "Previous window in Activities overview"})
+hl.bind("ALT_L", hl.dsp.global("quickshell:windowOverviewAccept"), {release = true, ignore_mods = true, non_consuming = true})
+hl.bind("ALT_R", hl.dsp.global("quickshell:windowOverviewAccept"), {release = true, ignore_mods = true, non_consuming = true})
+hl.bind("SUPER + SHIFT + Tab", hl.dsp.global("quickshell:windowOverviewToggle"), {description = "Toggle Activities overview"})
 hl.bind("SUPER + f11", hl.dsp.global("quickshell:oskToggle"), {description = "Toggle on-screen keyboard"} )
 hl.bind("SUPER + M", hl.dsp.global("quickshell:mediaControlsToggle"), {description = "Toggle media controls"} )
 hl.bind("SUPER + f12", hl.dsp.global("quickshell:overlayToggle"), {description = "Toggle overlay"} )
@@ -106,7 +127,21 @@ hl.bind("SUPER + mouse:273", hl.dsp.window.resize(), {mouse = true, description 
 for i = 1, 6 do
  local arrowkey = {"Left","Right","Up","Down","BracketLeft","BracketRight"}
  local focusdir = {"l","r","u","d","l","r"}
- hl.bind("SUPER + "..arrowkey[i], hl.dsp.focus({direction = focusdir[i]}) )
+ local colscroll = {"move -col", "move +col"}
+ if i <= 2 then
+  -- In the scrolling layout SUPER+Left/Right scrolls the view by one column instead of
+  -- directional focus. One handler picks the action, so both can never fire on one press.
+  hl.bind("SUPER + "..arrowkey[i], function()
+   local ws = hl.get_active_workspace()
+   if ws ~= nil and ws.tiled_layout == "scrolling" then
+    hl.dispatch(hl.dsp.layout(colscroll[i]))
+   else
+    hl.dispatch(hl.dsp.focus({direction = focusdir[i]}))
+   end
+  end)
+ else
+  hl.bind("SUPER + "..arrowkey[i], hl.dsp.focus({direction = focusdir[i]}) )
+ end
 end
 --#/# bind = SUPER + SHIFT + ←/↑/→/↓,, -- Move in direction
 for i = 1, 4 do
@@ -125,7 +160,7 @@ hl.bind("SUPER + Semicolon", hl.dsp.layout("splitratio -0.1"), {repeating = true
 hl.bind("SUPER + Apostrophe", hl.dsp.layout("splitratio +0.1"), {repeating = true} )
 --# Positioning mode
 hl.bind("SUPER + ALT + Space", hl.dsp.window.float({action = "toggle"}), {description = "Float/Tile"} )
-hl.bind("SUPER + D", hl.dsp.window.fullscreen({mode = "maximized"}), {description = "Maximize"} )
+hl.bind("SUPER + D", function() hl.dispatch(MainstreamToggleMaximize()) end, {description = "Maximize"} )
 hl.bind("SUPER + F", hl.dsp.window.fullscreen({mode = "fullscreen"}), {description = "Fullscreen"} )
 hl.bind("SUPER + ALT + F", hl.dsp.window.fullscreen_state({internal = 0, client = 3}), {description = "Fullscreen spoof"} )
 hl.bind("SUPER + P", hl.dsp.window.pin(), {description = "Pin"} )
@@ -158,7 +193,7 @@ for i = 1, 6 do
  hl.bind(keycombos[i], hl.dsp.window.move({workspace = prefix[i].."1"}) )
 end
 
-hl.bind("SUPER + ALT + S", hl.dsp.window.move({workspace = "special:special", follow = false}), {description = "Send to scratchpad"} )
+hl.bind("SUPER + ALT + S", hl.dsp.window.move({workspace = "special", follow = false}), {description = "Send to scratchpad"} )
 hl.bind("CTRL + SUPER + S", function()
  local w = hl.get_active_window()
  if w and w.workspace and w.workspace.special then
@@ -190,6 +225,25 @@ hl.bind("SUPER + SHIFT + L", hl.dsp.exec_cmd("systemctl suspend || loginctl susp
 
 hl.bind("CTRL + SHIFT + ALT + SUPER + Delete", hl.dsp.exec_cmd("systemctl poweroff || loginctl poweroff") )
 
+--##! Screen
+--# Zoom
+local function zoomfunction(value)
+ local zoomvalue = hl.get_config("cursor:zoom_factor")
+ if (zoomvalue + value) > 3.0 then
+ hl.config({cursor = {zoom_factor = 3.0}})
+ elseif (zoomvalue + value) < 1.0 then
+ hl.config({cursor = {zoom_factor = 1.0}})
+ else
+ hl.config({cursor = {zoom_factor = zoomvalue + value}})
+ end
+end
+hl.bind("SUPER + Minus", function() zoomfunction(-0.3) end, {repeating = true, description = "Zoom out"} )
+hl.bind("SUPER + Equal", function() zoomfunction(0.3) end, {repeating = true, description = "Zoom in"} )
+
+--# Zoom with keypad
+hl.bind("SUPER + code:82", function() zoomfunction(-0.3) end, {repeating = true} )
+hl.bind("SUPER + code:86", function() zoomfunction(0.3) end, {repeating = true} )
+
 --#!
 --##! Workspace
 --# Switching
@@ -209,7 +263,21 @@ for i = 1, 4 do
  local key = {"CTRL + SUPER + ", "CTRL + SUPER + ALT + "}
  local keycombos = {key[1].."Right", key[1].."Left", key[2].."Right", key[2].."Left"}
  local prefix = {"r+","r-","m+","m-"}
+ local colmsg = {"swapcol r", "swapcol l"}
+ if i <= 2 then
+ -- In the scrolling layout CTRL+SUPER+Left/Right swaps the column with its neighbour instead of
+ -- switching workspace. One handler picks the action, so both can never fire on one press.
+ hl.bind(keycombos[i], function()
+ local ws = hl.get_active_workspace()
+ if ws ~= nil and ws.tiled_layout == "scrolling" then
+ hl.dispatch(hl.dsp.layout(colmsg[i]))
+ else
+ hl.dispatch(hl.dsp.focus({workspace = prefix[i].."1"}))
+ end
+ end)
+ else
  hl.bind(keycombos[i], hl.dsp.focus({workspace = prefix[i].."1"}) )
+ end
 end
 --#/# bind = SUPER + Page_↑/↓,, -- Focus left/right
 for i = 1, 4 do
@@ -226,8 +294,10 @@ for i = 1, 4 do
  hl.bind(keycombos[i], hl.dsp.focus({workspace = prefix[i].."1"}) )
 end
 --## Special
-hl.bind("SUPER + S", hl.dsp.workspace.toggle_special("special"), {description = "Toggle scratchpad"} )
-hl.bind("SUPER + mouse:275", hl.dsp.workspace.toggle_special("special") )
+-- No name selects the default scratchpad, matching window.move("special").
+-- The name "special" can resolve to a different workspace with the same label.
+hl.bind("SUPER + S", hl.dsp.workspace.toggle_special(), {description = "Toggle scratchpad"} )
+hl.bind("SUPER + mouse:275", hl.dsp.workspace.toggle_special() )
 for i = 1, 4 do
  local key = {"BracketLeft","BracketRight","Up","Down"}
  local prefix = {"-1","+1","r-5","r+5"}
@@ -254,28 +324,45 @@ hl.bind("SUPER + O", function()
     end
 end, {description = "Toggle Scrolling overview"})
 
+--# Columns
+-- CTRL+SUPER is used where the plain SUPER key already belongs to an unguarded
+-- bind (Period = emoji, P = pin, E/C/X = apps, L = lock), so nothing double-fires.
+-- Everything here is guarded with on_layout, so it only acts in the scrolling layout.
+-- SUPER+Left/Right and CTRL+SUPER+Left/Right also focus windows or switch workspaces in
+-- other layouts, so their real binds live in the Window and Workspace sections, where
+-- one handler picks the action by layout. Listed here for the cheatsheet.
+--#/# bind = SUPER + ←/→,, -- Scroll view one column left/right
+--#/# bind = CTRL + SUPER + ←/→,, -- Swap column left/right
+
+--# Restructuring
+-- These change how many columns there are without a window opening or closing.
+local Scrolling = require("hyprland.scrolling")
+local function restructure(msg)
+ local run = on_layout("scrolling", msg)
+ return function()
+  run()
+  Scrolling.fitSoon()
+ end
+end
+hl.bind("CTRL + SUPER + P", restructure("promote"), {description = "Promote window to its own column"} )
+hl.bind("CTRL + SUPER + E", restructure("expel"), {description = "Expel window to its own column"} )
+hl.bind("CTRL + SUPER + C", restructure("consume"), {description = "Consume window into previous column"} )
+hl.bind("CTRL + SUPER + X", restructure("consume_or_expel next"), {description = "Consume or expel window"} )
+hl.bind("CTRL + SUPER + L", on_layout("scrolling", "inhibit_scroll"), {description = "Toggle scroll lock"} )
+
+--# Nudge and column width
+--#/# binde = SUPER + ALT + ←/→,, -- Nudge view left/right
+hl.bind("SUPER + ALT + Left", on_layout("scrolling", "move -200"), {repeating = true} )
+hl.bind("SUPER + ALT + Right", on_layout("scrolling", "move +200"), {repeating = true} )
+-- SUPER+ALT+Equal is already taken (notification test), so width uses CTRL+SUPER.
+hl.bind("CTRL + SUPER + Minus", on_layout("scrolling", "colresize -conf"), {description = "Previous column width preset"} )
+hl.bind("CTRL + SUPER + Equal", on_layout("scrolling", "colresize +conf"), {description = "Next column width preset"} )
+hl.bind("CTRL + SUPER + F", on_layout("scrolling", "fit expand"), {description = "Expand column into the free space"} )
+hl.bind("CTRL + SUPER + A", on_layout("scrolling", "fit all"), {description = "Fit all columns on screen"} )
+
 --##! Monocle Layout
 hl.bind("SUPER + J", on_layout("monocle", "cyclenext"), {description = "Next window"} )
 hl.bind("SUPER + K", on_layout("monocle", "cycleprev"), {description = "Previous window"} )
-
---##! Screen
---# Zoom
-local function zoomfunction(value)
- local zoomvalue = hl.get_config("cursor:zoom_factor")
- if (zoomvalue + value) > 3.0 then
- hl.config({cursor = {zoom_factor = 3.0}})
- elseif (zoomvalue + value) < 1.0 then
- hl.config({cursor = {zoom_factor = 1.0}})
- else
- hl.config({cursor = {zoom_factor = zoomvalue + value}})
- end
-end
-hl.bind("SUPER + Minus", function() zoomfunction(-0.3) end, {repeating = true, description = "Zoom out"} )
-hl.bind("SUPER + Equal", function() zoomfunction(0.3) end, {repeating = true, description = "Zoom in"} )
-
---# Zoom with keypad
-hl.bind("SUPER + code:82", function() zoomfunction(-0.3) end, {repeating = true} )
-hl.bind("SUPER + code:86", function() zoomfunction(0.3) end, {repeating = true} )
 
 --#!
 --##! Apps

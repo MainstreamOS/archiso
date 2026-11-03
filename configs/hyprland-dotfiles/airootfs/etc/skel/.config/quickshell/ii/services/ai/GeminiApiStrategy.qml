@@ -1,259 +1,269 @@
 import QtQuick
-import qs.modules.common.functions as CF
+import qs.services
+import "strategyhelpers.js" as Helpers
 
 ApiStrategy {
+    id: root
     supportsFunctions: true
+    supportsAttachments: true
 
-    readonly property string apiKeyEnvVarName: "API_KEY"
-    readonly property string fileUriVarName: "file_uri"
-    readonly property string fileMimeTypeVarName: "MIME_TYPE"
-    readonly property string fileUriSubstitutionString: "{{ fileUriVarName }}"
-    readonly property string fileMimeTypeSubstitutionString: "{{ fileMimeTypeVarName }}"
-    property string buffer: ""
-    
-    function buildEndpoint(model: AiModel): string {
-        const result = model.endpoint + `?key=\$\{${root.apiKeyEnvVarName}\}`
-        // console.log("[AI] Endpoint: " + result);
-        return result;
-    }
+    property bool _usedSearch: false
 
-    function buildRequestData(model: AiModel, messages, systemPrompt: string, temperature: real, tools: list<var>, filePath: string) {
-        let contents = messages.map(message => {
-            // console.log("[AI] Building request data for message:", JSON.stringify(message, null, 2));
+    function buildRequest(ctx: var): var {
+        const model = ctx.model;
+        const tools = ctx.tools ?? [];
+        const usingSearch = tools[0]?.google_search !== undefined;
+        // 2.5 searches on the free tier, so only a Gemini 3 or 4 refusal is about billing.
+        root._usedSearch = usingSearch && (model.model.startsWith("gemini-3") || model.model.startsWith("gemini-4") || model.model.endsWith("-latest"));
+        const unanswered = ctx.unansweredCalls ?? {};
+        // Gemini 3 answers a functionResponse only when it carries its call's id.
+        let lastCallId = "";
+        const contents = (ctx.messages ?? []).map(message => {
             const geminiApiRoleName = (message.role === "assistant") ? "model" : message.role;
-            const usingSearch = tools[0]?.google_search !== undefined
-            if (!usingSearch && message.functionCall != undefined && message.functionName.length > 0) {
+            const hasCall = message.functionCall != undefined && message.functionName.length > 0;
+            if (!usingSearch && hasCall && !unanswered[message.id]) {
+                lastCallId = message.functionCallId ?? "";
                 const callPart = {
                     functionCall: {
                         "name": message.functionName,
                         "args": message.functionArgs ?? {}
                     }
                 };
+                if (lastCallId.length > 0) callPart.functionCall.id = lastCallId;
                 if (message.functionThoughtSignature && message.functionThoughtSignature.length > 0) {
                     callPart.thoughtSignature = message.functionThoughtSignature;
                 }
                 return {
                     "role": geminiApiRoleName,
                     "parts": [callPart]
-                }
+                };
             }
-            if (!usingSearch && message.functionResponse != undefined && message.functionName.length > 0) {
+            if (!usingSearch && !hasCall && message.functionName.length > 0) {
+                const responsePart = {
+                    "name": message.functionName,
+                    "response": { "content": message.functionResponse }
+                };
+                if (lastCallId.length > 0) responsePart.id = lastCallId;
                 return {
                     "role": geminiApiRoleName,
-                    "parts": [{ 
-                        functionResponse: {
-                            "name": message.functionName,
-                            "response": { "content": message.functionResponse }
-                        }
-                    }]
-                }
+                    "parts": [{ functionResponse: responsePart }]
+                };
             }
             return {
                 "role": geminiApiRoleName,
                 "parts": [
-                    { text: message.rawContent },
-                    ...(message.fileUri && message.fileUri.length > 0 ? [{ 
+                    { text: message.role === "assistant" ? Ai.historyText(message) : message.rawContent },
+                    ...(message.fileUri && message.fileUri.length > 0 ? [{
                         "file_data": {
                             "mime_type": message.fileMimeType,
                             "file_uri": message.fileUri
                         }
                     }] : [])
                 ]
-            }
-        })
-        if (filePath && filePath.length > 0) {
-            const trimmedFilePath = CF.FileUtils.trimFileProtocol(filePath);
-            // Add file_data part to the last message's parts array
+            };
+        });
+        const attachment = ctx.attachment?.path ?? "";
+        const file = Helpers.filePlaceholders();
+        if (attachment.length > 0 && contents.length > 0) {
+            // run-request.sh uploads the file and fills these in.
             contents[contents.length - 1].parts.unshift({
                 file_data: {
-                    mime_type: fileMimeTypeSubstitutionString,
-                    file_uri: fileUriSubstitutionString
+                    mime_type: file.mime,
+                    file_uri: file.uri
                 }
             });
         }
-        let baseData = {
+        // Gemini 3 series deprecates sampling parameters (temperature, top_p, top_k)
+        // and thinking_budget in favor of thinking_level ("minimal", "low", "medium", "high").
+        let generationConfig = {};
+        const chosenThinkingLevel = ctx.thinkingLevel;
+        if (Ai.thinkingLevels.includes(chosenThinkingLevel)) {
+            let geminiLevel = chosenThinkingLevel;
+            if (geminiLevel === "extra" || geminiLevel === "max" || geminiLevel === "ultracode") {
+                geminiLevel = "high";
+            } else if (geminiLevel === "none") {
+                geminiLevel = "minimal";
+            }
+            // Models like Pro, Argon, and latest series support low, medium, high. Clamp minimal to low.
+            if (geminiLevel === "minimal" && (model.model.includes("pro") || model.model.includes("3.8") || model.model.includes("argon") || model.model.endsWith("-latest"))) {
+                geminiLevel = "low";
+            }
+            if (["minimal", "low", "medium", "high"].includes(geminiLevel)) {
+                generationConfig.thinkingConfig = {
+                    thinkingLevel: geminiLevel,
+                    includeThoughts: true
+                };
+            } else {
+                generationConfig.thinkingConfig = {
+                    includeThoughts: true
+                };
+            }
+        } else {
+            generationConfig.thinkingConfig = {
+                includeThoughts: true
+            };
+        }
+
+        // Sanitize any extraParams so deprecated parameters are never passed
+        const budgetKeys = ["thinking_budget", "thinkingBudget"];
+        const retiredKeys = ["temperature", "top_p", "top_k"].concat(budgetKeys);
+        const without = (obj, keys) => {
+            const copy = Object.assign({}, obj);
+            for (const key of keys) delete copy[key];
+            return copy;
+        };
+        const extra = without(model.extraParams ?? {}, retiredKeys);
+        if (extra.generationConfig) {
+            const extraGen = without(extra.generationConfig, retiredKeys);
+            if (extraGen.thinkingConfig) {
+                extraGen.thinkingConfig = without(extraGen.thinkingConfig, budgetKeys);
+                extraGen.thinkingConfig.includeThoughts = true;
+            }
+            generationConfig = Object.assign(generationConfig, extraGen);
+            delete extra.generationConfig;
+        }
+
+        const baseData = {
             "contents": contents,
             "tools": tools,
             "system_instruction": {
-                "parts": [{ text: systemPrompt }]
+                "parts": [{ text: ctx.systemPrompt }]
             },
-            "generationConfig": {
-                "temperature": temperature,
-            },
+            "generationConfig": generationConfig
         };
-        // print("Gemini API call payload:", JSON.stringify(baseData, null, 2));
-        return model.extraParams ? Object.assign({}, baseData, model.extraParams) : baseData;
+        const body = Object.assign({}, baseData, extra);
+
+        const options = ["--report-exit", "--body", "--secret-header", "x-goog-api-key", "", "API_KEY"];
+        if (attachment.length > 0) options.push("--upload-gemini", attachment, "--file-token", file.token);
+        return {
+            options: options,
+            argv: ["curl", "--no-buffer", "--silent", "--show-error", model.endpoint,
+                "-H", "Content-Type: application/json", "--data-binary", "@-"],
+            stdin: JSON.stringify(body),
+            env: {}
+        };
     }
 
-    function buildAuthorizationHeader(apiKeyEnvVarName: string): string {
-        // Gemini doesn't use Authorization header, key is in URL
-        return "";
+    // Called after buildRequest, so the search flag belongs to this request.
+    function newState(): var {
+        return { buffer: "", usedSearch: root._usedSearch, gotAny: false };
     }
 
-    function parseResponseLine(line, message) {
+    function parseLine(line: string, sink: var): void {
+        const state = sink.state;
         if (line.startsWith("[")) {
-            buffer += line.slice(1).trim();
+            state.buffer += line.slice(1).trim();
         } else if (line === "]") {
-            buffer += line.slice(0, -1).trim();
-            return parseBuffer(message);
+            root.parseBuffer(sink);
         } else if (line.startsWith(",")) {
-            return parseBuffer(message);
+            root.parseBuffer(sink);
         } else {
-            buffer += line.trim();
+            state.buffer += line.trim();
         }
-        return {};
     }
 
-    function parseBuffer(message) {
-        // console.log("[Ai] Gemini buffer: ", buffer);
-        let finished = false;
+    function parseBuffer(sink: var): void {
+        const state = sink.state;
+        const buffer = state.buffer;
+        state.buffer = "";
+        if (buffer.length === 0) return;
+        let dataJson;
         try {
-            if (buffer.length === 0) return {};
-            const dataJson = JSON.parse(buffer);
-
-            // Uploaded file
-            if (dataJson.uploadedFile) {
-                message.fileUri = dataJson.uploadedFile.uri;
-                message.fileMimeType = dataJson.uploadedFile.mimeType;
-                return ({})
-            }
-
-            // Error response handling
-            if (dataJson.error) {
-                const errorMsg = `**Error ${dataJson.error.code}**: ${dataJson.error.message}`;
-                message.rawContent += errorMsg;
-                message.content += errorMsg;
-                return { finished: true };
-            }
-
-            // No candidates?
-            if (!dataJson.candidates) return {};
-            
-            // Finished?
-            if (dataJson.candidates[0]?.finishReason) {
-                finished = true;
-            }
-            
-            // Function call handling
-            if (dataJson.candidates[0]?.content?.parts[0]?.functionCall) {
-                const responsePart = dataJson.candidates[0].content.parts[0];
-                const functionCall = responsePart.functionCall;
-                message.functionName = functionCall.name;
-                message.functionCall = functionCall.name;
-                message.functionArgs = functionCall.args;
-                message.functionThoughtSignature = responsePart.thoughtSignature ?? functionCall.thoughtSignature ?? "";
-                const newContent = `\n\n[[ Function: ${functionCall.name}(${JSON.stringify(functionCall.args, null, 2)}) ]]\n`
-                message.rawContent += newContent;
-                message.content += newContent;
-                return { functionCall: { name: functionCall.name, args: functionCall.args }, finished: finished };
-            }
-
-            // Normal text response
-            const responseContent = dataJson.candidates[0]?.content?.parts[0]?.text
-            message.rawContent += responseContent;
-            message.content += responseContent;
-            
-            // Handle annotations and metadata
-            const annotationSources = dataJson.candidates[0]?.groundingMetadata?.groundingChunks?.map(chunk => {
-                return {
-                    "type": "url_citation",
-                    "text": chunk?.web?.title,
-                    "url": chunk?.web?.uri,
-                }
-            }) ?? [];
-
-            const annotations = dataJson.candidates[0]?.groundingMetadata?.groundingSupports?.map(citation => {
-                return {
-                    "type": "url_citation",
-                    "start_index": citation.segment?.startIndex,
-                    "end_index": citation.segment?.endIndex,
-                    "text": citation?.segment.text,
-                    "url": annotationSources[citation.groundingChunkIndices[0]]?.url,
-                    "sources": citation.groundingChunkIndices
-                }
-            });
-            message.annotationSources = annotationSources;
-            message.annotations = annotations;
-            message.searchQueries = dataJson.candidates[0]?.groundingMetadata?.webSearchQueries ?? [];
-
-            // Usage metadata
-            if (dataJson.usageMetadata) {
-                return {
-                    tokenUsage: {
-                        input: dataJson.usageMetadata.promptTokenCount ?? -1,
-                        output: dataJson.usageMetadata.candidatesTokenCount ?? -1,
-                        total: dataJson.usageMetadata.totalTokenCount ?? -1
-                    },
-                    finished: finished
-                };
-            }
-            
+            dataJson = JSON.parse(buffer);
         } catch (e) {
-            console.log("[AI] Gemini: Could not parse buffer: ", e);
-            message.rawContent += buffer;
-            message.content += buffer;
-        } finally {
-            buffer = "";
+            state.gotAny = true;
+            sink.raw(buffer);
+            return;
         }
-        return { finished: finished };
+        try {
+            root.handleChunk(dataJson, sink);
+        } catch (e) {
+            console.warn("[Ai] Gemini: unexpected response chunk:", e);
+        }
     }
 
-    function onRequestFinished(message) {
-        return parseBuffer(message);
+    function handleChunk(dataJson: var, sink: var): void {
+        const state = sink.state;
+        state.gotAny = true;
+
+        if (dataJson.uploadedFile) {
+            sink.uploadedFile(dataJson.uploadedFile.uri, dataJson.uploadedFile.mimeType);
+            return;
+        }
+
+        if (dataJson.error) {
+            if (dataJson.error.code === 429 && state.usedSearch) sink.searchRefused();
+            sink.error(dataJson.error.message ?? JSON.stringify(dataJson.error), "Error " + dataJson.error.code);
+            sink.finished();
+            return;
+        }
+
+        const candidate = dataJson.candidates?.[0];
+        if (candidate) {
+            const parts = candidate.content?.parts ?? [];
+            for (const part of parts) {
+                if (part.functionCall) {
+                    // The sink skips a call without a name, which still ends the thoughts.
+                    sink.endThink();
+                    const functionCall = part.functionCall;
+                    sink.functionCall({
+                        name: functionCall.name,
+                        args: functionCall.args ?? {},
+                        id: functionCall.id ?? "",
+                        thoughtSignature: part.thoughtSignature ?? functionCall.thoughtSignature ?? ""
+                    });
+                    break;
+                }
+                if (part.thought) {
+                    const thoughtText = typeof part.thought === "string" ? part.thought : (part.text || "");
+                    sink.think(thoughtText);
+                } else if (part.text) {
+                    sink.text(part.text);
+                }
+            }
+
+            const grounding = candidate.groundingMetadata;
+            if (grounding) {
+                const annotationSources = grounding.groundingChunks?.map(chunk => {
+                    return {
+                        "type": "url_citation",
+                        "text": chunk?.web?.title,
+                        "url": chunk?.web?.uri,
+                    };
+                }) ?? [];
+                const annotations = grounding.groundingSupports?.map(citation => {
+                    return {
+                        "type": "url_citation",
+                        "start_index": citation.segment?.startIndex,
+                        "end_index": citation.segment?.endIndex,
+                        "text": citation?.segment?.text,
+                        "url": annotationSources[citation.groundingChunkIndices?.[0]]?.url,
+                        "sources": citation.groundingChunkIndices
+                    };
+                }) ?? [];
+                sink.setAnnotations(annotationSources, annotations, grounding.webSearchQueries ?? []);
+            }
+        }
+
+        if (dataJson.usageMetadata) {
+            sink.usage({
+                input: dataJson.usageMetadata.promptTokenCount ?? -1,
+                output: dataJson.usageMetadata.candidatesTokenCount ?? -1,
+                total: dataJson.usageMetadata.totalTokenCount ?? -1
+            });
+        }
+
+        if (candidate?.finishReason) {
+            sink.endThink();
+            sink.finished();
+        }
     }
-    
-    function reset() {
-        buffer = "";
-    }
 
-    function buildScriptFileSetup(filePath) {
-        const trimmedFilePath = CF.FileUtils.trimFileProtocol(filePath);
-        let content = ""
-
-        // print("file path:", filePath)
-        // print("trimmed file path:", trimmedFilePath)
-        // print("escaped file path:", CF.StringUtils.shellSingleQuoteEscape(trimmedFilePath))
-
-        content += `IMAGE_PATH='${CF.StringUtils.shellSingleQuoteEscape(trimmedFilePath)}'\n`;
-        content += `${fileMimeTypeVarName}=$(file -b --mime-type "$IMAGE_PATH")\n`;
-        content += 'NUM_BYTES=$(wc -c < "${IMAGE_PATH}")\n';
-        content += 'tmp_header_file="/tmp/quickshell/ai/upload-header.tmp"\n';
-        content += 'tmp_file_info_file="/tmp/quickshell/ai/file-info.json.tmp"\n';
-
-        // Initial resumable request defining metadata.
-        // The upload url is in the response headers dump them to a file.
-        content += 'curl "https://generativelanguage.googleapis.com/upload/v1beta/files"'
-            + ` -H "x-goog-api-key: \$${apiKeyEnvVarName}"`
-            + ' -D $tmp_header_file'
-            + ' -H "X-Goog-Upload-Protocol: resumable"'
-            + ' -H "X-Goog-Upload-Command: start"'
-            + ' -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}"'
-            + ` -H "X-Goog-Upload-Header-Content-Type: \${${fileMimeTypeVarName}}"`
-            + ' -H "Content-Type: application/json"'
-            + ` -d "{'file': {'display_name': 'Image'}}" 2> /dev/null`
-            + '\n';
-
-        // Get file upload header
-        content += 'upload_url=$(grep -i "x-goog-upload-url: " "${tmp_header_file}" | cut -d" " -f2 | tr -d "\r")\n';
-        content += 'rm "${tmp_header_file}"\n';
-
-        // Upload the actual file
-        content += 'curl "${upload_url}"'
-            + ` -H "x-goog-api-key: \$${apiKeyEnvVarName}"`
-            + ' -H "Content-Length: ${NUM_BYTES}"'
-            + ' -H "X-Goog-Upload-Offset: 0"'
-            + ' -H "X-Goog-Upload-Command: upload, finalize"'
-            + ' --data-binary "@${IMAGE_PATH}" 2> /dev/null > "${tmp_file_info_file}"'
-            + '\n';
-
-        content += `${fileUriVarName}=$(jq -r ".file.uri" "$tmp_file_info_file")\n`
-        content += `printf "{\\"uploadedFile\\": {\\"uri\\": \\"$${fileUriVarName}\\", \\"mimeType\\": \\"$${fileMimeTypeVarName}\\"}}\\n,\\n"\n`
-
-        return content
-    }
-
-    function finalizeScriptContent(scriptContent: string): string {
-        return scriptContent.replace(fileMimeTypeSubstitutionString, `'"\$${fileMimeTypeVarName}"'`)
-                            .replace(fileUriSubstitutionString, `'"\$${fileUriVarName}"'`);
+    function finish(sink: var, exitCode: int, stderrTail: string): void {
+        root.parseBuffer(sink);
+        if (exitCode !== 0 && !sink.state.gotAny) {
+            const detail = Helpers.lastErrorLine(stderrTail);
+            if (detail.length > 0) sink.error(detail);
+        }
     }
 }

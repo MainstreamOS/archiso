@@ -12,11 +12,13 @@ import Quickshell.Wayland
 
 Item { // Window
     id: root
+    property real uiScale: 1
     property bool closing: false
     property bool captureSuppressed: false
     property var toplevel
     property var windowData
     property var monitorData
+    property var workspaceReserved: monitorData?.reserved ?? [0, 0, 0, 0]
     property var scale
     property bool restrictToWorkspace: true
     property real widthRatio: {
@@ -29,12 +31,14 @@ Item { // Window
         const monitorHeight = monitorData.transform & 1 ? monitorData.width : monitorData.height;
         return (widgetHeight * monitorData.scale) / (monitorHeight * widgetMonitor.scale);
     }
+    // Where the window really is, even past the screen's edge as a scrolled column is,
+    // so neighbors never stack on top of it; the workspace's edge cuts it there.
     property real initX: {
-        return Math.max((windowData?.at[0] - (monitorData?.x ?? 0) - monitorData?.reserved[0]) * widthRatio * root.scale, 0) + xOffset;
+        return (windowData?.at[0] - (monitorData?.x ?? 0) - workspaceReserved[0]) * widthRatio * root.scale + xOffset;
     }
 
     property real initY: {
-        return Math.max((windowData?.at[1] - (monitorData?.y ?? 0) - monitorData?.reserved[1]) * heightRatio * root.scale, 0) + yOffset;
+        return (windowData?.at[1] - (monitorData?.y ?? 0) - workspaceReserved[1]) * heightRatio * root.scale + yOffset;
     }
     property real xOffset: 0
     property real yOffset: 0
@@ -53,19 +57,15 @@ Item { // Window
     // own place there, so the cut follows every move and animation.
     property real workspaceWidth: 0
     property real workspaceHeight: 0
+    property vector4d workspaceRadii
     readonly property bool clipped: restrictToWorkspace && workspaceWidth > 0 && workspaceHeight > 0
     readonly property real visibleLeft: clipped ? Math.max(0, xOffset - x) : 0
     readonly property real visibleTop: clipped ? Math.max(0, yOffset - y) : 0
     readonly property real visibleRight: clipped ? Math.min(width, xOffset + workspaceWidth - x) : width
     readonly property real visibleBottom: clipped ? Math.min(height, yOffset + workspaceHeight - y) : height
 
-    property bool centerIcons: Config.options.overview.centerIcons
-    property real iconGapRatio: 0.06
-    property real iconToWindowRatio: centerIcons ? 0.35 : 0.15
     property real xwaylandIndicatorToIconRatio: 0.35
-    property real iconToWindowRatioCompact: 0.6
     property string iconPath: Quickshell.iconPath(AppSearch.guessIcon(windowData?.class), "image-missing")
-    property bool compactMode: Appearance.font.pixelSize.smaller * 4 > visibleArea.height || Appearance.font.pixelSize.smaller * 4 > visibleArea.width
 
     property bool indicateXWayland: windowData?.xwayland ?? false
 
@@ -82,19 +82,15 @@ Item { // Window
 
     layer.enabled: true
     layer.effect: OpacityMask {
-        maskSource: Item {
+        maskSource: WorkspacePreviewMask {
             width: root.width
             height: root.height
-            Rectangle {
-                x: root.visibleLeft
-                y: root.visibleTop
-                width: Math.max(0, root.visibleRight - root.visibleLeft)
-                height: Math.max(0, root.visibleBottom - root.visibleTop)
-                topLeftRadius: root.topLeftRadius
-                topRightRadius: root.topRightRadius
-                bottomRightRadius: root.bottomRightRadius
-                bottomLeftRadius: root.bottomLeftRadius
-            }
+            windowRect: Qt.vector4d(root.visibleLeft, root.visibleTop,
+                Math.max(0, root.visibleRight - root.visibleLeft), Math.max(0, root.visibleBottom - root.visibleTop))
+            windowRadii: Qt.vector4d(root.topLeftRadius, root.topRightRadius, root.bottomLeftRadius, root.bottomRightRadius)
+            workspaceRect: Qt.vector4d(root.xOffset - root.x, root.yOffset - root.y, root.workspaceWidth, root.workspaceHeight)
+            workspaceRadii: root.workspaceRadii
+            workspaceClipped: root.clipped ? 1 : 0
         }
     }
 
@@ -150,18 +146,12 @@ Item { // Window
     // showing what's actually in each window. The overview-open speed
     // fix is independent of this (it's about the wlr-layer-shell surface
     // lifecycle, see Overview.qml).
-    ScreencopyView {
+    HdrScreencopyView {
         id: windowPreview
         anchors.fill: parent
         captureSource: (GlobalStates.overviewOpen && !root.captureSuppressed) ? root.toplevel : null
         live: true
         constraintSize: Qt.size(Math.max(1, root.targetWindowWidth), Math.max(1, root.targetWindowHeight))
-        // PQ-to-sRGB tone-mapping when HDR Always On
-        layer.enabled: GlobalStates.hdrActive
-        layer.effect: ShaderEffect {
-            property real sdrPaperWhite: 203.0
-            fragmentShader: "file://" + Quickshell.env("HOME") + "/.config/quickshell/ii/shaders/pq_to_srgb.frag.qsb"
-        }
     }
 
     // Color overlay for interactions
@@ -175,32 +165,15 @@ Item { // Window
             hovered ? ColorUtils.transparentize(Appearance.colors.colLayer2Hover, 0.7) :
             ColorUtils.transparentize(Appearance.colors.colLayer2)
         border.color : ColorUtils.transparentize(Appearance.m3colors.m3outline, 0.88)
-        border.width : 1
+        border.width : root.uiScale
     }
 
-    StyledImage {
+    LauncherWindowBadge {
         id: windowIcon
-        property real baseSize: Math.min(visibleArea.width, visibleArea.height)
-        anchors {
-            top: root.centerIcons ? undefined : visibleArea.top
-            left: root.centerIcons ? undefined : visibleArea.left
-            centerIn: root.centerIcons ? visibleArea : undefined
-            margins: baseSize * root.iconGapRatio
-        }
-        property var iconSize: {
-            return baseSize * (root.compactMode ? root.iconToWindowRatioCompact : root.iconToWindowRatio);
-        }
-        mipmap: true
-        Layout.alignment: Qt.AlignHCenter
+        objectName: "windowBadge"
+        centerIcon: Config.options.overview.centerIcons
+        uiScale: root.uiScale
+        boundsItem: visibleArea
         source: root.iconPath
-        width: iconSize
-        height: iconSize
-
-        Behavior on width {
-            animation: Appearance.animation.elementMoveEnter.numberAnimation.createObject(this)
-        }
-        Behavior on height {
-            animation: Appearance.animation.elementMoveEnter.numberAnimation.createObject(this)
-        }
     }
 }

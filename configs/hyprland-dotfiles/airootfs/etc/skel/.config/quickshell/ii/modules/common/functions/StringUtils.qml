@@ -51,6 +51,7 @@ Singleton {
      * @returns {Array<{type: "text" | "think" | "code", content: string, lang?: string, completed?: boolean}>}
      */
     function splitMarkdownBlocks(markdown) {
+        if (!markdown) return [];
         const regex = /```(\w+)?\n([\s\S]*?)```|<think>([\s\S]*?)<\/think>/g;
         /**
          * @type {{type: "text" | "think" | "code"; content: string; lang: string | undefined; completed: boolean | undefined}[]}
@@ -103,13 +104,11 @@ Singleton {
                     });
                 }
                 const thinkContent = text.slice(thinkStart + 7);
-                if (thinkContent.trim()) {
-                    result.push({
-                        type: "think",
-                        content: thinkContent,
-                        completed: false
-                    });
-                }
+                result.push({
+                    type: "think",
+                    content: thinkContent,
+                    completed: false
+                });
             } else if (codeStart !== -1) {
                 const beforeCode = text.slice(0, codeStart);
                 if (beforeCode.trim()) {
@@ -232,6 +231,36 @@ Singleton {
         if (typeof str !== 'string')
             return str;
         return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Plain text as styled text (Text.StyledText) with its web and email
+     * addresses as links, or "" when it has none.
+     * @param { string } str
+     * @returns { string }
+     */
+    function linkify(str) {
+        const text = String(str ?? "");
+        if (!/[\/@]|www\./i.test(text)) return "";
+        // http(s) and www. addresses, a host with a path (bit.ly/x), or an email address.
+        const pattern = /(?:\bhttps?:\/\/|\bwww\.)[^\s<>"]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\/[^\s<>"]*|\b[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b/gi;
+        // Styled text collapses runs of spaces and ignores line breaks.
+        const plain = s => root.escapeHtml(s).replace(/ {2,}/g, m => " " + "&nbsp;".repeat(m.length - 1)).replace(/\n/g, "<br>");
+        let out = "";
+        let last = 0;
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            let link = match[0];
+            // Punctuation ending a sentence or an aside is not part of the address.
+            while (/[.,!?;:'"\]]$/.test(link) || (link.endsWith(")") && link.split("(").length < link.split(")").length))
+                link = link.slice(0, -1);
+            const href = /^https?:\/\//i.test(link) ? link
+                : link.includes("@") && !link.includes("/") ? "mailto:" + link : "https://" + link;
+            // Styled text does not unescape attributes; the pattern keeps quotes and brackets out of them.
+            out += plain(text.slice(last, match.index)) + `<a href="${href}">${root.escapeHtml(link)}</a>`;
+            last = match.index + link.length;
+        }
+        return out.length > 0 ? out + plain(text.slice(last)) : "";
     }
 
     /**

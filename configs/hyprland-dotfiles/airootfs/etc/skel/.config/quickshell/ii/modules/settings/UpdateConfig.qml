@@ -16,139 +16,103 @@ ContentPage {
     property bool isRunning: false
     property bool userStopped: false
 
-    // The update runs in a session of its own and writes here, so this page
-    // is only ever a viewer of it: a window that reloads or closes no longer
-    // takes the update with it. How a run ended stays on disk until it has
-    // been seen and the window closed, so a run that finishes while Settings
-    // is shut is still shown once, and one watched to the end is not shown
-    // again on every visit after. A result that needs a reboot stays until
-    // the reboot has happened.
+    // The update runs in its own session and writes here; this page only views it.
+    // A result stays on disk until it has been seen and the window closed.
     readonly property string stateDir: Directories.updateStateDir
     readonly property string logPath: stateDir + "/update.log"
     readonly property string exitPath: stateDir + "/update.exit"
     readonly property string pidPath: stateDir + "/update.pid"
     readonly property string seenPath: stateDir + "/update.seen"
-    // A run that replaced parts of the desktop leaves this behind when its
-    // record goes, so the reminder to reboot outlives the output. It expires
-    // on its own once the machine has been started since it was written.
+    // Lets the reboot reminder outlive the record. Stale once the machine has
+    // booted since it was written.
     readonly property string rebootMarkPath: stateDir + "/update.reboot"
     readonly property string launcher: Quickshell.shellPath("scripts/update/run-detached.sh")
     // The launcher ends the log with this once the helper has exited.
     readonly property string exitSentinel: "@@MAINSTREAM-UPDATE-EXIT "
-    // The helper's two answers about the running desktop: what this run is
-    // about to replace, judged before it installs anything, and what it did.
+    // Helper markers: what the run will replace (judged before installing) and what it did.
     readonly property string rebootPlanMarker: "@@MAINSTREAM-UPDATE-REBOOT-PLAN "
     readonly property string rebootMarker: "@@MAINSTREAM-UPDATE-REBOOT "
     readonly property string rebootCheck: Quickshell.shellPath("scripts/update/reboot-check.sh")
-    // Two different questions, kept apart. What a run started now would do is
-    // predicted from the pending list, or stated by a live run's own plan;
-    // what the finished run did is its verdict. Ranking them against each
-    // other let a replayed record silence the fresh prediction, which is the
-    // answer the person standing at the page actually wants.
+    // The boot menu would not start the system as updated, so no reboot is
+    // offered. 3 after the marker: it starts a kernel no longer installed.
+    readonly property string bootBrokenMarker: "@@MAINSTREAM-UPDATE-BOOT-BROKEN"
+    property bool bootBroken: false
+    property bool bootOldKernel: false
+    // Kept apart so a replayed record cannot silence a fresh prediction: rebootPredicted
+    // is what a run started now would do; rebootVerdict is a finished run's.
     property bool rebootPredicted: false
-    property bool rebootRequired: false
-    // A finished run that replaced parts of the desktop leaves one thing to
-    // do; the page leads with that until the reboot happens.
+    property bool rebootVerdict: false
+    readonly property bool rebootRequired: root.rebootVerdict && !root.bootBroken
     readonly property bool awaitingReboot: !root.isRunning && root.rebootRequired
-    // A record older than this boot belongs to a run whose reboot happened.
     property bool recordPredatesBoot: false
-    // True while a finished record is being replayed rather than tailed. A
-    // replayed plan says what some earlier run was about to do, which is not
-    // a prediction about anything now.
+    // Set while a finished record is replayed; its plan marker predicts nothing now.
     property bool replaying: false
 
-    // Lines arrive faster than a wrapped text item can lay them out, and each
-    // assignment lays the whole thing out again, so a burst of a thousand
-    // lines was a thousand layouts. They are collected here and handed over
-    // a few times a second, so a burst costs one.
+    // Batched so a burst of lines costs one text layout, not one per line.
     property var pendingLines: []
-    // The text item shows the newest part of a long run. The record on disk
-    // has all of it, and Copy reads that.
+    // The view keeps only the newest part; Copy reads the full record on disk.
     readonly property int outputKeepChars: 250000
     property bool outputTrimmed: false
-    // The helper's first line. A run that never printed it was turned away by
-    // sudo, which is how a wrong password is told apart from a failure later,
-    // in whatever language sudo complains.
+    // The helper's first line. A run without it was refused by sudo, which tells
+    // a wrong password from a later failure in any language.
     readonly property string startMarker: "@@MAINSTREAM-UPDATE-HELPER-START"
     property bool helperStarted: false
-    // A missing first line only means that when the installed helper is one
-    // that prints it. An older one, left by an update whose root half did not
-    // run, exits 1 for a failed package step too, and when it prints nothing
-    // at all only sudo's own words can say the password was wrong.
+    // Whether the installed helper prints that line. An older one also exits 1
+    // on a failed package step, so then only sudo's own words prove a wrong password.
     property bool helperMarksStart: false
-    // Two things an update can leave for later. Updating finishes with a root
-    // half (updatems-system) that installs the release's own update tools, so
-    // once a release has been applied, either copy differing from the clone's
-    // means that half never ran for it. The relogin note is left for changes
-    // that only load at login, and goes at the next login.
+    // The root half (updatems-system) installs the update tools, so a copy differing from
+    // the clone's means it never ran. The relogin note marks changes that only load at login.
     property bool systemHalfPending: false
     property bool reloginNeeded: false
-    // The launcher reports a failure to start through runningChanged alone,
-    // with no exited to follow; this says whether exited already spoke.
-    property bool launcherExited: false
     readonly property string liveCheck: Quickshell.shellPath("scripts/update/update-live.sh")
     property bool snapshotsAvailable: true
     Process {
         running: true
-        // What the page offers is the snapshot taken before an update, which
-        // needs the snapshot service configured for this root, not merely a
-        // Btrfs one.
+        // The pre-update snapshot needs the snapshot service set up for root, not just Btrfs.
         command: ["sh", "-c", "test -f /etc/limine-snapper-sync.conf && test -f /etc/snapper/configs/root"]
         onExited: (code) => root.snapshotsAvailable = (code === 0)
     }
 
-    // Whether an AUR helper (yay or paru) is actually installed. The AUR
-    // update switch is only shown when one is — Mainstream ships none by
-    // default, so for most users the toggle would be a no-op control for a
-    // step that can't run. Detected once on load by aurHelperCheck below.
+    // Mainstream ships no AUR helper, so the AUR switch only shows when yay or paru is installed.
     property bool aurHelperPresent: false
 
-    // Step skip-flags. The helper runs pacman + yay + flatpak directly
-    // as the primary path and (by default) topgrade afterwards for the
-    // developer-tool extras. Each --noconfirm/--yes is hard-coded in
-    // the helper since an unattended GUI update isn't useful if it
-    // stops at prompts. Defaults match what most users want: everything
-    // runs except firmware (firmware updates can prompt polkit and
-    // time out non-interactively).
-    property bool flagSkipSystem: false
-    // AUR is disabled by default: Mainstream installs ship no AUR helper
-    // and don't use the AUR for system packages (recent AUR supply-chain
-    // concerns). Users who installed yay/paru themselves can untick this.
-    property bool flagSkipAur: true
-    property bool flagSkipFlatpak: false
-    property bool flagSkipDotfiles: false
-    property bool flagSkipExtras: false
-    property bool flagSkipFirmware: true
-    property bool flagAutoRebuildQuickshell: true
-    property bool flagEdge: false
+    readonly property bool flagSkipSystem: Config.options.updates.advanced.skipSystem
+    readonly property bool flagSkipAur: Config.options.updates.advanced.skipAur
+    readonly property bool flagSkipFlatpak: Config.options.updates.advanced.skipFlatpak
+    readonly property bool flagSkipDotfiles: Config.options.updates.advanced.skipDotfiles
+    readonly property bool flagSkipExtras: Config.options.updates.advanced.skipExtras
+    readonly property bool flagSkipFirmware: Config.options.updates.advanced.skipFirmware
+    readonly property bool flagAutoRebuildQuickshell: Config.options.updates.advanced.autoRebuildQuickshell
+    readonly property bool flagEdge: Config.options.updates.advanced.edge
     property string customArgs: ""
 
-    // Held in QML state from the moment the user submits the password
-    // until the helper process exits. Cleared from the visible field
-    // immediately on submit, and from this property on helper exit.
+    // Hidden from startup, the tips have no width to wrap at and report too little
+    // height, so a floor keeps the terminal's full space on a cold reopen.
+    property real cachedTipsHeight: 268
+
+    // Notices above the terminal come out of its height, so they never push the
+    // password box off-screen.
+    readonly property real extraNoticesHeight:
+        (pendingNoticeBox.visible ? pendingNoticeBox.implicitHeight + (pendingNoticeBox.parent ? pendingNoticeBox.parent.spacing : 4) : 0)
+        + (reloginNoticeBox.visible ? reloginNoticeBox.implicitHeight + (reloginNoticeBox.parent ? reloginNoticeBox.parent.spacing : 4) : 0)
+        + (outputTrimmedText.visible ? outputTrimmedText.implicitHeight + (outputTrimmedText.parent ? outputTrimmedText.parent.spacing : 4) : 0)
+
+    // Cleared as soon as it is written to the launcher's stdin.
     property string pendingPassword: ""
 
     function buildHelperArgs(finishing) {
-        // The privileged work runs in /usr/local/bin/mainstream-update-helper
-        // which writes a temporary NOPASSWD sudoers rule, runs pacman +
-        // yay/paru + flatpak directly, then optionally tops up with
-        // topgrade for developer-tool ecosystems.
         let args = ["sudo", "-S", "/usr/local/bin/mainstream-update-helper"];
         if (flagSkipSystem)            args.push("--skip-system");
         if (flagSkipAur)               args.push("--skip-aur");
         if (flagSkipFlatpak)           args.push("--skip-flatpak");
-        // The root half only runs after the dotfiles step, so a run meant to
-        // finish it cannot skip that step.
+        // The root half runs after the dotfiles step, so finishing it cannot skip that step.
         if (flagSkipDotfiles && !finishing) args.push("--skip-dotfiles");
         if (flagSkipExtras)            args.push("--skip-extras");
         if (flagSkipFirmware)          args.push("--skip-firmware");
         if (flagAutoRebuildQuickshell) args.push("--auto-rebuild-quickshell");
         if (flagEdge)                  args.push("--edge");
         if (customArgs.trim().length > 0) {
-            // Custom args are passed through to topgrade when extras runs.
-            // Split on whitespace so multi-token args reach topgrade properly,
-            // and sent after -- so the helper hands on the options among them
-            // rather than taking them for its own.
+            // For topgrade, after -- so the helper passes them on instead of taking them.
             let extra = customArgs.trim().split(/\s+/);
             args.push("--");
             for (let i = 0; i < extra.length; i++) args.push(extra[i]);
@@ -157,13 +121,8 @@ ContentPage {
     }
 
     function commandPreview() {
-        // List the steps the helper will run in order, marking each as
-        // ✓ (will run) or ✗ (skipped). Tells the user what's about to
-        // happen far more usefully than a single command line.
         let lines = [];
         lines.push((flagSkipSystem      ? "✗" : "✓") + "  System packages    (pacman -Syu)");
-        // Only list the AUR step when a helper is actually installed —
-        // otherwise it's a guaranteed no-op the user shouldn't have to read.
         if (aurHelperPresent)
             lines.push((flagSkipAur     ? "✗" : "✓") + "  AUR                (yay -Sua)");
         lines.push((flagSkipFlatpak     ? "✗" : "✓") + "  Flatpak            (flatpak update --system + --user)");
@@ -178,12 +137,13 @@ ContentPage {
         pendingLines = [];
         outputTrimmed = false;
         helperStarted = false;
-        rebootRequired = false;
+        rebootVerdict = false;
         rebootPredicted = false;
+        bootBroken = false;
+        bootOldKernel = false;
         recordPredatesBoot = false;
         userStopped = false;
         replaying = false;
-        launcherExited = false;
     }
 
     function clearOutput() {
@@ -200,8 +160,6 @@ ContentPage {
         resetRunState();
         // The last run may have installed a newer helper.
         helperMarkCheck.running = true;
-        // Snapshot the password and clear the visible field so it
-        // doesn't sit on screen for the rest of the run.
         pendingPassword = passwordField.text;
         passwordField.text = "";
         helperProc.command = ["bash", root.launcher, root.stateDir].concat(buildHelperArgs(finishing === true));
@@ -210,9 +168,8 @@ ContentPage {
         isRunning = true;
     }
 
-    // The notice sits above the password field and already asks for the
-    // password, so an empty field only takes the focus. The output is left
-    // alone, since it may be the record of the run that left this undone.
+    // The notice already asks for the password, so an empty field only takes
+    // focus. The output stays: it may record the run that left this undone.
     function finishPendingUpdate() {
         if (passwordField.text.length === 0) {
             passwordField.forceActiveFocus();
@@ -230,46 +187,60 @@ ContentPage {
 
     function stopUpdate() {
         if (!isRunning) return;
-        // Not marked as stopped until the signal has actually been delivered.
-        // The launcher forks, so the pid can be written a moment after the
-        // page thinks the run began; a Stop pressed in that window used to
-        // report a stopped run over a summary showing every step succeeded.
+        // Marked stopped only once the signal lands: the launcher forks, so the
+        // pid file can appear a moment after the run seems to start.
         stopProc.running = true;
     }
 
-    // Everything that happens once the helper has exited, whether this page
-    // watched it end or found the record afterwards.
+    // The run lives apart from this page, so the guard asks again whether anything is installing.
+    function requestReboot() {
+        if (!root.awaitingReboot || rebootGuard.running)
+            return;
+        rebootGuard.running = true;
+    }
+
+    function bootBrokenText() {
+        if (root.recordPredatesBoot)
+            return Translation.tr("The last update found that the boot menu could not start the system. Run the update again to check it.");
+        if (root.bootOldKernel)
+            return Translation.tr("Do not restart the computer yet. The boot menu still starts a kernel that is no longer installed, so the computer would start without its drivers. The message above says how to build the boot image for the installed kernel.");
+        return Translation.tr("Do not restart the computer yet. The boot menu does not match the system's boot image, so the computer would not start, and it could not be repaired, usually because the EFI partition is too full. Free some space on the EFI partition, then run the update again: it repairs the boot menu first.");
+    }
+
+    // Runs once the helper has exited, whether watched live or found in the record.
     function finish(exitCode) {
         tailProc.running = false;
         root.isRunning = false;
         root.pendingPassword = "";
         root.flushOutput();
-        // Strip trailing whitespace before appending the completion line, so
-        // the auto-scrolled viewport lands on the Summary text rather than on
-        // the blank lines the log ends with.
+        // So the auto-scroll lands on the summary, not the log's trailing blank lines.
         root.outputText = root.outputText.replace(/\s+$/, "");
         // Whatever the run did, it may have finished what an earlier one left.
         leftoverCheck.running = true;
-        if (root.userStopped) {
+        if (exitCode === 106)
+            root.bootBroken = true;
+        if (root.userStopped || exitCode === 143 || exitCode === 130) {
             root.outputText += "\n\n" + Translation.tr("Update stopped by user.");
+            if (root.bootBroken)
+                root.outputText += "\n" + root.bootBrokenText();
+            if (root.rebootRequired)
+                root.outputText += "\n" + Translation.tr("Parts of the running desktop were already replaced. Reboot, then run the update again to finish it; until then some controls may not work.");
             return;
         }
         if (exitCode < 0) {
             root.outputText += "\n\n" + Translation.tr("The update did not finish. The record above stops where it stopped.");
             return;
         }
-        // sudo exits 1 when the password is wrong, and the helper never gets
-        // to print its first line. Its message comes out in the session's
-        // language, so it only settles the question for a helper that does
-        // not print that line.
-        // A standard account is turned away by sudo with the right password,
-        // and being told the password was wrong would send it round in circles.
+        // sudo refuses a standard account even with the right password, so it
+        // must not be told the password was wrong.
         const sudoNotAllowed = root.outputText.indexOf("is not in the sudoers file") !== -1
             || root.outputText.indexOf("is not allowed to run sudo") !== -1;
         if (exitCode === 1 && !root.helperStarted && sudoNotAllowed) {
             root.outputText += "\n\n" + Translation.tr("This account cannot install updates. An administrator can run the update, or make this account an administrator in Settings > Accounts.");
             return;
         }
+        // sudo exits 1 on a wrong password before the helper's first line. Its
+        // message is localized, so it only decides for a helper without that line.
         const sudoRefused = root.outputText.indexOf("incorrect password") !== -1
             || root.outputText.indexOf("Sorry, try again") !== -1;
         const authFailed = exitCode === 1 && !root.helperStarted
@@ -278,36 +249,35 @@ ContentPage {
             root.outputText += "\n\n" + Translation.tr("Authentication failed — wrong password. Try again.");
             return;
         }
-        // Exit code 100 is the helper's "primary path ok but developer-tool
-        // extras failed" signal, rendered the same as a full success: the
-        // Summary block already marks the failed extras step, and users who
-        // do not have those toolchains are not alarmed by a pass that erred
-        // on tools they never touch. 101 is the dotfiles step failing, which
-        // leaves the machine on its old release and must not read as success.
+        // 100: snap or extras failed, or [mainstream] was switched off; shown as
+        // success since the summary says so. 101: dotfiles failed, never a success.
         if (exitCode === 3) {
             root.outputText += "\n\n" + Translation.tr("Another update was already running, so this one did not start.");
         } else if (exitCode === 4) {
-            // The desktop's Qt pin held pacman back, so no package changed and
-            // trying again cannot help until a rebuilt desktop package is out.
-            // Flatpak, Snap and the system files went ahead regardless.
+            // The desktop's Qt pin held pacman back; the other steps still ran.
             root.outputText += "\n\n" + Translation.tr("System packages were held back: Arch moved to a newer Qt than this desktop is built for. Flatpak, Snap and the system files still updated, and the rest goes through once the matching desktop update is published.");
         } else if (exitCode === 101) {
             root.outputText += "\n\n" + Translation.tr("Update finished, but the Mainstream dotfiles did not update. See the Dotfiles line in the summary above.");
         } else if (exitCode === 102) {
-            // The desktop files landed but the root-owned half did not, which
-            // the Finish update notice offers to complete.
+            // The root half ran but failed partway. It installs the update tools first, so
+            // usually no Finish update notice follows; the next update runs it again.
             root.outputText += "\n\n" + Translation.tr("Update finished, but the system part of the Mainstream update did not finish. See the System bits line in the summary above.");
-        } else if (exitCode === 0 || exitCode === 100) {
-            root.outputText += "\n\n" + Translation.tr("Update completed successfully.");
+        } else if (exitCode === 105) {
+            root.outputText += "\n\n" + Translation.tr("System packages were held back: the EFI partition, which holds the boot menu, is too full to rebuild the boot image safely. No system package was changed. Free some space on the EFI partition, then run the update again.");
+        } else if (exitCode === 0 || exitCode === 100 || exitCode === 106) {
+            // 106 set bootBroken above, so its message below stands in for this one.
+            if (!root.bootBroken)
+                root.outputText += "\n\n" + Translation.tr("Update completed successfully.");
         } else {
             root.outputText += "\n\n" + Translation.tr("Update finished with exit code %1.").arg(exitCode);
         }
+        if (root.bootBroken)
+            root.outputText += "\n\n" + root.bootBrokenText();
         if (root.rebootRequired)
             root.outputText += "\n" + Translation.tr("Parts of the running desktop were replaced. Reboot to finish the update; until then some controls may not work.");
-        // Only a run that succeeded is let go of on close; a failure and a
-        // stop stay to be read again. A reboot the run asked for is kept on
-        // its own, so the output can go while the reminder stays.
-        if (exitCode === 0 || exitCode === 100) {
+        // Only a success is let go on close; failures, stops and a boot menu
+        // that would not start stay to be reread.
+        if ((exitCode === 0 || exitCode === 100) && !root.bootBroken) {
             if (root.rebootRequired)
                 rebootMarkProc.running = true;
             seenProc.running = true;
@@ -315,41 +285,32 @@ ContentPage {
         rebootMarkCheck.running = true;
     }
 
-    // "<0|1> [package ...]", from the check script or a marker line. The
-    // package names stay in the record; the page only says yes or no.
+    // "<0|1> [package ...]" from the check script or a marker line; only yes or no is used.
     function readRebootAnswer(text, kind) {
         const first = text.trim().split(/\s+/)[0];
-        // The prediction could not reach the repositories, so it leaves
-        // whatever was known standing rather than claiming no reboot.
+        // Repositories unreachable: keep what was known rather than claim no reboot.
         if (first === "unknown")
             return;
         const yes = first === "1";
         if (kind === "verdict") {
-            // A record written before this boot describes a run whose reboot
-            // has already happened.
-            root.rebootRequired = yes && !root.recordPredatesBoot;
+            // A record from before this boot: its reboot already happened.
+            root.rebootVerdict = yes && !root.recordPredatesBoot;
             // That run is over, so it predicts nothing about the next one.
             root.rebootPredicted = false;
         } else if (kind === "plan") {
-            // Only a run happening now says anything about what is pending.
             if (!root.replaying)
                 root.rebootPredicted = yes;
         } else if (!root.isRunning) {
-            // The on-open prediction never overrides a run in flight, which
-            // knows more than the pending list does.
+            // A run in flight knows more than the pending list does.
             root.rebootPredicted = yes;
         }
     }
 
-    // Asked when the page opens: of what is pending, does anything own a
-    // file the running desktop has loaded. checkupdates answers from a
-    // fresh copy of the repositories; without it the last sync stands in.
+    // Does anything pending own a file the running desktop has loaded?
     Process {
         id: predictProc
-        // Held until the probe has said what is on disk. Predicting costs a
-        // repository sync, which is wasted while a run is in flight or a
-        // finished record is about to answer the same question, and the page
-        // is rebuilt on every visit because the settings pages share a loader.
+        // Waits for the probe: it costs a repository sync, and the page is
+        // rebuilt on every visit because the settings pages share a loader.
         running: false
         command: ["bash", root.rebootCheck, "predict"]
         stdout: StdioCollector {
@@ -357,11 +318,17 @@ ContentPage {
         }
     }
 
-    // A chunk of the record, usually one line. The sentinel is the helper's
-    // exit and is never shown; it is looked for anywhere in the chunk rather
-    // than at its start, because the parser can hand it over glued to the
-    // blank line the launcher writes before it.
+    // Some tools color their output even into a file; the codes would show as text.
+    function plainText(text) {
+        if (text.indexOf("\x1b") === -1)
+            return text;
+        return text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+    }
+
+    // Usually one line. The exit sentinel is looked for anywhere in it, since the
+    // parser can glue it to the blank line the launcher writes before it.
     function takeLine(line) {
+        line = root.plainText(line);
         const plan = line.indexOf(root.rebootPlanMarker);
         if (plan !== -1) {
             root.readRebootAnswer(line.substring(plan + root.rebootPlanMarker.length), "plan");
@@ -376,10 +343,14 @@ ContentPage {
             root.helperStarted = true;
             return;
         }
-        // A helper too old to print that line still opens every step with a
-        // banner and starts each early refusal with ">>> ", and sudo prints
-        // neither. The record itself is the proof then, since the helper on
-        // disk may have been replaced by the very run being read.
+        const broken = line.indexOf(root.bootBrokenMarker);
+        if (broken !== -1) {
+            root.bootBroken = true;
+            root.bootOldKernel = line.substring(broken + root.bootBrokenMarker.length).trim() === "3";
+            return;
+        }
+        // An older helper without that line still prints step banners or ">>> " refusals, which
+        // sudo never does. The record decides, since this run may have replaced the helper.
         if (!root.helperStarted && (line.indexOf("═══") !== -1 || line.indexOf(">>> ") === 0))
             root.helperStarted = true;
         const at = line.indexOf(root.exitSentinel);
@@ -398,8 +369,6 @@ ContentPage {
             flushTimer.start();
     }
 
-    // One assignment for everything that arrived since the last, and the
-    // text kept to its newest part once a run gets long.
     function flushOutput() {
         flushTimer.stop();
         if (root.pendingLines.length === 0)
@@ -422,32 +391,19 @@ ContentPage {
         onTriggered: root.flushOutput()
     }
 
-    // Launches the update and nothing more. The helper itself runs under
-    // run-detached.sh in its own session; this process is over within a
-    // moment, once the password has been handed on.
+    // Only launches the update; the helper runs detached in its own session, so
+    // this exits once the password is handed on.
     Process {
         id: helperProc
         onRunningChanged: {
-            // When the process flips from idle to running, push the password
-            // into stdin so `sudo -S` can authenticate, then close the stream:
-            // the launcher waits for exactly that one line.
+            // The launcher waits for exactly one stdin line, the password for sudo -S.
             if (running && root.pendingPassword.length > 0) {
                 write(root.pendingPassword + "\n");
                 root.pendingPassword = "";
                 stdinEnabled = false;
-                return;
-            }
-            // Exited speaks first on a normal end. A stop with nothing said
-            // means the launcher never ran at all, which used to leave the
-            // page believing an update was under way for good.
-            if (!running && root.isRunning && !root.launcherExited && !tailProc.running) {
-                root.isRunning = false;
-                root.pendingPassword = "";
-                root.outputText = Translation.tr("The update could not be started.");
             }
         }
         onExited: (exitCode, exitStatus) => {
-            root.launcherExited = true;
             root.pendingPassword = "";
             if (exitCode !== 0) {
                 root.isRunning = false;
@@ -458,45 +414,56 @@ ContentPage {
         }
     }
 
-    // Follows the record from its first line, so a page that opens part way
-    // through a run shows everything the helper has said so far.
+    // From the first line, so a page opened mid-run shows everything so far.
     Process {
         id: tailProc
         command: ["tail", "-n", "+1", "-F", root.logPath]
         stdout: SplitParser { onRead: data => root.takeLine(data) }
     }
 
-    // The helper is the child of the recorded session leader. It is signalled
-    // rather than the leader, which would only defer the signal until the
-    // helper finished on its own.
+    // Signals the session leader's child (sudo, which relays it to the helper);
+    // signaling the leader would only defer it until the helper finished.
     Process {
         id: stopProc
-        // The pid has to still be the session the launcher recorded: a pid
-        // file left by a killed run names a number the kernel has since handed
-        // to something else, and signalling its children hits a bystander.
-        // The leader's child is sudo, sudo's child the helper. The helper is
-        // told first, and then whatever step it is on, since the helper only
-        // acts on the signal once that step has ended.
+        // The live check rejects a stale pid file whose number now names a bystander.
         command: ["bash", "-c",
-            'p=$(bash "$0" "$1") || exit 1;'
-            + ' s=$(pgrep -P "$p" | head -n1); h=""; [ -n "$s" ] && h=$(pgrep -P "$s" | head -n1);'
-            + ' pkill -TERM -P "$p" || exit 1;'
-            + ' [ -n "$h" ] && pkill -TERM -P "$h"; exit 0',
+            'p=$(bash "$0" "$1") || exit 1; pkill -TERM -P "$p" || exit 1; exit 0',
             root.liveCheck, root.pidPath]
         onExited: (code) => {
             if (code === 0) {
+                if (!root.userStopped) {
+                    root.flushOutput();
+                    root.outputText += "\n" + Translation.tr("Stopping. AUR builds and developer extras stop right away; any other step finishes first, so nothing is left half installed.");
+                }
                 root.userStopped = true;
             } else {
-                // Nothing was signalled, so the run is still going or has
-                // already ended on its own. Say so rather than leaving a
-                // button that looks like it worked.
+                // Nothing was signaled; say so rather than leave a Stop that seemed to work.
                 root.showStopFailed();
             }
         }
     }
 
-    // Asked when the page opens, before a finished record is replayed, since
-    // reading that record's end depends on it, and again as each run starts.
+    // Exits 1 while this page's update, a pacman transaction or a dotfiles
+    // update is running; a lock file alone may be left from a crash.
+    Process {
+        id: rebootGuard
+        command: ["bash", "-c",
+            'bash "$0" "$1" "$2" && exit 1; [ -e /var/lib/pacman/db.lck ] && pidof pacman >/dev/null && exit 1; exit 0',
+            Quickshell.shellPath("scripts/update/update-busy.sh"), root.pidPath, Directories.dotfilesClone + "/.update-lock"]
+        onExited: (code) => {
+            if (code !== 0) {
+                root.flushOutput();
+                root.outputText += "\n\n" + Translation.tr("An update or package install is still running, so the computer was not restarted. Reboot once it finishes.");
+                return;
+            }
+            // The page may have learned more while the check ran.
+            if (root.awaitingReboot)
+                Session.reboot();
+        }
+    }
+
+    // Runs before a finished record is replayed, since reading its end depends
+    // on this, and again as each run starts.
     property bool markChecked: false
     Process {
         id: helperMarkCheck
@@ -511,8 +478,8 @@ ContentPage {
         }
     }
 
-    // Read when the page opens and after each run, since the dotfiles step of
-    // a run writes the relogin note and its root half settles the other.
+    // Rechecked after each run: its dotfiles step writes the relogin note and
+    // its root half settles the other.
     Process {
         id: leftoverCheck
         running: true
@@ -530,19 +497,15 @@ ContentPage {
         }
     }
 
-    // Asked once when the page opens: is a run under way, and if not, is there
-    // a record of the last one to show.
+    // On open: is a run under way, or is there a record of the last one to show?
     Process {
         id: probeProc
         command: ["bash", "-c",
             'if [ -f "$1" ]; then read up _ < /proc/uptime; s="";'
             + ' [ "$(stat -c %Y "$0")" -lt "$(( $(date +%s) - ${up%.*} ))" ] && s=" rebooted";'
             + ' echo "finished $(cat "$1")$s";'
-            // A pid file outlives a run that was killed or lost to a power
-            // cut, so it has to name a live process to mean anything. Without
-            // this the page latches into a run that can never end, and both
-            // buttons that could clear it are disabled while it believes one
-            // is in progress.
+            // A pid file outlives a killed run, so it only counts if it names a
+            // live process; otherwise the page latches into a run that never ends.
             + ' elif bash "$3" "$2" >/dev/null 2>&1; then echo running;'
             + ' elif [ -s "$0" ]; then rm -f "$2"; echo "finished -1";'
             + ' else rm -f "$2"; echo none; fi',
@@ -564,8 +527,7 @@ ContentPage {
                     recordProc.running = true;
                     return;
                 }
-                // Nothing on disk, so the pending list is the only thing that
-                // can answer whether a run started now would end in a reboot.
+                // Nothing on disk, so only the pending list can predict a reboot.
                 predictProc.running = true;
                 rebootMarkCheck.running = true;
             }
@@ -573,24 +535,18 @@ ContentPage {
     }
     property int pendingExitCode: -1
 
-    // The finished record, read whole; its sentinel line goes through the
-    // same path a live one does.
+    // The finished record, read whole; its sentinel goes through the same path
+    // a live one does.
     Process {
         id: recordProc
         command: ["cat", root.logPath]
         stdout: StdioCollector {
             onStreamFinished: {
                 root.outputText = "";
-                // What follows describes a run that has already ended.
                 root.replaying = true;
-                // The flag that says the user stopped it lives only here,
-                // while the record lives on disk, so it is read back from the
-                // exit code the run left behind.
+                // userStopped is not on disk, so it is read back from the exit code.
                 root.userStopped = (root.pendingExitCode === 143 || root.pendingExitCode === 130);
                 root.helperStarted = false;
-                // Each line is read for its markers; the text itself is
-                // queued and reaches the page in one piece at the end,
-                // which is what makes a long record cheap to show.
                 const lines = this.text.split("\n");
                 let sawSentinel = false;
                 for (let i = 0; i < lines.length; i++) {
@@ -601,17 +557,14 @@ ContentPage {
                 if (!sawSentinel) root.finish(isNaN(root.pendingExitCode) ? -1 : root.pendingExitCode);
                 root.flushOutput();
                 root.replaying = false;
-                // The record said the last run needs no reboot, or its reboot
-                // already happened. Either way nothing has answered what a run
-                // started now would do, so ask.
+                // No reboot pending, so still predict what a run started now would do.
                 if (!root.rebootRequired)
                     predictProc.running = true;
             }
         }
     }
 
-    // Clearing the output also lets go of the record, so it does not come
-    // back the next time the page opens.
+    // Also removes the record, so it does not return the next time the page opens.
     Process {
         id: clearProc
         command: ["rm", "-f", root.logPath, root.exitPath, root.pidPath, root.seenPath, root.rebootMarkPath]
@@ -622,8 +575,8 @@ ContentPage {
         command: ["touch", root.rebootMarkPath]
     }
 
-    // A marker older than this boot belongs to a reboot that has happened.
-    // A run's own verdict is never overruled here; a marker can only add.
+    // A marker older than this boot is stale. It can only add a reboot, never
+    // overrule a run's own verdict.
     Process {
         id: rebootMarkCheck
         command: ["bash", "-c",
@@ -634,13 +587,12 @@ ContentPage {
         stdout: StdioCollector {
             onStreamFinished: {
                 if (this.text.trim() === "pending" && !root.isRunning)
-                    root.rebootRequired = true;
+                    root.rebootVerdict = true;
             }
         }
     }
 
-    // Says the result on disk has been shown. The window reads it when it
-    // closes and lets the record go.
+    // Marks the result as shown; the window lets the record go when it closes.
     Process {
         id: seenProc
         command: ["touch", root.seenPath]
@@ -652,13 +604,12 @@ ContentPage {
         command: ["cat", root.logPath]
         stdout: StdioCollector {
             onStreamFinished: {
-                const whole = this.text.split("\n").filter(l => l.indexOf("@@MAINSTREAM-UPDATE") !== 0).join("\n");
+                const whole = root.plainText(this.text).split("\n").filter(l => l.indexOf("@@MAINSTREAM-UPDATE") !== 0).join("\n");
                 Quickshell.clipboardText = whole.trim().length > 0 ? whole : root.outputText;
             }
         }
     }
 
-    // One-shot probe for an AUR helper. Exit 0 = yay or paru is on PATH.
     Process {
         id: aurHelperCheck
         command: ["sh", "-c", "command -v yay >/dev/null 2>&1 || command -v paru >/dev/null 2>&1"]
@@ -668,10 +619,15 @@ ContentPage {
         }
     }
 
-    // ── Tips & Info section ──
     ContentSection {
+        id: tipsSection
+        visible: !Config.options.updates.disableTips && !Config.options.updates.showAdvanced
         icon: "lightbulb"
         title: Translation.tr("Tips & Info")
+        onImplicitHeightChanged: {
+            if (visible && implicitHeight > root.cachedTipsHeight)
+                root.cachedTipsHeight = implicitHeight;
+        }
 
         ContentSubsection {
             title: Translation.tr("Before & after the update")
@@ -697,50 +653,60 @@ ContentPage {
 
     }
 
-    // ── Output section ──
     ContentSection {
         icon: "system_update_alt"
         title: Translation.tr("System Update")
 
         headerExtra: [
-            // Shown as soon as it is known, which is before the update starts
-            // whenever the pending list can be read, so nobody starts a run
-            // without knowing it ends in a reboot.
-            // Cut like the buttons beside it (height, corner, padding, icon
-            // size) so the row reads as one set; only the tint says it is a
-            // notice rather than something to press.
-            Rectangle {
+            // Shown before a run starts when the pending list can be read. Red once
+            // a finished run asks for it; then a second click restarts, so a stray one cannot.
+            RippleButtonWithIcon {
                 id: rebootChip
-                visible: root.rebootPredicted || root.rebootRequired
-                // The tooltip takes a parent without a hover state as always
-                // hovered, so the chip has to report its own.
-                property bool hovered: chipHover.hovered
-                implicitWidth: rebootChipRow.implicitWidth + 20
-                implicitHeight: 35
-                radius: Appearance.rounding.small
-                color: root.rebootRequired ? Appearance.m3colors.m3errorContainer : Appearance.m3colors.m3tertiaryContainer
-                RowLayout {
-                    id: rebootChipRow
-                    anchors.centerIn: parent
+                visible: (root.rebootPredicted || root.rebootRequired) && !root.bootBroken
+                readonly property bool canReboot: root.awaitingReboot
+                property bool armed: false
+                onCanRebootChanged: if (!canReboot) armed = false
+                readonly property color colOnChip: root.rebootRequired ? Appearance.m3colors.m3onErrorContainer : Appearance.m3colors.m3onTertiaryContainer
+                colBackground: root.rebootRequired ? Appearance.m3colors.m3errorContainer : Appearance.m3colors.m3tertiaryContainer
+                colBackgroundHover: rebootChip.canReboot ? Appearance.colors.colErrorContainerHover : rebootChip.colBackground
+                colRipple: Appearance.colors.colErrorContainerActive
+                pointingHandCursor: rebootChip.canReboot
+                rippleEnabled: rebootChip.canReboot
+                contentItem: RowLayout {
                     spacing: 5
                     MaterialSymbol {
                         text: "restart_alt"
                         iconSize: Appearance.font.pixelSize.larger
                         fill: 1
-                        color: root.rebootRequired ? Appearance.m3colors.m3onErrorContainer : Appearance.m3colors.m3onTertiaryContainer
+                        color: rebootChip.colOnChip
                     }
                     StyledText {
-                        text: Translation.tr("Reboot required")
+                        text: rebootChip.armed ? Translation.tr("Click again to reboot") : Translation.tr("Reboot required")
                         font.pixelSize: Appearance.font.pixelSize.small
-                        color: root.rebootRequired ? Appearance.m3colors.m3onErrorContainer : Appearance.m3colors.m3onTertiaryContainer
+                        color: rebootChip.colOnChip
                     }
                 }
-                HoverHandler {
-                    id: chipHover
+                onClicked: {
+                    if (!rebootChip.canReboot)
+                        return;
+                    if (!rebootChip.armed) {
+                        rebootChip.armed = true;
+                        chipDisarmTimer.restart();
+                        return;
+                    }
+                    rebootChip.armed = false;
+                    root.requestReboot();
+                }
+                Timer {
+                    id: chipDisarmTimer
+                    interval: 4000
+                    onTriggered: rebootChip.armed = false
                 }
                 StyledToolTip {
                     extraVisibleCondition: rebootChip.visible
-                    text: Translation.tr("This update replaces parts of the running desktop.")
+                    text: rebootChip.canReboot
+                        ? Translation.tr("Reboot to finish the update. Open apps are asked to close first.")
+                        : Translation.tr("This update replaces parts of the running desktop.")
                 }
             },
             RippleButtonWithIcon {
@@ -750,10 +716,10 @@ ContentPage {
             }
         ]
 
-        // The ordinary update finishes it: the helper runs the root half after
-        // the dotfiles step even when there is no new release to apply. Held
-        // back while a reboot is pending, since the password field is too.
+        // A normal run finishes it: the root half runs after the dotfiles step
+        // even with no new release. Hidden during a pending reboot, like the password field.
         NoticeBox {
+            id: pendingNoticeBox
             Layout.fillWidth: true
             visible: root.systemHalfPending && !root.isRunning && !root.awaitingReboot
             materialIcon: "update"
@@ -776,6 +742,7 @@ ContentPage {
 
         // A reboot logs in again as well, so its reminder covers this one.
         NoticeBox {
+            id: reloginNoticeBox
             Layout.fillWidth: true
             visible: root.reloginNeeded && !root.rebootRequired
             materialIcon: "logout"
@@ -783,6 +750,7 @@ ContentPage {
         }
 
         StyledText {
+            id: outputTrimmedText
             visible: root.outputTrimmed
             Layout.fillWidth: true
             wrapMode: Text.Wrap
@@ -792,8 +760,14 @@ ContentPage {
         }
 
         Rectangle {
+            id: outputBox
             Layout.fillWidth: true
-            implicitHeight: 200
+            // Give the output the space previously occupied by the tips and gap,
+            // unless the advanced options are expanded and taking that space.
+            // Deduct any visible notice bubbles above so the password row never gets pushed off-screen.
+            implicitHeight: Math.max(80, 200 + ((Config.options.updates.disableTips && !Config.options.updates.showAdvanced)
+                ? Math.max(tipsSection.implicitHeight, root.cachedTipsHeight) + root.sectionSpacing : 0)
+                - root.extraNoticesHeight)
             radius: Appearance.rounding.small
             color: Appearance.colors.colLayer0
             clip: true
@@ -820,10 +794,8 @@ ContentPage {
                     textFormat: Text.PlainText
                 }
 
-                // Keep the newest line in view unless the reader has scrolled
-                // up to look at something, and come back to following once
-                // they return to the end. This is not tied to the run being
-                // under way, because the result lines land after it ends.
+                // Follows the end unless the reader scrolls up. Not tied to isRunning,
+                // since the result lines land after the run ends.
                 property bool followTail: true
                 onContentYChanged: followTail = atYEnd
                 onContentHeightChanged: {
@@ -837,7 +809,6 @@ ContentPage {
                 }
             }
 
-            // Running indicator
             Rectangle {
                 visible: root.isRunning
                 anchors {
@@ -858,10 +829,8 @@ ContentPage {
             }
         }
 
-        // Clear sits beside the reboot button rather than only in the row
-        // below, which this state hides: a verdict the user disagrees with,
-        // or a run they want to try again, would otherwise have no way out
-        // except actually rebooting.
+        // Clear is offered here too since this state hides the row below; otherwise
+        // the only way out of a reboot verdict would be rebooting.
         RowLayout {
             visible: root.awaitingReboot
             Layout.fillWidth: true
@@ -879,39 +848,27 @@ ContentPage {
             RippleButtonWithIcon {
                 materialIcon: "restart_alt"
                 mainText: Translation.tr("Reboot Now")
-                // The shared path, so windows are snapshotted for the next
-                // login and clients are asked to close first. A bare systemctl
-                // call did neither, and had no fallback when it was refused.
-                onClicked: Session.reboot()
+                onClicked: root.requestReboot()
             }
         }
 
-        // Show-advanced toggle on its own row, left-aligned above the
-        // password / Start row. ConfigSwitch is wider than a button so
-        // pinning it alongside the password field made the row crowded.
         ConfigRow {
             visible: !root.awaitingReboot
             ConfigSwitch {
                 id: advancedToggle
                 buttonIcon: "tune"
                 text: Translation.tr("Show advanced options")
-                checked: false
+                checked: Config.options.updates.showAdvanced
+                onCheckedChanged: Config.options.updates.showAdvanced = checked
             }
-            // Fill the rest of the row with empty space so the toggle
-            // doesn't stretch — ConfigRow uses RowLayout, which would
-            // otherwise distribute width.
             Item { Layout.fillWidth: true }
         }
 
         ConfigRow {
             id: startRow
             visible: !root.awaitingReboot
-            // Password field on the left edge of the row. Captured at
-            // submit, then passed to the helper via sudo -S over stdin
-            // (see helperProc above). Visible field is cleared as soon
-            // as the helper starts so it doesn't sit on screen for the
-            // duration of a 30-minute upgrade. Always present, always
-            // required — no popup polkit dialog as a fallback.
+            // Required for every run, with no polkit dialog fallback; it reaches
+            // sudo -S over stdin and is cleared on submit.
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 38
@@ -976,7 +933,7 @@ ContentPage {
                     buttonIcon: "desktop_windows"
                     text: Translation.tr("Skip system packages")
                     checked: root.flagSkipSystem
-                    onCheckedChanged: root.flagSkipSystem = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipSystem = checked
                     StyledToolTip {
                         text: Translation.tr("Skip the pacman -Syu step.")
                     }
@@ -985,7 +942,7 @@ ContentPage {
                     buttonIcon: "deployed_code"
                     text: Translation.tr("Skip Flatpak apps")
                     checked: root.flagSkipFlatpak
-                    onCheckedChanged: root.flagSkipFlatpak = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipFlatpak = checked
                 }
             }
             ConfigRow {
@@ -994,7 +951,7 @@ ContentPage {
                     buttonIcon: "developer_mode"
                     text: Translation.tr("Skip extras (topgrade)")
                     checked: root.flagSkipExtras
-                    onCheckedChanged: root.flagSkipExtras = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipExtras = checked
                     StyledToolTip {
                         text: Translation.tr("After the primary update, topgrade catches developer-tool ecosystems (cargo, pipx, npm, nix, JetBrains, VS Code, ...). Turn this on to skip that pass — useful if you don't use those tools or topgrade itself is failing for you.")
                     }
@@ -1003,7 +960,7 @@ ContentPage {
                     buttonIcon: "memory"
                     text: Translation.tr("Skip firmware updates")
                     checked: root.flagSkipFirmware
-                    onCheckedChanged: root.flagSkipFirmware = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipFirmware = checked
                     StyledToolTip {
                         text: Translation.tr("Only applies when developer extras runs. Firmware updates (fwupd) can prompt polkit and time out non-interactively.")
                     }
@@ -1015,7 +972,7 @@ ContentPage {
                     buttonIcon: "code"
                     text: Translation.tr("Skip dotfiles")
                     checked: root.flagSkipDotfiles
-                    onCheckedChanged: root.flagSkipDotfiles = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipDotfiles = checked
                     StyledToolTip {
                         text: Translation.tr("Skip the Mainstream dotfiles refresh step (updatems). Dotfiles update only when a new release tag is published upstream; turn this on to manage them manually.")
                     }
@@ -1024,7 +981,7 @@ ContentPage {
                     buttonIcon: "build"
                     text: Translation.tr("Auto-rebuild Quickshell")
                     checked: root.flagAutoRebuildQuickshell
-                    onCheckedChanged: root.flagAutoRebuildQuickshell = checked
+                    onCheckedChanged: Config.options.updates.advanced.autoRebuildQuickshell = checked
                     StyledToolTip {
                         text: Translation.tr("If a Qt update breaks Quickshell's ABI, rebuild the owning package automatically after all other update steps finish.")
                     }
@@ -1036,7 +993,7 @@ ContentPage {
                     buttonIcon: "science"
                     text: Translation.tr("Edge updates")
                     checked: root.flagEdge
-                    onCheckedChanged: root.flagEdge = checked
+                    onCheckedChanged: Config.options.updates.advanced.edge = checked
                     StyledToolTip {
                         text: Translation.tr("Follow the newest pushed work instead of the newest release. Fixes reach you before they are released, and so does anything still being worked on. Turning it off puts you back on the latest release.")
                     }
@@ -1051,20 +1008,27 @@ ContentPage {
                     }
                 }
             }
-            // AUR switch lives last, and only when a helper is installed —
-            // Mainstream ships none, so for most users this control would
-            // toggle a step that can't run.
             ConfigRow {
                 uniform: true
-                visible: root.aurHelperPresent
                 ConfigSwitch {
+                    visible: root.aurHelperPresent
                     buttonIcon: "block"
                     text: Translation.tr("Disable AUR (yay/paru)")
                     checked: root.flagSkipAur
-                    onCheckedChanged: root.flagSkipAur = checked
+                    onCheckedChanged: Config.options.updates.advanced.skipAur = checked
                     StyledToolTip {
                         text: Translation.tr("Skip the AUR update step. On by default — Mainstream doesn't use the AUR and ships no AUR helper. Untick only if you installed yay or paru yourself and want AUR packages updated too.")
                     }
+                }
+                Item {
+                    visible: !root.aurHelperPresent
+                    Layout.fillWidth: true
+                }
+                ConfigSwitch {
+                    buttonIcon: "lightbulb"
+                    text: Translation.tr("Disable tips")
+                    checked: Config.options.updates.disableTips
+                    onCheckedChanged: Config.options.updates.disableTips = checked
                 }
             }
 
@@ -1092,7 +1056,7 @@ ContentPage {
                     StyledText {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: customArgsField.text.length === 0 && !customArgsField.activeFocus
-                        text: Translation.tr("e.g. --only system flatpak")
+                        text: Translation.tr("e.g. --only cargo node")
                         color: Appearance.m3colors.m3outlineVariant
                         font: customArgsField.font
                     }
@@ -1122,10 +1086,6 @@ ContentPage {
                     font.pixelSize: Appearance.font.pixelSize.small
                     color: Appearance.colors.colOnLayer1
                     wrapMode: Text.Wrap
-                    // Force plain-text rendering so the ✓ / ✗ characters
-                    // and explicit \n separators render literally — without
-                    // this AutoText might try to interpret the content as
-                    // rich text.
                     textFormat: Text.PlainText
                 }
             }

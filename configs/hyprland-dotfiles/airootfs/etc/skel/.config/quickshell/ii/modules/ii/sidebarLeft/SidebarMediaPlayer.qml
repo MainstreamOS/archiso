@@ -1,10 +1,12 @@
 pragma ComponentBehavior: Bound
 import qs
 import qs.services
+import "../../../services/mpris-capabilities.js" as Capabilities
 import qs.modules.common
 import qs.modules.common.models
 import qs.modules.common.widgets
 import qs.modules.common.functions
+import qs.modules.ii.mediaControls
 import Qt5Compat.GraphicalEffects
 import QtQuick
 import QtQuick.Controls
@@ -179,6 +181,148 @@ Item {
         color: root.artDominantColor
     }
 
+    // Text keeps its themed color unless it would be lost on what is really behind it, which
+    // with blurred art changes from place to place: under 1.8:1 it moves toward black or
+    // white, only as far as a readable 3:1.
+    readonly property real lostBelow: 1.8
+    readonly property real readableAt: 3
+    readonly property color plainBackdrop: ColorUtils.composite(ColorUtils.transparentize(root.artDominantColor, 0.9),
+        ColorUtils.composite(Appearance.colors.colLayer0, Appearance.wallpaperAverage))
+    // The cover as the blurred background shows it, averaged into a grid over the page.
+    readonly property int sampleColumns: 12
+    readonly property int sampleRows: 24
+    property var artSamples: []
+
+    Canvas {
+        id: artSampler
+        width: 1
+        height: 1
+        opacity: 0
+        readonly property string art: root.shown && root.blurredBackground ? root.displayedArt : ""
+        // Only the cover in view stays loaded, or a long playlist would keep every one it showed.
+        property string loadedArt: ""
+        onArtChanged: {
+            root.artSamples = [];
+            if (loadedArt.length > 0 && loadedArt !== art)
+                unloadImage(loadedArt);
+            loadedArt = art;
+            if (art.length === 0)
+                return;
+            if (isImageLoaded(art))
+                sample();
+            else
+                loadImage(art);
+        }
+        onImageLoaded: {
+            if (art.length > 0 && isImageLoaded(art))
+                sample();
+        }
+        onAvailableChanged: {
+            if (available && art.length > 0 && isImageLoaded(art))
+                sample();
+        }
+        function sample() {
+            if (!available || background.width <= 0 || background.height <= 0)
+                return;
+            const image = getContext("2d").createImageData(art);
+            if (!image || image.width <= 0)
+                return;
+            const pixels = image.data;
+            // The same crop PreserveAspectCrop makes.
+            const cover = Math.max(background.width / image.width, background.height / image.height);
+            const shownWidth = background.width / cover;
+            const shownHeight = background.height / cover;
+            const left = (image.width - shownWidth) / 2;
+            const top = (image.height - shownHeight) / 2;
+            const steps = 3;
+            const samples = [];
+            for (let row = 0; row < root.sampleRows; row++) {
+                for (let column = 0; column < root.sampleColumns; column++) {
+                    let r = 0, g = 0, b = 0;
+                    for (let dy = 0; dy < steps; dy++) {
+                        for (let dx = 0; dx < steps; dx++) {
+                            const x = Math.min(image.width - 1, Math.floor(left + (column + (dx + 0.5) / steps) / root.sampleColumns * shownWidth));
+                            const y = Math.min(image.height - 1, Math.floor(top + (row + (dy + 0.5) / steps) / root.sampleRows * shownHeight));
+                            const i = (y * image.width + x) * 4;
+                            r += pixels[i];
+                            g += pixels[i + 1];
+                            b += pixels[i + 2];
+                        }
+                    }
+                    samples.push(Qt.rgba(r / (255 * steps * steps), g / (255 * steps * steps), b / (255 * steps * steps), 0.5));
+                }
+            }
+            root.artSamples = samples;
+        }
+    }
+
+    function placesBehind(item, width) {
+        if (root.artSamples.length === 0 || !item || background.width <= 0 || background.height <= 0)
+            return [root.plainBackdrop];
+        const shown = Math.min(item.width, width ?? item.width);
+        const corner = item.mapToItem(background, (item.width - shown) / 2, 0);
+        const firstColumn = Math.floor(corner.x / background.width * root.sampleColumns);
+        const lastColumn = Math.floor((corner.x + shown) / background.width * root.sampleColumns);
+        const firstRow = Math.floor(corner.y / background.height * root.sampleRows);
+        const lastRow = Math.floor((corner.y + item.height) / background.height * root.sampleRows);
+        const places = [];
+        for (let row = Math.max(0, firstRow); row <= Math.min(root.sampleRows - 1, lastRow); row++) {
+            for (let column = Math.max(0, firstColumn); column <= Math.min(root.sampleColumns - 1, lastColumn); column++)
+                places.push(ColorUtils.composite(root.artSamples[row * root.sampleColumns + column], root.plainBackdrop));
+        }
+        return places.length > 0 ? places : [root.plainBackdrop];
+    }
+    function readable(color, places) {
+        const worst = c => Math.min(...places.map(place => ColorUtils.contrastRatio(ColorUtils.composite(c, place), place)));
+        if (worst(color) >= root.lostBelow)
+            return color;
+        const towardBlack = ColorUtils.worstContrast("black", places) > ColorUtils.worstContrast("white", places);
+        return ColorUtils.mixUntil(color, towardBlack ? "black" : "white", c => worst(c) >= root.readableAt);
+    }
+
+    property color titleColor: root.blendedColors.colOnLayer0
+    property color artistColor: root.blendedColors.colSubtext
+    property color lyricsColor: root.blendedColors.colOnLayer0
+    property color lyricsDimColor: root.blendedColors.colSubtext
+    property color lyricsActiveColor: root.blendedColors.colPrimary
+    property color timeColor: root.blendedColors.colSubtext
+    function updateTextColors() {
+        // Their fixed frames: the text itself slides out and back when the song changes.
+        const title = root.placesBehind(titleText.parent, titleText.paintedWidth);
+        const artist = root.placesBehind(artistText.parent, artistText.paintedWidth);
+        const lyrics = root.placesBehind(middle);
+        const time = root.placesBehind(timeRow);
+        root.titleColor = root.readable(root.blendedColors.colOnLayer0, title);
+        root.artistColor = root.readable(root.blendedColors.colSubtext, artist);
+        root.lyricsColor = root.readable(root.blendedColors.colOnLayer0, lyrics);
+        root.lyricsDimColor = root.readable(root.blendedColors.colSubtext, lyrics);
+        root.lyricsActiveColor = root.readable(root.blendedColors.colPrimary, lyrics);
+        root.timeColor = root.readable(root.blendedColors.colSubtext, time);
+    }
+    function queueTextColors() {
+        if (root.shown)
+            Qt.callLater(root.updateTextColors);
+    }
+    onArtSamplesChanged: root.queueTextColors()
+    onPlainBackdropChanged: root.queueTextColors()
+    onHeightChanged: {
+        root.queueTextColors();
+        if (artSampler.art.length > 0 && artSampler.isImageLoaded(artSampler.art))
+            artSampler.sample();
+    }
+    Connections {
+        target: root.blendedColors
+        function onColOnLayer0Changed() { root.queueTextColors(); }
+    }
+    Connections {
+        target: titleText
+        function onPaintedWidthChanged() { root.queueTextColors(); }
+    }
+    Connections {
+        target: artistText
+        function onPaintedWidthChanged() { root.queueTextColors(); }
+    }
+
     // ---- playback ----
 
     // A smoother seek bar than the bar's own slower refresh gives.
@@ -192,7 +336,7 @@ Item {
     // A player that never says how long the track is gets its position
     // reported as the length, so the bar would sit full and both times would
     // read the same. Such a track shows how far in it is and nothing else.
-    readonly property bool hasLength: (root.player?.lengthSupported ?? false) && root.player.length > 0
+    readonly property bool hasLength: Capabilities.hasLength(root.player)
     readonly property real trackLength: root.hasLength ? root.player.length : 0
 
     readonly property bool canChangeVolume: MprisController.canChangeVolume
@@ -218,19 +362,6 @@ Item {
         } else {
             root.setVolume(root.volumeBeforeMute[id] ?? 0.5);
         }
-    }
-
-    function playerName(player) {
-        return player?.identity || player?.desktopEntry || Translation.tr("Unknown");
-    }
-
-    // Two windows of one browser are two players with one name, so those
-    // say what they are playing as well.
-    function playerLabel(player) {
-        const name = root.playerName(player);
-        const twins = root.players.filter(other => root.playerName(other) === name).length > 1;
-        const title = StringUtils.cleanMusicTitle(player?.trackTitle);
-        return twins && title ? `${name} · ${title}` : name;
     }
 
     // ---- sizes ----
@@ -310,24 +441,13 @@ Item {
             readonly property real artSide: Math.floor(Math.max(0, Math.min(content.width, content.height * 0.45,
                 content.height - content.otherHeight - content.middleMinimum)))
 
-            StyledComboBox {
+            MediaPlayerSelector {
                 id: playerPicker
-                visible: root.players.length >= 2
                 Layout.fillWidth: true
                 Layout.bottomMargin: content.gap
-                implicitHeight: 36
-                model: root.players.map(player => root.playerLabel(player))
-                currentIndex: root.players.indexOf(root.player)
-                // A new title in one of two browser windows rebuilds the list,
-                // and a rebuilt list puts the choice back at the top. The
-                // picker names the player the controls drive regardless, and
-                // its choice goes back to that player.
-                displayText: root.playerLabel(root.player)
-                onModelChanged: Qt.callLater(playerPicker.followPlayer)
-                function followPlayer() {
-                    playerPicker.currentIndex = Qt.binding(() => root.players.indexOf(root.player));
-                }
-                onActivated: index => MprisController.setActivePlayer(root.players[index])
+                players: root.players
+                player: root.player
+                onPlayerSelected: player => MprisController.setActivePlayer(player)
             }
 
             // ── Album art ──
@@ -338,7 +458,15 @@ Item {
                 Layout.preferredHeight: content.artSide
                 visible: content.artSide >= 72
 
+                // The same raised shadow the island's player card sits on,
+                // so the cover lifts off the page instead of lying flat on it.
+                StyledRectangularShadow {
+                    target: artLoader
+                    visible: artLoader.active
+                }
                 Loader {
+                    id: artLoader
+                    readonly property real radius: Appearance.rounding.normal
                     anchors.fill: parent
                     active: artFrame.visible
                     sourceComponent: roundedArtComponent
@@ -372,7 +500,7 @@ Item {
                         width: parent.width
                         font.pixelSize: Appearance.font.pixelSize.huge
                         font.weight: Font.Bold
-                        color: root.blendedColors.colOnLayer0
+                        color: root.titleColor
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
@@ -400,7 +528,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width
                         font.pixelSize: Appearance.font.pixelSize.large
-                        color: root.blendedColors.colSubtext
+                        color: root.artistColor
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
@@ -432,9 +560,9 @@ Item {
                     visible: root.showLyrics && parent.height >= 24
                     active: root.shown
                     textAlignment: Text.AlignHCenter
-                    textColor: root.blendedColors.colOnLayer0
-                    activeColor: root.blendedColors.colPrimary
-                    dimColor: root.blendedColors.colSubtext
+                    textColor: root.lyricsColor
+                    activeColor: root.lyricsActiveColor
+                    dimColor: root.lyricsDimColor
                     indicatorColor: root.artDominantColor
                     indicatorShapeColor: root.blendedColors.colPrimary
                 }
@@ -511,7 +639,7 @@ Item {
                         Item {
                             Layout.fillWidth: true
                             visible: root.hasLength
-                            implicitHeight: Math.max(seekLoader.implicitHeight, progressLoader.implicitHeight)
+                            implicitHeight: Appearance.sizes.wavySliderHeight
 
                             Loader {
                                 id: seekLoader
@@ -552,12 +680,13 @@ Item {
                         }
 
                         RowLayout {
+                            id: timeRow
                             Layout.fillWidth: true
 
                             StyledText {
                                 visible: root.player?.positionSupported ?? false
                                 font.pixelSize: Appearance.font.pixelSize.small
-                                color: root.blendedColors.colSubtext
+                                color: root.timeColor
                                 font.features: { "tnum": 1 }
                                 text: StringUtils.friendlyTimeForSeconds(root.player?.position ?? 0)
                             }
@@ -565,7 +694,7 @@ Item {
                             StyledText {
                                 visible: root.hasLength
                                 font.pixelSize: Appearance.font.pixelSize.small
-                                color: root.blendedColors.colSubtext
+                                color: root.timeColor
                                 font.features: { "tnum": 1 }
                                 text: StringUtils.friendlyTimeForSeconds(root.trackLength)
                             }

@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import QtQuick.Layouts
 import QtQuick.Controls
 import qs.modules.common
@@ -22,7 +23,7 @@ TextField {
         hintingPreference: Font.PreferFullHinting
         variableAxes: Appearance.font.variableAxes.main
     }
-    renderType: ScreenScale.renderTypeFor(Screen.name)
+    renderType: (QsWindow.window?.nativeTextRendering ?? false) ? Text.NativeRendering : Text.QtRendering
     selectedTextColor: Appearance.colors.colOnSecondaryContainer
     selectionColor: Appearance.colors.colSecondaryContainer
 
@@ -31,4 +32,10 @@ TextField {
         color: Appearance.colors.colLayer1
         radius: Appearance.rounding.full
     }
+
+    // The toolkit grows its own editing menu on a right click; leaving it in
+    // place would open both.
+    ContextMenu.menu: null
+
+    TextFieldContextMenuArea {}
 }

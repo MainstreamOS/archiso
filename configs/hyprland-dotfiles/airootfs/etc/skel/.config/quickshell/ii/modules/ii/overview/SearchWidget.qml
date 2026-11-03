@@ -22,11 +22,19 @@ Item { // Wrapper
     // Exposed so the panel-level wheelOverlay (Overview.qml) can route wheel
     // events into the result list instead of scrolling the outer Flickable.
     property alias appResults: appResults
+    property real maximumResultsHeight: 600
+    property bool quietStyle: false
+    // How wide a quiet search bar runs, to span the panels under it.
+    property real panelWidth: 0
+    property real uiScale: 1
+    property var contentColors: Appearance.launcherContent
+    readonly property real collapsedHeight: searchBar.height + searchBar.verticalPadding * 4 + Appearance.sizes.elevationMargin * root.uiScale * 2
+    signal navigationKeyPressed(var event)
 
     property string searchingText: LauncherSearch.query
     property bool showResults: searchingText != ""
-    implicitWidth: searchWidgetContent.implicitWidth + Appearance.sizes.elevationMargin * 2
-    implicitHeight: searchWidgetContent.implicitHeight + searchBar.verticalPadding * 2 + Appearance.sizes.elevationMargin * 2
+    implicitWidth: searchWidgetContent.implicitWidth + Appearance.sizes.elevationMargin * root.uiScale * 2
+    implicitHeight: searchWidgetContent.implicitHeight + searchBar.verticalPadding * 2 + Appearance.sizes.elevationMargin * root.uiScale * 2
 
     function focusFirstItem() {
         appResults.currentIndex = 0;
@@ -103,21 +111,23 @@ Item { // Wrapper
 
     StyledRectangularShadow {
         target: searchWidgetContent
+        blur: 0.9 * Appearance.sizes.elevationMargin * root.uiScale
+        offset: Qt.vector2d(0, root.uiScale)
+        spread: root.uiScale
         color: Appearance.colors.colLauncherShadow
     }
-    Rectangle { // Background
+    LauncherSearchSurface { // Background
         id: searchWidgetContent
+        uiScale: root.uiScale
+        searchHeight: searchBar.height
         anchors {
             top: parent.top
             horizontalCenter: parent.horizontalCenter
-            topMargin: Appearance.sizes.elevationMargin
+            topMargin: Appearance.sizes.elevationMargin * root.uiScale
         }
         clip: true
-        implicitWidth: columnLayout.implicitWidth
+        implicitWidth: root.quietStyle ? (root.panelWidth > 0 ? root.panelWidth : searchBar.preferredWidth + 14 * root.uiScale) : columnLayout.implicitWidth
         implicitHeight: columnLayout.implicitHeight
-        radius: RoundedCorners.on ? searchBar.height / 2 + searchBar.verticalPadding : 0
-        color: Appearance.colors.colLauncherPanel
-
         Behavior on implicitHeight {
             id: searchHeightBehavior
             enabled: GlobalStates.overviewOpen && root.showResults
@@ -126,6 +136,7 @@ Item { // Wrapper
 
         ColumnLayout {
             id: columnLayout
+            width: root.quietStyle ? searchWidgetContent.width : implicitWidth
             anchors {
                 top: parent.top
                 horizontalCenter: parent.horizontalCenter
@@ -144,14 +155,25 @@ Item { // Wrapper
 
             SearchBar {
                 id: searchBar
-                property real verticalPadding: 4
+                quietStyle: root.quietStyle
+                fillSearchWidth: root.quietStyle
+                uiScale: root.uiScale
+                contentColors: root.contentColors
+                property real verticalPadding: 4 * root.uiScale
                 Layout.fillWidth: true
-                Layout.leftMargin: 10
-                Layout.rightMargin: 4
+                Layout.minimumHeight: root.quietStyle ? 48 * root.uiScale : 0
+                Layout.maximumHeight: root.quietStyle ? 48 * root.uiScale : Infinity
+                Layout.leftMargin: 10 * root.uiScale
+                Layout.rightMargin: 4 * root.uiScale
                 Layout.topMargin: verticalPadding
                 Layout.bottomMargin: verticalPadding
                 Synchronizer on searchingText {
                     property alias source: root.searchingText
+                }
+                onKeyPressed: event => root.navigationKeyPressed(event)
+                onAccepted: {
+                    const item = appResults.itemAtIndex(0);
+                    if (item) item.clicked();
                 }
             }
 
@@ -159,19 +181,19 @@ Item { // Wrapper
                 // Separator
                 visible: root.showResults
                 Layout.fillWidth: true
-                height: 1
-                color: Appearance.launcherContent.colOutlineVariant
+                height: root.uiScale
+                color: root.contentColors.colOutlineVariant
             }
 
             ListView { // App results
                 id: appResults
                 visible: root.showResults
                 Layout.fillWidth: true
-                implicitHeight: Math.min(600, appResults.contentHeight + topMargin + bottomMargin)
+                implicitHeight: Math.min(root.maximumResultsHeight, appResults.contentHeight + topMargin + bottomMargin)
                 clip: true
-                topMargin: 10
-                bottomMargin: 10
-                spacing: 2
+                topMargin: 10 * root.uiScale
+                bottomMargin: 10 * root.uiScale
+                spacing: 2 * root.uiScale
                 KeyNavigation.up: searchBar
                 highlightMoveDuration: 100
 
@@ -212,6 +234,8 @@ Item { // Wrapper
 
                 delegate: SearchItem {
                     id: searchItem
+                    uiScale: root.uiScale
+                    contentColors: root.contentColors
                     // The selectable item for each search result
                     required property var modelData
                     anchors.left: parent?.left

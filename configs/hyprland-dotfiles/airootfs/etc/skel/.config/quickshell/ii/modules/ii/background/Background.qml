@@ -40,8 +40,8 @@ Variants {
 
         // Hide when fullscreen
         property list<HyprlandWorkspace> workspacesForMonitor: Hyprland.workspaces.values.filter(workspace => workspace.monitor && workspace.monitor.name == monitor.name)
-        property var activeWorkspaceWithFullscreen: workspacesForMonitor.filter(workspace => ((workspace.toplevels.values.filter(window => window.wayland?.fullscreen)[0] != undefined) && workspace.active))[0]
-        visible: GlobalStates.screenLocked || (!(activeWorkspaceWithFullscreen != undefined)) || !Config?.options.background.hideWhenFullscreen
+        property bool hasFullscreenWindow: HyprlandData.activeWorkspaceHasFullscreen(modelData.name)
+        visible: GlobalStates.screenLocked || !hasFullscreenWindow || !Config?.options.background.hideWhenFullscreen
 
         // Workspaces
         property HyprlandMonitor monitor: Hyprland.monitorFor(modelData)
@@ -79,6 +79,12 @@ Variants {
         readonly property real parallaxRation: Math.max(1.1, Config.options.background.parallax.workspaceZoom)
         property int wallpaperWidth: modelData.width // Some reasonable init value, to be updated
         property int wallpaperHeight: modelData.height // Some reasonable init value, to be updated
+        // What the picture on its way in decodes to. Its place on screen stays
+        // the old picture's until the swap starts, so nothing moves under the effect.
+        property int decodeWidth: modelData.width
+        property int decodeHeight: modelData.height
+        readonly property real decodeScale: Math.max(logicalScreenWidth / Math.max(1, decodeWidth),
+            logicalScreenHeight / Math.max(1, decodeHeight)) * parallaxRation
         // monitor.width/height are the monitor's physical mode and monitor.scale is the Hyprland
         // scale factor, so dividing gives the two logical edge lengths. Hyprland states a mode in
         // the panel's own orientation, which makes that pair right as a set of magnitudes and
@@ -162,6 +168,17 @@ Variants {
         // that never loads is never the one being carried off.
         property url shownWallpaper: ""
         property bool wallpaperSwapPending: false
+        // The picture being drawn, which follows wallpaperPath once its size is
+        // known and the old picture is ready to cover the change.
+        property string displayedPath: ""
+        property var pendingPicture: null
+        // True for the moment a new size lands, so the picture goes straight to
+        // its place, under the old one, rather than gliding there during the effect.
+        property bool placingPicture: false
+        property bool holdingPlace: false
+        property bool backdropsHeld: false
+        property real heldX: 0
+        property real heldY: 0
 
         // A screen's own picture is known a moment after the shell starts or
         // the monitor is plugged in. Until then a change lands without an
@@ -216,14 +233,93 @@ Variants {
             outgoingRevealed = 0;
         }
 
-        // Runs once both pictures are decoded: the new one underneath is
-        // complete before the old one starts to leave, so no frame shows
-        // the bare background.
-        function maybeStartSwap() {
-            if (!wallpaperSwapPending) return;
-            if (wallpaper.status !== Image.Ready || outgoing.status !== Image.Ready) return;
+        function holdBackdrops() {
+            if (backdropsHeld) return;
+            backdropsHeld = true;
+            wallpaper.backdropFreeze();
+            WallpaperPlacement.freeze(screenName);
+        }
+
+        function letGoBackdrops(fadeMs) {
+            backdropStep.stop();
+            if (!backdropsHeld) return;
+            backdropsHeld = false;
+            wallpaper.backdropRelease(fadeMs);
+            WallpaperPlacement.release(screenName, fadeMs);
+        }
+
+        // What sits at the screen's edges changes partway through the effect, about
+        // when the effect gets there, and is finished changing when the effect is.
+        Timer {
+            id: backdropStep
+            onTriggered: bgRoot.letGoBackdrops(bgRoot.swapRunDuration * 0.65)
+        }
+
+        function placePicture(width, height) {
+            placingPicture = true;
+            wallpaperWidth = width;
+            wallpaperHeight = height;
+            decodeWidth = width;
+            decodeHeight = height;
+            Qt.callLater(() => placingPicture = false);
+        }
+
+        // A picture of known size. With nothing to carry off it comes up at
+        // once. Otherwise the old picture is copied over itself first, so the
+        // new one can load unseen underneath.
+        function pictureMeasured(path, width, height) {
+            if (path === displayedPath) {
+                placePicture(width, height);
+                return;
+            }
+            const effect = Config.options.background.wallpaperTransition;
+            swapAnimation.stop();
+            if (shownWallpaper == "" || !pictureSettled || effect === "none" || wallpaperIsVideo) {
+                finishSwap();
+                wallpaperSwapPending = false;
+                pendingPicture = null;
+                placePicture(width, height);
+                displayedPath = path;
+                return;
+            }
+            resetSwapKnobs();
+            backdropStep.stop();
+            holdBackdrops();
+            pendingPicture = { "path": path, "width": width, "height": height };
+            wallpaperSwapPending = true;
+            if (outgoing.source != shownWallpaper) {
+                outgoing.x = wallpaper.x;
+                outgoing.y = wallpaper.y;
+                outgoing.width = wallpaper.width;
+                outgoing.height = wallpaper.height;
+                outgoing.source = shownWallpaper;
+            }
+            outgoing.opacity = 1;
+            advanceSwap();
+        }
+
+        // Each step waits on the one before: the old picture decoded, then the
+        // new one decoded underneath it. Only then does the new one take its
+        // place and the effect start, so no frame shows either picture out of place.
+        function advanceSwap() {
+            if (!wallpaperSwapPending || outgoing.status !== Image.Ready) return;
+            if (pendingPicture && displayedPath !== pendingPicture.path) {
+                decodeWidth = pendingPicture.width;
+                decodeHeight = pendingPicture.height;
+                displayedPath = pendingPicture.path;
+            }
+            if (wallpaper.status !== Image.Ready) return;
+            // A pan already under way stops where it is, unless a new size moves the picture anyway.
+            const resized = pendingPicture && (pendingPicture.width !== wallpaperWidth || pendingPicture.height !== wallpaperHeight);
+            if (pendingPicture) placePicture(pendingPicture.width, pendingPicture.height);
+            pendingPicture = null;
             wallpaperSwapPending = false;
+            heldX = resized ? wallpaper.pannedX : wallpaper.x;
+            heldY = resized ? wallpaper.pannedY : wallpaper.y;
+            holdingPlace = true;
             swapEffect = TransitionEffects.resolve(Config.options.background.wallpaperTransition);
+            backdropStep.interval = swapRunDuration * 0.35;
+            backdropStep.restart();
             swapAnimation.restart();
         }
 
@@ -233,6 +329,9 @@ Variants {
             shaderTime = 0;
             outgoing.source = "";
             outgoing.opacity = 0;
+            pendingPicture = null;
+            holdingPlace = false;
+            letGoBackdrops(0);
             resetSwapKnobs();
         }
 
@@ -327,14 +426,38 @@ Variants {
         function updateZoomScale() {
             const picture = bgRoot.monitorPicture;
             if (picture && picture.path === bgRoot.wallpaperPath && picture.width > 0 && picture.height > 0) {
-                bgRoot.wallpaperWidth = picture.width;
-                bgRoot.wallpaperHeight = picture.height;
+                bgRoot.pictureMeasured(picture.path, picture.width, picture.height);
                 return;
             }
-            if (getWallpaperSizeProc.running) return;
+            // With no path yet, magick would wait on input that never comes.
+            if (bgRoot.wallpaperPath.length === 0) {
+                getWallpaperSizeProc.path = "";
+                getWallpaperSizeProc.running = false;
+                bgRoot.pictureMeasured(bgRoot.fallbackWallpaper, bgRoot.modelData.width, bgRoot.modelData.height);
+                return;
+            }
+            // Ending a run measures again from its exit, so the newest path is the one sized.
+            if (getWallpaperSizeProc.running) {
+                if (getWallpaperSizeProc.path !== bgRoot.wallpaperPath) {
+                    getWallpaperSizeProc.path = "";
+                    getWallpaperSizeProc.running = false;
+                }
+                return;
+            }
             getWallpaperSizeProc.path = bgRoot.wallpaperPath;
             getWallpaperSizeProc.running = true;
+            measureDeadline.restart();
         }
+        // A picture is never kept off the screen by a measurement that hangs.
+        // It comes up sized to the screen, and a late answer sizes it properly.
+        Timer {
+            id: measureDeadline
+            interval: 3000
+            onTriggered: {
+                bgRoot.pictureMeasured(bgRoot.wallpaperPath || bgRoot.fallbackWallpaper, bgRoot.modelData.width, bgRoot.modelData.height);
+            }
+        }
+        readonly property string fallbackWallpaper: Quickshell.shellPath("assets/images/default_wallpaper.webp")
         Process {
             id: getWallpaperSizeProc
             property string path
@@ -354,9 +477,9 @@ Variants {
                 // A picture that cannot be measured is sized to the screen
                 // rather than to whatever was shown before it.
                 const measured = width > 0 && height > 0;
-                bgRoot.wallpaperWidth = measured ? width : bgRoot.modelData.width;
-                bgRoot.wallpaperHeight = measured ? height : bgRoot.modelData.height;
-                // minSuitableScale is a reactive binding; no manual assignment needed.
+                measureDeadline.stop();
+                bgRoot.pictureMeasured(bgRoot.wallpaperPath || bgRoot.fallbackWallpaper,
+                    measured ? width : bgRoot.modelData.width, measured ? height : bgRoot.modelData.height);
             }
         }
 
@@ -400,31 +523,10 @@ Variants {
                         yScale: bgRoot.incomingZoom
                     }
                 ]
-                onSourceChanged: {
-                    const effect = Config.options.background.wallpaperTransition;
-                    if (bgRoot.shownWallpaper == "" || !bgRoot.pictureSettled || effect === "none" || bgRoot.wallpaperIsVideo
-                            || source == bgRoot.shownWallpaper) {
-                        swapAnimation.stop();
-                        bgRoot.finishSwap();
-                        bgRoot.wallpaperSwapPending = false;
-                        return;
-                    }
-                    // A change during a run starts over from the picture that
-                    // had finished loading, at its place on screen right now.
-                    swapAnimation.stop();
-                    bgRoot.resetSwapKnobs();
-                    outgoing.x = wallpaper.x;
-                    outgoing.y = wallpaper.y;
-                    outgoing.width = wallpaper.width;
-                    outgoing.height = wallpaper.height;
-                    outgoing.opacity = 1;
-                    outgoing.source = bgRoot.shownWallpaper;
-                    bgRoot.wallpaperSwapPending = true;
-                }
                 onStatusChanged: {
                     if (status === Image.Ready) {
                         bgRoot.shownWallpaper = source;
-                        bgRoot.maybeStartSwap();
+                        bgRoot.advanceSwap();
                     } else if (status === Image.Error) {
                         // This screen's own picture would not load (moved,
                         // deleted, or on a drive not mounted yet), so it gives
@@ -499,49 +601,73 @@ Variants {
                     return Math.max(0, Math.min(1, usedFraction));
                 }
 
-                x: {
+                readonly property real pannedX: {
                     if (bgRoot.logicalScreenWidth > width) {
                         // Center the picture
                         return (bgRoot.logicalScreenWidth - width) / 2;
                     }
                     return - bgRoot.parallaxTotalPixelsX * usedFractionX;
                 }
-                y: {
+                readonly property real pannedY: {
                     if (bgRoot.logicalScreenHeight > height) {
                         // Center the picture
                         return (bgRoot.logicalScreenHeight - height) / 2;
                     }
                     return - bgRoot.parallaxTotalPixelsY * usedFractionY;
                 }
+                // Still under a transition. A panel closing as the picture is chosen
+                // would pan it mid-effect, by far the most on a very wide picture.
+                x: bgRoot.holdingPlace ? bgRoot.heldX : pannedX
+                y: bgRoot.holdingPlace ? bgRoot.heldY : pannedY
 
                 // Fall back to the bundled default wallpaper when no path is set
                 // (e.g. a fresh install before a wallpaper has been chosen), so the
                 // background is never blank.
-                source: bgRoot.wallpaperPath || Quickshell.shellPath("assets/images/default_wallpaper.webp")
+                source: bgRoot.displayedPath
                 fillMode: Image.PreserveAspectCrop
                 Behavior on x {
+                    enabled: !bgRoot.placingPicture
                     NumberAnimation {
                         duration: 600
                         easing.type: Easing.OutCubic
                     }
                 }
                 Behavior on y {
+                    enabled: !bgRoot.placingPicture
                     NumberAnimation {
                         duration: 600
                         easing.type: Easing.OutCubic
                     }
                 }
+                // For what samples this picture: the widgets over it move after it does.
+                signal backdropMoved()
+                signal backdropFreeze()
+                signal backdropRelease(real fadeMs)
                 sourceSize {
                     // Decode at physical pixels on HiDPI displays. The Image's
                     // width/height (logical px) and all parallax math stay
                     // unchanged — only the pixel buffer gets denser, which
                     // costs proportional VRAM but keeps detail when the GPU
                     // resamples during pan.
-                    width: Math.min(bgRoot.wallpaperWidth, bgRoot.scaledWallpaperWidth * Math.max(1, bgRoot.monitor?.scale ?? 1))
-                    height: Math.min(bgRoot.wallpaperHeight, bgRoot.scaledWallpaperHeight * Math.max(1, bgRoot.monitor?.scale ?? 1))
+                    width: Math.min(bgRoot.decodeWidth, bgRoot.decodeWidth * bgRoot.decodeScale * Math.max(1, bgRoot.monitor?.scale ?? 1))
+                    height: Math.min(bgRoot.decodeHeight, bgRoot.decodeHeight * bgRoot.decodeScale * Math.max(1, bgRoot.monitor?.scale ?? 1))
                 }
                 width: bgRoot.scaledWallpaperWidth
                 height: bgRoot.scaledWallpaperHeight
+            }
+
+            QtObject {
+                readonly property var placement: ({
+                    "path": bgRoot.displayedPath,
+                    "video": bgRoot.wallpaperIsVideo,
+                    "x": wallpaper.x,
+                    "y": wallpaper.y,
+                    "width": wallpaper.width,
+                    "height": wallpaper.height,
+                })
+                onPlacementChanged: WallpaperPlacement.publish(bgRoot.modelData.name, placement)
+                Component.onCompleted: WallpaperPlacement.publish(bgRoot.modelData.name, placement)
+                Component.onDestruction: WallpaperPlacement.publish(bgRoot.modelData.name, null)
             }
 
             // mpvpaper draws a video wallpaper on its own surface, which this
@@ -608,7 +734,7 @@ Variants {
                     // delete it) is simply not shown leaving; the new one is
                     // already underneath.
                     onStatusChanged: {
-                        if (status === Image.Ready) bgRoot.maybeStartSwap();
+                        if (status === Image.Ready) bgRoot.advanceSwap();
                         else if (status === Image.Error) {
                             bgRoot.wallpaperSwapPending = false;
                             bgRoot.finishSwap();
@@ -633,9 +759,8 @@ Variants {
 
             Loader {
                 id: blurLoader
-                active: Config.options.lock.blur.enable && (GlobalStates.screenLocked || scaleAnim.running || GlobalStates.overviewOpen)
+                active: Config.options.lock.blur.enable && (GlobalStates.screenLocked || scaleAnim.running)
                 anchors.fill: wallpaper
-                // extraZoom only applies to the lock screen, not the overview
                 scale: GlobalStates.screenLocked ? Config.options.lock.blur.extraZoom : 1
                 Behavior on scale {
                     NumberAnimation {
@@ -672,10 +797,7 @@ Variants {
                         onTriggered: lockBlurThrottle.scheduleUpdate()
                     }
                     source: lockBlur.capped ? lockBlurThrottle : lockBlur.liveSource
-                    // Full lock radius when locked; slightly lighter blur for overview
-                    radius: GlobalStates.screenLocked
-                        ? Config.options.lock.blur.radius
-                        : (GlobalStates.overviewOpen ? Config.options.lock.blur.radius : 0)
+                    radius: GlobalStates.screenLocked ? Config.options.lock.blur.radius : 0
                     samples: Config.options.lock.blur.radius * 2 + 1
                     Behavior on radius {
                         NumberAnimation {
@@ -687,8 +809,7 @@ Variants {
 
                     Rectangle {
                         anchors.fill: parent
-                        // Lock screen: full dim; overview: lighter dim
-                        opacity: GlobalStates.screenLocked ? 1 : (GlobalStates.overviewOpen ? 0.85 : 0)
+                        opacity: GlobalStates.screenLocked ? 1 : 0
                         color: CF.ColorUtils.transparentize(Appearance.colors.colLayer0, 0.7)
                         Behavior on opacity {
                             NumberAnimation {
@@ -698,6 +819,20 @@ Variants {
                             }
                         }
                     }
+                }
+            }
+
+            // This spans the screen rather than following wallpaper parallax.
+            // Keep it below the movable cards, in screen coordinates.
+            FadeLoader {
+                shown: Config.options.background.widgets.visualizer.enable
+                sourceComponent: VisualizerWidget {
+                    screenWidth: bgRoot.screen.width
+                    screenHeight: bgRoot.screen.height
+                    scaledScreenWidth: bgRoot.screen.width
+                    scaledScreenHeight: bgRoot.screen.height
+                    wallpaperScale: 1
+                    wallpaperItem: bgRoot.wallpaperIsVideo ? null : wallpaper
                 }
             }
 
@@ -720,8 +855,15 @@ Variants {
                 readonly property real wallpaperTotalOffsetX: wallpaper.x - baseWallpaperOffsetX
                 readonly property real wallpaperTotalOffsetY: wallpaper.y - baseWallpaperOffsetY
                 readonly property bool locked: GlobalStates.screenLocked
-                x: wallpaperTotalOffsetX * parallaxFactor * !locked
-                y: wallpaperTotalOffsetY * parallaxFactor * !locked
+                // How far through its pan the picture is, carried over at the distance a
+                // picture the screen's shape pans. A very wide picture pans several times
+                // further, and that isn't a reason for the widgets to move with it.
+                readonly property real panShareX: bgRoot.parallaxTotalPixelsX > 0 ? wallpaperTotalOffsetX / bgRoot.parallaxTotalPixelsX : 0
+                readonly property real panShareY: bgRoot.parallaxTotalPixelsY > 0 ? wallpaperTotalOffsetY / bgRoot.parallaxTotalPixelsY : 0
+                x: panShareX * bgRoot.logicalScreenWidth * (bgRoot.parallaxRation - 1) * parallaxFactor * !locked
+                y: panShareY * bgRoot.logicalScreenHeight * (bgRoot.parallaxRation - 1) * parallaxFactor * !locked
+                onXChanged: wallpaper.backdropMoved()
+                onYChanged: wallpaper.backdropMoved()
 
                 transitions: Transition {
                     PropertyAnimation {
@@ -738,8 +880,8 @@ Variants {
                 }
 
                 FadeLoader {
-                    shown: Config.options.background.widgets.visualizer.enable
-                    sourceComponent: VisualizerWidget {
+                    shown: Config.options.background.widgets.customImage.enable
+                    sourceComponent: CustomImage {
                         screenWidth: bgRoot.screen.width
                         screenHeight: bgRoot.screen.height
                         scaledScreenWidth: bgRoot.screen.width
@@ -749,15 +891,42 @@ Variants {
                     }
                 }
 
+                // Before the other widgets, so the depth cutout above it goes over the clock alone.
                 FadeLoader {
-                    shown: Config.options.background.widgets.customImage.enable
-                    sourceComponent: CustomImage {
+                    id: clockLoader
+                    shown: Config.options.background.widgets.clock.enable
+                    sourceComponent: ClockWidget {
                         screenWidth: bgRoot.screen.width
                         screenHeight: bgRoot.screen.height
                         scaledScreenWidth: bgRoot.screen.width
                         scaledScreenHeight: bgRoot.screen.height
                         wallpaperScale: 1
                         wallpaperItem: bgRoot.wallpaperIsVideo ? null : wallpaper
+                        hasActiveMusic: widgetCanvas.hasActiveMusic
+                    }
+                }
+
+                ClockDepthCutout {
+                    x: wallpaper.x - widgetCanvas.x
+                    y: wallpaper.y - widgetCanvas.y
+                    width: wallpaper.width
+                    height: wallpaper.height
+                    sourceSize.width: wallpaper.sourceSize.width
+                    sourceSize.height: wallpaper.sourceSize.height
+                    picture: CF.FileUtils.trimFileProtocol(wallpaper.source.toString())
+                    allowed: !bgRoot.wallpaperSwapPending && !swapAnimation.running && !GlobalStates.screenLocked
+                    wanted: Config.options.background.widgets.clock.depthEffect
+                        && Config.options.background.widgets.clock.enable
+                        && !Config.options.background.widgets.clock.showOnlyWhenLocked
+                        && !bgRoot.wallpaperIsVideo
+                    // Measured against the centered picture, so parallax doesn't move it.
+                    region: {
+                        const clock = clockLoader.item;
+                        if (!clock || wallpaper.width <= 0 || wallpaper.height <= 0)
+                            return Qt.rect(0, 0, 0, 0);
+                        return Qt.rect((clock.x - widgetCanvas.baseWallpaperOffsetX) / wallpaper.width,
+                            (clock.y - widgetCanvas.baseWallpaperOffsetY) / wallpaper.height,
+                            clock.width / wallpaper.width, clock.height / wallpaper.height);
                     }
                 }
 
@@ -782,19 +951,6 @@ Variants {
                         scaledScreenHeight: bgRoot.screen.height
                         wallpaperScale: 1
                         wallpaperItem: bgRoot.wallpaperIsVideo ? null : wallpaper
-                    }
-                }
-
-                FadeLoader {
-                    shown: Config.options.background.widgets.clock.enable
-                    sourceComponent: ClockWidget {
-                        screenWidth: bgRoot.screen.width
-                        screenHeight: bgRoot.screen.height
-                        scaledScreenWidth: bgRoot.screen.width
-                        scaledScreenHeight: bgRoot.screen.height
-                        wallpaperScale: 1
-                        wallpaperItem: bgRoot.wallpaperIsVideo ? null : wallpaper
-                        hasActiveMusic: widgetCanvas.hasActiveMusic
                     }
                 }
 

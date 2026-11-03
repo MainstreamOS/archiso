@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
+import qs.modules.settings.bar
 import qs.modules.settings.services
 
 ContentPage {
@@ -81,8 +82,10 @@ ContentPage {
                 Layout.preferredWidth: 220
                 model: [
                     { displayName: Translation.tr("None"), icon: "block", value: "none" },
+                    { displayName: Translation.tr("Minimal"), icon: "fiber_manual_record", value: "minimal" },
                     { displayName: Translation.tr("Dashes"), icon: "remove", value: "dashes" },
                     { displayName: Translation.tr("Dots"), icon: "more_horiz", value: "dots" },
+                    { displayName: Translation.tr("Minimal and badges"), icon: "fiber_manual_record", value: "minimal-badge" },
                     { displayName: Translation.tr("Count badge"), icon: "counter_2", value: "badge" },
                     { displayName: Translation.tr("Dashes and badges"), icon: "line_end_circle", value: "dashes-badge" },
                     { displayName: Translation.tr("Dots and badges"), icon: "pending", value: "dots-badge" }
@@ -150,6 +153,7 @@ ContentPage {
                     { displayName: Translation.tr("None"), icon: "block", value: "off" },
                     { displayName: Translation.tr("Magnify"), icon: "zoom_in", value: "magnify" },
                     { displayName: Translation.tr("Glow"), icon: "blur_on", value: "glow" },
+                    { displayName: Translation.tr("Bubble"), icon: "bubble_chart", value: "bubble" },
                 ]
                 currentIndex: {
                     const idx = model.findIndex(item => item.value === Config.options.dock.hoverEffect);
@@ -159,9 +163,37 @@ ContentPage {
             }
         }
 
+        ConfigRow {
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            OptionalMaterialSymbol {
+                icon: "move_item"
+                Layout.alignment: Qt.AlignVCenter
+            }
+            StyledText {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 6
+                text: Translation.tr("Move to workspace shows")
+                color: Appearance.colors.colOnSecondaryContainer
+            }
+            StyledComboBox {
+                textRole: "displayName"
+                Layout.fillWidth: false
+                Layout.preferredWidth: 220
+                model: [
+                    { displayName: Translation.tr("Workspace numbers"), icon: "tag", value: "numbers" },
+                    { displayName: Translation.tr("Named workspaces"), icon: "label", value: "named" },
+                    { displayName: Translation.tr("Both"), icon: "stacks", value: "both" }
+                ]
+                currentIndex: Math.max(0, model.findIndex(item => item.value === Config.options.dock.moveToWorkspaceShows))
+                onActivated: index => Config.options.dock.moveToWorkspaceShows = model[index].value
+            }
+        }
+
         // The glow's strength is what that effect is chosen for, so it leads.
         ConfigSlider {
-            visible: Config.options.dock.hoverEffect === "glow"
+            visible: Appearance.sizes.dockHoverEffect === "glow"
             text: Translation.tr("Glow intensity")
             buttonIcon: "flare"
             stopIndicatorValues: [Appearance.sizes.dockGlowIntensityStock]
@@ -180,7 +212,7 @@ ContentPage {
         // and range: the wave has room to be dramatic, the glow's lift is an
         // accent and the track keeps it one.
         ConfigSlider {
-            visible: Config.options.dock.hoverEffect !== "off"
+            visible: ["magnify", "glow"].includes(Appearance.sizes.dockHoverEffect)
             text: Translation.tr("Magnify amount")
             buttonIcon: "zoom_in"
             stopIndicatorValues: [Appearance.sizes.dockHoverMagnifyStock]
@@ -238,6 +270,24 @@ ContentPage {
 
         ConfigRow {
             uniform: true
+            ConfigSwitch {
+                buttonIcon: "colors"
+                text: Translation.tr("Tint app icons")
+                checked: Config.options.dock.monochromeIcons
+                onCheckedChanged: {
+                    Config.options.dock.monochromeIcons = checked;
+                }
+            }
+            ConfigSwitch {
+                buttonIcon: "splitscreen_left"
+                text: Translation.tr("Icon separators")
+                checked: Config.options.dock.showIconSeparators
+                onCheckedChanged: Config.options.dock.showIconSeparators = checked
+            }
+        }
+
+        ConfigRow {
+            uniform: true
             Layout.fillWidth: true
             ConfigSwitch {
                 buttonIcon: "volume_up"
@@ -274,15 +324,6 @@ ContentPage {
                 }
             }
         }
-
-        ConfigSwitch {
-            buttonIcon: "colors"
-            text: Translation.tr("Tint app icons")
-            checked: Config.options.dock.monochromeIcons
-            onCheckedChanged: {
-                Config.options.dock.monochromeIcons = checked;
-            }
-        }
     }
 
     ContentSection {
@@ -309,6 +350,52 @@ ContentPage {
                 if (stepped === Config.options.dock.iconSize)
                     return;
                 Config.options.dock.iconSize = stepped;
+            }
+        }
+
+        ConfigSlider {
+            visible: Config.options.dock.showOverviewButton
+            text: Translation.tr("Launcher icon size")
+            buttonIcon: "apps"
+            from: 0.4
+            to: 3
+            stopIndicatorValues: [1]
+            value: Appearance.sizes.dockLauncherScale
+            onMoved: {
+                const stepped = Math.round(value * 20) / 20;
+                const wanted = stepped === 1 ? -1 : stepped;
+                if (wanted !== Config.options.dock.launcherScale) Config.options.dock.launcherScale = wanted;
+            }
+        }
+
+        ConfigSlider {
+            visible: Config.options.dock.showOverviewButton
+            text: Translation.tr("Launcher dot spacing")
+            buttonIcon: "space_bar"
+            from: 0
+            to: 0.4
+            stopIndicatorValues: [Appearance.sizes.dockLauncherDotGapStock]
+            value: Appearance.sizes.dockLauncherDotGap
+            onMoved: {
+                const stepped = Math.round(value * 200) / 200;
+                const wanted = stepped === Appearance.sizes.dockLauncherDotGapStock ? -1 : stepped;
+                if (wanted !== Config.options.dock.launcherDotGap) Config.options.dock.launcherDotGap = wanted;
+            }
+        }
+
+        ConfigSlider {
+            visible: Config.options.dock.cornerStyle === "float"
+            text: Translation.tr("Screen-edge padding")
+            buttonIcon: "padding"
+            from: 0
+            to: Appearance.sizes.dockEdgePaddingMax
+            stopIndicatorValues: [Appearance.sizes.dockEdgePaddingStock]
+            value: Config.options.dock.edgePadding >= 0
+                ? Appearance.sizes.dockEdgeGap : Appearance.sizes.dockEdgePaddingStock
+            onMoved: {
+                const stepped = Math.round(value);
+                const wanted = stepped === Appearance.sizes.dockEdgePaddingStock ? -1 : stepped;
+                if (wanted !== Config.options.dock.edgePadding) Config.options.dock.edgePadding = wanted;
             }
         }
 
@@ -358,18 +445,27 @@ ContentPage {
         // Hug shows neither roundness, so what those two hold belongs to
         // the style it was last left for and is no reason to offer a reset.
         ConfigResetButton {
-            visible: Config.options.dock.iconSize >= 0
+            visible: ((Config.options.dock.cornerStyle === "float" && Config.options.dock.edgePadding >= 0)
+                || Config.options.dock.iconSize >= 0
+                || Config.options.dock.launcherScale >= 0 || Config.options.dock.launcherDotGap >= 0
                 || (Config.options.dock.cornerStyle !== "span"
-                    && (Config.options.dock.radius >= 0 || Config.options.dock.topRadius >= 0))
+                    && (Config.options.dock.radius >= 0 || Config.options.dock.topRadius >= 0)))
             Layout.leftMargin: 8
             Layout.topMargin: 2
             buttonText: Translation.tr("Reset to default shape")
             onClicked: {
                 Config.options.dock.iconSize = -1
+                Config.options.dock.launcherScale = -1
+                Config.options.dock.launcherDotGap = -1
+                Config.options.dock.edgePadding = -1
                 Config.options.dock.radius = -1
                 Config.options.dock.topRadius = -1
             }
         }
+    }
+
+    BackdropSection {
+        surface: Config.options.dock
     }
 
     ContentSection {
@@ -385,8 +481,8 @@ ContentPage {
 
         ConfigSlider {
             text: Translation.tr("Background")
-            visible: Config.options.dock.showBackground
-            stopIndicatorValues: [Appearance.colors.layer0StockAlpha]
+            visible: Appearance.sizes.dockShowBackground
+            stopIndicatorValues: [Appearance.colors.dockStockAlpha]
             buttonIcon: "wallpaper"
             // The track stops where the dock stops being frosted rather than at
             // nothing, so every point along it answers the same way. Running it
@@ -395,7 +491,7 @@ ContentPage {
             to: 1
             value: Math.max(Appearance.colors.surfaceOpacityFloor,
                 Config.options.dock.backgroundOpacity < 0
-                    ? Appearance.colors.layer0StockAlpha : Config.options.dock.backgroundOpacity)
+                    ? Appearance.colors.dockStockAlpha : Config.options.dock.backgroundOpacity)
             onMoved: {
                 if (Math.abs(value - Config.options.dock.backgroundOpacity) < 0.005)
                     return;
@@ -431,7 +527,7 @@ ContentPage {
         }
 
         ColorField {
-            visible: ["badge", "dashes-badge", "dots-badge"].includes(Config.options.dock.indicatorStyle)
+            visible: ["badge", "minimal-badge", "dashes-badge", "dots-badge"].includes(Config.options.dock.indicatorStyle)
             text: Translation.tr("Badge text")
             allowEmpty: true
             buttonIcon: "format_color_text"
@@ -444,7 +540,7 @@ ContentPage {
         }
 
         ColorField {
-            visible: ["badge", "dashes-badge", "dots-badge"].includes(Config.options.dock.indicatorStyle)
+            visible: ["badge", "minimal-badge", "dashes-badge", "dots-badge"].includes(Config.options.dock.indicatorStyle)
             text: Translation.tr("Badge background")
             allowEmpty: true
             buttonIcon: "counter_2"
@@ -457,7 +553,7 @@ ContentPage {
         }
 
         ColorField {
-            visible: Config.options.dock.hoverEffect === "glow"
+            visible: Appearance.sizes.dockHoverEffect === "glow"
             text: Translation.tr("Glow color")
             allowEmpty: true
             buttonIcon: "blur_on"

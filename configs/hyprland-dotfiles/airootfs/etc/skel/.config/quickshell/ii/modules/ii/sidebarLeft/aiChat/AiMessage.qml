@@ -6,57 +6,119 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
+import "../../../common/functions/markdownblocks.js" as MarkdownBlocks
+import "../../../../services/ai/sink.js" as Sink
 
 Rectangle {
     id: root
-    property int messageIndex
-    property var messageData
-    property var messageInputField
+    property string messageId
+    property var messageData: null
+    readonly property var modelEntry: {
+        const models = Ai.models;
+        const id = root.messageData?.model ?? "";
+        return (models && Object.prototype.hasOwnProperty.call(models, id)) ? models[id] : null;
+    }
 
-    property real messagePadding: 7
-    property real contentSpacing: 3
+    property real messagePadding: 10
+    property real contentSpacing: 6
 
     property bool enableMouseSelection: false
     property bool renderMarkdown: true
     property bool editing: false
 
-    property list<var> messageBlocks: StringUtils.splitMarkdownBlocks(root.messageData?.content)
-
-    anchors.left: parent?.left
-    anchors.right: parent?.right
-    implicitHeight: columnLayout.implicitHeight + root.messagePadding * 2
-
-    radius: Appearance.rounding.normal
-    color: Appearance.colors.colLayer1
-
-    function saveMessage() {
-        if (!root.editing) return;
-        // Get all Loader children (each represents a segment)
-        const segments = messageContentColumnLayout.children
-            .map(child => child.segment)
-            .filter(segment => (segment));
-
-        // Reconstruct markdown
-        const newContent = segments.map(segment => {
-            if (segment.type === "code") {
-                const lang = segment.lang ? segment.lang : "";
-                // Remove trailing newlines
-                const code = segment.content.replace(/\n+$/, "");
-                return "```" + lang + "\n" + code + "\n```";
-            } else {
-                return segment.content;
-            }
-        }).join("");
-
-        root.editing = false
-        root.messageData.content = newContent;
+    readonly property string role: root.messageData?.role ?? ""
+    // Function and command outputs are stored as user messages but belong to a tool.
+    readonly property bool isToolOutput: root.role !== "assistant" && (root.messageData?.functionName ?? "").length > 0
+    readonly property bool isUserMessage: root.role === "user" && !root.isToolOutput
+    readonly property color headerColor: root.isUserMessage ? Appearance.chatBubble.mineText
+        : root.role === "assistant" ? Appearance.chatBubble.theirsText : Appearance.colors.colSubtext
+    // The model still gets the answer's text as the user turn.
+    readonly property string answer: root.messageData?.answer ?? ""
+    readonly property string toolTitle: {
+        if (!root.isToolOutput) return "";
+        const activities = root.messageData?.activities ?? [];
+        const command = activities.find(a => a?.kind === "command" && a?.target);
+        return command ? String(command.target).split("\n")[0] : (root.messageData?.functionName ?? "");
     }
+
+    property var splitter: MarkdownBlocks.createSplitter()
+    property var blocks: []
+    property string openBlockContent: ""
+
+    function refresh(): void {
+        const data = root.messageData;
+        if (!data) {
+            if (root.blocks.length > 0) root.blocks = [];
+            root.openBlockContent = "";
+            return;
+        }
+        const next = root.splitter.update(data.content, data.contentRevision, data.done);
+        if (next !== root.blocks) root.blocks = next;
+        root.openBlockContent = root.splitter.openContent();
+    }
+
+    onMessageDataChanged: {
+        root.splitter = MarkdownBlocks.createSplitter();
+        root.refresh();
+    }
+    Component.onCompleted: root.refresh()
+
+    Connections {
+        target: root.messageData
+        function onContentChanged() { root.refresh(); }
+        function onDoneChanged() { root.refresh(); }
+        function onContentRevisionChanged() { root.refresh(); }
+    }
+
+    function blockText(block): string {
+        return block.completed ? root.splitter.content(block.key) : root.openBlockContent;
+    }
+
+    function copyText(): string {
+        const parts = [];
+        for (const block of root.blocks) {
+            if (block.type === "text") parts.push(root.blockText(block));
+            else if (block.type === "code") parts.push(MarkdownBlocks.fence(block.lang, root.blockText(block)));
+        }
+        return Sink.unescapeThinkTags(parts.join("")).trim();
+    }
+
+    function saveMessage(): void {
+        if (!root.editing) return;
+        const parts = [];
+        for (let i = 0; i < blockRepeater.count; i++) {
+            const item = blockRepeater.itemAt(i);
+            if (item && typeof item.sourceText === "function") parts.push(item.sourceText());
+        }
+        root.editing = false;
+        if (!root.messageData) return;
+        Ai.updateMessageContent(root.messageId, parts.join(""));
+    }
+
+    TextMetrics {
+        id: userTextMetrics
+        font.family: Appearance.font.family.reading
+        font.pixelSize: Appearance.font.pixelSize.small
+        text: root.isUserMessage ? (root.messageData?.content ?? "") : ""
+    }
+
+    anchors.left: root.isUserMessage ? undefined : parent?.left
+    anchors.right: parent?.right
+    width: parent ? (root.isUserMessage
+        ? Math.min(parent.width * 0.88, Math.max(180, userTextMetrics.boundingRect.width + root.messagePadding * 2 + 16))
+        : parent.width) : 0
+    implicitHeight: root.answer ? answerLine.implicitHeight + root.messagePadding * 2 : columnLayout.implicitHeight + root.messagePadding * 2
+
+    radius: 14
+    color: root.answer ? "transparent" : root.isUserMessage ? Appearance.chatBubble.mine
+        : root.role === "assistant" ? Appearance.chatBubble.theirs
+        : root.isToolOutput ? Appearance.colors.colLayer2 : "transparent"
 
     Keys.onPressed: (event) => {
         if ( // Prevent de-select
-            event.key === Qt.Key_Control || 
-            event.key == Qt.Key_Shift || 
-            event.key == Qt.Key_Alt || 
+            event.key === Qt.Key_Control ||
+            event.key == Qt.Key_Shift ||
+            event.key == Qt.Key_Alt ||
             event.key == Qt.Key_Meta
         ) {
             event.accepted = true
@@ -68,8 +130,27 @@ Rectangle {
         }
     }
 
+    RowLayout {
+        id: answerLine
+        visible: !!root.answer
+        anchors.centerIn: parent
+        spacing: 6
+
+        MaterialSymbol {
+            iconSize: Appearance.font.pixelSize.normal
+            color: Appearance.colors.colSubtext
+            text: root.answer === "approved" ? "check" : "close"
+        }
+        StyledText {
+            font.pixelSize: Appearance.font.pixelSize.small
+            color: Appearance.colors.colSubtext
+            text: root.answer === "approved" ? Translation.tr("Approved") : Translation.tr("Declined")
+        }
+    }
+
     ColumnLayout { // Main layout of the whole thing
         id: columnLayout
+        visible: !root.answer
 
         anchors.left: parent.left
         anchors.right: parent.right
@@ -77,195 +158,172 @@ Rectangle {
         anchors.margins: messagePadding
         spacing: root.contentSpacing
 
-        Rectangle {
+        RowLayout {
             Layout.fillWidth: true
-            implicitWidth: headerRowLayout.implicitWidth + 4 * 2
-            implicitHeight: headerRowLayout.implicitHeight + 4 * 2
-            color: Appearance.colors.colSecondaryContainer
-            radius: Appearance.rounding.small
-        
-            RowLayout { // Header
-                id: headerRowLayout
-                anchors {
-                    fill: parent
-                    margins: 4
+            spacing: 6
+
+            CustomIcon {
+                visible: root.role === "assistant" && !!root.modelEntry?.icon
+                implicitWidth: 16
+                implicitHeight: 16
+                source: root.modelEntry?.icon ?? ""
+                colorize: true
+                color: root.headerColor
+            }
+
+            MaterialSymbol {
+                visible: root.role !== "assistant" || !root.modelEntry?.icon
+                text: root.isToolOutput ? "terminal" : root.isUserMessage ? "person" : "neurology"
+                iconSize: 16
+                color: root.headerColor
+            }
+
+            StyledText {
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                font.pixelSize: Appearance.font.pixelSize.smaller
+                font.weight: Font.Medium
+                color: root.headerColor
+                text: root.role === "assistant"
+                    ? (root.modelEntry?.name ?? root.messageData?.model ?? "").replace(/^Custom:\s*/i, "")
+                    : root.isToolOutput ? root.toolTitle : root.isUserMessage ? Translation.tr("You") : Translation.tr("Interface")
+            }
+
+            MaterialSymbol {
+                visible: root.role === "interface"
+                text: "visibility_off"
+                iconSize: 16
+                color: Appearance.colors.colSubtext
+            }
+
+            RippleButton {
+                id: copyButton
+                property bool activated: false
+                implicitWidth: 28
+                implicitHeight: 28
+                buttonRadius: 8
+                Accessible.name: Translation.tr("Copy message")
+                onClicked: {
+                    Quickshell.clipboardText = root.copyText();
+                    activated = true;
+                    copyIconTimer.restart();
                 }
-                spacing: 18
-
-                Item { // Name
-                    id: nameWrapper
-                    implicitHeight: Math.max(nameRowLayout.implicitHeight + 5 * 2, 30)
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignVCenter
-
-                    RowLayout {
-                        id: nameRowLayout
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 10
-                        spacing: 12
-
-                        Item {
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.fillHeight: true
-                            implicitWidth: messageData?.role == 'assistant' ? modelIcon.width : roleIcon.implicitWidth
-                            implicitHeight: messageData?.role == 'assistant' ? modelIcon.height : roleIcon.implicitHeight
-
-                            CustomIcon {
-                                id: modelIcon
-                                anchors.centerIn: parent
-                                visible: messageData?.role == 'assistant' && Ai.models[messageData?.model].icon
-                                width: Appearance.font.pixelSize.large
-                                height: Appearance.font.pixelSize.large
-                                source: messageData?.role == 'assistant' ? Ai.models[messageData?.model].icon :
-                                    messageData?.role == 'user' ? 'linux-symbolic' : 'desktop-symbolic'
-
-                                colorize: true
-                                color: Appearance.m3colors.m3onSecondaryContainer
-                            }
-
-                            MaterialSymbol {
-                                id: roleIcon
-                                anchors.centerIn: parent
-                                visible: !modelIcon.visible
-                                iconSize: Appearance.font.pixelSize.larger
-                                color: Appearance.m3colors.m3onSecondaryContainer
-                                text: messageData?.role == 'user' ? 'person' : 
-                                    messageData?.role == 'interface' ? 'settings' : 
-                                    messageData?.role == 'assistant' ? 'neurology' : 
-                                    'computer'
-                            }
-                        }
-
-                        StyledText {
-                            id: providerName
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            font.pixelSize: Appearance.font.pixelSize.normal
-                            color: Appearance.m3colors.m3onSecondaryContainer
-                            text: messageData?.role == 'assistant' ? Ai.models[messageData?.model].name :
-                                (messageData?.role == 'user' && SystemInfo.username) ? SystemInfo.username :
-                                Translation.tr("Interface")
-                        }
-                    }
+                contentItem: MaterialSymbol {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: copyButton.activated ? "check" : "content_copy"
+                    iconSize: 17
+                    color: Appearance.colors.colSubtext
                 }
+                Timer {
+                    id: copyIconTimer
+                    interval: 1500
+                    onTriggered: copyButton.activated = false
+                }
+                StyledToolTip { text: Translation.tr("Copy") }
+            }
 
-                Button { // Not visible to model
-                    id: modelVisibilityIndicator
-                    visible: messageData?.role == 'interface'
-                    implicitWidth: 16
-                    implicitHeight: 30
-                    Layout.alignment: Qt.AlignVCenter
-
-                    background: Item
-
-                    MaterialSymbol {
-                        id: notVisibleToModelText
-                        anchors.centerIn: parent
-                        iconSize: Appearance.font.pixelSize.small
-                        color: Appearance.colors.colSubtext
-                        text: "visibility_off"
-                    }
-                    StyledToolTip {
-                        text: Translation.tr("Not visible to model")
-                    }
+            RippleButton {
+                id: moreButton
+                implicitWidth: 28
+                implicitHeight: 28
+                buttonRadius: 8
+                Accessible.name: Translation.tr("Message actions")
+                onClicked: {
+                    if (messageMenu.visible) messageMenu.close();
+                    else messageMenu.openAt(moreButton.width - messageMenu.width, moreButton.height + 4);
+                }
+                contentItem: MaterialSymbol {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    text: root.editing ? "edit" : "more_horiz"
+                    iconSize: 20
+                    color: root.editing ? Appearance.colors.colPrimary : Appearance.colors.colSubtext
+                }
+                StyledToolTip {
+                    extraVisibleCondition: !messageMenu.visible
+                    text: Translation.tr("Message actions")
                 }
 
-                ButtonGroup {
-                    spacing: 5
+                ContextMenuPopup {
+                    id: messageMenu
+                    width: 240
+                    implicitHeight: menuColumn.implicitHeight + topPadding + bottomPadding
+                    focus: true
+                    // Let the trigger close the menu on click instead of
+                    // dismissing it on press and immediately opening it again.
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                    contentItem: ColumnLayout {
+                        id: menuColumn
+                        spacing: 2
 
-                    AiMessageControlButton {
-                        id: regenButton
-                        buttonIcon: "refresh"
-                        visible: messageData?.role === 'assistant'
-
-                        onClicked: {
-                            Ai.regenerate(root.messageIndex)
-                        }
-                        
-                        StyledToolTip {
-                            text: Translation.tr("Regenerate")
-                        }
-                    }
-
-                    AiMessageControlButton {
-                        id: copyButton
-                        buttonIcon: activated ? "inventory" : "content_copy"
-
-                        onClicked: {
-                            Quickshell.clipboardText = root.messageData?.content
-                            copyButton.activated = true
-                            copyIconTimer.restart()
-                        }
-
-                        Timer {
-                            id: copyIconTimer
-                            interval: 1500
-                            repeat: false
-                            onTriggered: {
-                                copyButton.activated = false
+                        ContextMenuItem {
+                            visible: root.role === "assistant"
+                            enabled: root.messageData?.done ?? false
+                            iconName: "refresh"
+                            label: Translation.tr("Regenerate")
+                            Accessible.name: label
+                            onClicked: {
+                                messageMenu.close();
+                                Ai.regenerate(root.messageId);
                             }
                         }
-                        
-                        StyledToolTip {
-                            text: Translation.tr("Copy")
-                        }
-                    }
-                    AiMessageControlButton {
-                        id: editButton
-                        activated: root.editing
-                        enabled: root.messageData?.done ?? false
-                        buttonIcon: "edit"
-                        onClicked: {
-                            root.editing = !root.editing
-                            if (!root.editing) { // Save changes
-                                root.saveMessage()
+                        ContextMenuItem {
+                            enabled: root.messageData?.done ?? false
+                            iconName: root.editing ? "save" : "edit"
+                            label: root.editing ? Translation.tr("Save changes") : Translation.tr("Edit message")
+                            Accessible.name: label
+                            onClicked: {
+                                messageMenu.close();
+                                if (root.editing) root.saveMessage();
+                                else root.editing = true;
                             }
                         }
-                        StyledToolTip {
-                            text: root.editing ? Translation.tr("Save") : Translation.tr("Edit")
+                        ContextMenuItem {
+                            visible: root.role === "assistant"
+                            iconName: "code"
+                            label: root.renderMarkdown ? Translation.tr("View Markdown source") : Translation.tr("Show formatted text")
+                            Accessible.name: label
+                            onClicked: {
+                                messageMenu.close();
+                                root.renderMarkdown = !root.renderMarkdown;
+                            }
                         }
-                    }
-                    AiMessageControlButton {
-                        id: toggleMarkdownButton
-                        activated: !root.renderMarkdown
-                        buttonIcon: "code"
-                        onClicked: {
-                            root.renderMarkdown = !root.renderMarkdown
-                        }
-                        StyledToolTip {
-                            text: Translation.tr("View Markdown source")
-                        }
-                    }
-                    AiMessageControlButton {
-                        id: deleteButton
-                        buttonIcon: "close"
-                        onClicked: {
-                            Ai.removeMessage(root.messageIndex)
-                        }
-                        StyledToolTip {
-                            text: Translation.tr("Delete")
+                        ContextMenuSeparator {}
+                        ContextMenuItem {
+                            iconName: "delete"
+                            label: Translation.tr("Delete message")
+                            Accessible.name: label
+                            onClicked: {
+                                messageMenu.close();
+                                Ai.removeMessage(root.messageId);
+                            }
                         }
                     }
                 }
             }
         }
 
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 1
+            color: ColorUtils.transparentize(root.isUserMessage
+                ? Appearance.chatBubble.mineText : Appearance.chatBubble.theirsText, 0.82)
+        }
+
         Loader {
             Layout.fillWidth: true
-            active: root.messageData?.localFilePath && root.messageData?.localFilePath.length > 0
+            active: (root.messageData?.localFilePath ?? "").length > 0
             sourceComponent: AttachedFileIndicator {
-                filePath: root.messageData?.localFilePath
+                filePath: root.messageData?.localFilePath ?? ""
                 canRemove: false
             }
         }
 
         ColumnLayout { // Message content
             id: messageContentColumnLayout
-            spacing: 0
+            Layout.fillWidth: true
+            spacing: 4
 
             Item {
                 Layout.fillWidth: true
@@ -279,15 +337,17 @@ Rectangle {
                 FadeLoader {
                     id: loadingIndicatorLoader
                     anchors.centerIn: parent
-                    shown: (root.messageBlocks.length < 1) && (!root.messageData.done)
+                    shown: (root.blocks.length < 1) && (!root.messageData?.done)
                     sourceComponent: MaterialLoadingIndicator {
                         loading: true
                     }
                 }
             }
             Repeater {
+                id: blockRepeater
                 model: ScriptModel {
-                    values: root.messageBlocks
+                    values: root.blocks
+                    objectProp: "key"
                 }
                 delegate: DelegateChooser {
                     id: messageDelegate
@@ -297,28 +357,67 @@ Rectangle {
                         editing: root.editing
                         renderMarkdown: root.renderMarkdown
                         enableMouseSelection: root.enableMouseSelection
-                        segmentContent: modelData.content
+                        segmentContent: root.blockText(modelData)
                         segmentLang: modelData.lang
                         messageData: root.messageData
+                        done: root.messageData?.done ?? false
+                        contentRevision: root.messageData?.contentRevision ?? 0
                     } }
                     DelegateChoice { roleValue: "think"; MessageThinkBlock {
                         editing: root.editing
                         renderMarkdown: root.renderMarkdown
                         enableMouseSelection: root.enableMouseSelection
-                        segmentContent: modelData.content
+                        segmentContent: root.blockText(modelData)
                         messageData: root.messageData
                         done: root.messageData?.done ?? false
-                        completed: modelData.completed ?? false
+                        completed: modelData.completed
+                        thinkIndex: modelData.thinkIndex
+                        contentRevision: root.messageData?.contentRevision ?? 0
                     } }
                     DelegateChoice { roleValue: "text"; MessageTextBlock {
+                        textColor: root.isUserMessage ? Appearance.chatBubble.mineText : Appearance.chatBubble.theirsText
                         editing: root.editing
                         renderMarkdown: root.renderMarkdown
                         enableMouseSelection: root.enableMouseSelection
-                        segmentContent: modelData.content
+                        segmentContent: root.blockText(modelData)
                         messageData: root.messageData
                         done: root.messageData?.done ?? false
-                        forceDisableChunkSplitting: root.messageData?.content.includes("```") ?? true
+                        completed: modelData.completed
+                        contentRevision: root.messageData?.contentRevision ?? 0
+                        forceDisableChunkSplitting: modelData.hasFence
                     } }
+                }
+            }
+
+            // Streaming active indicator
+            RowLayout {
+                visible: (root.role === 'assistant') && !(root.messageData?.done ?? true) && (root.blocks.length > 0)
+                Layout.topMargin: 4
+                Layout.bottomMargin: 4
+                Layout.leftMargin: 6
+                spacing: 6
+
+                Rectangle {
+                    id: streamingBar
+                    readonly property bool live: !(root.messageData?.done ?? true)
+                    property real pulse: 1
+                    implicitWidth: 8
+                    implicitHeight: 14
+                    radius: 2
+                    color: Appearance.colors.colPrimary
+                    opacity: streamingBar.live ? streamingBar.pulse : 1
+                    SequentialAnimation on pulse {
+                        loops: Animation.Infinite
+                        running: streamingBar.live
+                        NumberAnimation { to: 0.2; duration: 450; easing.type: Easing.InOutQuad }
+                        NumberAnimation { to: 1.0; duration: 450; easing.type: Easing.InOutQuad }
+                    }
+                }
+
+                StyledText {
+                    text: Translation.tr("Generating…")
+                    font.pixelSize: Appearance.font.pixelSize.smaller
+                    color: Appearance.colors.colSubtext
                 }
             }
         }

@@ -155,6 +155,12 @@ ApplicationWindow {
         },
         {
             group: 4,
+            name: Translation.tr("Storage"),
+            icon: "hard_drive",
+            component: "modules/settings/StorageConfig.qml"
+        },
+        {
+            group: 4,
             name: Translation.tr("Update"),
             icon: "system_update_alt",
             component: "modules/settings/UpdateConfig.qml"
@@ -176,9 +182,236 @@ ApplicationWindow {
     function pageIndex(name) {
         return root.pages.findIndex(page => page.component.endsWith(name));
     }
+    // By file or by position, so a new window and one already open read a page alike.
+    function resolvePage(name) {
+        const named = root.pageIndex(name);
+        const position = parseInt(name);
+        return named !== -1 ? named : (position >= 0 && position < root.pages.length ? position : -1);
+    }
     function showPage(name) {
-        const idx = root.pageIndex(name);
-        if (idx !== -1) root.currentPage = idx;
+        root.requestPage(root.pageIndex(name));
+    }
+
+    // Every page change asks first whether an update has replaced this
+    // window's files, since the page would load from them.
+    function requestPage(index) {
+        if (root.restarting || index < 0 || index >= root.pages.length)
+            return;
+        root.pendingPage = index;
+        root.checkFiles();
+    }
+
+    // Set once an update has replaced the code this window runs. A page loaded
+    // after that could mix versions, so Settings starts again instead.
+    property bool filesReplaced: false
+    // The tree as this window found it, read from the files rather than the
+    // clock, which can be hours off after a dual boot or before a time sync.
+    property string filesBaseline: ""
+    // The update that replaced them is still running and may still be copying.
+    property bool updateLive: false
+    property bool restarting: false
+    property bool restartRefused: false
+    // The new window never came up, so this one stays and stops restarting unasked.
+    property bool restartFailed: false
+    property int pendingPage: -1
+    property bool restartAsked: false
+    // Services a page here has started. Asking one that never started would
+    // start it, and its startup work with it.
+    property bool sharingUsed: !!Quickshell.env("QS_SHARING_FOLDER")
+    property bool appsUsed: false
+
+    function checkFiles() {
+        // A check under way answers this request too.
+        if (!filesCheck.running)
+            filesCheck.running = true;
+        checkWatchdog.restart();
+    }
+
+    function requestRestart() {
+        root.restartAsked = true;
+        root.checkFiles();
+    }
+
+    function takeCheck(answer) {
+        checkWatchdog.stop();
+        if (answer.startsWith("base ")) {
+            root.filesBaseline = answer.slice(5);
+            answer = "same";
+        }
+        if (answer === "replaced" || answer === "updating") {
+            root.updateLive = answer === "updating";
+            if (!root.updateLive)
+                root.filesReplaced = true;
+        }
+        const target = root.pendingPage;
+        const asked = root.restartAsked;
+        root.pendingPage = -1;
+        root.restartAsked = false;
+        if (root.restarting)
+            return;
+        const moving = target !== -1 && target !== root.currentPage;
+        // Only a page change or the Restart button restarts. Focus or the end
+        // of a run raises the banner alone, since the user may be typing.
+        if (root.filesReplaced && (asked || (moving && !root.restartFailed))) {
+            if (!root.restartBlocked()) {
+                root.restartInto(moving ? target : root.currentPage);
+                return;
+            }
+            if (asked)
+                root.restartRefused = true;
+        } else if (root.restartRefused && !root.restartBlocked()) {
+            root.restartRefused = false;
+        }
+        if (moving)
+            root.currentPage = target;
+    }
+
+    // Flags the pages already keep for work under way, some on rows inside
+    // the page, and for an open editor or prompt whose input would be lost.
+    readonly property var busyFlags: ["isRunning", "busy", "working", "applying", "applyInFlight",
+        "ioBusy", "countingDown", "revertPending", "countryApplying", "isConnecting",
+        "show", "editorOpen", "saveDialogOpen", "exportDialogOpen", "changingPassword", "renaming",
+        "showChangePassword", "showChangeName", "isAskingPassword"]
+
+    function isTextEntry(item) {
+        return !!item && typeof item.cursorPosition === "number" && item.readOnly === false
+            && typeof item.text === "string";
+    }
+
+    function restartBlocked() {
+        if (root.updateLive || Config.writePending || Config.themeApplyInProgress)
+            return true;
+        if (root.sharingUsed && FileSharing.busy)
+            return true;
+        if (root.appsUsed && (DefaultApps.busyRole !== "" || AutostartApps.busyId !== ""))
+            return true;
+        const focused = root.activeFocusItem;
+        if (root.isTextEntry(focused) && focused.text.length > 0)
+            return true;
+        const stack = pageLoader.item ? [pageLoader.item] : [];
+        const seen = new Set();
+        while (stack.length > 0) {
+            const item = stack.pop();
+            if (!item || seen.has(item))
+                continue;
+            seen.add(item);
+            if (root.busyFlags.some(flag => item[flag] === true))
+                return true;
+            // A typed password is kept nowhere a new window could read it back.
+            if (root.isTextEntry(item) && item.echoMode !== undefined
+                    && item.echoMode !== TextInput.Normal && item.text.length > 0)
+                return true;
+            for (const list of [item.children, item.resources]) {
+                for (let i = 0; i < (list?.length ?? 0); i++)
+                    stack.push(list[i]);
+            }
+            // A popup's content sits in the window overlay, not under the page.
+            if (item.contentItem)
+                stack.push(item.contentItem);
+        }
+        return false;
+    }
+
+    function restartInto(index) {
+        root.restarting = true;
+        const signalPath = `${Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"}/mainstream-settings-restart-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+        Quickshell.execDetached({
+            command: ["qs", "-p", Quickshell.shellPath("settings.qml")],
+            // Of what this window was opened for, only a section not yet shown goes with it.
+            environment: ({
+                "QS_SETTINGS_PAGE": root.pages[index].component.split("/").pop(),
+                "QS_SETTINGS_SECTION": root.pendingSettingsSection || null,
+                "QS_SETTINGS_TAB": null,
+                "QS_SHARING_FOLDER": null,
+                "QS_SETTINGS_SIZE": `${Math.round(root.width)}x${Math.round(root.height)}`,
+                "QS_SETTINGS_RESTART_SIGNAL": signalPath
+            })
+        });
+        restartWait.command = ["bash", "-c",
+            'for i in $(seq 150); do [ -e "$0" ] && { rm -f "$0"; echo up; exit 0; }; sleep 0.1; done; echo timeout',
+            signalPath];
+        restartWait.running = true;
+    }
+
+    // This window stays until the new one is up, so a version that cannot
+    // start leaves Settings open, still showing what it showed.
+    Process {
+        id: restartWait
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (this.text.trim() === "up") {
+                    Qt.quit();
+                    return;
+                }
+                root.restarting = false;
+                root.restartFailed = true;
+            }
+        }
+    }
+
+    // A window a restart opened tells the old one, once it is up, to go.
+    property bool restartSignalSent: false
+    function signalRestarted() {
+        const signalPath = Quickshell.env("QS_SETTINGS_RESTART_SIGNAL");
+        if (!signalPath || !Config.ready || root.restartSignalSent)
+            return;
+        root.restartSignalSent = true;
+        Quickshell.execDetached(["touch", signalPath]);
+    }
+    Connections {
+        target: Config
+        function onReadyChanged() {
+            root.signalRestarted();
+        }
+    }
+
+    readonly property string updatePidPath: Directories.updateStateDir + "/update.pid"
+
+    // Whether the tree differs from the one this window started on, and whether an update
+    // is still copying it. Once replaced it cannot match again, so only the update is asked.
+    Process {
+        id: filesCheck
+        command: ["bash", "-c",
+            '[ "$1" = replaced ] || {'
+            + ' h=$(find -H "$0" -type f \\( -name "*.qml" -o -name "*.js" -o -name qmldir \\) -printf "%i %C@ %P\\n" 2>/dev/null | md5sum);'
+            + ' h=${h%% *}; [ -z "$1" ] && { echo "base $h"; exit 0; }; [ "$h" = "$1" ] && { echo same; exit 0; }; };'
+            + ' bash "$2" "$3" "$4" && { echo updating; exit 0; }; echo replaced',
+            Quickshell.shellPath(""), root.filesReplaced ? "replaced" : root.filesBaseline,
+            Quickshell.shellPath("scripts/update/update-busy.sh"),
+            root.updatePidPath,
+            Directories.dotfilesClone + "/.update-lock"]
+        stdout: StdioCollector {
+            onStreamFinished: root.takeCheck(this.text.trim())
+        }
+    }
+
+    // A check that never answers must not leave a page change waiting.
+    Timer {
+        id: checkWatchdog
+        interval: 1000
+        onTriggered: root.takeCheck("")
+    }
+
+    onActiveChanged: {
+        if (active)
+            root.checkFiles();
+    }
+    onCurrentPageChanged: root.restartRefused = false
+
+    // The end of a run is when an update has just replaced these files. The
+    // pause lets the update's own processes exit before the check.
+    Connections {
+        target: pageLoader.item
+        ignoreUnknownSignals: true
+        function onIsRunningChanged() {
+            if (!pageLoader.item.isRunning)
+                runEndCheck.restart();
+        }
+    }
+    Timer {
+        id: runEndCheck
+        interval: 1500
+        onTriggered: root.checkFiles()
     }
 
     // Read deep-linking from environment variables (set by dialogs)
@@ -186,27 +419,26 @@ ApplicationWindow {
     // its position, so callers don't have to track this list's ordering.
     property int initialPage: {
         const envPage = Quickshell.env("QS_SETTINGS_PAGE");
-        if (!envPage) return 0;
-        const named = root.pageIndex(envPage);
-        return named !== -1 ? named : (parseInt(envPage) || 0);
+        return envPage ? Math.max(root.resolvePage(envPage), 0) : 0;
     }
     property int initialTab: {
         const envTab = Quickshell.env("QS_SETTINGS_TAB");
         return envTab ? parseInt(envTab) : 0;
     }
-    // Handed to the loaded page below and cleared once a page reports the
-    // section found, so later page visits start at the top as usual.
+    // Handed to the next page loaded and cleared once it has looked, so later
+    // page visits start at the top as usual.
     property string pendingSettingsSection: Quickshell.env("QS_SETTINGS_SECTION") || ""
     property int currentPage: initialPage
 
     visible: true
-    // A successful run's record is kept only until it has been seen and the
-    // window closed. The Update page marks it seen once it has shown the
-    // result; a run still going, or one that failed, has no mark and stays.
+    // A successful run's record goes once the Update page has marked it seen and the window
+    // closes (not restarts); a run still going, or one that failed, has no mark and stays.
     onClosing: {
-        Quickshell.execDetached(["bash", "-c",
-            '[ -f "$0/update.seen" ] && rm -f "$0/update.log" "$0/update.exit" "$0/update.seen"',
-            Directories.updateStateDir]);
+        if (!root.restarting) {
+            Quickshell.execDetached(["bash", "-c",
+                '[ -f "$0/update.seen" ] && rm -f "$0/update.log" "$0/update.exit" "$0/update.seen"',
+                Directories.updateStateDir]);
+        }
         Qt.quit();
     }
     title: Translation.tr("Mainstream Settings")
@@ -309,13 +541,11 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        // An app must not tear itself down under the user. Quickshell reloads
-        // an instance whenever a file it loaded changes, and the update copies
-        // this very tree in, so the window used to restart part way through
-        // an update and, since a reload kills the objects' child processes,
-        // took the running update with it. The next launch loads the new
-        // files; this one keeps what it started with.
+        // Off so an update copying this tree cannot reload the window and kill its child
+        // processes, the update among them; filesCheck restarts onto the new version instead.
         Quickshell.watchFiles = false
+        root.checkFiles()
+        root.signalRestarted()
         MaterialThemeLoader.reapplyTheme()
         ThemeLibrary.load()
         Config.readWriteDelay = 0 // Settings app always only sets one var at a time so delay isn't needed
@@ -327,10 +557,35 @@ ApplicationWindow {
             FileSharing.requestFolder(sharingFolder)
     }
 
-    // A second launch hands its page to this window rather than opening
-    // another: qs ipc --pid <pid> call settings showPage UpdateConfig.qml
+    // By pid, since a restart's two windows share the title until the old one goes.
+    function bringForward() {
+        Quickshell.execDetached(["hyprctl", "dispatch",
+            `hl.dsp.focus({ window = "pid:${Quickshell.processId}" })`]);
+    }
+
     IpcHandler {
         target: "settings"
+        // QS_SETTINGS_PAGE and QS_SETTINGS_SECTION for a window already open.
+        // "restarting" has the caller ask again, reaching the window that stays.
+        function openPage(page: string, section: string): string {
+            if (root.restarting)
+                return "restarting";
+            const index = page ? root.resolvePage(page) : -1;
+            if (index !== -1) {
+                root.pendingSettingsSection = section;
+                // Even for the page shown, so it overrides an earlier request still being checked.
+                root.requestPage(index);
+                if (index === root.currentPage && pageLoader.status === Loader.Ready) {
+                    // A page still loading takes the section in onLoaded instead.
+                    if (section && pageLoader.item.scrollToSection)
+                        pageLoader.item.scrollToSection(section);
+                    root.pendingSettingsSection = "";
+                }
+            }
+            root.bringForward();
+            return "ok";
+        }
+        // For callers that bring the window forward themselves, such as the welcome installer.
         function showPage(name: string): void {
             root.showPage(name);
         }
@@ -341,12 +596,10 @@ ApplicationWindow {
         // stays void: Files takes any output as an older Settings without
         // this function and opens a new window instead.
         function shareFolder(path: string): void {
+            root.sharingUsed = true;
             FileSharing.requestFolder(path);
             root.showPage("SharingConfig.qml");
-            const titleRegex = (root.title || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            if (titleRegex)
-                Quickshell.execDetached(["hyprctl", "dispatch",
-                    `hl.dsp.focus({ window = [[title:^${titleRegex}$]] })`]);
+            root.bringForward();
         }
     }
 
@@ -361,7 +614,7 @@ ApplicationWindow {
         command: ["bash", "-c",
             'bash "$0" "$1" >/dev/null 2>&1 && [ ! -f "$2" ]',
             Quickshell.shellPath("scripts/update/update-live.sh"),
-            Directories.updateStateDir + "/update.pid",
+            root.updatePidPath,
             Directories.updateStateDir + "/update.exit"]
         onExited: (exitCode, exitStatus) => {
             if (exitCode === 0) root.showPage("UpdateConfig.qml")
@@ -370,8 +623,10 @@ ApplicationWindow {
 
     minimumWidth: 750
     minimumHeight: 500
-    width: 1100
-    height: 750
+    // A restart opens the new window at the old one's size.
+    readonly property var startSize: (Quickshell.env("QS_SETTINGS_SIZE") || "").split("x").map(Number)
+    width: root.startSize[0] >= root.minimumWidth ? root.startSize[0] : 1100
+    height: root.startSize[1] >= root.minimumHeight ? root.startSize[1] : 750
     color: Appearance.m3colors.m3background
 
     ColumnLayout {
@@ -382,20 +637,22 @@ ApplicationWindow {
 
         Keys.onPressed: (event) => {
             if (event.modifiers === Qt.ControlModifier) {
+                // From a page change still being checked, so quick presses add up.
+                const from = root.pendingPage !== -1 ? root.pendingPage : root.currentPage;
                 if (event.key === Qt.Key_PageDown) {
-                    root.currentPage = Math.min(root.currentPage + 1, root.pages.length - 1)
+                    root.requestPage(Math.min(from + 1, root.pages.length - 1))
                     event.accepted = true;
                 } 
                 else if (event.key === Qt.Key_PageUp) {
-                    root.currentPage = Math.max(root.currentPage - 1, 0)
+                    root.requestPage(Math.max(from - 1, 0))
                     event.accepted = true;
                 }
                 else if (event.key === Qt.Key_Tab) {
-                    root.currentPage = (root.currentPage + 1) % root.pages.length;
+                    root.requestPage((from + 1) % root.pages.length);
                     event.accepted = true;
                 }
                 else if (event.key === Qt.Key_Backtab) {
-                    root.currentPage = (root.currentPage - 1 + root.pages.length) % root.pages.length;
+                    root.requestPage((from - 1 + root.pages.length) % root.pages.length);
                     event.accepted = true;
                 }
             }
@@ -444,6 +701,31 @@ ApplicationWindow {
             }
         }
 
+        NoticeBox {
+            Layout.fillWidth: true
+            visible: root.filesReplaced
+            materialIcon: "update"
+            text: root.restarting ? Translation.tr("Restarting Settings…")
+                : root.restartRefused ? Translation.tr("Something is still running or unsaved. Finish it, then restart Settings.")
+                : root.restartFailed ? Translation.tr("Settings could not restart. You can keep using this window, or try again.")
+                : Translation.tr("Settings was updated. Restart it to use the new version.")
+
+            Item {
+                Layout.fillWidth: true
+            }
+            RippleButtonWithIcon {
+                Layout.fillWidth: false
+                buttonRadius: Appearance.rounding.small
+                colBackground: CF.ColorUtils.transparentize(Appearance.colors.colPrimaryContainer)
+                colBackgroundHover: Appearance.colors.colPrimaryContainerHover
+                colRipple: Appearance.colors.colPrimaryContainerActive
+                enabled: !root.restarting
+                materialIcon: "restart_alt"
+                mainText: Translation.tr("Restart")
+                onClicked: root.requestRestart()
+            }
+        }
+
         RowLayout { // Window content with navigation rail and content pane
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -489,7 +771,7 @@ ApplicationWindow {
 
                             SettingsNavButton {
                                 toggled: root.currentPage === index
-                                onPressed: root.currentPage = index
+                                onPressed: root.requestPage(index)
                                 buttonIcon: modelData.icon
                                 buttonIconRotation: modelData.iconRotation ?? 0
                                 buttonText: modelData.name
@@ -521,12 +803,25 @@ ApplicationWindow {
                         && (root.pages[root.currentPage]?.asynchronous ?? false)
 
                     onLoaded: {
-                        if (!root.pendingSettingsSection || !item?.scrollToSection) return;
+                        const loadedPage = root.pages[root.currentPage].component;
+                        if (loadedPage.endsWith("SharingConfig.qml"))
+                            root.sharingUsed = true;
+                        else if (loadedPage.endsWith("ManageAppsConfig.qml"))
+                            root.appsUsed = true;
+                        if (!root.pendingSettingsSection) return;
+                        if (!item?.scrollToSection) {
+                            root.pendingSettingsSection = "";
+                            return;
+                        }
                         const name = root.pendingSettingsSection;
                         const page = item;
                         // After layout: section positions are not final inside onLoaded.
                         Qt.callLater(() => {
-                            if (page === pageLoader.item && page.scrollToSection(name))
+                            if (page !== pageLoader.item)
+                                return;
+                            page.scrollToSection(name);
+                            // A request that came in meanwhile keeps its own section.
+                            if (root.pendingSettingsSection === name)
                                 root.pendingSettingsSection = "";
                         });
                     }

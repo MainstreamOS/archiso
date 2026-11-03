@@ -18,6 +18,7 @@ Item {
         { id: "activeWindowPill", name: Translation.tr("Workspace title (pill)"), icon: "select_window" },
         { id: "resources",     name: Translation.tr("System resources"),  icon: "monitor_heart" },
         { id: "network",       name: Translation.tr("Network speed"),     icon: "network_check" },
+        { id: "phone",         name: Translation.tr("Phone"),             icon: "smartphone" },
         { id: "media",         name: Translation.tr("Media"),             icon: "music_note" },
         { id: "workspaces",    name: Translation.tr("Workspaces"),        icon: "workspaces" },
         { id: "clock",         name: Translation.tr("Clock & date"),      icon: "schedule" },
@@ -39,12 +40,6 @@ Item {
     // retired is dropped — unknown ids pass through, though every entry
     // written back is normalized to id + enabled.
     readonly property var retiredModules: Config.retiredBarModules
-    // Arranged by the bar rather than the user: the editor hides these
-    // while they are placed, preserves their entries in the layout it
-    // writes back, and offers the widget again if a layout arrives
-    // without it.
-    readonly property var barManagedModules: ["sidebarButton"]
-
     // Widgets with no vertical rendering — hidden from the editor while the bar is vertical.
     readonly property var verticalUnsupported: ["activeWindow", "activeWindowPill", "utilButtons", "weather", "timers", "releaseUpdates"]
 
@@ -76,8 +71,6 @@ Item {
             .filter(w => root.retiredModules.indexOf(w.id) === -1);
     }
     function widgetHiddenHere(id) {
-        if (root.barManagedModules.indexOf(id) !== -1)
-            return root.findWidget(id) !== null;
         return Config.options.bar.vertical && root.verticalUnsupported.indexOf(id) !== -1;
     }
     function shownWidgetsOf(g) {
@@ -99,13 +92,6 @@ Item {
         return Array.prototype.slice.call(a).map(g => ({ widgets: root.widgetsOf(g) }));
     }
     function commit(s, groups) {
-        // Bar-managed entries float to the front of their group: drops index
-        // around hidden entries, and without a canonical spot the bar could
-        // render one somewhere the editor cannot show.
-        for (const g of groups) {
-            g.widgets = g.widgets.filter(w => root.barManagedModules.indexOf(w.id) !== -1)
-                .concat(g.widgets.filter(w => root.barManagedModules.indexOf(w.id) === -1));
-        }
         const cleaned = groups.filter(g => g.widgets.length > 0);
         Config.options.bar.layout[s] = cleaned;
     }
@@ -148,8 +134,8 @@ Item {
         const placed = root.placedIds();
         return root.moduleCatalog.filter(m => placed.indexOf(m.id) === -1 && !root.widgetHiddenHere(m.id));
     }
-    // A widget goes where the default layout keeps it, so one added to a bar
-    // saved before it existed lands in the same place as on a new install.
+    // A widget joins the section the default layout keeps it in, as a group of
+    // its own at the end: the same section as on a new install, not the same spot.
     function addWidget(id) {
         const section = root.sectionIds.find(s => (Config.defaultBarLayout[s] ?? [])
             .some(group => (group.widgets ?? []).some(w => w.id === id))) ?? "center";

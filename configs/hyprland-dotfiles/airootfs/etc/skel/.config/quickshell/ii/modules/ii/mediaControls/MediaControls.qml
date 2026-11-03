@@ -24,15 +24,27 @@ Scope {
     // binding re-evaluates on every bump.
     readonly property var meaningfulPlayers: {
         const order = MprisController.recentPlayerNames;
-        return MprisController.orderByRecency(realPlayers).slice(0, Config.options.media.maxShownPlayers);
+        return filterDuplicatePlayers(MprisController.orderByRecency(realPlayers)).slice(0, Config.options.media.maxShownPlayers);
+    }
+    // One track mirrored on several buses is one card: the active player when
+    // it is among them, so the selection keeps its card, else the one with art.
+    function filterDuplicatePlayers(players) {
+        const groups = [];
+        for (const player of players) {
+            const title = player.trackTitle;
+            const group = title ? groups.find(g => g[0].trackTitle
+                && (g[0].trackTitle.includes(title) || title.includes(g[0].trackTitle))) : null;
+            if (group) group.push(player);
+            else groups.push([player]);
+        }
+        return groups.map(g => g.find(p => p === root.activePlayer)
+            ?? g.find(p => p.trackArtUrl?.length > 0) ?? g[0]);
     }
     readonly property real osdWidth: Appearance.sizes.osdWidth
     readonly property real widgetWidth: Appearance.sizes.mediaControlsWidth
     readonly property real widgetHeight: Appearance.sizes.mediaControlsHeight
     property real popupRounding: RoundedCorners.on ? Appearance.rounding.screenRounding - Appearance.sizes.hyprlandGapsOut + 1 : 0
 
-    // MprisController filters known mirror buses by browser process. Distinct
-    // windows remain distinct, even when titles or metadata happen to match.
     // Centralized post-send revert: once a transfer reaches Sent state
     // (whether the popup is open or not), wait 3 seconds, then close the
     // popup and clear the transfer state so the bar reverts to the player.
@@ -83,7 +95,8 @@ Scope {
 
     Loader {
         id: mediaControlsLoader
-        active: GlobalStates.mediaControlsOpen
+        active: GlobalStates.mediaControlsOpen && (!Appearance.sizes.barIsIsland
+            || (GlobalStates.mediaReceiveActive && !IslandState.transferSession))
         onActiveChanged: {
             if (!mediaControlsLoader.active && root.realPlayers.length === 0) {
                 GlobalStates.mediaControlsOpen = false;

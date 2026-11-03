@@ -61,15 +61,30 @@ ContentPage {
         return all;
     }
 
-    // The plugin forgets its per-monitor settings on every reload and takes them
-    // again from plugins.lua, so a reload is what applies the file.
     function writeScrollOverviewMonitors(all) {
         root.scrollOverviewMonitors = all;
+        scrollOverviewMonitorsSaveTimer.restart();
+    }
+
+    // The plugin forgets its per-monitor settings on every reload and takes them
+    // again from plugins.lua, so a reload is what applies the file.
+    function saveScrollOverviewMonitors() {
+        scrollOverviewMonitorsSaveTimer.stop();
+        const all = root.scrollOverviewMonitors;
         const text = Object.keys(all).sort().map(name => [name].concat(Object.keys(all[name]).sort()
             .map(key => `${key}=${key === "scale" ? Number(all[name][key]).toFixed(2) : all[name][key]}`)).join(" ")).join("\n");
         Quickshell.execDetached(["bash", "-c", 'printf "%s" "$1" > "$0" && hyprctl reload',
             root.scrollOverviewMonitorsFile, text.length > 0 ? text + "\n" : ""]);
     }
+
+    // Saved once the value settles: a held spin button or a typed number would
+    // otherwise reload Hyprland at every step.
+    Timer {
+        id: scrollOverviewMonitorsSaveTimer
+        interval: 500
+        onTriggered: root.saveScrollOverviewMonitors()
+    }
+    Component.onDestruction: if (scrollOverviewMonitorsSaveTimer.running) root.saveScrollOverviewMonitors()
 
     // A null value drops that one setting, so the monitor follows the rest again.
     function setScrollOverviewMonitorKey(output, key, value) {
@@ -268,6 +283,51 @@ ContentPage {
         ])
     }
 
+    ContentSection {
+        icon: "lock_clock"
+        title: Translation.tr("Login screen")
+
+        ConfigRow {
+            ConfigSpinBox {
+                id: loginClockSize
+                icon: "resize"
+                text: Translation.tr("Clock size (%)")
+                enabled: GreeterAppearance.available
+                value: GreeterAppearance.clockSize
+                from: 50
+                to: 200
+                stepSize: 5
+                onValueChanged: {
+                    if (value !== GreeterAppearance.clockSize) GreeterAppearance.setClockSize(value);
+                }
+            }
+            Item { Layout.fillWidth: true }
+            RippleButtonWithIcon {
+                materialIcon: "restart_alt"
+                mainText: Translation.tr("Reset")
+                enabled: GreeterAppearance.available && GreeterAppearance.clockSize !== 100
+                onClicked: GreeterAppearance.setClockSize(100)
+            }
+        }
+        Connections {
+            target: GreeterAppearance
+            function onClockSizeChanged() { loginClockSize.value = GreeterAppearance.clockSize; }
+        }
+        StyledText {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: Appearance.colors.colSubtext
+            text: Translation.tr("Changes the login clock for all users. Takes effect the next time the login screen opens.")
+        }
+        StyledText {
+            Layout.fillWidth: true
+            visible: !GreeterAppearance.available || GreeterAppearance.error.length > 0
+            wrapMode: Text.WordWrap
+            color: GreeterAppearance.error.length ? Appearance.m3colors.m3error : Appearance.colors.colSubtext
+            text: GreeterAppearance.error || Translation.tr("Update Mainstream to enable this setting.")
+        }
+    }
+
     // ── Left Hot Corner ──────────────────────────────────────────────────────
     ContentSection {
         icon: "ads_click"
@@ -316,7 +376,7 @@ ContentPage {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6   // match ConfigSwitch's contentItem RowLayout spacing (10) minus ConfigRow's default (4)
-                text: Translation.tr("Trigger overview")
+                text: Translation.tr("Action")
                 color: Appearance.colors.colOnSecondaryContainer
             }
             StyledComboBox {
@@ -328,6 +388,7 @@ ContentPage {
                     { displayName: Translation.tr("Off"),                icon: "block",     value: "off" },
                     { displayName: Translation.tr("Default Overview"),   icon: "grid_view", value: "default" },
                     { displayName: Translation.tr("Scrolling Overview"), icon: "view_day",  value: "scrolloverview" },
+                    { displayName: Translation.tr("Left sidebar"),       icon: "left_panel_open", value: "sidebar" }
                 ]
                 currentIndex: {
                     const idx = model.findIndex(item => item.value === Config.options.bar.hotCorners.trigger);
@@ -569,6 +630,39 @@ ContentPage {
         }
     }
 
+    // ── Right Hot Corner ─────────────────────────────────────────────────────
+    ContentSection {
+        icon: "ads_click"
+        title: Translation.tr("Right Hot Corner")
+
+        ConfigSwitch {
+            buttonIcon: "right_panel_open"
+            text: Translation.tr("Open the right sidebar")
+            checked: Config.options.bar.hotCorners.rightTrigger === "sidebar"
+            onCheckedChanged: Config.options.bar.hotCorners.rightTrigger = checked ? "sidebar" : "off"
+        }
+    }
+
+    ContentSection {
+        icon: "swap_horiz"
+        title: Translation.tr("Workspace navigation")
+        ConfigSwitch {
+            buttonIcon: "swap_horiz"
+            text: Translation.tr("Show navigation arrows")
+            tooltipText: Translation.tr("Show arrows for scrolling and monocle windows on the desktop and in the launcher.")
+            checked: Config.options.interactions.showWorkspaceNavigationArrows
+            onCheckedChanged: Config.options.interactions.showWorkspaceNavigationArrows = checked
+        }
+        ConfigSwitch {
+            visible: Config.options.interactions.showWorkspaceNavigationArrows
+            buttonIcon: "blur_medium"
+            text: Translation.tr("Fade navigation arrows when not in use")
+            tooltipText: Translation.tr("They stay faintly visible, and come back when the pointer reaches them.")
+            checked: Config.options.interactions.fadeWorkspaceNavigationArrows
+            onCheckedChanged: Config.options.interactions.fadeWorkspaceNavigationArrows = checked
+        }
+    }
+
     ContentSection {
         icon: "overview_key"
         title: Translation.tr("Launcher Overview")
@@ -627,6 +721,39 @@ ContentPage {
             }
         }
         ContentSubsection {
+            title: Translation.tr("Scrolling and monocle launcher")
+            ConfigSwitch {
+                buttonIcon: "check"
+                text: Translation.tr("Enable")
+                checked: Config.options.overview.useScrollingLauncher
+                onCheckedChanged: Config.options.overview.useScrollingLauncher = checked
+            }
+            ConfigSpinBox {
+                visible: Config.options.overview.useScrollingLauncher
+                icon: "view_agenda"
+                text: Translation.tr("Visible workspaces")
+                value: Config.options.overview.scrollingWorkspaces
+                from: 1
+                to: 8
+                stepSize: 1
+                onValueChanged: Config.options.overview.scrollingWorkspaces = value
+            }
+            ConfigSwitch {
+                buttonIcon: "history"
+                visible: Config.options.overview.useScrollingLauncher
+                text: Translation.tr("Show recently used apps")
+                checked: Config.options.overview.scrollingShowRecentApps
+                onCheckedChanged: Config.options.overview.scrollingShowRecentApps = checked
+            }
+            ConfigSwitch {
+                buttonIcon: "swap_horiz"
+                text: Translation.tr("Workspaces on the right")
+                visible: Config.options.overview.useScrollingLauncher
+                checked: Config.options.overview.scrollingSwapSides
+                onCheckedChanged: Config.options.overview.scrollingSwapSides = checked
+            }
+        }
+        ContentSubsection {
             title: Translation.tr("Performance")
 
             ConfigSwitch {
@@ -648,6 +775,16 @@ ContentPage {
         mirrorIcon: true
         title: Translation.tr("Left Sidebar")
 
+        ConfigSwitch {
+            buttonIcon: "push_pin"
+            text: Translation.tr("Pinned by default")
+            tooltipText: Translation.tr("Open the left sidebar pinned, reserving screen space for it")
+            checked: Config.options.sidebar.pinnedOnStartup
+            onCheckedChanged: {
+                Config.options.sidebar.pinnedOnStartup = checked;
+            }
+        }
+
         ConfigRow {
             ColumnLayout {
                 ContentSubsectionLabel {
@@ -665,11 +802,15 @@ ContentPage {
                     ]
                 }
             }
+            Item { Layout.fillWidth: true }
             ColumnLayout {
+                Layout.alignment: Qt.AlignRight
                 ContentSubsectionLabel {
                     text: Translation.tr("Translator")
                 }
                 ConfigSelectionArray {
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: naturalWidth
                     currentValue: Config.options.sidebar.translator.enable ? 1 : 0
                     onSelected: newValue => {
                         Config.options.sidebar.translator.enable = (newValue === 1);
@@ -697,6 +838,80 @@ ContentPage {
                         { displayName: Translation.tr("Yes"), icon: "check", value: 1 }
                     ]
                 }
+            }
+            Item { Layout.fillWidth: true }
+            ColumnLayout {
+                Layout.alignment: Qt.AlignRight
+                ContentSubsectionLabel {
+                    text: Translation.tr("Phone")
+                }
+                ConfigSelectionArray {
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: naturalWidth
+                    currentValue: Config.options.sidebar.phone.enable ? 1 : 0
+                    onSelected: newValue => {
+                        Config.options.sidebar.phone.enable = (newValue === 1);
+                    }
+                    options: [
+                        { displayName: Translation.tr("No"),  icon: "close", value: 0 },
+                        { displayName: Translation.tr("Yes"), icon: "check", value: 1 }
+                    ]
+                }
+            }
+        }
+
+        ContentSubsection {
+            visible: Config.options.sidebar.phone.enable
+
+            ConfigSwitch {
+                buttonIcon: "link"
+                text: Translation.tr("Link previews in messages")
+                checked: Config.options.sidebar.phone.linkPreviews
+                onCheckedChanged: Config.options.sidebar.phone.linkPreviews = checked
+                StyledToolTip {
+                    text: Translation.tr("Shows a card for each link, which loads the linked page from the web when the message is on screen")
+                }
+            }
+
+            ConfigSwitch {
+                visible: Config.options.sidebar.phone.linkPreviews
+                buttonIcon: "play_circle"
+                text: Translation.tr("Use browser sign-in for YouTube")
+                checked: Config.options.sidebar.phone.youtubeBrowserSignIn
+                onCheckedChanged: Config.options.sidebar.phone.youtubeBrowserSignIn = checked
+                StyledToolTip {
+                    text: Translation.tr("If YouTube blocks playback, use your Zen or Firefox sign-in. Browser cookies are read only when you play a YouTube video.")
+                }
+            }
+
+            ContentSubsectionLabel {
+                Layout.topMargin: 10
+                text: Translation.tr("Contact privacy")
+            }
+
+            ConfigSwitch {
+                buttonIcon: "person"
+                text: Translation.tr("Show contact name")
+                checked: Config.options.sidebar.phone.privacy.showContactName
+                onCheckedChanged: Config.options.sidebar.phone.privacy.showContactName = checked
+            }
+            ConfigSwitch {
+                buttonIcon: "call"
+                text: Translation.tr("Show phone number")
+                checked: Config.options.sidebar.phone.privacy.showPhoneNumber
+                onCheckedChanged: Config.options.sidebar.phone.privacy.showPhoneNumber = checked
+            }
+            ConfigSwitch {
+                buttonIcon: "chat"
+                text: Translation.tr("Show message contents")
+                checked: Config.options.sidebar.phone.privacy.showMessage
+                onCheckedChanged: Config.options.sidebar.phone.privacy.showMessage = checked
+            }
+            ConfigSwitch {
+                buttonIcon: "account_circle"
+                text: Translation.tr("Show contact picture")
+                checked: Config.options.sidebar.phone.privacy.showContactPicture
+                onCheckedChanged: Config.options.sidebar.phone.privacy.showContactPicture = checked
             }
         }
 
@@ -873,7 +1088,7 @@ ContentPage {
 
             ConfigSwitch {
                 buttonIcon: "av_timer"
-                text: Translation.tr("Pomodoro")
+                text: Translation.tr("Focus")
                 checked: Config.options.sounds.pomodoro
                 onCheckedChanged: {
                     Config.options.sounds.pomodoro = checked;

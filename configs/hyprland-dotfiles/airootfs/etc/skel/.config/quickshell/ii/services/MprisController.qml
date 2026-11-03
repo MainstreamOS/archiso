@@ -9,8 +9,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
-import "MprisSelection.js" as Selection
-import "MprisCapabilities.js" as Capabilities
+import "mpris-selection.js" as Selection
+import "mpris-capabilities.js" as Capabilities
 import qs.modules.common
 
 /**
@@ -21,11 +21,11 @@ Singleton {
 	property list<MprisPlayer> players: Mpris.players.values.filter(player => isRealPlayer(player));
 	property MprisPlayer trackedPlayer: null;
 	readonly property MprisPlayer activePlayer: trackedPlayer && players.indexOf(trackedPlayer) !== -1
-        ? trackedPlayer : Selection.choose(orderByRecency(players), null, null);
-    onPlayersChanged: Qt.callLater(() => root.reconcileSelection(null))
-    function reconcileSelection(preferred) {
-        root.trackedPlayer = Selection.choose(orderByRecency(root.players), root.trackedPlayer, preferred);
-    }
+		? trackedPlayer : Selection.choose(orderByRecency(players), null, null);
+	onPlayersChanged: Qt.callLater(() => root.reconcileSelection(null))
+	function reconcileSelection(preferred) {
+		root.trackedPlayer = Selection.choose(orderByRecency(root.players), root.trackedPlayer, preferred);
+	}
 	signal trackChanged(reverse: bool);
 
 	// Most-recently-active bus names, newest first — lets the popup show only
@@ -144,23 +144,26 @@ Singleton {
 			required property MprisPlayer modelData;
 			target: modelData;
 
-            Component.onCompleted: {
-                coveredBuiltinsRefresh.restart();
-                root.notePlaybackChange(modelData);
-                Qt.callLater(() => root.reconcileSelection(modelData));
-            }
+			Component.onCompleted: {
+				coveredBuiltinsRefresh.restart();
+				root.notePlaybackChange(modelData);
+				Qt.callLater(() => root.reconcileSelection(modelData));
+			}
 
-            Component.onDestruction: {
-                coveredBuiltinsRefresh.restart();
-                if (root.trackedPlayer === modelData) root.trackedPlayer = null;
-                Qt.callLater(() => root.reconcileSelection(null));
-            }
+			Component.onDestruction: {
+				coveredBuiltinsRefresh.restart();
+				if (root.trackedPlayer === modelData) root.trackedPlayer = null;
+				Qt.callLater(() => root.reconcileSelection(null));
+			}
 
-            function onIsPlayingChanged() {
-                root.notePlaybackChange(modelData);
-                root.reconcileSelection(modelData.isPlaying ? modelData : null);
-            }
-
+			// Recency rides on the isPlaying PROPERTY change, not
+			// playbackStateChanged: the state signal fires while isPlaying
+			// still holds its old value, so a starting player reads as
+			// not-playing there and never gets bumped.
+			function onIsPlayingChanged() {
+				root.notePlaybackChange(modelData);
+				root.reconcileSelection(modelData.isPlaying ? modelData : null);
+			}
 		}
 	}
 
@@ -264,10 +267,6 @@ Singleton {
 				if (player.canPause) player.pause();
 			}
 		}
-
-        function state(): string {
-            return JSON.stringify({ active: root.activePlayer?.dbusName ?? "", title: root.activePlayer?.trackTitle ?? "", capabilities: { volume: root.canChangeVolume, loop: root.loopSupported, shuffle: root.shuffleSupported }, players: root.players.map(p => ({ name: p.dbusName, title: p.trackTitle, playing: p.isPlaying })) });
-        }
 
 		function playPause(): void { root.togglePlaying(); }
 		function previous(): void { root.previous(); }

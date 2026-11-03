@@ -1,15 +1,17 @@
 import qs.modules.common
+import qs.modules.common.functions
 import qs.modules.common.widgets
 import QtQuick
 import QtQuick.Layouts
 
 RippleButton {
+    id: buttonRoot
+    readonly property bool bubble: Appearance.sizes.dockHoverEffect === "bubble"
+    property bool bubbleHovered: hovered
+    rippleEnabled: !bubble
+
     Layout.fillHeight: !dockRoot.dockVertical
     Layout.fillWidth: dockRoot.dockVertical
-    Layout.topMargin: dockRoot.dockEdge === "bottom" ? Appearance.sizes.elevationMargin - Appearance.sizes.hyprlandGapsOut : 0
-    Layout.bottomMargin: dockRoot.dockEdge === "top" ? Appearance.sizes.elevationMargin - Appearance.sizes.hyprlandGapsOut : 0
-    Layout.leftMargin: dockRoot.dockEdge === "right" ? Appearance.sizes.elevationMargin - Appearance.sizes.hyprlandGapsOut : 0
-    Layout.rightMargin: dockRoot.dockEdge === "left" ? Appearance.sizes.elevationMargin - Appearance.sizes.hyprlandGapsOut : 0
     // The square base size both orientations derive from — the pill's
     // thickness minus its inner padding on each side, so buttons and list
     // delegates span the row's cross axis exactly at any configured dock
@@ -24,6 +26,20 @@ RippleButton {
     colBackgroundHover: dockRoot.content.settled.colLayer1Hover
     colRipple: dockRoot.content.settled.colLayer1Active
 
+    Rectangle {
+        anchors.centerIn: parent
+        width: Math.min(buttonRoot.dockButtonSize, dockRoot.fittedIconSize + 8)
+        height: width
+        radius: 12
+        visible: buttonRoot.bubble
+        color: buttonRoot.bubbleHovered ? ColorUtils.applyAlpha(dockRoot.content.colOnLayer0, 0.12) : "transparent"
+        z: -1
+        Behavior on color {
+            animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+        }
+    }
+
+    background.visible: !bubble
     background.implicitHeight: dockButtonSize
     background.implicitWidth: dockButtonSize
 }

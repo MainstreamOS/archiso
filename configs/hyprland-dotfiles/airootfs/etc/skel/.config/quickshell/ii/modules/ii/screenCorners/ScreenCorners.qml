@@ -13,14 +13,7 @@ Scope {
     id: screenCorners
     readonly property Toplevel activeWindow: ToplevelManager.activeToplevel
     property var actionForCorner: ({
-        // TopLeft is owned by the scroll-overview hot corner in Bar.qml —
-        // this screen-corner widget intentionally no-ops there so a single
-        // cursor approach to that corner doesn't double-trigger (sidebar +
-        // overview). BottomLeft and both right corners still toggle their
-        // respective sidebars.
-        [RoundCorner.CornerEnum.TopLeft]: () => {},
         [RoundCorner.CornerEnum.BottomLeft]: () => GlobalStates.sidebarLeftOpen = !GlobalStates.sidebarLeftOpen,
-        [RoundCorner.CornerEnum.TopRight]: () => GlobalStates.sidebarRightOpen = !GlobalStates.sidebarRightOpen,
         [RoundCorner.CornerEnum.BottomRight]: () => GlobalStates.sidebarRightOpen = !GlobalStates.sidebarRightOpen
     })
 
@@ -69,14 +62,8 @@ Scope {
                 active: {
                     if (!Config.options.sidebar.cornerOpen.enable) return false;
                     if (cornerPanelWindow.fullscreen) return false;
-                    // Top-left is owned by the bar's scroll-overview hot corner.
-                    // Even though we made actionForCorner[TopLeft] a no-op, the
-                    // loader's MouseArea still grabs input here and starves the
-                    // bar's MouseArea — the cursor reaching the screen edge gets
-                    // captured by ScreenCorners and the hot corner never sees it.
-                    // Disabling the loader for TopLeft drops its mask region so
-                    // events fall through to the bar.
-                    if (cornerWidget.isTopLeft) return false;
+                    // The top corners belong to HotCornerRipple; an input region here would starve it.
+                    if (cornerWidget.isTop) return false;
                     return (Config.options.sidebar.cornerOpen.bottom == cornerWidget.isBottom);
                 }
                 anchors {
@@ -158,9 +145,7 @@ Scope {
             property HyprlandMonitor monitor: Hyprland.monitorFor(modelData)
 
             // Hide when fullscreen
-            property list<HyprlandWorkspace> workspacesForMonitor: Hyprland.workspaces.values.filter(workspace => workspace.monitor && workspace.monitor.name == monitor.name)
-            property var activeWorkspaceWithFullscreen: workspacesForMonitor.filter(workspace => ((workspace.toplevels.values.filter(window => window.wayland?.fullscreen)[0] != undefined) && workspace.active))[0]
-            property bool fullscreen: activeWorkspaceWithFullscreen != undefined
+            property bool fullscreen: HyprlandData.activeWorkspaceHasFullscreen(modelData.name)
 
             CornerPanelWindow {
                 screen: modelData

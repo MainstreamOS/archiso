@@ -54,7 +54,9 @@ ShellRoot {
         FirstRunExperience.load()
         ConflictKiller.load()
         Cliphist.refresh()
-        BluetoothStatus.reconnectTrustedAudioDevicesAtStartup()
+        BluetoothStatus.startProfileReconnect()
+        // Recover early tray clients even when the island's System panel is lazy.
+        TrayService.reregisterStatusNotifierItems()
         Wallpapers.load()
         Updates.load()
         ReleaseUpdates.load()
@@ -62,6 +64,9 @@ ShellRoot {
         // _announceEnabled comment in ReleaseUpdates. Settings reads the same
         // singleton for its version display without ever setting this.
         ReleaseUpdates._announceEnabled = true
+        // The phone stays connected for the whole session, not only while its tab is open.
+        Phone.keepConnected = true
+        PhoneIntroduction.enabled = true
         ThemeManager.load()
         // Day/Night scheduler runs only here in the main shell — see the
         // _autoApplyEnabled comment in ThemeManager for why. Settings.qml
@@ -78,6 +83,7 @@ ShellRoot {
         GlobalStates._publishBarOpen = true
         // Only the shell draws the launcher, see _judgeLauncherEnabled.
         Appearance._judgeLauncherEnabled = true
+        WallpaperPlacement._panelBlurEnabled = true
     }
 
 
@@ -95,16 +101,61 @@ ShellRoot {
     // The updater holds reloading for the copying and releases it afterwards.
     // Held is never a resting state: releasing always reloads, so the shell ends
     // on the finished tree whether or not anything changed while it waited.
+    // A reload under the lock screen leaves the session locked with nothing to
+    // unlock it, so a release while locked waits for the unlock.
+    property bool reloadPending: false
+
+    Connections {
+        target: GlobalStates
+        function onScreenLockedChanged() {
+            if (GlobalStates.screenLocked) unlockedReloadTimer.stop()
+            else unlockedReloadTimer.restart()
+        }
+    }
+
+    // Started by every unlock, and a release meanwhile waits for it, so the unlock
+    // can let go of the lock, put the workspaces back and unlock the keyring.
+    Timer {
+        id: unlockedReloadTimer
+        interval: 2000
+        onTriggered: {
+            if (!root.reloadPending || GlobalStates.screenLocked) return
+            root.reloadPending = false
+            Quickshell.watchFiles = true
+            Quickshell.reload(true)
+        }
+    }
+
+    // Launcher entries can't name a path under the home folder, so the file's handler comes through here.
+    IpcHandler {
+        target: "appimage"
+        function install(path: string): void {
+            Quickshell.execDetached(["env", `MAINSTREAM_APPIMAGE=${path}`, "qs", "-p",
+                CF.FileUtils.trimFileProtocol(Quickshell.shellPath("appimage-installer.qml"))]);
+        }
+    }
+
     IpcHandler {
         target: "updates"
 
         function holdReload(): void {
+            root.reloadPending = false
             Quickshell.watchFiles = false
         }
 
         function resumeReload(): void {
+            if (GlobalStates.screenLocked || unlockedReloadTimer.running) {
+                root.reloadPending = true
+                // Still held, so held() says so and no file change reloads it first.
+                Quickshell.watchFiles = false
+                return
+            }
             Quickshell.watchFiles = true
             Quickshell.reload(true)
+        }
+
+        function held(): bool {
+            return !Quickshell.watchFiles
         }
     }
 }

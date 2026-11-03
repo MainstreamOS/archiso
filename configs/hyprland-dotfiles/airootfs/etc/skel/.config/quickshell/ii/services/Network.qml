@@ -6,7 +6,9 @@ pragma ComponentBehavior: Bound
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import qs.modules.common
 import qs.services.network
+import "network-rates.js" as Rates
 
 /**
  * Network service with nmcli.
@@ -22,7 +24,26 @@ Singleton {
     property bool wifiConnecting: connectProc.running
     property WifiAccessPoint wifiConnectTarget
     readonly property list<WifiAccessPoint> wifiNetworks: []
-    readonly property WifiAccessPoint active: wifiNetworks.find(n => n.active) ?? null
+    // A network joined on a Steam Frame adapter is only shown when the computer's own card has none.
+    readonly property WifiAccessPoint active: wifiNetworks.find(n => n.active && !n.onFrameAdapter)
+        ?? wifiNetworks.find(n => n.active) ?? null
+
+    // Steam's profile for the Steam Frame adapter's link to the headset, never the user's network.
+    readonly property string frameProfileName: "Steam Frame Wireless Adapter"
+    // Found by USB id, so even with Wi-Fi off or Steam closed.
+    property var frameAdapters: []
+    readonly property bool frameAdapterPresent: frameAdapters.length > 0
+    // Wi-Fi devices on Steam's link, and Frame adapters left out because the
+    // computer has a Wi-Fi card of its own.
+    property var frameLinkDevices: []
+    property var hiddenWifiDevices: []
+    // Cards a scan may use while a Frame adapter is in: a scan takes the adapter
+    // off the headset's channel, and back-to-back scans have hung it.
+    property var scanDevices: []
+    property WifiAccessPoint frameProfile: null
+    // The headset's hotspot, from Steam's profile. Kept after a forget, since it
+    // is still the headset and never a network to join.
+    property string frameSsid: ""
     
     // Saved connection names (SSIDs with profiles)
     property var savedConnectionNames: new Set()
@@ -30,23 +51,32 @@ Singleton {
     // Sorted once per scan, not from a binding: a binding that sorts on
     // strength would rebuild the list, and every row with it, on every scan.
     property var friendlyWifiNetworks: []
+    // Steam's profile is not named after its network, so no scan matches it. It is
+    // added by name so it can be deleted, which has fixed a headset that would not pair.
     readonly property list<var> savedNetworks: friendlyWifiNetworks.filter(n => n.isSaved && !n.active)
+        .concat(frameProfile ? [frameProfile] : [])
     readonly property list<var> availableNetworks: friendlyWifiNetworks.filter(n => !n.isSaved && !n.active)
+    // The last scan as nmcli gave it, kept so the list can be redone when a
+    // device joins or leaves Steam's link without asking nmcli again.
+    property var scanRows: []
+    // The list waits for the first status, which says which devices are Steam's.
+    property bool devicesKnown: false
+    // Kept from the last sort: the rows' own active flags are already the new ones.
+    property string sortedActive: ""
+    // Networks gone from the list. A view holds its rows still while one asks
+    // for a password, so these may still be on screen until no prompt is open.
+    property var retiredNetworks: []
 
     function reorderNetworks() {
         const before = root.friendlyWifiNetworks;
         // Only when the networks or the connected one change. Two networks a
         // few dBm apart swap on nearly every scan, and each swap cost a full
         // row rebuild. Signal bars still update live inside each row.
-        const namesNow = wifiNetworks.map(n => n.ssid).sort().join("\u0000");
-        const namesBefore = before.map(n => n.ssid).sort().join("\u0000");
-        const activeNow = (wifiNetworks.find(n => n.active) ?? null);
-        const activeBefore = (before.find(n => n.active) ?? null);
-        if (namesNow === namesBefore && activeNow === activeBefore)
+        const sameNetworks = before.length === wifiNetworks.length && before.every(n => wifiNetworks.includes(n));
+        const activeNow = wifiNetworks.filter(n => n.active).map(n => n.ssid).join("\u0000");
+        if (sameNetworks && activeNow === root.sortedActive)
             return;
-        // A prompt is open, and the password being typed lives in a row.
-        if (before.some(n => n.askingPassword))
-            return;
+        root.sortedActive = activeNow;
         root.friendlyWifiNetworks = [...wifiNetworks].sort((a, b) => {
             if (a.active && !b.active)
                 return -1;
@@ -55,11 +85,20 @@ Singleton {
             return b.strength - a.strength;
         });
     }
+
+    function freeRetiredNetworks() {
+        const all = [...root.wifiNetworks, ...root.retiredNetworks, ...(root.frameProfile ? [root.frameProfile] : [])];
+        if (all.some(n => n.askingPassword))
+            return;
+        for (const network of root.retiredNetworks)
+            network.destroy();
+        root.retiredNetworks = [];
+    }
     
     property string wifiStatus: "disconnected"
 
     property string networkName: ""
-    property int networkStrength
+    property int networkStrength: root.active?.strength ?? 0
     property string materialSymbol: root.ethernet
         ? "lan"
         : (root.wifiEnabled && root.wifiStatus === "connected")
@@ -80,9 +119,12 @@ Singleton {
                         : "signal_wifi_bad"
 
     // Control
-    function enableWifi(enabled = true): void {
+    // Settings shows this warning on the page, so it passes quiet.
+    function enableWifi(enabled = true, quiet = false): void {
         const cmd = enabled ? "on" : "off";
         enableWifiProc.exec(["nmcli", "radio", "wifi", cmd]);
+        if (!enabled && !quiet && root.frameAdapterPresent)
+            Quickshell.execDetached(["notify-send", Translation.tr("Wi-Fi turned off"), Translation.tr("Turning Wi-Fi off also turns off the wireless adapter for the Steam Frame (experimental), so the headset cannot stream through it until Wi-Fi is back on."), "-a", "Shell"]);
     }
 
     function toggleWifi(): void {
@@ -95,8 +137,13 @@ Singleton {
     }
 
     function connectToWifiNetwork(accessPoint: WifiAccessPoint): void {
+        // Steam brings its link up by itself, on the adapter, when the headset is near.
+        if (accessPoint.frameProfile)
+            return;
         accessPoint.askingPassword = false;
         root.wifiConnectTarget = accessPoint;
+        // exec() ends an attempt still running, and that one's exit arrives after this target is set.
+        connectProc.superseded = connectProc.running;
         // We use this instead of `nmcli connection up SSID` because this also creates a connection profile
         connectProc.exec(["nmcli", "dev", "wifi", "connect", accessPoint.ssid])
 
@@ -160,6 +207,7 @@ Singleton {
 
     Process {
         id: connectProc
+        property bool superseded: false
         environment: ({
             LANG: "C",
             LC_ALL: "C"
@@ -173,7 +221,7 @@ Singleton {
         stderr: SplitParser {
             onRead: line => {
                 // print("err:", line)
-                if (line.includes("Secrets were required") && root.wifiConnectTarget) {
+                if (line.includes("Secrets were required") && root.wifiConnectTarget && !connectProc.superseded) {
                     root.wifiConnectTarget.askingPassword = true
                 }
             }
@@ -181,6 +229,8 @@ Singleton {
         // Only for a network that plausibly wants one: a failure alone also
         // covers a network that is just out of range, which needs no password.
         onExited: (exitCode, exitStatus) => {
+            if (superseded)
+                return;
             const target = root.wifiConnectTarget;
             if (target && exitCode !== 0 && !target.askingPassword)
                 target.askingPassword = target.isSecure && !target.isSaved;
@@ -188,7 +238,11 @@ Singleton {
         }
         // onExited never fires if the command cannot start at all.
         onRunningChanged: {
-            if (!running && root.wifiConnectTarget)
+            if (running)
+                return;
+            if (superseded)
+                superseded = false;
+            else if (root.wifiConnectTarget)
                 root.wifiConnectTarget = null;
         }
     }
@@ -258,7 +312,9 @@ Singleton {
 
     Process {
         id: rescanProcess
-        command: ["nmcli", "dev", "wifi", "list", "--rescan", "yes"]
+        command: root.frameAdapterPresent
+            ? ["sh", "-c", "for i in \"$@\"; do nmcli dev wifi list --rescan yes ifname \"$i\" > /dev/null & done; wait", "sh"].concat(root.scanDevices)
+            : ["nmcli", "dev", "wifi", "list", "--rescan", "yes"]
         // Output unused: getNetworks reads the fields this service wants once
         // per scan, so the list is not rebuilt once per network in range.
         onExited: {
@@ -269,10 +325,7 @@ Singleton {
 
     // Status update
     function update() {
-        updateConnectionType.startCheck();
-        wifiStatusProcess.running = true
-        updateNetworkName.running = true;
-        updateNetworkStrength.running = true;
+        updateStatus.running = true;
     }
 
     Process {
@@ -284,90 +337,89 @@ Singleton {
         }
     }
 
-    Process {
-        id: updateConnectionType
-        property string buffer
-        command: ["sh", "-c", "nmcli -t -f TYPE,STATE d status && nmcli -t -f CONNECTIVITY g"]
-        running: true
-        function startCheck() {
-            buffer = "";
-            updateConnectionType.running = true;
-        }
-        stdout: SplitParser {
-            onRead: data => {
-                updateConnectionType.buffer += data + "\n";
-            }
-        }
-        onExited: (exitCode, exitStatus) => {
-            const lines = updateConnectionType.buffer.trim().split('\n');
-            const connectivity = lines.pop() // none, limited, full
-            let hasEthernet = false;
-            let hasWifi = false;
-            let wifiStatus = "disconnected";
-            lines.forEach(line => {
-                if (line.includes("ethernet") && line.includes("connected"))
-                    hasEthernet = true;
-                else if (line.includes("wifi:")) {
-                    if (line.includes("disconnected")) {
-                        wifiStatus = "disconnected"
-                    }
-                    else if (line.includes("connected")) {
-                        hasWifi = true;
-                        wifiStatus = "connected"
+    function applyStatus(text) {
+        const parts = text.split(/^--(?:devices|active|connectivity)--$/m);
+        const adapters = (parts[0] ?? "").split("\n").filter(name => name.length > 0);
+        const devices = Rates.terseRows(parts[1]).map(f => ({ device: f[0], type: f[1] ?? "", state: f[2] ?? "", connection: f[3] ?? "" }));
+        const [connectivity, radio] = Rates.terseRows(parts[3])[0] ?? []; // none, limited, full
+        root.wifiEnabled = radio === "enabled";
+        const isAdapter = name => adapters.includes(name);
+        const wifiDevices = devices.filter(d => d.type === "wifi");
+        const ownCards = wifiDevices.filter(d => !isAdapter(d.device)).map(d => d.device);
+        const frameLink = wifiDevices.filter(d => d.connection === root.frameProfileName).map(d => d.device);
+        const hidden = wifiDevices.filter(d => ownCards.length > 0 && isAdapter(d.device)
+            && (d.connection === "" || frameLink.includes(d.device))).map(d => d.device);
+        const ignored = name => frameLink.includes(name) || hidden.includes(name);
+        const scanDevices = wifiDevices.filter(d => !ignored(d.device)).map(d => d.device);
+        if (scanDevices.join(" ") !== root.scanDevices.join(" "))
+            root.scanDevices = scanDevices;
 
-                        if (connectivity === "limited") {
-                            hasWifi = false;
-                            wifiStatus = "limited"
-                        }
-                    }
-                    else if (line.includes("connecting")) {
-                        wifiStatus = "connecting"
-                    }
-                    else if (line.includes("unavailable")) {
-                        wifiStatus = "disabled"
-                    }
-                }
-            });
-            root.wifiStatus = wifiStatus;
-            root.ethernet = hasEthernet;
-            root.wifi = hasWifi;
+        const firstStatus = !root.devicesKnown;
+        if (firstStatus || adapters.join(" ") !== root.frameAdapters.join(" ")
+                || frameLink.join(" ") !== root.frameLinkDevices.join(" ")
+                || hidden.join(" ") !== root.hiddenWifiDevices.join(" ")) {
+            root.frameAdapters = adapters;
+            root.frameLinkDevices = frameLink;
+            root.hiddenWifiDevices = hidden;
+            root.devicesKnown = true;
+            root.applyScan();
+            // Steam made its profile after the saved list was read, as on a first pairing.
+            if (frameLink.length > 0 && !root.frameProfile)
+                getSavedConnections.running = true;
         }
+        // The first list waits for this, since it must not scan when a Frame adapter is in.
+        if (firstStatus)
+            getNetworks.running = true;
+
+        // The best state of any card wins, so a second card that is idle or
+        // retrying cannot cover a connected one.
+        const rank = ["disabled", "disconnected", "connecting", "connected"];
+        let best = -1;
+        for (const d of wifiDevices) {
+            if (ignored(d.device))
+                continue;
+            const state = d.state.includes("disconnected") ? "disconnected"
+                : d.state.includes("connected") ? "connected"
+                : d.state.includes("connecting") ? "connecting"
+                : d.state.includes("unavailable") ? "disabled" : "";
+            best = Math.max(best, rank.indexOf(state));
+        }
+        let wifiStatus = best >= 0 ? rank[best] : "disconnected";
+        if (wifiStatus === "connected" && connectivity === "limited")
+            wifiStatus = "limited";
+        // A join or drop re-reads the list for its ACTIVE flags now rather than at the
+        // next scan. NetworkManager already knows them, so this run starts no scan.
+        if (wifiStatus !== root.wifiStatus) {
+            getNetworks.rescan = "no";
+            getNetworks.running = true;
+        }
+        root.wifiStatus = wifiStatus;
+        root.wifi = wifiStatus === "connected";
+        // Not includes(): "disconnected" contains "connected".
+        root.ethernet = devices.some(d => d.type === "ethernet" && d.state.startsWith("connected"));
+
+        const connections = Rates.parseConnections(parts[2])
+            .filter(c => c.name !== root.frameProfileName && !ignored(c.device));
+        const ownWifi = connections.find(c => ownCards.includes(c.device));
+        const first = connections[0];
+        root.networkName = (first && isAdapter(first.device) && ownWifi ? ownWifi.name : first?.name) ?? "";
     }
 
+    // One pass for status and name, so both judge the same devices.
     Process {
-        id: updateNetworkName
-        command: ["sh", "-c", "nmcli -t -f NAME c show --active | head -1"]
+        id: updateStatus
         running: true
-        stdout: SplitParser {
-            onRead: data => {
-                root.networkName = data;
-            }
-        }
-    }
-
-    Process {
-        id: updateNetworkStrength
-        running: true
-        command: ["sh", "-c", "nmcli -f IN-USE,SIGNAL,SSID device wifi | awk '/^\\*/{if (NR!=1) {print $2}}'"]
-        stdout: SplitParser {
-            onRead: data => {
-                root.networkStrength = parseInt(data);
-            }
-        }
-    }
-
-    Process {
-        id: wifiStatusProcess
-        command: ["nmcli", "radio", "wifi"]
-        Component.onCompleted: running = true
+        command: ["sh", "-c", "for d in /sys/class/net/*; do [ -r \"$d/device/uevent\" ] || continue; "
+            + "while read -r l; do case \"$l\" in PRODUCT=28de/2432/*) echo \"${d##*/}\" ;; esac; done < \"$d/device/uevent\"; done; "
+            + "echo --devices--; nmcli -t -f DEVICE,TYPE,STATE,CONNECTION d status; "
+            + "echo --active--; nmcli -t -f DEVICE,TYPE,NAME c show --active; "
+            + "echo --connectivity--; nmcli -t -f CONNECTIVITY,WIFI g"]
         environment: ({
             LANG: "C",
             LC_ALL: "C"
         })
         stdout: StdioCollector {
-            onStreamFinished: {
-                root.wifiEnabled = text.trim() === "enabled";
-            }
+            onStreamFinished: root.applyStatus(this.text)
         }
     }
 
@@ -390,87 +442,157 @@ Singleton {
                     }
                 });
                 root.savedConnectionNames = savedNames;
-                // Re-fetch networks to update isSaved status
-                getNetworks.running = true;
+                root.syncFrameProfile();
+                // Redone from the last scan: asking nmcli again could start a scan.
+                root.applyScan();
             }
         }
     }
 
+    function syncFrameProfile() {
+        const saved = root.savedConnectionNames.has(root.frameProfileName);
+        if (saved)
+            getFrameSsid.running = true;
+        if (saved && !root.frameProfile) {
+            // The headset's hotspot is on 6 GHz, where Wi-Fi allows only WPA3. Marked
+            // on the object, since a page held for a prompt can show it after a forget.
+            root.frameProfile = apComp.createObject(root, {
+                lastIpcObject: { active: false, strength: 0, frequency: 0, ssid: root.frameProfileName, bssid: "", security: "WPA3", isSaved: true, frameProfile: true }
+            });
+        } else if (!saved && root.frameProfile) {
+            const gone = root.frameProfile;
+            // Not saved anymore, so a page still showing it offers no Forget.
+            gone.lastIpcObject = Object.assign({}, gone.lastIpcObject, { isSaved: false });
+            root.retiredNetworks.push(gone);
+            root.frameProfile = null;
+            root.freeRetiredNetworks();
+        }
+    }
+
     Process {
-        id: getNetworks
-        running: true
-        command: ["nmcli", "-g", "ACTIVE,SIGNAL,FREQ,SSID,BSSID,SECURITY", "d", "w"]
+        id: getFrameSsid
+        command: ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "id", root.frameProfileName]
         environment: ({
             LANG: "C",
             LC_ALL: "C"
         })
         stdout: StdioCollector {
             onStreamFinished: {
+                const ssid = (Rates.terseRows(this.text)[0] ?? [""])[0];
+                if (ssid.length > 0 && ssid !== root.frameSsid) {
+                    root.frameSsid = ssid;
+                    root.applyScan();
+                }
+            }
+        }
+    }
+
+    // Networks only a hidden Frame adapter sees are left out, and so is the
+    // headset's hotspot whichever card sees it, since only Steam can join it.
+    function applyScan() {
+        if (!root.devicesKnown)
+            return;
+        const hotspots = new Set(root.scanRows.filter(n => n.active && root.frameLinkDevices.includes(n.device)).map(n => n.ssid));
+        if (root.frameSsid.length > 0)
+            hotspots.add(root.frameSsid);
+        const allNetworks = root.scanRows
+            .filter(n => n.ssid && n.ssid.length > 0 && !root.hiddenWifiDevices.includes(n.device) && !hotspots.has(n.ssid))
+            .map(n => Object.assign({}, n, {
+                onFrameAdapter: root.frameAdapters.includes(n.device),
+                isSaved: root.savedConnectionNames.has(n.ssid)
+            }));
+
+        // Group networks by SSID and prioritize connected ones
+        const networkMap = new Map();
+        for (const network of allNetworks) {
+            const existing = networkMap.get(network.ssid);
+            if (!existing) {
+                networkMap.set(network.ssid, network);
+            } else {
+                // Prioritize active/connected networks
+                if (network.active && !existing.active) {
+                    networkMap.set(network.ssid, network);
+                } else if (!network.active && !existing.active) {
+                    // If both are inactive, keep the one with better signal
+                    if (network.strength > existing.strength) {
+                        networkMap.set(network.ssid, network);
+                    }
+                }
+                // If existing is active and new is not, keep existing
+            }
+        }
+
+        const wifiNetworks = Array.from(networkMap.values());
+
+        const rNetworks = root.wifiNetworks;
+
+        // Matched by name, since the list above is one entry per name. Radio
+        // and band change whenever the strongest radio does, and matching on
+        // them would rebuild the object, taking the password prompt with it.
+        const stillThere = ssid => wifiNetworks.some(n => n.ssid === ssid);
+        // A network being joined stays until it is done with.
+        const inUse = ap => ap.askingPassword || ap === root.wifiConnectTarget;
+
+        const gone = rNetworks.filter(rn => !stillThere(rn.ssid) && !inUse(rn));
+        for (const network of gone) {
+            rNetworks.splice(rNetworks.indexOf(network), 1);
+            root.retiredNetworks.push(network);
+        }
+
+        for (const network of wifiNetworks) {
+            let match = rNetworks.find(n => n.ssid === network.ssid);
+            // Back while a view still shows it: the same object keeps that row.
+            const retired = match ? -1 : root.retiredNetworks.findIndex(n => n.ssid === network.ssid);
+            if (retired >= 0) {
+                match = root.retiredNetworks.splice(retired, 1)[0];
+                rNetworks.push(match);
+            }
+            if (match) {
+                match.lastIpcObject = network;
+            } else {
+                rNetworks.push(apComp.createObject(root, {
+                    lastIpcObject: network
+                }));
+            }
+        }
+
+        root.reorderNetworks();
+        root.freeRetiredNetworks();
+    }
+
+    Process {
+        id: getNetworks
+        // --rescan auto scans every card once the list is 30 s old, the Frame
+        // adapter included, so it is off while one is plugged in.
+        property string rescan: "auto"
+        command: ["nmcli", "-g", "ACTIVE,SIGNAL,FREQ,SSID,BSSID,SECURITY,DEVICE", "d", "w", "list", "--rescan", root.frameAdapterPresent ? "no" : getNetworks.rescan]
+        environment: ({
+            LANG: "C",
+            LC_ALL: "C"
+        })
+        onRunningChanged: {
+            if (!running)
+                getNetworks.rescan = "auto";
+        }
+        stdout: StdioCollector {
+            onStreamFinished: {
                 const PLACEHOLDER = "STRINGWHICHHOPEFULLYWONTBEUSED";
                 const rep = new RegExp("\\\\:", "g");
                 const rep2 = new RegExp(PLACEHOLDER, "g");
 
-                const allNetworks = text.trim().split("\n").map(n => {
+                root.scanRows = text.trim().split("\n").map(n => {
                     const net = n.replace(rep, PLACEHOLDER).split(":");
-                    const ssid = net[3];
                     return {
                         active: net[0] === "yes",
                         strength: parseInt(net[1]),
                         frequency: parseInt(net[2]),
-                        ssid: ssid,
+                        ssid: net[3],
                         bssid: net[4]?.replace(rep2, ":") ?? "",
                         security: net[5] || "",
-                        isSaved: root.savedConnectionNames.has(ssid)
+                        device: net[6] ?? ""
                     };
-                }).filter(n => n.ssid && n.ssid.length > 0);
-
-                // Group networks by SSID and prioritize connected ones
-                const networkMap = new Map();
-                for (const network of allNetworks) {
-                    const existing = networkMap.get(network.ssid);
-                    if (!existing) {
-                        networkMap.set(network.ssid, network);
-                    } else {
-                        // Prioritize active/connected networks
-                        if (network.active && !existing.active) {
-                            networkMap.set(network.ssid, network);
-                        } else if (!network.active && !existing.active) {
-                            // If both are inactive, keep the one with better signal
-                            if (network.strength > existing.strength) {
-                                networkMap.set(network.ssid, network);
-                            }
-                        }
-                        // If existing is active and new is not, keep existing
-                    }
-                }
-
-                const wifiNetworks = Array.from(networkMap.values());
-
-                const rNetworks = root.wifiNetworks;
-
-                // Matched by name, since the list above is one entry per name. Radio
-                // and band change whenever the strongest radio does, and matching on
-                // them would rebuild the object, taking the password prompt with it.
-                const stillThere = ssid => wifiNetworks.some(n => n.ssid === ssid);
-                // A network being joined stays until it is done with.
-                const inUse = ap => ap.askingPassword || ap === root.wifiConnectTarget;
-
-                const gone = rNetworks.filter(rn => !stillThere(rn.ssid) && !inUse(rn));
-                for (const network of gone)
-                    rNetworks.splice(rNetworks.indexOf(network), 1).forEach(n => n.destroy());
-
-                for (const network of wifiNetworks) {
-                    const match = rNetworks.find(n => n.ssid === network.ssid);
-                    if (match) {
-                        match.lastIpcObject = network;
-                    } else {
-                        rNetworks.push(apComp.createObject(root, {
-                            lastIpcObject: network
-                        }));
-                    }
-                }
-
-                root.reorderNetworks();
+                });
+                root.applyScan();
             }
         }
     }

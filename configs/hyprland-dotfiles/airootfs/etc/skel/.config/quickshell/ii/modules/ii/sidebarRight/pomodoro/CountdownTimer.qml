@@ -29,88 +29,56 @@ Item {
                 anchors.centerIn: parent
                 spacing: 0
 
+                ClockTimePicker {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: timeItem.showsEndTime
+                }
+
+                DurationPicker {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: timeItem.showsLength
+                }
+
                 Item {
                     id: timeItem
+                    visible: !timeItem.showsEndTime && !timeItem.showsLength
                     Layout.alignment: Qt.AlignHCenter
-                    implicitWidth: 120
+                    implicitWidth: 160
                     implicitHeight: 50
 
-                    property bool editMode: false
-
-                    function applyEdit() {
-                        editMode = false;
-                        let raw = timeField.text.replace(/[^0-9:]/g, "");
-                        let parts = raw.split(":");
-                        let newSeconds = 0;
-                        if (parts.length >= 2) {
-                            let mins = parseInt(parts[0]);
-                            let secs = parseInt(parts[1]);
-                            newSeconds = (isNaN(mins) ? 0 : mins) * 60 + (isNaN(secs) ? 0 : secs);
-                        } else {
-                            let s = parseInt(parts[0]);
-                            newSeconds = isNaN(s) ? 0 : s;
-                        }
-                        TimerService.setCountdownTime(newSeconds);
-                    }
+                    readonly property bool showsEndTime: TimerService.countdownPicksEndTime
+                    readonly property bool showsLength: !TimerService.countdownToClock && TimerService.countdownIdle
 
                     StyledText {
-                        visible: !timeItem.editMode
                         anchors.centerIn: parent
-                        text: {
-                            let minutes = Math.floor(TimerService.countdownSecondsLeft / 60).toString().padStart(2, '0');
-                            let seconds = Math.floor(TimerService.countdownSecondsLeft % 60).toString().padStart(2, '0');
-                            return `${minutes}:${seconds}`;
-                        }
-                        font.pixelSize: 40
+                        text: TimerService.formatCountdown(TimerService.countdownSecondsLeft)
+                        font.pixelSize: 32
                         color: Appearance.m3colors.m3onSurface
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        visible: !timeItem.editMode
-                        cursorShape: Qt.IBeamCursor
-                        acceptedButtons: Qt.LeftButton
-
-                        onClicked: (mouse) => {
-                            if (mouse.button === Qt.LeftButton && !TimerService.countdownRunning) {
-                                let minutes = Math.floor(TimerService.countdownDuration / 60).toString().padStart(2, '0');
-                                let seconds = Math.floor(TimerService.countdownDuration % 60).toString().padStart(2, '0');
-                                timeField.text = `${minutes}:${seconds}`;
-                                timeItem.editMode = true;
-                                timeField.forceActiveFocus();
-                                timeField.selectAll();
-                            }
-                        }
-                    }
-
-                    StyledTextInput {
-                        id: timeField
-                        visible: timeItem.editMode
-                        anchors.centerIn: parent
-                        width: parent.width
-                        horizontalAlignment: TextInput.AlignHCenter
-                        font.pixelSize: 40
-                        font.hintingPreference: Font.PreferDefaultHinting
-                        renderType: ScreenScale.renderTypeFor(Screen.name)
-                        color: Appearance.m3colors.m3onSurface
-
-                        Keys.onReturnPressed: timeItem.applyEdit()
-                        Keys.onEnterPressed: timeItem.applyEdit()
-                        Keys.onEscapePressed: timeItem.editMode = false
-
-                        onActiveFocusChanged: {
-                            if (!activeFocus && timeItem.editMode)
-                                timeItem.applyEdit();
-                        }
                     }
                 }
 
                 StyledText {
+                    visible: !timeItem.showsEndTime && !timeItem.showsLength
                     Layout.alignment: Qt.AlignHCenter
-                    text: TimerService.countdownRunning ? Translation.tr("Running") : Translation.tr("Timer")
+                    text: TimerService.countdownRunning
+                        ? Translation.tr("Ends at %1").arg(Qt.formatTime(new Date(Date.now() + TimerService.countdownSecondsLeft * 1000), Config.options.time.format))
+                        : Translation.tr("Timer")
                     font.pixelSize: Appearance.font.pixelSize.normal
                     color: Appearance.colors.colSubtext
                 }
+            }
+        }
+
+        SegmentedTabBar {
+            Layout.alignment: Qt.AlignHCenter
+            Layout.preferredWidth: 220
+            model: [
+                {"name": Translation.tr("Length"), "icon": "hourglass_empty"},
+                {"name": Translation.tr("Clock time"), "icon": "schedule"}
+            ]
+            currentIndex: TimerService.countdownToClock ? 1 : 0
+            onActivated: index => {
+                TimerService.setCountdownMode(index === 1);
             }
         }
 
@@ -125,7 +93,8 @@ Item {
                     text: TimerService.countdownRunning ? Translation.tr("Pause") : (TimerService.countdownSecondsLeft === TimerService.countdownDuration) ? Translation.tr("Start") : Translation.tr("Resume")
                     color: TimerService.countdownRunning ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnPrimary
                 }
-                implicitHeight: 35
+                implicitHeight: 32
+                buttonRadius: 10
                 implicitWidth: 90
                 font.pixelSize: Appearance.font.pixelSize.larger
                 onClicked: TimerService.toggleCountdown()
@@ -134,22 +103,23 @@ Item {
             }
 
             RippleButton {
-                implicitHeight: 35
+                implicitHeight: 32
+                buttonRadius: 10
                 implicitWidth: 90
 
                 onClicked: TimerService.resetCountdown()
                 enabled: TimerService.countdownSecondsLeft < TimerService.countdownDuration
 
                 font.pixelSize: Appearance.font.pixelSize.larger
-                colBackground: Appearance.colors.colErrorContainer
-                colBackgroundHover: Appearance.colors.colErrorContainerHover
-                colRipple: Appearance.colors.colErrorContainerActive
+                colBackground: Appearance.surfaces.row
+                colBackgroundHover: Appearance.colors.colLayer2Hover
+                colRipple: Appearance.colors.colLayer2Active
 
                 contentItem: StyledText {
                     anchors.centerIn: parent
                     horizontalAlignment: Text.AlignHCenter
                     text: Translation.tr("Reset")
-                    color: Appearance.colors.colOnErrorContainer
+                    color: Appearance.colors.colOnLayer1
                 }
             }
         }
