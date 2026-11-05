@@ -25,6 +25,9 @@ intel-ucode
 # Firmware & hardware support
 # ==============================================================================
 sof-firmware
+alsa-ucm-conf
+thermald
+fprintd
 b43-fwcutter
 usbmuxd
 usbutils

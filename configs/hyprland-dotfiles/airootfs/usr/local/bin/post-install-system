@@ -130,6 +130,11 @@ for svc in NetworkManager bluetooth fstrim.timer cups.socket; do
     systemctl enable "$svc" 2>/dev/null || true
 done
 
+# Intel thermal daemon: prevent thermal runaway and throttling on Intel laptops
+if grep -qi "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+    systemctl enable thermald.service 2>/dev/null || true
+fi
+
 # Most home printers are found over mDNS and answer to a .local name, which
 # nothing resolves until nss-mdns is named in nsswitch. The package installs the
 # resolver and stops there, so a printer the machine can see advertised is still
