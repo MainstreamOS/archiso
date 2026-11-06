@@ -94,7 +94,6 @@ LIVE_PKGS=(
     mkinitcpio-archiso
     mkinitcpio-nfs-utils
     nbd
-    squashfs-tools
     syslinux
     mtools
     edk2-shell
@@ -116,13 +115,11 @@ LIVE_PKGS=(
 info "Removing live-only packages..."
 # Filter to installed targets first: a missing name ("target not found") would
 # abort the whole -Rns. Then try the batch; if any target is still required by a
-# kept package (squashfs-tools is a depends of calamares-mainstream, which isn't
-# removed until a later Calamares module), -Rns is all-or-nothing and vetoes the
-# ENTIRE batch — silently leaving chromium behind. Fall back to a per-package
-# sweep that loops until a pass removes nothing new, so anything with no kept
-# dependent (chromium has zero reverse-deps) is removed regardless. Whatever
-# remains is genuinely still required now and gets cleaned by finalize-install
-# once calamares-mainstream is gone.
+# kept package, -Rns is all-or-nothing and vetoes the ENTIRE batch — silently
+# leaving chromium behind. Fall back to a per-package sweep that loops until a pass
+# removes nothing new, so anything with no kept dependent (chromium has zero
+# reverse-deps) is removed regardless. Whatever remains is genuinely still
+# required now and gets cleaned by finalize-install once live packages are gone.
 _present=()
 for _p in "${LIVE_PKGS[@]}"; do
     if pacman -Qq "$_p" &>/dev/null; then

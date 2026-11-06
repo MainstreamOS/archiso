@@ -84,6 +84,7 @@ info "CPU vendor: $CPU_VENDOR"
 #
 # NOT included here even though they look live-only:
 #   - dosfstools: needed if user creates FAT partitions post-install
+#   - squashfs-tools: required by mainstream-basic and needed for AppImage inspection (unsquashfs)
 #   - nano, openssh, less, man-db, terminus-font: genuinely useful on the
 #     installed system
 LIVEONLY=(
@@ -93,7 +94,6 @@ LIVEONLY=(
     mkinitcpio-nfs-utils
     syslinux
     mtools
-    squashfs-tools
     nbd
     memtest86+
     memtest86+-efi

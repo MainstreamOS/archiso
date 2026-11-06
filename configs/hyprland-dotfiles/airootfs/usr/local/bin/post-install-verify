@@ -29,7 +29,6 @@ LIVEONLY=(
     mkinitcpio-nfs-utils
     syslinux
     mtools
-    squashfs-tools
     nbd
     memtest86+
     memtest86+-efi
