@@ -76,6 +76,8 @@ ROOT_FILES=(
     "0644|sdata/polkit/org.mainstreamos.ollama-setup.policy|/usr/share/polkit-1/actions/org.mainstreamos.ollama-setup.policy"
     "0755|sdata/polkit/ai-cli-install|/usr/local/bin/ai-cli-install"
     "0644|sdata/polkit/org.mainstreamos.ai-cli-install.policy|/usr/share/polkit-1/actions/org.mainstreamos.ai-cli-install.policy"
+    "0755|sdata/polkit/mainstream-efi-resize|/usr/local/bin/mainstream-efi-resize"
+    "0644|sdata/polkit/org.mainstreamos.efi-resize.policy|/usr/share/polkit-1/actions/org.mainstreamos.efi-resize.policy"
     "0755|dots/.config/quickshell/ii/scripts/colors/sddm-bg-helper.sh|/usr/local/bin/sddm-bg-helper"
     "0644|sdata/polkit/org.illogicalimpulse.sddm-bg.policy|/usr/share/polkit-1/actions/org.illogicalimpulse.sddm-bg.policy"
     "0644|sdata/polkit/50-sddm-bg.rules|/usr/share/polkit-1/rules.d/50-sddm-bg.rules"
