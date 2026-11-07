@@ -325,8 +325,8 @@ ButtonMouseArea {
                                 anchors {
                                     bottom: parent.bottom
                                     right: parent.right
-                                    bottomMargin: (wsApp.implicitHeight - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
-                                    rightMargin: (wsApp.implicitWidth - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
+                                    bottomMargin: (wsApp.height - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
+                                    rightMargin: (wsApp.width - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
                                 }
                                 animated: !wsApp.biggestWindow
                                 visible: false
@@ -382,8 +382,8 @@ ButtonMouseArea {
                                 anchors {
                                     bottom: parent.bottom
                                     right: parent.right
-                                    bottomMargin: (wsApp.implicitHeight - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
-                                    rightMargin: (wsApp.implicitWidth - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
+                                    bottomMargin: (wsApp.height - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
+                                    rightMargin: (wsApp.width - root.workspaceButtonWidth) / 2 + wsApp.cornerMargin
                                 }
                                 source: wsApp.mainAppIconSource
                                 implicitSize: (!root.superPressAndHeld && Config.options?.bar.workspaces.showAppIcons) ? root.workspaceIconSize : root.workspaceIconSizeShrinked
@@ -485,6 +485,8 @@ ButtonMouseArea {
         readonly property int wsId: wsModel.getWorkspaceIdAt(index)
         implicitWidth: root.vertical ? root.barThickness : root.workspaceButtonWidth
         implicitHeight: root.vertical ? root.workspaceButtonWidth : root.barThickness
+        width: root.vertical ? root.width : implicitWidth
+        height: root.vertical ? implicitHeight : root.height
     }
 
     component NumberWorkspaceItem: WorkspaceItem {
