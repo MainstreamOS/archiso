@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# mainstream-hardware-quirks — automated hardware detection and quirks engine
+# Detects vendor-specific laptop hardware (ASUS, Apple, Intel Panther Lake, Lenovo, Framework)
+# and applies required udev rules, modprobe configs, and system services.
+#
+# Safe and idempotent to run on every boot, update, and package install.
+
+set -euo pipefail
+
+SYS_VENDOR="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+PRODUCT_NAME="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+CHASSIS_TYPE="$(cat /sys/class/dmi/id/chassis_type 2>/dev/null || true)"
+
+log() {
+    printf 'mainstream-hardware-quirks: %s\n' "$1"
+}
+
+# ── 1. ASUS ROG Flow Z13 detachable keyboard touchpad integration ──────────
+# Detachable keyboard touchpad connects over USB. Without this rule, libinput
+# marks it as external and disables Disable-While-Typing (DWT), causing jumpy
+# cursor taps during typing.
+apply_asus_z13_quirk() {
+    local is_z13=0
+    if [[ "$PRODUCT_NAME" =~ GZ30[12] || "$PRODUCT_NAME" =~ "ROG Flow Z13" ]]; then
+        is_z13=1
+    elif command -v lsusb >/dev/null 2>&1 && lsusb 2>/dev/null | grep -qE "0b05:(1a30|19b6)"; then
+        is_z13=1
+    fi
+
+    if (( is_z13 )); then
+        local rule_file="/etc/udev/rules.d/99-mainstream-asus-z13-touchpad.rules"
+        local content='ACTION=="add|change", KERNEL=="event*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a30", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_TOUCHPAD_INTEGRATION}="internal"
+ACTION=="add|change", KERNEL=="event*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19b6", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_TOUCHPAD_INTEGRATION}="internal"'
+
+        if [[ ! -f "$rule_file" ]] || [[ "$(< "$rule_file")" != "$content" ]]; then
+            log "Configuring ASUS ROG Flow Z13 internal touchpad DWT rule..."
+            mkdir -p /etc/udev/rules.d
+            printf '%s\n' "$content" > "$rule_file"
+            if command -v udevadm >/dev/null 2>&1; then
+                udevadm control --reload-rules 2>/dev/null || true
+                udevadm trigger --subsystem-match=input 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
+# ── 2. Intel Panther Lake (Core Ultra 300 / Xe3) display quirks ────────────
+# Panel Replay in the xe driver causes display freeze on wake/commits;
+# DPCD backlight AUX control is required on panels where EDID is absent.
+apply_intel_ptl_quirk() {
+    local is_ptl=0
+    if [[ "$PRODUCT_NAME" =~ (B9406|UX5406AA) ]]; then
+        is_ptl=1
+    fi
+    # Also detect Panther Lake PCI ID (8086:b0xx)
+    for dev in /sys/bus/pci/devices/*; do
+        [ -r "$dev/vendor" ] && [ -r "$dev/device" ] || continue
+        if [[ "$(< "$dev/vendor")" == "0x8086" && "$(< "$dev/device")" =~ ^0xb0[0-9a-f]{2}$ ]]; then
+            is_ptl=1
+            break
+        fi
+    done
+
+    if (( is_ptl )); then
+        local conf="/etc/modprobe.d/mainstream-intel-xe.conf"
+        local content="# Intel Panther Lake (Xe3) display panel replay and backlight quirks
+options xe enable_panel_replay=0 enable_dpcd_backlight=1"
+
+        if [[ ! -f "$conf" ]] || [[ "$(< "$conf")" != "$content" ]]; then
+            log "Configuring Intel Panther Lake (Xe3) display & backlight quirks..."
+            mkdir -p /etc/modprobe.d
+            printf '%s\n' "$content" > "$conf"
+            NEED_MKINITCPIO=1
+        fi
+    fi
+}
+
+# ── 3. Intel Wi-Fi 7 (BE200 / BE201 / BE202 / BE211) 802.11be stability ──
+# Prevents firmware handshake freezes and driver stalls on modern Wi-Fi 7 APs.
+apply_intel_wifi7_quirk() {
+    local has_be200=0
+    for dev in /sys/bus/pci/devices/*; do
+        [ -r "$dev/vendor" ] && [ -r "$dev/device" ] || continue
+        local v="$(< "$dev/vendor")" d="$(< "$dev/device")"
+        if [[ "$v" == "0x8086" ]] && [[ "$d" =~ ^0x(272b|272c|7740|7e40)$ ]]; then
+            has_be200=1
+            break
+        fi
+    done
+
+    if (( has_be200 )); then
+        local conf="/etc/modprobe.d/mainstream-iwlwifi-wifi7.conf"
+        local content="# Intel Wi-Fi 7 (BE200 series) 802.11be stability quirk
+# Prevents firmware crashes and handshake hangs on modern Wi-Fi 7 access points
+options iwlwifi disable_11be=Y"
+
+        if [[ ! -f "$conf" ]] || [[ "$(< "$conf")" != "$content" ]]; then
+            log "Configuring Intel Wi-Fi 7 (BE200 series) 11be stability quirk..."
+            mkdir -p /etc/modprobe.d
+            printf '%s\n' "$content" > "$conf"
+        fi
+    fi
+}
+
+# ── 4. Microsoft Surface Keyboard and EC Initramfs Modules ─────────────────
+# Required so keyboard / Type Cover works during LUKS passphrase entry in early boot.
+apply_surface_quirk() {
+    if [[ "$SYS_VENDOR" =~ "Microsoft Corporation" ]] && [[ "$PRODUCT_NAME" =~ Surface ]]; then
+        local conf_dir="/etc/mkinitcpio.conf.d"
+        local conf="$conf_dir/surface_device_modules.conf"
+        local pinctrl=""
+        if command -v lsmod >/dev/null 2>&1; then
+            pinctrl="$(lsmod | awk '/^pinctrl_/ {print $1; exit}')"
+        fi
+        local mods="surface_aggregator surface_aggregator_registry surface_aggregator_hub surface_hid_core surface_hid surface_kbd intel_lpss_pci 8250_dw"
+        [[ -n "$pinctrl" ]] && mods="$pinctrl $mods"
+        local content="MODULES+=($mods)"
+
+        if [[ ! -f "$conf" ]] || [[ "$(< "$conf")" != "$content" ]]; then
+            log "Configuring Microsoft Surface keyboard & aggregator initramfs modules..."
+            mkdir -p "$conf_dir"
+            printf '%s\n' "$content" > "$conf"
+            NEED_MKINITCPIO=1
+        fi
+    fi
+}
+
+# ── 5. Apple MacBook Hardware Integration via shared mac-config.sh ─────────
+apply_apple_quirks() {
+    if [[ "$SYS_VENDOR" =~ ^Apple || "$PRODUCT_NAME" =~ MacBook ]]; then
+        log "Apple hardware detected. Applying mainstream mac configuration..."
+        local mac_lib=""
+        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        for path in \
+            /usr/local/lib/mac-config.sh \
+            /usr/lib/mainstream/mac-config.sh \
+            "$script_dir/../../../sdata/lib/mac-config.sh" \
+            "$script_dir/../../lib/mac-config.sh" \
+            "$script_dir/mac-config.sh"
+        do
+            if [[ -f "$path" ]]; then
+                mac_lib="$path"
+                break
+            fi
+        done
+
+        if [[ -n "$mac_lib" ]]; then
+            # shellcheck source=/dev/null
+            source "$mac_lib"
+            mac_apply_autoconfig || true
+        else
+            log "Warning: mac-config.sh library not found, skipping mac autoconfig."
+        fi
+    fi
+}
+
+# ── 4. Lenovo Yoga Pro 7 / Slim 7 Quad-Speaker ALC287 pin quirk ────────────
+apply_lenovo_yoga_quirk() {
+    if [[ "$PRODUCT_NAME" =~ (Yoga|Slim\ 7) ]]; then
+        local is_alc287=0
+        if grep -qi "ALC287" /proc/asound/card*/codec* 2>/dev/null; then
+            is_alc287=1
+        fi
+
+        if (( is_alc287 )); then
+            local audio_conf="/etc/modprobe.d/mainstream-lenovo-yoga-audio.conf"
+            local audio_content="# Lenovo Yoga ALC287 bass speaker amplifier pin quirk
+options snd-sof-intel-hda-generic hda_model=alc287-yoga9-bass-spk-pin"
+
+            if [[ ! -f "$audio_conf" ]] || [[ "$(< "$audio_conf")" != "$audio_content" ]]; then
+                log "Configuring Lenovo Yoga ALC287 quad-speaker bass amplifier pin quirk..."
+                mkdir -p /etc/modprobe.d
+                printf '%s\n' "$audio_content" > "$audio_conf"
+            fi
+        fi
+    fi
+}
+
+# ── 5. Framework Laptop 16 RGB keyboard access via qmk_hid ─────────────────
+apply_framework_quirk() {
+    if [[ "$SYS_VENDOR" =~ Framework || "$PRODUCT_NAME" =~ "Framework Laptop 16" ]]; then
+        local qmk_rule="/etc/udev/rules.d/50-mainstream-framework16-qmk-hid.rules"
+        local qmk_content='# Framework Laptop 16 keyboard RGB control via qmk_hid
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="32ac", ATTRS{idProduct}=="0012", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="32ac", ATTRS{idProduct}=="0014", MODE="0660", TAG+="uaccess"'
+
+        if [[ ! -f "$qmk_rule" ]] || [[ "$(< "$qmk_rule")" != "$qmk_content" ]]; then
+            log "Configuring Framework 16 QMK HID keyboard access..."
+            mkdir -p /etc/udev/rules.d
+            printf '%s\n' "$qmk_content" > "$qmk_rule"
+            if command -v udevadm >/dev/null 2>&1; then
+                udevadm control --reload-rules 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
+# ── 6. Intel thermald service for laptops ──────────────────────────────────
+apply_intel_thermald() {
+    if grep -qi "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+        local is_laptop=0
+        # Chassis types: 8=Portable, 9=Laptop, 10=Notebook, 14=Sub-Notebook, 30=Tablet, 31=Convertible, 32=Detachable
+        if [[ "$CHASSIS_TYPE" =~ ^(8|9|10|14|30|31|32)$ ]] || compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
+            is_laptop=1
+        fi
+
+        if (( is_laptop )) && command -v systemctl >/dev/null 2>&1; then
+            if systemctl list-unit-files thermald.service >/dev/null 2>&1; then
+                if ! systemctl is-enabled thermald.service >/dev/null 2>&1; then
+                    log "Enabling Intel thermald.service for laptop thermal management..."
+                    systemctl enable thermald.service 2>/dev/null || true
+                    if [ -d /run/systemd/system ]; then
+                        systemctl start thermald.service 2>/dev/null || true
+                    fi
+                fi
+            fi
+        fi
+    fi
+}
+
+main() {
+    NEED_MKINITCPIO=0
+
+    apply_asus_z13_quirk
+    apply_intel_ptl_quirk
+    apply_intel_wifi7_quirk
+    apply_surface_quirk
+    apply_apple_quirks
+    apply_lenovo_yoga_quirk
+    apply_framework_quirk
+    apply_intel_thermald
+
+    if (( NEED_MKINITCPIO )) && command -v mkinitcpio >/dev/null 2>&1 && [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        log "Hardware quirks modified early-KMS initramfs modules. Rebuilding initramfs..."
+        mkinitcpio -P || true
+    fi
+}
+
+main "$@"
