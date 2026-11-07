@@ -390,6 +390,16 @@ if [[ -r "$MAC_LIB" ]]; then
     fi
 fi
 
+# Apply hardware quirks (Intel Panther Lake, Wi-Fi 7, Microsoft Surface, ASUS, Lenovo, Framework)
+# prior to the final mkinitcpio -P call so initramfs modules and early-KMS configs are included.
+if command -v mainstream-hardware-quirks >/dev/null 2>&1; then
+    info "Applying vendor hardware quirks..."
+    mainstream-hardware-quirks || true
+elif [[ -x /usr/lib/mainstream/mainstream-hardware-quirks ]]; then
+    info "Applying vendor hardware quirks..."
+    /usr/lib/mainstream/mainstream-hardware-quirks || true
+fi
+
 # Encrypted installs: install-limine puts rd.luks.name= on the kernel
 # cmdline, which only the sd-encrypt hook honors — without it the initramfs
 # cannot unlock the root volume. Insert it after sd-vconsole so plymouth
