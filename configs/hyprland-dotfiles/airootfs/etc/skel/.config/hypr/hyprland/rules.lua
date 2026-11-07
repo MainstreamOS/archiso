@@ -362,6 +362,83 @@ end
 -- ######## Workspace rules ########
 hl.workspace_rule({ workspace = "special:special", gaps_out = 30 })
 
+-- Keep primary workspaces 1..10 persistent in compositor memory so slide
+-- animations across empty workspaces never drop frames or abort on frame 0
+for i = 1, 10 do
+    hl.workspace_rule({ workspace = tostring(i), persistent = true })
+end
+
+-- Dynamic workspace decade persistence:
+-- When entering higher workspace groups (11..20, 21..30, etc.), dynamically load
+-- that entire group of 10 into persistent memory so scrolling within the group is
+-- butter-smooth. When leaving that group, release persistence if no windows exist.
+local dynamicDecades = {}
+
+local function getDecade(wsId)
+    if not wsId or wsId <= 0 then return 0 end
+    return math.floor((wsId - 1) / 10)
+end
+
+local function ensureDecadePersistent(decade)
+    if decade <= 0 or dynamicDecades[decade] then return end
+    local startWs = decade * 10 + 1
+    local endWs = startWs + 9
+    for i = startWs, endWs do
+        hl.workspace_rule({ workspace = tostring(i), persistent = true })
+    end
+    dynamicDecades[decade] = true
+end
+
+local function cleanupEmptyDecades(activeDecade)
+    for decade, _ in pairs(dynamicDecades) do
+        if decade ~= activeDecade then
+            local startWs = decade * 10 + 1
+            local endWs = startWs + 9
+            local hasWindows = false
+            for i = startWs, endWs do
+                local w = hl.get_workspace(i)
+                if w and w.windows > 0 then
+                    hasWindows = true
+                    break
+                end
+            end
+            if not hasWindows then
+                for i = startWs, endWs do
+                    hl.workspace_rule({ workspace = tostring(i), persistent = false })
+                end
+                dynamicDecades[decade] = nil
+            end
+        end
+    end
+end
+
+hl.on("workspace.active", function(ws)
+    if not ws or not ws.id or ws.special or ws.id <= 0 then return end
+    local decade = getDecade(ws.id)
+    if decade > 0 then
+        ensureDecadePersistent(decade)
+    end
+    cleanupEmptyDecades(decade)
+end)
+
+local function onWindowChange()
+    local ws = hl.get_active_workspace()
+    local activeDecade = ws and getDecade(ws.id) or 0
+    cleanupEmptyDecades(activeDecade)
+end
+
+hl.on("window.destroy", onWindowChange)
+hl.on("window.close", onWindowChange)
+hl.on("window.move_to_workspace", onWindowChange)
+
+local activeWs = hl.get_active_workspace()
+if activeWs and activeWs.id and not activeWs.special and activeWs.id > 0 then
+    local d = getDecade(activeWs.id)
+    if d > 0 then
+        ensureDecadePersistent(d)
+    end
+end
+
 -- ######## Layer rules ########
 hl.layer_rule({ match = { namespace = ".*" }, xray = true})
 hl.layer_rule({ match = { namespace = "walker" }, no_anim = true})

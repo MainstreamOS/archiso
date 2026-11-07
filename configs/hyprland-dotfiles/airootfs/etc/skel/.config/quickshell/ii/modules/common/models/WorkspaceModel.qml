@@ -40,12 +40,18 @@ NestableObject {
             length: root.shownCount
         }, (_, i) => {
             const thisWorkspaceId = getWorkspaceId(root.group, i);
-            return Hyprland.workspaces.values.some(ws => ws.id === thisWorkspaceId);
+            return HyprlandData.windowList.some(win => win.workspace.id === thisWorkspaceId);
         });
     }
 
     // Occupied workspace updates
     Component.onCompleted: updateWorkspaceOccupied()
+    Connections {
+        target: HyprlandData
+        function onWindowListChanged() {
+            root.updateWorkspaceOccupied();
+        }
+    }
     Connections {
         target: Hyprland.workspaces
         function onValuesChanged() {
