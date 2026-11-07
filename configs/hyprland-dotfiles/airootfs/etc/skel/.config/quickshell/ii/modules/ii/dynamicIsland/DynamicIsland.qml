@@ -38,7 +38,7 @@ Scope {
             exclusiveZone: (Config.options.bar.autoHide.enable && (concealed || !Config.options.bar.autoHide.pushWindows)) ? -1 : Appearance.sizes.barHeight
             // Allocate the Wayland buffer once; only the items inside it morph.
             implicitWidth: Math.min(screen.width, Math.ceil(Math.max(compactWidth, expandedWidth) + Math.max(48, 2 * cornerRadius + 2)))
-            implicitHeight: expandedChromeHeight + 208 + 24 + edgeGap * 2
+            implicitHeight: Math.ceil(Math.max(Appearance.sizes.baseBarHeight, (expandedChromeHeight + 258) * expandedScale) + 24 + edgeGap * 2)
             color: "transparent"
             WlrLayershell.namespace: "quickshell:dynamicIsland"
             // Match the standard bar's arrangement priority when a side panel
@@ -172,10 +172,12 @@ Scope {
             readonly property color surfaceOutline: window.notch
                 ? ColorUtils.applyAlpha(Appearance.colors.colBarBackgroundBorder, 1)
                 : Appearance.colors.colBarBackgroundBorder
+            readonly property real expandedScale: Math.max(0.7, Math.min(2.5, Config.options.bar.island.expandedScale ?? 1.0))
             readonly property real edgeGap: floating ? Appearance.sizes.hyprlandGapsOut : 0
             readonly property real cornerRadius: Appearance.sizes.islandShape === "rect" ? 0 : Appearance.rounding.barFloat
             readonly property real compactWidth: clock.implicitWidth + 32
-            readonly property real expandedWidth: Appearance.sizes.mediaControlsWidth + 32
+            readonly property real baseExpandedWidth: Appearance.sizes.mediaControlsWidth + 32
+            readonly property real expandedWidth: Math.round(baseExpandedWidth * expandedScale)
             readonly property real contentPadding: 16
             readonly property real navigationHeight: 36
             readonly property real contentSpacing: 10
@@ -274,9 +276,10 @@ Scope {
                 }
                 Rectangle {
                     id: surface
+                    readonly property real baseExpandedHeight: (window.drawerMode ? window.contentPadding * 2 : window.expandedChromeHeight)
+                        + Math.min(window.drawerMode ? 258 : 208, content.implicitHeight)
                     width: Math.min(window.width - 48, window.expanded ? window.expandedWidth : window.compactWidth)
-                    height: window.expanded ? (window.drawerMode ? window.contentPadding * 2 : window.expandedChromeHeight)
-                        + Math.min(window.drawerMode ? 258 : 208, content.implicitHeight) : Appearance.sizes.baseBarHeight
+                    height: window.expanded ? Math.round(baseExpandedHeight * window.expandedScale) : Appearance.sizes.baseBarHeight
                     color: "transparent"
                     radius: window.cornerRadius
                     topLeftRadius: window.floating || window.bottom ? radius : 0
@@ -388,11 +391,23 @@ Scope {
                         visible: !window.expanded
                         interactive: false
                     }
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: window.contentPadding
+                    Item {
+                        id: expandedContentContainer
+                        anchors.top: window.bottom ? undefined : parent.top
+                        anchors.bottom: window.bottom ? parent.bottom : undefined
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: window.expanded ? Math.round(surface.width / window.expandedScale) : surface.width
+                        height: window.expanded ? Math.round(surface.height / window.expandedScale) : surface.height
+                        scale: window.expanded ? window.expandedScale : 1.0
+                        transformOrigin: window.bottom ? Item.Bottom : Item.Top
                         visible: window.expanded
-                        spacing: window.contentSpacing
+                        opacity: window.expanded ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: 150 } }
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: window.contentPadding
+                            spacing: window.contentSpacing
                         RowLayout {
                             visible: !window.drawerMode
                             Layout.fillWidth: true
@@ -429,7 +444,33 @@ Scope {
                                 radius: 12
                                 color: Appearance.surfaces.raised
 
-                                readonly property bool showWorkspaces: navHover.hovered || workspacesWidget.containsMouse
+                                readonly property bool isHovered: navHover.hovered || workspacesWidget.containsMouse
+                                readonly property bool showWorkspaces: isHovered || workspaceHoldTimer.running
+
+                                function holdWorkspaces(): void {
+                                    workspaceHoldTimer.restart();
+                                }
+
+                                Timer {
+                                    id: workspaceHoldTimer
+                                    interval: 400
+                                }
+
+                                onIsHoveredChanged: {
+                                    if (!isHovered)
+                                        navigator.holdWorkspaces();
+                                }
+
+                                Connections {
+                                    target: window
+                                    function onExpandedChanged() {
+                                        if (!window.expanded) {
+                                            workspaceHoldTimer.stop();
+                                            navWheelCooldown.stop();
+                                            navigationWheel.accumulated = 0;
+                                        }
+                                    }
+                                }
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -488,6 +529,7 @@ Scope {
                                             id: workspacesWidget
                                             contentColors: Appearance.islandContent
                                             anchors.centerIn: parent
+                                            implicitHeight: 28
                                             shownCount: Math.min(Config.options.bar.workspaces.shown, 10)
                                             monitor: window.monitor
                                             alwaysShowNumbers: true
@@ -505,22 +547,86 @@ Scope {
                                             acceptedButtons: Qt.RightButton
                                             onTapped: {
                                                 Hyprland.dispatch('hl.dsp.workspace.toggle_special()');
+                                                workspaceHoldTimer.stop();
                                                 closeTimer.stop();
                                                 window.opened = false;
                                                 IslandState.alertOpen = false;
                                             }
                                         }
+                                        Timer {
+                                            id: navWheelCooldown
+                                            interval: navigationWheel.cooldownInterval
+                                            onTriggered: {
+                                                if (Math.abs(navigationWheel.accumulated) >= navigationWheel.currentThreshold) {
+                                                    navigator.holdWorkspaces();
+                                                    const dir = navigationWheel.accumulated > 0 ? 1 : -1;
+                                                    navigationWheel.accumulated = 0;
+                                                    navigationWheel.dispatchStep(dir);
+                                                    navWheelCooldown.restart();
+                                                }
+                                            }
+                                        }
+
+                                        Timer {
+                                            id: navWheelReset
+                                            interval: 300
+                                            onTriggered: navigationWheel.accumulated = 0
+                                        }
+
                                         WheelHandler {
                                             id: navigationWheel
                                             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                                             target: null
-                                            onWheel: event => {
-                                                const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : (event.pixelDelta.y !== 0 ? event.pixelDelta.y : (event.angleDelta.x !== 0 ? event.angleDelta.x : event.pixelDelta.x));
-                                                if (delta < 0)
+
+                                            property real accumulated: 0
+                                            property real currentThreshold: 120
+                                            readonly property real angleThreshold: 120
+                                            readonly property real pixelThreshold: 30
+                                            readonly property int cooldownInterval: 200
+
+                                            function dispatchStep(direction) {
+                                                if (direction < 0)
                                                     Hyprland.dispatch(`hl.dsp.focus({workspace = "r+1"})`);
-                                                else if (delta > 0)
+                                                else if (direction > 0)
                                                     Hyprland.dispatch(`hl.dsp.focus({workspace = "r-1"})`);
+                                            }
+
+                                            onWheel: event => {
+                                                // Wayland can supply both angleDelta and pixelDelta. Prefer angleDelta
+                                                // for physical and high-res wheels; fallback to pixelDelta for touchpads.
+                                                const angleY = event.angleDelta.y;
+                                                const angleX = event.angleDelta.x;
+                                                const pixelY = event.pixelDelta.y;
+                                                const pixelX = event.pixelDelta.x;
+
+                                                const hasAngle = (angleY !== 0 || angleX !== 0);
+                                                const dominantAngle = Math.abs(angleY) >= Math.abs(angleX) ? angleY : angleX;
+                                                const dominantPixel = Math.abs(pixelY) >= Math.abs(pixelX) ? pixelY : pixelX;
+
+                                                const delta = hasAngle ? dominantAngle : dominantPixel;
+                                                if (!delta) return;
+
+                                                currentThreshold = hasAngle ? angleThreshold : pixelThreshold;
+
+                                                // Reset accumulator if the user reverses scroll direction
+                                                if (accumulated * delta < 0)
+                                                    accumulated = 0;
+
+                                                accumulated += delta;
+
+                                                // Clamp accumulator to at most 1 buffered step to prevent runaway queueing
+                                                accumulated = Math.max(-currentThreshold, Math.min(currentThreshold, accumulated));
+
+                                                if (!navWheelCooldown.running && Math.abs(accumulated) >= currentThreshold) {
+                                                    const dir = accumulated > 0 ? 1 : -1;
+                                                    accumulated = 0;
+                                                    dispatchStep(dir);
+                                                    navWheelCooldown.restart();
+                                                }
+
                                                 event.accepted = true;
+                                                navigator.holdWorkspaces();
+                                                navWheelReset.restart();
                                             }
                                         }
                                     }
@@ -596,6 +702,7 @@ Scope {
                         }
                     }
                 }
+            }
             }
             Component { id: media; MediaPanel {} }
             Component {

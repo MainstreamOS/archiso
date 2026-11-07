@@ -686,6 +686,7 @@ Singleton {
                 property int cornerStyle: 1 // 0: Hug | 1: Float | 2: Plain rectangle | 3: Notch
                 property JsonObject island: JsonObject {
                     property string shape: "notch" // "notch" | "float" | "rect"
+                    property real expandedScale: 1.0
                     property bool appDrawer: false
                     property list<string> panelOrder: root.defaultIslandPanels
                     property list<string> disabledPanels: []
@@ -903,6 +904,13 @@ Singleton {
                 // One row of Lock, Logout, Reboot and Shutdown; off shows the full grid.
                 property bool simpleMenu: true
                 property int menuSize: 75
+            }
+
+            property JsonObject display: JsonObject {
+                // Clamshell mode on laptops: keep external displays on and disable internal screen when closed
+                property bool clamshellMode: true
+                // Suspend laptop when lid is closed without external displays
+                property bool sleepOnLidClose: true
             }
 
             property JsonObject brightness: JsonObject {

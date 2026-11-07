@@ -56,6 +56,28 @@ ContentPage {
             checked: Config.options.bar.island.desktopNotifications
             onCheckedChanged: Config.options.bar.island.desktopNotifications = checked
         }
+        ConfigSlider {
+            buttonIcon: "zoom_in"
+            text: Translation.tr("Dynamic Island size")
+            from: 80
+            to: 180
+            stopIndicatorValues: [100]
+            usePercentTooltip: true
+            value: Math.round((Config.options.bar.island.expandedScale ?? 1.0) * 100)
+            onMoved: {
+                const stepped = Math.round(value) / 100;
+                if (Math.abs(stepped - (Config.options.bar.island.expandedScale ?? 1.0)) < 0.001)
+                    return;
+                Config.options.bar.island.expandedScale = stepped;
+            }
+        }
+        ConfigResetButton {
+            visible: Math.abs((Config.options.bar.island.expandedScale ?? 1.0) - 1.0) > 0.01
+            Layout.leftMargin: 8
+            Layout.topMargin: 2
+            buttonText: Translation.tr("Reset to default")
+            onClicked: Config.options.bar.island.expandedScale = 1.0
+        }
     }
 
     ContentSection {
