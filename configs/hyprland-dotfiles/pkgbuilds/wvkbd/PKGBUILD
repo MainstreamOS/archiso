@@ -1,0 +1,21 @@
+pkgname=wvkbd
+pkgver=0.21
+pkgrel=1
+pkgdesc='On-screen keyboard for the Mainstream live installer'
+arch=(x86_64)
+url='https://github.com/jjsullivan5196/wvkbd'
+license=('GPL-3.0-only' 'MIT')
+depends=(cairo glibc libxkbcommon pango wayland)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('e0a88358cf5a76f812a766f9323a2633da1297bfb11a1e38d420689efdd26f9d')
+
+build() {
+    cd "$pkgname-$pkgver"
+    make -j1 wvkbd-mobintl
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 wvkbd-mobintl "$pkgdir/usr/bin/wvkbd-mobintl"
+    install -Dm644 COPYING_WESTON "$pkgdir/usr/share/licenses/$pkgname/COPYING_WESTON"
+}

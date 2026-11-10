@@ -6,6 +6,7 @@ Comment=Install Arch Linux with Hyprland dotfiles
 Exec=/usr/local/bin/calamares-launch
 Icon=calamares
 NoDisplay=true
+Hidden=true
 Terminal=false
 Categories=System;
 X-GNOME-Autostart-enabled=true

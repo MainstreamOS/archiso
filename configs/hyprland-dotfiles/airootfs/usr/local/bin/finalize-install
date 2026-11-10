@@ -102,6 +102,7 @@ LIVEONLY=(
     reflector
     pv
     calamares-mainstream
+    wvkbd
     ckbcomp
     hwinfo
     kpmcore
@@ -289,6 +290,7 @@ LOOSE_FILES=(
     # per-generation gate and can black-screen legacy (470xx/390xx) drivers.
     /etc/modprobe.d/nvidia-live.conf
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
+    /usr/local/bin/calamares-launch
     /etc/systemd/resolved.conf.d/archiso.conf
     /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
     /etc/initcpio/install/nvidia-gsp-strip

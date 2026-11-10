@@ -237,6 +237,7 @@ wget
 # with the Mainstream branding icons before compilation.
 # ==============================================================================
 calamares-mainstream
+wvkbd
 ckbcomp
 hwinfo
 kcrash

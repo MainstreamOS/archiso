@@ -1255,6 +1255,13 @@ regenerate_netinstall_extras() {
         !skip               { print }
     ' "$ni" > "${ni}.tmp" && mv "${ni}.tmp" "$ni"
     rm -f "$blockfile"
+    local optional="$PKG_WORK_DIR/sdata/subcmd-install/optional-apps.conf"
+    if [[ -f "$optional" ]]; then
+        awk '/# GEN-EXTRAS-END/ { print; exit } { print }' "$ni" > "${ni}.tmp"
+        printf '\n' >> "${ni}.tmp"
+        cat "$optional" >> "${ni}.tmp"
+        mv "${ni}.tmp" "$ni"
+    fi
     info "Regenerated netinstall Included Extras from default-apps.list (${#MAINSTREAM_DEFAULT_APPS[@]} apps)."
 }
 regenerate_netinstall_extras
@@ -1400,6 +1407,7 @@ info "Building local PKGBUILDs..."
 # preference to Arch's stock package.
 build_local_pkg "kpmcore"
 build_local_pkg "calamares-mainstream"
+build_local_pkg "wvkbd"
 # mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
 # plasma-browser-integration replacement). Builds the Rust host + bundles the
 # WebExtension .xpi and the browser auto-install policies. git-sourced PKGBUILD,

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+[[ -d /run/archiso && -x /usr/bin/calamares ]] || exit 1
+
+has_physical_keyboard() {
+    local event properties
+    for event in /sys/class/input/event*; do
+        [[ -e "$event" ]] || continue
+        properties=$(udevadm info --query=property --path="$event" 2>/dev/null) || continue
+        if grep -qx 'ID_INPUT_KEYBOARD=1' <<< "$properties" &&
+            ! grep -q '^DEVPATH=/devices/virtual/input/' <<< "$properties"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [[ -z ${WAYLAND_DISPLAY:-} ]] || has_physical_keyboard; then
+    exec sudo -E /usr/bin/calamares
+fi
+
+wvkbd-mobintl --no-feedback &
+keyboard_pid=$!
+trap 'kill "$keyboard_pid" 2>/dev/null || true' EXIT
+sudo -E /usr/bin/calamares

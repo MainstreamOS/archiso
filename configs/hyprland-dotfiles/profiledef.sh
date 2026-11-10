@@ -45,6 +45,7 @@ file_permissions=(
   ["/usr/local/bin/live-mac-quirks"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
+  ["/usr/local/bin/calamares-launch"]="0:0:755"
   ["/usr/local/bin/live-setup"]="0:0:755"
   ["/usr/local/bin/choose-mirror"]="0:0:755"
 
