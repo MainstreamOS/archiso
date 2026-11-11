@@ -390,14 +390,17 @@ if [[ -r "$MAC_LIB" ]]; then
     fi
 fi
 
-# Apply hardware quirks (Intel Panther Lake, Wi-Fi 7, Microsoft Surface, ASUS, Lenovo, Framework)
-# prior to the final mkinitcpio -P call so initramfs modules and early-KMS configs are included.
-if command -v mainstream-hardware-quirks >/dev/null 2>&1; then
+# Hardware quirks and the packages they name, before the final initramfs build below,
+# which then carries their modules and kernel options.
+quirks="$(command -v mainstream-hardware-quirks 2>/dev/null || echo /usr/lib/mainstream/mainstream-hardware-quirks)"
+if [[ -x "$quirks" ]]; then
     info "Applying vendor hardware quirks..."
-    mainstream-hardware-quirks || true
-elif [[ -x /usr/lib/mainstream/mainstream-hardware-quirks ]]; then
-    info "Applying vendor hardware quirks..."
-    /usr/lib/mainstream/mainstream-hardware-quirks || true
+    mapfile -t quirk_packages < <("$quirks" --packages 2>/dev/null)
+    if (( ${#quirk_packages[@]} )); then
+        pacman -S --noconfirm --needed "${quirk_packages[@]}" 2>&1 \
+            || note_failure "installing ${quirk_packages[*]} for this hardware failed"
+    fi
+    MAINSTREAM_QUIRKS_DEFER_REBUILD=1 "$quirks" || true
 fi
 
 # Encrypted installs: install-limine puts rd.luks.name= on the kernel

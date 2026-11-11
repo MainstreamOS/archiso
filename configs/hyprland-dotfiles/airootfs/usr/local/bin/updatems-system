@@ -45,7 +45,6 @@ ROOT_FILES=(
     "0755|sdata/dist-arch/mainstream-system/mainstream-update-direct|/usr/bin/mainstream-update-direct"
     "0755|sdata/dist-arch/mainstream-system/update-pacman-guard|/usr/lib/mainstream/update-pacman-guard"
     "0644|sdata/dist-arch/mainstream-system/00-mainstream-update-guard.hook|/usr/share/libalpm/hooks/00-mainstream-update-guard.hook"
-    "0755|sdata/dist-arch/mainstream-system/mainstream-hardware-quirks|/usr/lib/mainstream/mainstream-hardware-quirks"
     "0755|sdata/update/mainstream-update-helper|/usr/local/bin/mainstream-update-helper"
     "0755|sdata/update/updatems|/usr/local/bin/updatems"
     "0755|sdata/update/updatems-system|/usr/local/bin/updatems-system"
@@ -505,11 +504,16 @@ if systemctl is-active --quiet ipp-usb.service 2>/dev/null; then
 fi
 
 # ── Hardware quirks pass ──────────────────────────────────────────────────
-# Apply vendor-specific laptop quirks (ASUS Z13, Panther Lake, Apple, Lenovo Yoga)
-if [[ -x /usr/lib/mainstream/mainstream-hardware-quirks ]]; then
-    /usr/lib/mainstream/mainstream-hardware-quirks >/dev/null 2>&1 || true
-elif [[ -x "$REPO_DIR/sdata/dist-arch/mainstream-system/mainstream-hardware-quirks" ]]; then
-    "$REPO_DIR/sdata/dist-arch/mainstream-system/mainstream-hardware-quirks" >/dev/null 2>&1 || true
+# mainstream-system owns the engine, so the clone's copy stands in until that package arrives.
+# The packages it names go in first, and its initramfs changes wait for the next kernel update.
+_quirks=/usr/lib/mainstream/mainstream-hardware-quirks
+[[ -x "$_quirks" ]] || _quirks="$REPO_DIR/sdata/dist-arch/mainstream-system/mainstream-hardware-quirks"
+if [[ -x "$_quirks" ]]; then
+    mapfile -t _quirk_packages < <("$_quirks" --packages 2>/dev/null)
+    if (( ${#_quirk_packages[@]} )) && ! _pacman_needed "${_quirk_packages[@]}"; then
+        warn "$(t "Could not install the packages this hardware needs")"
+    fi
+    MAINSTREAM_QUIRKS_DEFER_REBUILD=1 "$_quirks" >/dev/null 2>&1 || true
 fi
 
 # ── pacman keyring + [mainstream] repo self-healing ───────────────────────

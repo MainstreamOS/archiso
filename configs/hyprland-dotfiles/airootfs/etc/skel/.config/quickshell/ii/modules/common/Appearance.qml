@@ -1352,6 +1352,8 @@ Singleton {
             property int hugeass: 23
             property int title: huge
         }
+        readonly property real textGrowth: 1
+        readonly property real roomGrowth: 1
     }
 
     animationCurves: QtObject {

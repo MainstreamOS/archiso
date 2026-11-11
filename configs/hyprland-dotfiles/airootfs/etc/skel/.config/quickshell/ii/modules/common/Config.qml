@@ -319,7 +319,21 @@ Singleton {
 
     // A window running as its own process waits for this before it quits, or
     // the change that started the countdown below would never reach the file.
-    readonly property bool writePending: fileWriteTimer.running
+    readonly property bool writePending: fileWriteTimer.running || root._applyAppFontsAfterSave || root._reconcileLidAfterSave
+
+    property bool _applyAppFontsAfterSave: false
+    function queueAppFontApply() {
+        root._applyAppFontsAfterSave = true;
+        fileWriteTimer.restart();
+    }
+
+    property bool _reconcileLidAfterSave: false
+    function queueLidReconcile() {
+        root._reconcileLidAfterSave = true;
+        fileWriteTimer.restart();
+    }
+
+    property bool _saveFailed: false
 
     Timer {
         id: fileWriteTimer
@@ -334,9 +348,26 @@ Singleton {
             }
             if (root._writeStale) {
                 root._writeStale = false
+                root._applyAppFontsAfterSave = false
+                root._reconcileLidAfterSave = false
                 return
             }
-            configFileView.writeAdapter()
+            const applyFonts = root._applyAppFontsAfterSave;
+            const reconcileLid = root._reconcileLidAfterSave;
+            root._saveFailed = false;
+            configFileView.writeAdapter();
+            if (!applyFonts && !reconcileLid) return;
+
+            // The helpers read the file. Wait for this write, including when
+            // writeAdapter flushed an older job or skipped an unchanged file.
+            configFileView.waitForJob();
+            root._applyAppFontsAfterSave = false;
+            root._reconcileLidAfterSave = false;
+            if (root._saveFailed) return;
+            if (applyFonts)
+                Quickshell.execDetached([Quickshell.shellPath("scripts/themes/apply-gtk-font.sh")]);
+            if (reconcileLid)
+                Quickshell.execDetached([Directories.home + "/.config/hypr/hyprland/scripts/clamshell.sh", "reconcile"]);
         }
     }
 
@@ -355,6 +386,8 @@ Singleton {
             if (root._reloading) return
             fileWriteTimer.restart()
         }
+        onSaved: root._saveFailed = false
+        onSaveFailed: root._saveFailed = true
         onLoaded: {
             root.ready = true
             // Memory matches disk again, so later writes are not stale.
@@ -441,6 +474,10 @@ Singleton {
                     property int fakeScreenRounding: -1
                     property int windowRounding: -1
                 }
+                // Font size in apps, apart from the display scale. See scripts/themes/apply-gtk-font.sh.
+                property real appFontScale: 1.0
+                // The shell's own text; the bar and Island follow their own Size instead.
+                property real uiTextScale: 1.0
                 property JsonObject fonts: JsonObject {
                     property string main: "Google Sans Flex"
                     property string numbers: "Google Sans Flex"
@@ -684,9 +721,13 @@ Singleton {
                 property bool bottom: false // Instead of top
                 property string mode: "bar" // "bar" | "island"
                 property int cornerStyle: 1 // 0: Hug | 1: Float | 2: Plain rectangle | 3: Notch
+                // The traditional bar's size, as a factor of its usual size.
+                property real scale: 1.0
                 property JsonObject island: JsonObject {
                     property string shape: "notch" // "notch" | "float" | "rect"
                     property real expandedScale: 1.0
+                    // The closed Island's size, as the traditional bar has its own.
+                    property real scale: 1.0
                     property bool appDrawer: false
                     property list<string> panelOrder: root.defaultIslandPanels
                     property list<string> disabledPanels: []
@@ -1294,7 +1335,6 @@ Singleton {
 
             property JsonObject sidebar: JsonObject {
                 property bool pinnedOnStartup: true
-                property bool keepRightSidebarLoaded: true
                 property JsonObject translator: JsonObject {
                     property bool enable: false
                     property int delay: 300 // Delay before sending request. Reduces (potential) rate limits and lag.

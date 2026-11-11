@@ -10,12 +10,7 @@ import qs.modules.common
 import qs.modules.common.functions
 import qs.modules.common.widgets
 
-/**
- * Material 3 Expressive modal dialog to safely expand the EFI System Partition.
- *
- * Uses pure tonal surface hierarchy and coupled asymmetric capsule geometry
- * (17px outer sweep paired with 5px inner corners across 2px seams).
- */
+// Grows the EFI system partition through mainstream-efi-resize, showing its progress.
 Popup {
     id: root
 
@@ -37,11 +32,9 @@ Popup {
         const raw = root.efiData.part_bytes ?? root.efiData.total ?? 0;
         return Math.round(raw / (1024 * 1024));
     }
-    readonly property bool layoutCanResize: root.efiData ? (root.efiData.can_resize !== false) : false
-    readonly property real maxTargetMb: {
-        if (!root.efiData || root.efiData.max_target_bytes === undefined) return 16384;
-        return Math.floor(root.efiData.max_target_bytes / (1024 * 1024));
-    }
+    readonly property bool layoutCanResize: root.sizeOptions.some(option => root.isOptionSelectable(option.mb))
+    readonly property var selectedPlan: root.planFor(root.selectedSizeMb)
+    readonly property string resizeReason: root.selectedPlan?.reason ?? root.efiData?.reason ?? ""
 
     readonly property var sizeOptions: [
         { mb: 1024, label: "1 GB", desc: Translation.tr("Standard") },
@@ -51,14 +44,15 @@ Popup {
     ]
 
     function isOptionCurrent(mb) {
-        return Math.abs(root.currentPartMb - mb) <= 64;
+        return !root.isOptionSelectable(mb) && Math.abs(root.currentPartMb - mb) <= 64;
+    }
+
+    function planFor(mb) {
+        return root.efiData?.resize_plans?.find(plan => mb === plan.target_mb) ?? null;
     }
 
     function isOptionSelectable(mb) {
-        if (!root.layoutCanResize) return false;
-        if (mb <= root.currentPartMb + 64) return false;
-        if (root.maxTargetMb > 0 && mb > root.maxTargetMb) return false;
-        return true;
+        return root.planFor(mb) !== null;
     }
 
     function pickDefaultTarget() {
@@ -85,7 +79,8 @@ Popup {
     dim: true
     closePolicy: isResizing ? Popup.NoAutoClose : (Popup.CloseOnEscape | Popup.CloseOnPressOutside)
     padding: 24
-    implicitWidth: 500
+    // Built around its text, so it gets room as the text grows, as the Settings window does.
+    implicitWidth: Math.round(500 * (Appearance.font?.roomGrowth ?? 1))
 
     x: parent ? Math.round((parent.width - width) / 2) : 0
     y: parent ? Math.round((parent.height - height) / 2) : 0
@@ -107,18 +102,6 @@ Popup {
             radius: 24
             color: ColorUtils.applyAlpha(Appearance.m3colors.m3surfaceContainerHigh, 1.0)
         }
-    }
-
-    function formatSize(bytes) {
-        if (!bytes || bytes <= 0) return "0 B";
-        const units = ["B", "KB", "MB", "GB", "TB"];
-        let i = 0;
-        let v = bytes;
-        while (v >= 1024 && i < units.length - 1) {
-            v /= 1024;
-            i++;
-        }
-        return `${v.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
     }
 
     function startResize() {
@@ -158,23 +141,12 @@ Popup {
                 }
             }
         }
-        stderr: SplitParser {
-            onRead: line => {
-                const t = line.trim();
-                if (!t) return;
-                if (t.indexOf("dismissed") !== -1 || t.indexOf("Not authorized") !== -1) {
-                    root.resizeError = Translation.tr("Authorization cancelled.");
-                } else if (!root.resizeError) {
-                    root.resizeError = t;
-                }
-            }
-        }
+        stderr: StdioCollector { id: resizeErrors }
         onExited: (exitCode) => {
             if (root.isResizing) {
                 root.isResizing = false;
-                if (exitCode !== 0 && !root.resizeError) {
-                    root.resizeError = Translation.tr("Operation exited with status %1.").arg(exitCode);
-                }
+                if (exitCode !== 0 && !root.resizeError)
+                    root.resizeError = HelperUtils.failureMessage(exitCode, HelperUtils.helperReason(resizeErrors.text, "mainstream-efi-resize"));
             }
         }
     }
@@ -241,19 +213,20 @@ Popup {
                     Layout.fillWidth: true
                     spacing: 8
 
+                    // Wraps rather than pushing the usage past the box when the text is large.
                     StyledText {
+                        Layout.fillWidth: true
                         text: root.efiData ? `${root.efiData.device} on ${root.efiData.mount}` : "/boot/efi"
                         font.pixelSize: Appearance.font.pixelSize.normal
                         font.weight: Font.Medium
                         color: Appearance.colors.colOnLayer2
+                        wrapMode: Text.Wrap
                     }
-
-                    Item { Layout.fillWidth: true }
 
                     StyledText {
                         text: Translation.tr("%1 of %2 used")
-                            .arg(root.formatSize(root.efiData ? root.efiData.used : 0))
-                            .arg(root.formatSize(root.efiData ? (root.efiData.part_bytes ?? root.efiData.total) : 0))
+                            .arg(root.targetArea.formatSize(root.efiData ? root.efiData.used : 0))
+                            .arg(root.targetArea.formatSize(root.efiData ? (root.efiData.part_bytes ?? root.efiData.total) : 0))
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: Appearance.colors.colSubtext
                     }
@@ -285,7 +258,7 @@ Popup {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-                    visible: Boolean(root.efiData && root.efiData.reason)
+                    visible: root.resizeReason.length > 0
 
                     MaterialSymbol {
                         text: root.layoutCanResize ? "verified_user" : "info"
@@ -296,7 +269,7 @@ Popup {
 
                     StyledText {
                         Layout.fillWidth: true
-                        text: root.efiData ? (root.efiData.reason || "") : ""
+                        text: root.resizeReason
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: Appearance.colors.colSubtext
                         wrapMode: Text.WordWrap
@@ -395,7 +368,7 @@ Popup {
 
             StyledText {
                 Layout.fillWidth: true
-                visible: root.efiData && root.efiData.strategy === "tail_btrfs_relocate"
+                visible: root.selectedPlan?.strategy === "tail_btrfs_relocate"
                 text: Translation.tr("Boot files and Limine UKI hashes are verified on the new partition before switching /etc/fstab, keeping your existing boot partition intact until cutover.")
                 font.pixelSize: Appearance.font.pixelSize.smaller
                 color: Appearance.colors.colSubtext
@@ -529,7 +502,7 @@ Popup {
                 opacity: enabled ? 1.0 : 0.45
                 buttonRadius: Appearance.rounding.full
                 colBackground: Appearance.colors.colPrimary
-                colBackgroundHover: Qt.lighter(Appearance.colors.colPrimary, 1.08)
+                colBackgroundHover: Appearance.colors.colPrimaryHover
                 onClicked: root.startResize()
 
                 contentItem: StyledText {
