@@ -35,10 +35,10 @@ Scope {
             exclusionMode: ExclusionMode.Ignore
             // -1 ignores the zones others reserve, so a pinned sidebar cannot
             // pull the island off the screen's center.
-            exclusiveZone: (Config.options.bar.autoHide.enable && (concealed || !Config.options.bar.autoHide.pushWindows)) ? -1 : Appearance.sizes.barHeight
+            exclusiveZone: (Config.options.bar.autoHide.enable && (concealed || !Config.options.bar.autoHide.pushWindows)) ? -1 : Appearance.sizes.horizontalBarExclusiveZone
             // Allocate the Wayland buffer once; only the items inside it morph.
             implicitWidth: Math.min(screen.width, Math.ceil(Math.max(compactWidth, expandedWidth) + Math.max(48, 2 * cornerRadius + 2)))
-            implicitHeight: Math.ceil(Math.max(Appearance.sizes.baseBarHeight, (expandedChromeHeight + 258) * expandedScale) + 24 + edgeGap * 2)
+            implicitHeight: Math.ceil(Math.max(Appearance.sizes.baseBarHeight, expandedChromeHeight + 258 * Appearance.sizes.islandScale) + 24 + edgeGap * 2)
             color: "transparent"
             WlrLayershell.namespace: "quickshell:dynamicIsland"
             // Match the standard bar's arrangement priority when a side panel
@@ -172,15 +172,16 @@ Scope {
             readonly property color surfaceOutline: window.notch
                 ? ColorUtils.applyAlpha(Appearance.colors.colBarBackgroundBorder, 1)
                 : Appearance.colors.colBarBackgroundBorder
-            readonly property real expandedScale: Math.max(0.7, Math.min(2.5, Config.options.bar.island.expandedScale ?? 1.0))
+            // Shared widgets read this, at the panels' size; the closed clock sets its own.
+            property real uiScale: Appearance.sizes.islandScale
             readonly property real edgeGap: floating ? Appearance.sizes.hyprlandGapsOut : 0
             readonly property real cornerRadius: Appearance.sizes.islandShape === "rect" ? 0 : Appearance.rounding.barFloat
-            readonly property real compactWidth: clock.implicitWidth + 32
+            readonly property real compactWidth: compactRow.implicitWidth + 32 * Appearance.sizes.barScale
             readonly property real baseExpandedWidth: Appearance.sizes.mediaControlsWidth + 32
-            readonly property real expandedWidth: Math.round(baseExpandedWidth * expandedScale)
-            readonly property real contentPadding: 16
-            readonly property real navigationHeight: 36
-            readonly property real contentSpacing: 10
+            readonly property real expandedWidth: Math.round(baseExpandedWidth * Appearance.sizes.islandScale)
+            readonly property real contentPadding: 16 * Appearance.sizes.islandScale
+            readonly property real navigationHeight: 36 * Appearance.sizes.islandScale
+            readonly property real contentSpacing: 10 * Appearance.sizes.islandScale
             readonly property real expandedChromeHeight: contentPadding * 2 + navigationHeight + contentSpacing
             Connections {
                 target: GlobalStates
@@ -200,6 +201,10 @@ Scope {
             onExpandedChanged: {
                 if (expanded) {
                     unloadContent.stop();
+                    if (!window.drawerMode) {
+                        if (IslandPanels.enabled("weather")) Weather.refreshOnOpen();
+                        IslandState.mediaCoverArt.prepare();
+                    }
                     displayedPanel = window.validPanel(IslandState.selected);
                     content.active = true;
                 } else {
@@ -276,10 +281,12 @@ Scope {
                 }
                 Rectangle {
                     id: surface
-                    readonly property real baseExpandedHeight: (window.drawerMode ? window.contentPadding * 2 : window.expandedChromeHeight)
-                        + Math.min(window.drawerMode ? 258 : 208, content.implicitHeight)
+                    // Layouts round each scaled size up to a whole pixel, so a panel that fills the limit at 100%
+                    // comes out up to a few pixels taller at other sizes; the 8 keeps its last row from being cut.
+                    readonly property real expandedHeight: (window.drawerMode ? window.contentPadding * 2 : window.expandedChromeHeight)
+                        + Math.min((window.drawerMode ? 258 : 208) * Appearance.sizes.islandScale + 8, content.implicitHeight)
                     width: Math.min(window.width - 48, window.expanded ? window.expandedWidth : window.compactWidth)
-                    height: window.expanded ? Math.round(baseExpandedHeight * window.expandedScale) : Appearance.sizes.baseBarHeight
+                    height: window.expanded ? Math.round(expandedHeight) : Appearance.sizes.baseBarHeight
                     color: "transparent"
                     radius: window.cornerRadius
                     topLeftRadius: window.floating || window.bottom ? radius : 0
@@ -384,22 +391,30 @@ Scope {
                         }
                     }
 
-                    ClockWidget {
-                        id: clock
-                        contentColor: Appearance.barStripContent.colOnLayer1
+                    Row {
+                        id: compactRow
                         anchors.centerIn: parent
                         visible: !window.expanded
-                        interactive: false
+                        spacing: 3 * Appearance.sizes.barScale
+
+                        ClockWidget {
+                            uiScale: Appearance.sizes.barScale
+                            contentColor: Appearance.barStripContent.colOnLayer1
+                            interactive: false
+                        }
+                        // Stays until the release is installed. Hovering opens the Island, which says what it is.
+                        // Raised to the time's cap height, like the bar icon's badge, so it never reads as the date's separator.
+                        UpdateDot {
+                            visible: ReleaseUpdates.showIndicator
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.verticalCenterOffset: -Appearance.font.basePixelSize.large * 0.35 * Appearance.sizes.barScale
+                            size: 6 * Appearance.sizes.barScale
+                            tones: Appearance.barStripContent
+                        }
                     }
                     Item {
                         id: expandedContentContainer
-                        anchors.top: window.bottom ? undefined : parent.top
-                        anchors.bottom: window.bottom ? parent.bottom : undefined
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: window.expanded ? Math.round(surface.width / window.expandedScale) : surface.width
-                        height: window.expanded ? Math.round(surface.height / window.expandedScale) : surface.height
-                        scale: window.expanded ? window.expandedScale : 1.0
-                        transformOrigin: window.bottom ? Item.Bottom : Item.Top
+                        anchors.fill: parent
                         visible: window.expanded
                         opacity: window.expanded ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 150 } }
@@ -408,301 +423,287 @@ Scope {
                             anchors.fill: parent
                             anchors.margins: window.contentPadding
                             spacing: window.contentSpacing
-                        RowLayout {
-                            visible: !window.drawerMode
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: window.navigationHeight
-                            spacing: 8
-
-                            RippleButton {
-                                id: leftSidebarButton
-                                Layout.preferredWidth: window.navigationHeight
-                                Layout.preferredHeight: window.navigationHeight
-                                topPadding: 0
-                                bottomPadding: 0
-                                buttonRadius: 10
-                                colBackground: highlighted ? Appearance.colors.colPrimaryContainer : Appearance.surfaces.raised
-                                colBackgroundHover: highlighted ? Appearance.colors.colPrimaryContainerHover : Appearance.colors.colLayer2Hover
-                                colRipple: highlighted ? Appearance.colors.colPrimaryContainerActive : Appearance.colors.colLayer2Active
-                                highlighted: GlobalStates.sidebarLeftOpen
-                                Accessible.name: Translation.tr("Toggle left sidebar")
-                                onClicked: window.toggleSidebar(true)
-                                contentItem: MaterialSymbol {
-                                    anchors.centerIn: parent
-                                    text: "left_panel_open"
-                                    iconSize: 18
-                                    color: leftSidebarButton.highlighted ? Appearance.colors.colOnPrimaryContainer : Appearance.islandContent.colOnLayer1
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                            }
-
-                            Rectangle {
-                                id: navigator
+                            RowLayout {
+                                visible: !window.drawerMode
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: window.navigationHeight
-                                radius: 12
-                                color: Appearance.surfaces.raised
+                                spacing: 8 * Appearance.sizes.islandScale
 
-                                readonly property bool isHovered: navHover.hovered || workspacesWidget.containsMouse
-                                readonly property bool showWorkspaces: isHovered || workspaceHoldTimer.running
-
-                                function holdWorkspaces(): void {
-                                    workspaceHoldTimer.restart();
-                                }
-
-                                Timer {
-                                    id: workspaceHoldTimer
-                                    interval: 400
-                                }
-
-                                onIsHoveredChanged: {
-                                    if (!isHovered)
-                                        navigator.holdWorkspaces();
-                                }
-
-                                Connections {
-                                    target: window
-                                    function onExpandedChanged() {
-                                        if (!window.expanded) {
-                                            workspaceHoldTimer.stop();
-                                            navWheelCooldown.stop();
-                                            navigationWheel.accumulated = 0;
-                                        }
+                                RippleButton {
+                                    id: leftSidebarButton
+                                    Layout.preferredWidth: window.navigationHeight
+                                    Layout.preferredHeight: window.navigationHeight
+                                    topPadding: 0
+                                    bottomPadding: 0
+                                    buttonRadius: 10 * Appearance.sizes.islandScale
+                                    colBackground: highlighted ? Appearance.colors.colPrimaryContainer : Appearance.surfaces.raised
+                                    colBackgroundHover: highlighted ? Appearance.colors.colPrimaryContainerHover : Appearance.colors.colLayer2Hover
+                                    colRipple: highlighted ? Appearance.colors.colPrimaryContainerActive : Appearance.colors.colLayer2Active
+                                    highlighted: GlobalStates.sidebarLeftOpen
+                                    Accessible.name: Translation.tr("Toggle left sidebar")
+                                    onClicked: window.toggleSidebar(true)
+                                    contentItem: MaterialSymbol {
+                                        anchors.centerIn: parent
+                                        text: "left_panel_open"
+                                        iconSize: 18 * Appearance.sizes.islandScale
+                                        color: leftSidebarButton.highlighted ? Appearance.colors.colOnPrimaryContainer : Appearance.islandContent.colOnLayer1
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
                                     }
                                 }
 
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 4
-                                    anchors.rightMargin: 4
-                                    spacing: 4
+                                Rectangle {
+                                    id: navigator
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: window.navigationHeight
+                                    radius: 12 * Appearance.sizes.islandScale
+                                    color: Appearance.surfaces.raised
 
-                                    RippleButton {
-                                        Layout.preferredWidth: 28
-                                        Layout.preferredHeight: 28
-                                        topPadding: 0
-                                        bottomPadding: 0
-                                        buttonRadius: 8
-                                        colBackground: "transparent"
-                                        colBackgroundHover: Appearance.surfaces.row
-                                        enabled: IslandState.panels.length > 1
-                                        Accessible.name: Translation.tr("Previous panel")
-                                        onClicked: IslandState.step(-1)
-                                        contentItem: MaterialSymbol {
-                                            anchors.centerIn: parent
-                                            text: "chevron_left"
-                                            iconSize: 18
-                                            color: Appearance.islandContent.colOnLayer1
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter
-                                        }
+                                    // A waiting release holds the title until it is clicked, so hovering
+                                    // leaves it in place; scrolling still flashes the workspaces.
+                                    readonly property bool updateBanner: ReleaseUpdates.islandBanner
+                                    readonly property bool isHovered: navHover.hovered || workspacesWidget.containsMouse
+                                    readonly property bool showWorkspaces: (isHovered && !updateBanner) || workspaceHoldTimer.running
+
+                                    function holdWorkspaces(): void {
+                                        workspaceHoldTimer.restart();
                                     }
 
-                                    Rectangle {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 28
-                                        radius: 8
-                                        color: Appearance.surfaces.row
+                                    function dismissIsland(): void {
+                                        workspaceHoldTimer.stop();
+                                        closeTimer.stop();
+                                        window.opened = false;
+                                        IslandState.alertOpen = false;
+                                    }
 
-                                        RowLayout {
-                                            anchors.centerIn: parent
-                                            spacing: 6
-                                            opacity: navigator.showWorkspaces ? 0 : 1
-                                            Behavior on opacity { NumberAnimation { duration: 150 } }
+                                    function openUpdates(): void {
+                                        navigator.dismissIsland();
+                                        ReleaseUpdates.openUpdatesPage();
+                                    }
 
-                                            MaterialSymbol {
-                                                text: IslandPanels.entry(window.displayedPanel)?.icon ?? "tune"
-                                                iconSize: 14
-                                                color: Appearance.islandContent.colPrimary
-                                            }
+                                    Timer {
+                                        id: workspaceHoldTimer
+                                        interval: 400
+                                    }
 
-                                            StyledText {
-                                                text: IslandPanels.entry(window.displayedPanel)?.name ?? ""
-                                                color: Appearance.islandContent.colOnLayer0
-                                                font.pixelSize: 12
-                                                font.weight: Font.DemiBold
-                                            }
-                                        }
+                                    onIsHoveredChanged: {
+                                        if (!isHovered && !updateBanner)
+                                            navigator.holdWorkspaces();
+                                    }
 
-                                        Workspaces {
-                                            id: workspacesWidget
-                                            contentColors: Appearance.islandContent
-                                            anchors.centerIn: parent
-                                            implicitHeight: 28
-                                            shownCount: Math.min(Config.options.bar.workspaces.shown, 10)
-                                            monitor: window.monitor
-                                            alwaysShowNumbers: true
-                                            enableWheel: false
-                                            enableRightClick: false
-                                            opacity: navigator.showWorkspaces ? 1 : 0
-                                            visible: opacity > 0
-                                            Behavior on opacity {
-                                                NumberAnimation { duration: 150 }
-                                            }
-                                        }
-
-                                        HoverHandler { id: navHover }
-                                        TapHandler {
-                                            acceptedButtons: Qt.RightButton
-                                            onTapped: {
-                                                Hyprland.dispatch('hl.dsp.workspace.toggle_special()');
+                                    Connections {
+                                        target: window
+                                        function onExpandedChanged() {
+                                            if (!window.expanded)
                                                 workspaceHoldTimer.stop();
-                                                closeTimer.stop();
-                                                window.opened = false;
-                                                IslandState.alertOpen = false;
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 4 * Appearance.sizes.islandScale
+                                        anchors.rightMargin: 4 * Appearance.sizes.islandScale
+                                        spacing: 4 * Appearance.sizes.islandScale
+
+                                        RippleButton {
+                                            Layout.preferredWidth: 28 * Appearance.sizes.islandScale
+                                            Layout.preferredHeight: 28 * Appearance.sizes.islandScale
+                                            topPadding: 0
+                                            bottomPadding: 0
+                                            buttonRadius: 8 * Appearance.sizes.islandScale
+                                            colBackground: "transparent"
+                                            colBackgroundHover: Appearance.surfaces.row
+                                            enabled: IslandState.panels.length > 1
+                                            Accessible.name: Translation.tr("Previous panel")
+                                            onClicked: IslandState.step(-1)
+                                            contentItem: MaterialSymbol {
+                                                anchors.centerIn: parent
+                                                text: "chevron_left"
+                                                iconSize: 18 * Appearance.sizes.islandScale
+                                                color: Appearance.islandContent.colOnLayer1
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
                                             }
                                         }
-                                        Timer {
-                                            id: navWheelCooldown
-                                            interval: navigationWheel.cooldownInterval
-                                            onTriggered: {
-                                                if (Math.abs(navigationWheel.accumulated) >= navigationWheel.currentThreshold) {
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 28 * Appearance.sizes.islandScale
+                                            radius: 8 * Appearance.sizes.islandScale
+                                            color: Appearance.surfaces.row
+
+                                            RowLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 6 * Appearance.sizes.islandScale
+                                                opacity: navigator.showWorkspaces ? 0 : 1
+                                                Behavior on opacity { NumberAnimation { duration: 150 } }
+
+                                                MaterialSymbol {
+                                                    visible: !navigator.updateBanner
+                                                    text: IslandPanels.entry(window.displayedPanel)?.icon ?? "tune"
+                                                    iconSize: 14 * Appearance.sizes.islandScale
+                                                    color: Appearance.islandContent.colPrimary
+                                                }
+
+                                                UpdateDot {
+                                                    visible: navigator.updateBanner
+                                                    size: 8 * Appearance.sizes.islandScale
+                                                    tones: Appearance.islandContent
+                                                }
+
+                                                StyledText {
+                                                    text: navigator.updateBanner ? Translation.tr("Update available") : (IslandPanels.entry(window.displayedPanel)?.name ?? "")
+                                                    color: Appearance.islandContent.colOnLayer0
+                                                    font.pixelSize: 12 * Appearance.sizes.islandScale
+                                                    font.weight: Font.DemiBold
+                                                }
+                                            }
+
+                                            Workspaces {
+                                                id: workspacesWidget
+                                                contentColors: Appearance.islandContent
+                                                anchors.centerIn: parent
+                                                implicitHeight: 28 * Appearance.sizes.islandScale
+                                                shownCount: Math.min(Config.options.bar.workspaces.shown, 10)
+                                                monitor: window.monitor
+                                                alwaysShowNumbers: true
+                                                enableWheel: false
+                                                enableRightClick: false
+                                                opacity: navigator.showWorkspaces ? 1 : 0
+                                                visible: opacity > 0
+                                                Behavior on opacity {
+                                                    NumberAnimation { duration: 150 }
+                                                }
+                                            }
+
+                                            HoverHandler {
+                                                id: navHover
+                                                cursorShape: navigator.updateBanner ? Qt.PointingHandCursor : undefined
+                                            }
+                                            TapHandler {
+                                                acceptedButtons: Qt.RightButton
+                                                onTapped: {
+                                                    Hyprland.dispatch('hl.dsp.workspace.toggle_special()');
+                                                    navigator.dismissIsland();
+                                                }
+                                            }
+                                            TapHandler {
+                                                enabled: navigator.updateBanner && !navigator.showWorkspaces
+                                                onTapped: navigator.openUpdates()
+                                            }
+                                            WheelHandler {
+                                                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                                target: null
+
+                                                onWheel: event => {
+                                                    const vertical = event.angleDelta.y || event.pixelDelta.y;
+                                                    const horizontal = event.angleDelta.x || event.pixelDelta.x;
+                                                    const delta = vertical || horizontal;
+                                                    if (!delta) return;
+
+                                                    event.accepted = true;
                                                     navigator.holdWorkspaces();
-                                                    const dir = navigationWheel.accumulated > 0 ? 1 : -1;
-                                                    navigationWheel.accumulated = 0;
-                                                    navigationWheel.dispatchStep(dir);
-                                                    navWheelCooldown.restart();
+
+                                                    // Use the same workspace order as the Super + wheel binding.
+                                                    const workspace = delta < 0 ? "+1" : "-1";
+                                                    Hyprland.dispatch(`hl.dsp.focus({workspace = "${workspace}"})`);
                                                 }
                                             }
                                         }
 
-                                        Timer {
-                                            id: navWheelReset
-                                            interval: 300
-                                            onTriggered: navigationWheel.accumulated = 0
-                                        }
-
-                                        WheelHandler {
-                                            id: navigationWheel
-                                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                                            target: null
-
-                                            property real accumulated: 0
-                                            property real currentThreshold: 120
-                                            readonly property real angleThreshold: 120
-                                            readonly property real pixelThreshold: 30
-                                            readonly property int cooldownInterval: 200
-
-                                            function dispatchStep(direction) {
-                                                if (direction < 0)
-                                                    Hyprland.dispatch(`hl.dsp.focus({workspace = "r+1"})`);
-                                                else if (direction > 0)
-                                                    Hyprland.dispatch(`hl.dsp.focus({workspace = "r-1"})`);
-                                            }
-
-                                            onWheel: event => {
-                                                // Wayland can supply both angleDelta and pixelDelta. Prefer angleDelta
-                                                // for physical and high-res wheels; fallback to pixelDelta for touchpads.
-                                                const angleY = event.angleDelta.y;
-                                                const angleX = event.angleDelta.x;
-                                                const pixelY = event.pixelDelta.y;
-                                                const pixelX = event.pixelDelta.x;
-
-                                                const hasAngle = (angleY !== 0 || angleX !== 0);
-                                                const dominantAngle = Math.abs(angleY) >= Math.abs(angleX) ? angleY : angleX;
-                                                const dominantPixel = Math.abs(pixelY) >= Math.abs(pixelX) ? pixelY : pixelX;
-
-                                                const delta = hasAngle ? dominantAngle : dominantPixel;
-                                                if (!delta) return;
-
-                                                currentThreshold = hasAngle ? angleThreshold : pixelThreshold;
-
-                                                // Reset accumulator if the user reverses scroll direction
-                                                if (accumulated * delta < 0)
-                                                    accumulated = 0;
-
-                                                accumulated += delta;
-
-                                                // Clamp accumulator to at most 1 buffered step to prevent runaway queueing
-                                                accumulated = Math.max(-currentThreshold, Math.min(currentThreshold, accumulated));
-
-                                                if (!navWheelCooldown.running && Math.abs(accumulated) >= currentThreshold) {
-                                                    const dir = accumulated > 0 ? 1 : -1;
-                                                    accumulated = 0;
-                                                    dispatchStep(dir);
-                                                    navWheelCooldown.restart();
+                                        // Once the banner has been opened, the way back to the Update page until the release is installed.
+                                        RippleButton {
+                                            visible: ReleaseUpdates.showIndicator && !navigator.updateBanner
+                                            Layout.preferredWidth: 28 * Appearance.sizes.islandScale
+                                            Layout.preferredHeight: 28 * Appearance.sizes.islandScale
+                                            topPadding: 0
+                                            bottomPadding: 0
+                                            buttonRadius: 8 * Appearance.sizes.islandScale
+                                            colBackground: "transparent"
+                                            colBackgroundHover: Appearance.surfaces.row
+                                            Accessible.name: ReleaseUpdates.availableLine(ReleaseUpdates.latest?.version ?? "")
+                                            onClicked: navigator.openUpdates()
+                                            contentItem: Item {
+                                                UpdateDot {
+                                                    anchors.centerIn: parent
+                                                    size: 8 * Appearance.sizes.islandScale
+                                                    tones: Appearance.islandContent
                                                 }
+                                            }
+                                        }
 
-                                                event.accepted = true;
-                                                navigator.holdWorkspaces();
-                                                navWheelReset.restart();
+                                        RippleButton {
+                                            Layout.preferredWidth: 28 * Appearance.sizes.islandScale
+                                            Layout.preferredHeight: 28 * Appearance.sizes.islandScale
+                                            topPadding: 0
+                                            bottomPadding: 0
+                                            buttonRadius: 8 * Appearance.sizes.islandScale
+                                            colBackground: "transparent"
+                                            colBackgroundHover: Appearance.surfaces.row
+                                            enabled: IslandState.panels.length > 1
+                                            Accessible.name: Translation.tr("Next panel")
+                                            onClicked: IslandState.step(1)
+                                            contentItem: MaterialSymbol {
+                                                anchors.centerIn: parent
+                                                text: "chevron_right"
+                                                iconSize: 18 * Appearance.sizes.islandScale
+                                                color: Appearance.islandContent.colOnLayer1
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
                                             }
                                         }
                                     }
+                                }
 
-                                    RippleButton {
-                                        Layout.preferredWidth: 28
-                                        Layout.preferredHeight: 28
-                                        topPadding: 0
-                                        bottomPadding: 0
-                                        buttonRadius: 8
-                                        colBackground: "transparent"
-                                        colBackgroundHover: Appearance.surfaces.row
-                                        enabled: IslandState.panels.length > 1
-                                        Accessible.name: Translation.tr("Next panel")
-                                        onClicked: IslandState.step(1)
-                                        contentItem: MaterialSymbol {
-                                            anchors.centerIn: parent
-                                            text: "chevron_right"
-                                            iconSize: 18
-                                            color: Appearance.islandContent.colOnLayer1
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter
-                                        }
+                                RippleButton {
+                                    id: rightSidebarButton
+                                    Layout.preferredWidth: window.navigationHeight
+                                    Layout.preferredHeight: window.navigationHeight
+                                    topPadding: 0
+                                    bottomPadding: 0
+                                    buttonRadius: 10 * Appearance.sizes.islandScale
+                                    colBackground: highlighted ? Appearance.colors.colPrimaryContainer : Appearance.surfaces.raised
+                                    colBackgroundHover: highlighted ? Appearance.colors.colPrimaryContainerHover : Appearance.colors.colLayer2Hover
+                                    colRipple: highlighted ? Appearance.colors.colPrimaryContainerActive : Appearance.colors.colLayer2Active
+                                    highlighted: GlobalStates.sidebarRightOpen
+                                    Accessible.name: Translation.tr("Toggle right sidebar")
+                                    onClicked: window.toggleSidebar(false)
+                                    contentItem: MaterialSymbol {
+                                        anchors.centerIn: parent
+                                        text: "right_panel_open"
+                                        iconSize: 18 * Appearance.sizes.islandScale
+                                        color: rightSidebarButton.highlighted ? Appearance.colors.colOnPrimaryContainer : Appearance.islandContent.colOnLayer1
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
                                     }
                                 }
                             }
-
-                            RippleButton {
-                                id: rightSidebarButton
-                                Layout.preferredWidth: window.navigationHeight
-                                Layout.preferredHeight: window.navigationHeight
-                                topPadding: 0
-                                bottomPadding: 0
-                                buttonRadius: 10
-                                colBackground: highlighted ? Appearance.colors.colPrimaryContainer : Appearance.surfaces.raised
-                                colBackgroundHover: highlighted ? Appearance.colors.colPrimaryContainerHover : Appearance.colors.colLayer2Hover
-                                colRipple: highlighted ? Appearance.colors.colPrimaryContainerActive : Appearance.colors.colLayer2Active
-                                highlighted: GlobalStates.sidebarRightOpen
-                                Accessible.name: Translation.tr("Toggle right sidebar")
-                                onClicked: window.toggleSidebar(false)
-                                contentItem: MaterialSymbol {
-                                    anchors.centerIn: parent
-                                    text: "right_panel_open"
-                                    iconSize: 18
-                                    color: rightSidebarButton.highlighted ? Appearance.colors.colOnPrimaryContainer : Appearance.islandContent.colOnLayer1
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
+                            Loader {
+                                id: content
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                active: false
+                                sourceComponent: {
+                                    if (window.drawerMode) return appDrawer;
+                                    switch (window.displayedPanel) {
+                                    case "media": return media;
+                                    case "localsend": return localSend;
+                                    case "weather": return weather;
+                                    case "timers": return timers;
+                                    case "calendar": return calendar;
+                                    case "resources": return resources;
+                                    case "call": return call;
+                                    case "text": return messages;
+                                    case "notifications": return notifications;
+                                    default: return system;
+                                    }
                                 }
+                                onLoaded: if (window.drawerRequested) Qt.callLater(window.focusDrawer)
                             }
-                        }
-                        Loader {
-                            id: content
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            active: false
-                            sourceComponent: {
-                                if (window.drawerMode) return appDrawer;
-                                switch (window.displayedPanel) {
-                                case "media": return media;
-                                case "localsend": return localSend;
-                                case "weather": return weather;
-                                case "timers": return timers;
-                                case "calendar": return calendar;
-                                case "resources": return resources;
-                                case "call": return call;
-                                case "text": return messages;
-                                case "notifications": return notifications;
-                                default: return system;
-                                }
-                            }
-                            onLoaded: if (window.drawerRequested) Qt.callLater(window.focusDrawer)
                         }
                     }
                 }
-            }
             }
             Component { id: media; MediaPanel {} }
             Component {

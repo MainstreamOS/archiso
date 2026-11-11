@@ -362,40 +362,38 @@ end
 -- ######## Workspace rules ########
 hl.workspace_rule({ workspace = "special:special", gaps_out = 30 })
 
--- Keep primary workspaces 1..10 persistent in compositor memory so slide
--- animations across empty workspaces never drop frames or abort on frame 0
-for i = 1, 10 do
-    hl.workspace_rule({ workspace = tostring(i), persistent = true })
-end
-
--- Dynamic workspace decade persistence:
--- When entering higher workspace groups (11..20, 21..30, etc.), dynamically load
--- that entire group of 10 into persistent memory so scrolling within the group is
--- butter-smooth. When leaving that group, release persistence if no windows exist.
+-- Workspaces 1 to 10 stay alive while empty, so a slide across them has a frame to start from,
+-- and a higher group of ten (11 to 20 and so on) does the same while it is in use.
+-- Only on a single screen: whenever rules change, Hyprland moves a persistent workspace with no
+-- monitor of its own onto the focused screen, which would pull windows off a second one.
+local keepAlive = false
 local dynamicDecades = {}
 
+local workspacePersistence = require("hyprland.workspace-persistence")
+
+local function setDecadePersistent(decade, persistent)
+    for i = decade * 10 + 1, decade * 10 + 10 do
+        workspacePersistence.setDefault(i, persistent)
+    end
+end
+
 local function getDecade(wsId)
-    if not wsId or wsId <= 0 then return 0 end
+    -- The lock screen parks windows on workspaces just below the top id.
+    if not wsId or wsId <= 0 or wsId >= 2147483600 then return 0 end
     return math.floor((wsId - 1) / 10)
 end
 
 local function ensureDecadePersistent(decade)
-    if decade <= 0 or dynamicDecades[decade] then return end
-    local startWs = decade * 10 + 1
-    local endWs = startWs + 9
-    for i = startWs, endWs do
-        hl.workspace_rule({ workspace = tostring(i), persistent = true })
-    end
+    if not keepAlive or decade <= 0 or dynamicDecades[decade] then return end
+    setDecadePersistent(decade, true)
     dynamicDecades[decade] = true
 end
 
 local function cleanupEmptyDecades(activeDecade)
     for decade, _ in pairs(dynamicDecades) do
         if decade ~= activeDecade then
-            local startWs = decade * 10 + 1
-            local endWs = startWs + 9
             local hasWindows = false
-            for i = startWs, endWs do
+            for i = decade * 10 + 1, decade * 10 + 10 do
                 local w = hl.get_workspace(i)
                 if w and w.windows > 0 then
                     hasWindows = true
@@ -403,41 +401,61 @@ local function cleanupEmptyDecades(activeDecade)
                 end
             end
             if not hasWindows then
-                for i = startWs, endWs do
-                    hl.workspace_rule({ workspace = tostring(i), persistent = false })
-                end
+                setDecadePersistent(decade, false)
                 dynamicDecades[decade] = nil
             end
         end
     end
 end
 
+local function activeDecade()
+    local ws = hl.get_active_workspace()
+    if not ws or ws.special then return 0 end
+    return getDecade(ws.id)
+end
+
+local function setKeepAlive(on)
+    if keepAlive == on then return end
+    keepAlive = on
+    setDecadePersistent(0, on)
+    if on then
+        ensureDecadePersistent(activeDecade())
+    else
+        for decade, _ in pairs(dynamicDecades) do
+            setDecadePersistent(decade, false)
+        end
+        dynamicDecades = {}
+    end
+end
+
+local function refreshKeepAlive(leaving)
+    local screens = 0
+    for _, m in ipairs(hl.get_monitors() or {}) do
+        if not leaving or m.name ~= leaving.name then screens = screens + 1 end
+    end
+    setKeepAlive(screens == 1)
+end
+
 hl.on("workspace.active", function(ws)
     if not ws or not ws.id or ws.special or ws.id <= 0 then return end
     local decade = getDecade(ws.id)
-    if decade > 0 then
-        ensureDecadePersistent(decade)
-    end
+    ensureDecadePersistent(decade)
     cleanupEmptyDecades(decade)
 end)
 
 local function onWindowChange()
-    local ws = hl.get_active_workspace()
-    local activeDecade = ws and getDecade(ws.id) or 0
-    cleanupEmptyDecades(activeDecade)
+    cleanupEmptyDecades(activeDecade())
 end
 
 hl.on("window.destroy", onWindowChange)
 hl.on("window.close", onWindowChange)
 hl.on("window.move_to_workspace", onWindowChange)
 
-local activeWs = hl.get_active_workspace()
-if activeWs and activeWs.id and not activeWs.special and activeWs.id > 0 then
-    local d = getDecade(activeWs.id)
-    if d > 0 then
-        ensureDecadePersistent(d)
-    end
-end
+-- At startup no screen is connected yet; deciding once Hyprland is up lets each one open on a workspace of its own.
+if #(hl.get_monitors() or {}) > 0 then refreshKeepAlive() end
+hl.on("hyprland.start", function() refreshKeepAlive() end)
+hl.on("monitor.added", function() refreshKeepAlive() end)
+hl.on("monitor.removed", function(mon) refreshKeepAlive(mon) end)
 
 -- ######## Layer rules ########
 hl.layer_rule({ match = { namespace = ".*" }, xray = true})
@@ -503,13 +521,10 @@ hl.layer_rule({ match = { namespace = "quickshell:(background|screenCorners|hotC
 -- Sidebars keep blur below their stock alpha but above their shadows, so the room around
 -- them never turns into a frosted halo. Panels a custom rule blurs share this floor.
 hl.layer_rule({ match = { namespace = "quickshell:(bar|dynamicIsland|verticalBar|dock[A-Za-z]*|sidebarLeft|sidebarRight)" }, ignore_alpha = 0.35})
--- The app list sits above the overview's dim. Read what is actually behind it
--- so its blur edge blends with the dim instead of revealing a wallpaper outline.
-hl.layer_rule({ match = { namespace = "quickshell:(dock[A-Za-z]*|overview[A-Za-z]*)" }, xray = false})
--- The dim is what the launcher stands on, and it shows the wallpaper past the
--- windows. Its blur is computed once and reused until the wallpaper changes.
--- The surface is all but clear, so no alpha floor: it is blurred wherever it spans.
-hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, xray = true, ignore_alpha = 0})
+-- The launcher and its dim share one surface. Read the cached wallpaper blur
+-- wherever the surface has alpha, including during the fade.
+hl.layer_rule({ match = { namespace = "quickshell:dock[A-Za-z]*" }, xray = false})
+hl.layer_rule({ match = { namespace = "quickshell:overview" }, xray = true, ignore_alpha = 0})
 -- The island's antialiased edge must blend with the surface beneath it.
 -- X-ray blur injects wallpaper color there even when the body is fully opaque.
 hl.layer_rule({ match = { namespace = "quickshell:dynamicIsland" }, xray = false})
@@ -539,15 +554,12 @@ hl.layer_rule({ match = { namespace = "quickshell:lockWindowPusher" }, no_anim =
 hl.layer_rule({ match = { namespace = "quickshell:notificationPopup" }, animation = "fade"})
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:overlay" }, ignore_alpha = 1})
--- Higher arrangement orders are painted first. Keep the launcher and its
--- backdrop before the dock so its visible buttons stay above both surfaces.
+-- Higher arrangement orders are painted first. Paint the launcher before
+-- the dock so the dock's buttons stay above it.
 -- The dock still reserves its edge before the pinned sidebar below.
 hl.layer_rule({ match = { namespace = "quickshell:dock.*" }, order = 1})
 hl.layer_rule({ match = { namespace = "quickshell:overview" }, order = 2, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:windowOverview" }, order = 2, no_anim = true})
--- The dim grows from a pixel to the screen on every open; animated, that
--- reads as blur spreading outward. It appears in one step, like the launcher.
-hl.layer_rule({ match = { namespace = "quickshell:overviewDim" }, order = 3, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:osk" }, animation = "slide bottom"})
 hl.layer_rule({ match = { namespace = "quickshell:polkit" }, no_anim = true})
 hl.layer_rule({ match = { namespace = "quickshell:popup" }, xray = false}) -- No weird color for bar tooltips (this in theory should suffice)

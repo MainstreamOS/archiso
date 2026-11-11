@@ -13,7 +13,7 @@ import qs.modules.settings.storage
 ContentPage {
     id: root
     forceWidth: true
-    baseWidth: Math.max(0, Math.min(600 * (Appearance.font?.roomGrowth ?? 1), width - 40))
+    baseWidth: Math.max(0, Math.min(600 * Appearance.font.roomGrowth, width - 40))
 
     readonly property string script: `${FileUtils.trimFileProtocol(Directories.scriptPath)}/storage/storage.py`
     readonly property string homePath: FileUtils.trimFileProtocol(Directories.home)

@@ -96,6 +96,19 @@ Singleton {
     }
     readonly property var player: players.find(p => p.dbusName === preferredPlayer)
         || players.find(p => p.playbackState === MprisPlaybackState.Playing) || players[0] || null
+    // Observe the selected track while the card is closed. Only the art is
+    // prepared here; the player controls and audio visualizer remain lazy.
+    readonly property CoverArtSource mediaCoverArt: coverArt
+    CoverArtSource {
+        id: coverArt
+        url: root.enabled && root.panels.includes("media") ? (root.player?.trackArtUrl ?? "") : ""
+    }
+    readonly property bool mediaDiscoveryComplete: !mediaDiscovery.running
+    Timer {
+        id: mediaDiscovery
+        interval: 450
+        running: true
+    }
     readonly property var kdeCalls: PhoneIdentity.mergeNotifications(Notifications.list.filter(n => n.notification && n.phoneOrigin
         && NotificationPolicy.panelFor(n) === "call" && NotificationPolicy.incomingCall(n))
         .map(n => Object.assign(PhoneIdentity.forNotification(n, Phone.callDetails), {
@@ -238,8 +251,12 @@ Singleton {
         }
     }
     function dismissNotification(entry) {
-        if (entry.notificationId !== undefined) Notifications.discardNotification(entry.notificationId);
-        else dismissedPhoneNotifications = [...dismissedPhoneNotifications, entry.id].slice(-100);
+        root.dismissNotifications([entry]);
+    }
+    function dismissNotifications(entries) {
+        Notifications.discardNotifications(entries.filter(e => e.notificationId !== undefined).map(e => e.notificationId));
+        const phone = entries.filter(e => e.notificationId === undefined).map(e => e.id);
+        if (phone.length > 0) dismissedPhoneNotifications = [...dismissedPhoneNotifications, ...phone].slice(-100);
     }
     function dismissNotificationsForApp(appName) {
         if (!appName) return;

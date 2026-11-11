@@ -30,10 +30,9 @@ Item {
         property int currentIndex: 0
     }
 
-    // Opening the tab starts the phone daemon for a first pairing; the main
-    // shell keeps the bridge itself running.
+    // Opening the tab starts the daemon for a first pairing.
     property bool onScreen: false
-    onOnScreenChanged: if (onScreen) Phone.wanted = true
+    Binding { target: Phone; property: "setupVisible"; value: root.onScreen }
     Component.onCompleted: {
         if (Phone.openThread >= 0) {
             tabBar.currentIndex = 0;
@@ -41,7 +40,6 @@ Item {
             threadView.snapToBottom();
         }
     }
-    Component.onDestruction: Phone.wanted = false
 
     function postNotice(text): void {
         root.notice = text;
@@ -284,7 +282,7 @@ Item {
                                     }
                                     StyledText {
                                         text: Translation.tr("Messages")
-                                        font.pixelSize: 11
+                                        font.pixelSize: Appearance.font.scaled(11)
                                         font.weight: tabBar.currentIndex === 0 ? Font.DemiBold : Font.Medium
                                         color: tabBar.currentIndex === 0
                                             ? Appearance.colors.colOnPrimaryContainer
@@ -319,7 +317,7 @@ Item {
                                     }
                                     StyledText {
                                         text: Translation.tr("Calls")
-                                        font.pixelSize: 11
+                                        font.pixelSize: Appearance.font.scaled(11)
                                         font.weight: tabBar.currentIndex === 3 ? Font.DemiBold : Font.Medium
                                         color: tabBar.currentIndex === 3
                                             ? Appearance.colors.colOnPrimaryContainer
@@ -354,7 +352,7 @@ Item {
                                     }
                                     StyledText {
                                         text: Translation.tr("Contacts")
-                                        font.pixelSize: 11
+                                        font.pixelSize: Appearance.font.scaled(11)
                                         font.weight: tabBar.currentIndex === 1 ? Font.DemiBold : Font.Medium
                                         color: tabBar.currentIndex === 1
                                             ? Appearance.colors.colOnPrimaryContainer
@@ -395,7 +393,7 @@ Item {
                                     }
                                     StyledText {
                                         text: Translation.tr("Files")
-                                        font.pixelSize: 11
+                                        font.pixelSize: Appearance.font.scaled(11)
                                         font.weight: tabBar.currentIndex === 2 ? Font.DemiBold : Font.Medium
                                         color: tabBar.currentIndex === 2
                                             ? Appearance.colors.colOnPrimaryContainer

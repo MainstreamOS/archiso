@@ -80,7 +80,7 @@ Popup {
     closePolicy: isResizing ? Popup.NoAutoClose : (Popup.CloseOnEscape | Popup.CloseOnPressOutside)
     padding: 24
     // Built around its text, so it gets room as the text grows, as the Settings window does.
-    implicitWidth: Math.round(500 * (Appearance.font?.roomGrowth ?? 1))
+    implicitWidth: Math.round(500 * Appearance.font.roomGrowth)
 
     x: parent ? Math.round((parent.width - width) / 2) : 0
     y: parent ? Math.round((parent.height - height) / 2) : 0

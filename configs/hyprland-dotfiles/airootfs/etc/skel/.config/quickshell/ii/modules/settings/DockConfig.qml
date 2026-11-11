@@ -27,6 +27,7 @@ ContentPage {
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Position")
@@ -35,14 +36,14 @@ ContentPage {
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: [
                     { displayName: Translation.tr("Disabled"), icon: "close", value: "disabled" },
                     { displayName: Translation.tr("Top"), icon: "keyboard_arrow_up", value: "top" },
                     { displayName: Translation.tr("Bottom"), icon: "keyboard_arrow_down", value: "bottom" },
                     { displayName: Translation.tr("Left"), icon: "keyboard_arrow_left", value: "left" },
                     { displayName: Translation.tr("Right"), icon: "keyboard_arrow_right", value: "right" }
-                ].filter(item => item.value === "disabled" || Appearance.sizes.dockEdgeAllowed(item.value))
+                ].map(item => Object.assign({ enabled: item.value === "disabled" || Appearance.sizes.dockEdgeAllowed(item.value) }, item))
                 currentIndex: {
                     // Name the edge the dock actually occupies, not the saved
                     // one: the resolver already flips an edge the bar holds and
@@ -71,6 +72,7 @@ ContentPage {
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Window indicators")
@@ -79,7 +81,7 @@ ContentPage {
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: [
                     { displayName: Translation.tr("None"), icon: "block", value: "none" },
                     { displayName: Translation.tr("Minimal"), icon: "fiber_manual_record", value: "minimal" },
@@ -107,6 +109,7 @@ ContentPage {
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Launch animation")
@@ -115,7 +118,7 @@ ContentPage {
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: [
                     { displayName: Translation.tr("None"), icon: "block", value: DockLaunchAnims.AnimType.None },
                     { displayName: Translation.tr("Bounce"), icon: "swap_vert", value: DockLaunchAnims.AnimType.Bounce },
@@ -140,6 +143,7 @@ ContentPage {
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Hover animation")
@@ -148,7 +152,7 @@ ContentPage {
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: [
                     { displayName: Translation.tr("None"), icon: "block", value: "off" },
                     { displayName: Translation.tr("Magnify"), icon: "zoom_in", value: "magnify" },
@@ -172,6 +176,7 @@ ContentPage {
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Move to workspace shows")
@@ -180,7 +185,7 @@ ContentPage {
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: [
                     { displayName: Translation.tr("Workspace numbers"), icon: "tag", value: "numbers" },
                     { displayName: Translation.tr("Named workspaces"), icon: "label", value: "named" },

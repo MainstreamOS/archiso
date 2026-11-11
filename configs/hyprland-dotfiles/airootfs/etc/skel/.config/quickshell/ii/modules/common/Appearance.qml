@@ -356,7 +356,9 @@ Singleton {
     // it lies on the dim where the dim frosts the dock's own edge. The
     // launcher keeps its panels clear of the dock's band, so nothing of it
     // lies under the dock.
-    readonly property color dockOverLauncherBackdrop: laidOverDim(colors.colDockBackground, dockOwnShadow,
+    readonly property color dockOverLauncherSurface: BackdropPresets.dockIsFrost || BackdropPresets.dockIsGlass
+        ? launcherDrawerBackground : colors.colDockBackground
+    readonly property color dockOverLauncherBackdrop: laidOverDim(dockOverLauncherSurface, dockOwnShadow,
         root.sizes.dockShowBackground, wallpaperEdge(sizes.dockEdge))
     readonly property color dockOverLauncherStockBackdrop: laidOverDim(dockStockSurface, dockOwnStockShadow,
         root.sizes.dockShowBackground, wallpaperEdge(sizes.dockEdge))
@@ -371,18 +373,9 @@ Singleton {
         adaptive: root.autoIconContrast && root._judgeLauncherEnabled
         flipped: root.contentFlipped(backdrops, backdrops)
     }
-    // Under Frost the launcher's surfaces sample the wallpaper as the dock does, under its
-    // color. A video wallpaper has no still picture, so there they keep a flat color.
-    readonly property bool launcherSamplesWallpaper: BackdropPresets.dockIsFrost && !_wallpaperIsVideo
-    readonly property color launcherFrostBackdrop: ColorUtils.composite(colors.colDockBackground,
-        ColorUtils.composite(ColorUtils.applyAlpha("white", Config.options.dock.backdrop.haze), wallpaperAverage))
-    readonly property color launcherBackdrop: launcherSamplesWallpaper ? launcherFrostBackdrop
-        : laidOverDim(launcherSearchBackground, colors.colLauncherShadow, true)
-    // The app list is part of the launcher, so it takes the dock's color but not
-    // the see-through a dock preset or slider sets.
+    readonly property color launcherBackdrop: laidOverDim(launcherSearchBackground, colors.colLauncherShadow, true)
     readonly property color drawerSurface: ColorUtils.applyAlpha(colors.colDockBackground, colors.dockStockAlpha)
-    readonly property color drawerBackdrop: launcherSamplesWallpaper && root.sizes.dockShowBackground ? launcherFrostBackdrop
-        : laidOverDim(launcherDrawerBackground, dockStockShadow, root.sizes.dockShowBackground)
+    readonly property color drawerBackdrop: laidOverDim(launcherDrawerBackground, dockStockShadow, root.sizes.dockShowBackground)
     readonly property color launcherStockBackdrop: laidOverDim(ColorUtils.applyAlpha(m3colors.m3surfaceContainer, colors.layer0StockAlpha),
         colors.colShadow, true)
     readonly property color drawerStockBackdrop: laidOverDim(dockStockSurface, dockStockShadow,
@@ -402,11 +395,10 @@ Singleton {
         return ColorUtils.contrastRatio(ColorUtils.composite(colors.surfaceBorder(outline, surface), under),
             ColorUtils.composite(surface, under))
     }
-    function dockBorderOverDim(content, picture, shadow, stockShadow) {
+    function dockBorderOverDim(content, picture, shadow, stockShadow, surface = colors.colDockBackground) {
         const outline = content.colOutlineVariant
         if (!content.adaptive || !root.sizes.dockShowBackground)
-            return colors.dockBorder(outline)
-        const surface = colors.colDockBackground
+            return colors.surfaceBorder(outline, surface)
         const under = ColorUtils.composite(shadow, picture)
         const stockUnder = ColorUtils.composite(stockShadow, picture)
         const need = Math.min(content.markContrast,
@@ -414,13 +406,13 @@ Singleton {
         const stands = o => borderStanding(o, surface, under)
         const reaches = o => ColorUtils.meets(stands(o), need)
         if (reaches(outline))
-            return colors.dockBorder(outline)
+            return colors.surfaceBorder(outline, surface)
         const line = ColorUtils.composite(colors.surfaceBorder(outline, surface), under)
         const away = ColorUtils.relativeLuminance(line) > ColorUtils.relativeLuminance(ColorUtils.composite(surface, under))
             ? "white" : "black"
         const back = away === "white" ? "black" : "white"
         const toward = reaches(away) || (!reaches(back) && stands(away) >= stands(back)) ? away : back
-        return colors.dockBorder(ColorUtils.mixUntil(outline, toward, reaches))
+        return colors.surfaceBorder(ColorUtils.mixUntil(outline, toward, reaches), surface)
     }
     // The app list wears the dock's surface, but over the dim rather than
     // the screen's edge, so what reads on the dock need not read on it, and
@@ -471,8 +463,7 @@ Singleton {
     readonly property LauncherSurfaceContent launcherWorkspaceContent: LauncherSurfaceContent {
         m3: root.m3colors
         palette: root.colors
-        backdrops: [root.launcherSamplesWallpaper ? root.launcherFrostBackdrop
-            : root.laidOverDim(root.launcherWorkspaceBackground, root.colors.colLauncherShadow, true)]
+        backdrops: [root.laidOverDim(root.launcherWorkspaceBackground, root.colors.colLauncherShadow, true)]
         stockBackdrops: [root.launcherStockBackdrop]
         adaptive: root.autoIconContrast && root._judgeLauncherEnabled
         holdsFills: true
@@ -1106,7 +1097,8 @@ Singleton {
         }
         property color colDockBackgroundBorder: dockBorder(root.dockContent.colOutlineVariant)
         property color colDockOverLauncherBorder: root.dockBorderOverDim(root.dockOverLauncherContent,
-            root.wallpaperEdge(root.sizes.dockEdge), root.dockOwnShadow, root.dockOwnStockShadow)
+            root.wallpaperEdge(root.sizes.dockEdge), root.dockOwnShadow, root.dockOwnStockShadow,
+            BackdropPresets.dockIsFrost ? root.dockOverLauncherSurface : colDockBackground)
         property color colDrawerBorder: root.dockBorderOverDim(root.drawerContent, root.wallpaperAverage,
             colDockShadow, root.dockStockShadow)
         property color colDockShadow: ColorUtils.applyAlpha(colShadow, colShadow.a * colDockBackground.a)
@@ -1340,7 +1332,10 @@ Singleton {
                 "wght": 550, // Weight (Lowered to compensate for increased grade)
             })
         }
-        property QtObject pixelSize: QtObject {
+        // UI text size scales the shell's text. The bar, Island and their popups keep their
+        // own Size instead, so their code reads basePixelSize and scales it by that.
+        readonly property real uiTextScale: Math.max(0.8, Math.min(1.3, Config.options?.appearance?.uiTextScale ?? 1))
+        property QtObject basePixelSize: QtObject {
             property int smallest: 10
             property int smaller: 12
             property int smallie: 13
@@ -1352,8 +1347,36 @@ Singleton {
             property int hugeass: 23
             property int title: huge
         }
-        readonly property real textGrowth: 1
-        readonly property real roomGrowth: 1
+        property QtObject pixelSize: QtObject {
+            readonly property int smallest: Math.round(root.font.basePixelSize.smallest * root.font.uiTextScale)
+            readonly property int smaller: Math.round(root.font.basePixelSize.smaller * root.font.uiTextScale)
+            readonly property int smallie: Math.round(root.font.basePixelSize.smallie * root.font.uiTextScale)
+            readonly property int small: Math.round(root.font.basePixelSize.small * root.font.uiTextScale)
+            readonly property int normal: Math.round(root.font.basePixelSize.normal * root.font.uiTextScale)
+            readonly property int large: Math.round(root.font.basePixelSize.large * root.font.uiTextScale)
+            readonly property int larger: Math.round(root.font.basePixelSize.larger * root.font.uiTextScale)
+            readonly property int huge: Math.round(root.font.basePixelSize.huge * root.font.uiTextScale)
+            readonly property int hugeass: Math.round(root.font.basePixelSize.hugeass * root.font.uiTextScale)
+            readonly property int title: huge
+        }
+        // How much body text actually grew once rounded to whole pixels; widths that
+        // hold text, like a label column or a drop-down, grow by this.
+        readonly property real textGrowth: pixelSize.small / basePixelSize.small
+        // A layout built around text, like the Settings window, grows only for the labels in it;
+        // its controls and padding keep their size, so it needs about half as much.
+        readonly property real roomGrowth: 1 + (textGrowth - 1) / 2
+        // The bar, Island and their popups declare uiScale and keep their own Size, so
+        // shared code reads its sizes for the window it is in through these two.
+        function sizesFor(window): QtObject {
+            return window?.uiScale !== undefined ? root.font.basePixelSize : root.font.pixelSize;
+        }
+        // A size with no shared name, grown with UI text size like the shared ones.
+        function scaled(px: real): int {
+            return Math.round(px * root.font.uiTextScale);
+        }
+        function textScaleFor(window): real {
+            return window?.uiScale !== undefined ? 1 : root.font.uiTextScale;
+        }
     }
 
     animationCurves: QtObject {
@@ -1511,7 +1534,14 @@ Singleton {
     }
 
     sizes: QtObject {
-        property real baseBarHeight: 40
+        // The bar or closed Island (barScale) and the open Island (islandScale), laid out at that size rather
+        // than magnified so icons stay sharp; in tenths, so sizes land on whole pixels often enough to stay crisp.
+        readonly property real barScale: Math.round(Math.max(0.8, Math.min(1.5,
+            (barIsIsland ? Config.options?.bar.island.scale : Config.options?.bar.scale) ?? 1)) * 10) / 10
+        // The bar's popups follow the bar, and on the Island they follow the Island.
+        readonly property real barPopupScale: barIsIsland ? islandScale : barScale
+        readonly property real islandScale: Math.round(Math.max(0.8, Math.min(1.8, Config.options?.bar.island.expandedScale ?? 1)) * 10) / 10
+        property real baseBarHeight: Math.round(40 * barScale)
         // A floating strip spans the whole screen unless it is told otherwise,
         // as a percentage so one setting reads the same on every monitor
         // rather than leaving a wide screen barely trimmed and a narrow one
@@ -1550,8 +1580,8 @@ Singleton {
         }
         // The Hug dock runs the whole length of its edge, so it fits only
         // along the edge facing the bar: on either side of the bar it would
-        // run across the bar's ends. With the bar put away there is nothing
-        // to cross, and any edge will do. Every process goes by the shell's
+        // run across the bar's ends. With the traditional bar put away,
+        // either horizontal edge will do. Every process goes by the shell's
         // word on whether its bar is up (barShownOnFile above).
         readonly property bool dockSpans: Config.options?.dock.cornerStyle === "span"
         readonly property string dockHoverEffect: Config.options?.dock.hoverEffect ?? ""
@@ -1569,14 +1599,16 @@ Singleton {
             // negation, so an unrecognised value would anchor the dock to all
             // four edges at once instead of falling back to one.
             const want = ["top", "bottom", "left", "right"].includes(pos) ? pos : "bottom";
-            if (root.sizes.dockSpans)
-                return root.sizes.barShown ? root.sizes.oppositeEdge(root.sizes.barEdge) : want;
+            if (root.sizes.dockSpans && !root.sizes.barIsIsland) {
+                const horizontal = want === "top" || want === "bottom";
+                return !root.sizes.barShown && horizontal ? want : root.sizes.oppositeEdge(root.sizes.barEdge);
+            }
             return want === root.sizes.barEdge ? root.sizes.oppositeEdge(want) : want;
         }
-        // Whether the dock may be set on an edge in the style it has now. The Hug dock
-        // never runs down a side, even with the bar away.
+        // Whether the dock may be set on an edge in the style it has now. Beside the traditional
+        // bar the Hug dock faces it and never runs down a side; the Island leaves it any edge.
         function dockEdgeAllowed(edge) {
-            if (!root.sizes.dockSpans)
+            if (!root.sizes.dockSpans || root.sizes.barIsIsland)
                 return true;
             if (edge === "left" || edge === "right")
                 return false;
@@ -1630,7 +1662,7 @@ Singleton {
             const onScreen = root.sizes.dockEdge;
             const previous = Config.options.dock.cornerStyle;
             Config.options.dock.cornerStyle = style;
-            if (style === "span")
+            if (style === "span" && !root.sizes.barIsIsland)
                 Config.options.dock.position = root.sizes.barShown || onScreen === "left" || onScreen === "right"
                     ? root.sizes.oppositeEdge(root.sizes.barEdge) : onScreen;
             else if (previous === "span")
@@ -1772,9 +1804,11 @@ Singleton {
         }
         property real barHeight: (barIsIsland ? islandShape === "float" : Config.options.bar.cornerStyle === 1) ?
             (baseBarHeight + root.sizes.hyprlandGapsOut * 2) : baseBarHeight
-        property real barCenterSideModuleWidth: Config.options?.bar.verbose ? 360 : 140
-        property real barCenterSideModuleWidthShortened: 280
-        property real barCenterSideModuleWidthHellaShortened: 190
+        readonly property real horizontalBarExclusiveZone: barIsIsland ? barHeight
+            : baseBarHeight + (Config.options.bar.cornerStyle === 1 ? hyprlandGapsOut : 0)
+        property real barCenterSideModuleWidth: (Config.options?.bar.verbose ? 360 : 140) * barScale
+        property real barCenterSideModuleWidthShortened: 280 * barScale
+        property real barCenterSideModuleWidthHellaShortened: 190 * barScale
         property real barShortenScreenWidthThreshold: 1200 // Shorten if screen width is at most this value
         property real barHellaShortenScreenWidthThreshold: 1000 // Shorten even more...
         property real elevationMargin: 10
@@ -1799,7 +1833,8 @@ Singleton {
         property real mediaControlsWidth: 440
         property real mediaControlsHeight: 160
         property real wavySliderHeight: 24
-        property real notificationPopupWidth: 410
+        // The sidebars and notification popups are built around text, so they get room as it grows.
+        property real notificationPopupWidth: Math.round(410 * root.font.roomGrowth)
         // Where notification popups sit, read by the popup and by the picker in
         // Settings so the spot shown picked is always the one in use. A
         // hand-edited value neither knows lands on the stock corner.
@@ -1808,9 +1843,9 @@ Singleton {
         property real osdWidth: 180
         property real searchWidthCollapsed: 210
         property real searchWidth: 360
-        property real sidebarWidth: 460
-        property real sidebarWidthExtended: 750
-        property real baseVerticalBarWidth: 46
+        property real sidebarWidth: Math.round(460 * root.font.roomGrowth)
+        property real sidebarWidthExtended: Math.round(750 * root.font.roomGrowth)
+        property real baseVerticalBarWidth: Math.round(46 * barScale)
         property real verticalBarWidth: Config.options.bar.cornerStyle === 1 ? 
             (baseVerticalBarWidth + root.sizes.hyprlandGapsOut * 2) : baseVerticalBarWidth
         property real wallpaperSelectorWidth: 1200

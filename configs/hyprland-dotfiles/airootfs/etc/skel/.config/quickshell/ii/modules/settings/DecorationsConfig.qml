@@ -53,7 +53,6 @@ ContentPage {
     property string sysCurrentIcon: ""
     property string sysCurrentCursor: ""
 
-    readonly property string gtkFontScript: Quickshell.env("HOME") + "/.config/quickshell/ii/scripts/themes/apply-gtk-font.sh"
     readonly property string cursorScript: Quickshell.env("HOME") + "/.config/quickshell/ii/scripts/cursor/apply-cursor.sh"
     readonly property string cursorSizeScript: Quickshell.env("HOME") + "/.config/quickshell/ii/scripts/cursor/cursor-sizes.py"
 
@@ -205,7 +204,7 @@ ContentPage {
         { displayName: Translation.tr("Acrylic"), value: 8 },
         { displayName: Translation.tr("Aurora"), value: 9 },
         { displayName: Translation.tr("Haze"), value: 10 },
-    ].filter(style => root.supportedBlurVariants.includes(style.value))
+    ].map(style => Object.assign({ enabled: root.supportedBlurVariants.includes(style.value) }, style))
 
     readonly property var shippedBlurPresets: BackdropPresets.windowShipped
     readonly property var blurPresets: root.shippedBlurPresets.concat(Array.from(Config.options.appearance.windowBlurPresets))
@@ -504,19 +503,6 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         root.cursorSize = size
         Quickshell.execDetached(["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", String(size)])
         Quickshell.execDetached([root.cursorScript, String(size)])
-    }
-
-    function applyGtkFont() {
-        Quickshell.execDetached([root.gtkFontScript,
-            (Config.options.appearance.fonts.main || "").trim(),
-            (Config.options.appearance.fonts.monospace || "").trim(),
-            (Config.options.appearance.fonts.reading || "").trim()]);
-    }
-
-    Timer {
-        id: gtkFontDebounce
-        interval: 400
-        onTriggered: root.applyGtkFont()
     }
 
     // ── Decorations ──────────────────────────────────────────────────────────
@@ -1100,6 +1086,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Blur preset")
@@ -1108,7 +1095,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.blurPresetIndex >= 0 ? root.blurPresets
                     : root.blurPresets.concat([{ displayName: Translation.tr("Custom") }])
                 currentIndex: root.blurPresetIndex >= 0 ? root.blurPresetIndex : root.blurPresets.length
@@ -1148,7 +1135,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
         ConfigRow {
             Layout.leftMargin: 8
             Layout.rightMargin: 8
-            visible: root.blurStyles.length > 0
+            visible: root.supportedBlurVariants.length > 0
             enabled: root.blurEnabled
             opacity: root.blurEnabled ? 1 : 0.5
 
@@ -1158,6 +1145,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Blur style")
@@ -1166,12 +1154,13 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.blurStyles
                 currentIndex: root.blurStyles.findIndex(style => style.value === root.blurVariantValue)
                 onActivated: index => {
                     const chosen = root.blurStyles[index].value;
-                    if (chosen === root.blurVariantValue) return;
+                    // A style this Hyprland lacks is never sent, however it was reached.
+                    if (chosen === root.blurVariantValue || !root.supportedBlurVariants.includes(chosen)) return;
                     root.blurVariantValue = chosen;
                     root.setDecoration([`blurVariant=${chosen}`]);
                 }
@@ -1614,6 +1603,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Style")
@@ -1622,7 +1612,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.animationProfiles
                 currentIndex: root.animationProfiles.findIndex(p => p.value === root.animationProfileValue)
                 onActivated: index => {
@@ -1669,6 +1659,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("App style")
@@ -1678,7 +1669,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 id: gtkThemeCombo
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.sysGtkThemes.map(t => ({
                     displayName: t.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
                     value: t
@@ -1697,6 +1688,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Icons")
@@ -1706,7 +1698,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 id: iconThemeCombo
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.sysIconThemes.map(t => ({
                     displayName: t.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
                     value: t
@@ -1725,6 +1717,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Mouse cursor")
@@ -1734,7 +1727,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 id: cursorThemeCombo
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.sysCursorThemes.map(t => ({
                     displayName: t.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
                     value: t
@@ -1759,6 +1752,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             }
             StyledText {
                 Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.leftMargin: 6
                 text: Translation.tr("Cursor Size")
@@ -1767,7 +1761,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
             StyledComboBox {
                 textRole: "displayName"
                 Layout.fillWidth: false
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 220 * Appearance.font.textGrowth
                 model: root.cursorSizeOptions
                 currentIndex: {
                     const exact = model.findIndex(item => item.value === root.cursorSize)
@@ -1813,7 +1807,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 value: Config.options.appearance.fonts.main
                 onFontSelected: family => {
                     Config.options.appearance.fonts.main = family;
-                    gtkFontDebounce.restart();
+                    Config.queueAppFontApply();
                 }
             }
         }
@@ -1850,7 +1844,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 value: Config.options.appearance.fonts.monospace
                 onFontSelected: family => {
                     Config.options.appearance.fonts.monospace = family;
-                    gtkFontDebounce.restart();
+                    Config.queueAppFontApply();
                 }
             }
         }
@@ -1875,7 +1869,7 @@ print(json.dumps({"gtk":sorted(gtk),"icons":sorted(icons),"cursors":sorted(curso
                 value: Config.options.appearance.fonts.reading
                 onFontSelected: family => {
                     Config.options.appearance.fonts.reading = family;
-                    gtkFontDebounce.restart();
+                    Config.queueAppFontApply();
                 }
             }
         }

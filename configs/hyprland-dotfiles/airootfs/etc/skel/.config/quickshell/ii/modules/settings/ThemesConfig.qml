@@ -13,7 +13,7 @@ import qs.modules.common.functions
 ContentPage {
     id: root
     forceWidth: true
-    baseWidth: 720
+    baseWidth: 720 * Appearance.font.roomGrowth
 
     // ── Paths ────────────────────────────────────────────────────────────────
     readonly property string homePath: FileUtils.trimFileProtocol(Directories.home)
@@ -1401,16 +1401,12 @@ finally:
             Rectangle {
                 id: saveCard
                 Layout.fillWidth: true
-                // Preferred height grows to match the image when this card
-                // is the only one in the grid (full row width → tall 9:16
-                // image → card needs ~width*9/16+20 to contain it). Once
-                // the user saves themes, the layout splits the row and the
-                // card width drops by half, so the standard 260px is plenty
-                // for the half-width image plus margins. Width-only
-                // dependency, so no binding loop with the layout's height.
+                // Alone in the grid it is as tall as its full-width 16:9 image (width only, so no
+                // binding loop); beside a theme it takes that card's height, which grows with its text.
                 Layout.preferredHeight: root.orderedThemes.length === 0
                     ? Math.round(saveCard.width * 9 / 16) + 20
-                    : 260
+                    : 0
+                Layout.fillHeight: root.orderedThemes.length > 0
                 radius: Appearance.rounding.normal
                 color: Appearance.colors.colLayer2
 
@@ -1492,7 +1488,8 @@ finally:
                     readonly property bool isActive: modelData.slug === root.lastAppliedSlug
                     readonly property bool busy: root.applyInFlight
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 260
+                    // As tall as what it holds, so a larger text size cannot push the buttons into the next row.
+                    Layout.preferredHeight: themeCardColumn.implicitHeight + 20
                     radius: Appearance.rounding.normal
                     color: isActive ? Appearance.colors.colSecondaryContainer : Appearance.colors.colLayer2
 
@@ -1513,6 +1510,7 @@ finally:
                     }
 
                     ColumnLayout {
+                        id: themeCardColumn
                         anchors.fill: parent
                         anchors.margins: 10
                         spacing: 8
@@ -2056,7 +2054,7 @@ finally:
                 color: Appearance.colors.colOnLayer1
             }
             StyledComboBox {
-                Layout.preferredWidth: 200
+                Layout.preferredWidth: 200 * Appearance.font.textGrowth
                 // "Follow Night Light" keys on Hyprsunset.shouldBeOn, which is a
                 // clock-in-window test over light.night.from and .to and never
                 // consults light.night.mode, so the schedule keeps time whether

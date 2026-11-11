@@ -264,7 +264,7 @@ ApplicationWindow {
 
     // The one place that knows how to hand over to the installer.
     function launchInstaller() {
-        Quickshell.execDetached(["/usr/local/bin/calamares-launch"]);
+        Quickshell.execDetached(["sudo", "-E", "calamares"]);
         Qt.quit();
     }
 

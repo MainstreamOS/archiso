@@ -8,18 +8,20 @@ import qs.modules.common.widgets
 TextField {
     id: filterField
 
+    property real uiScale: QsWindow.window?.uiScale ?? 1
+    readonly property QtObject fontSizes: Appearance.font.sizesFor(QsWindow.window)
     property alias colBackground: background.color
     property alias radius: background.radius
 
     Layout.fillHeight: true
-    implicitWidth: 200
-    padding: 10
+    implicitWidth: 200 * filterField.uiScale
+    padding: 10 * filterField.uiScale
 
     placeholderTextColor: Appearance.colors.colSubtext
     color: Appearance.colors.colOnLayer1
     font {
         family: Appearance.font.family.main
-        pixelSize: Appearance.font.pixelSize.small
+        pixelSize: filterField.fontSizes.small * filterField.uiScale
         hintingPreference: Font.PreferFullHinting
         variableAxes: Appearance.font.variableAxes.main
     }

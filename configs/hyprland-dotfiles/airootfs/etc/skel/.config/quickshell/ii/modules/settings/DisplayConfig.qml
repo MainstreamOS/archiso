@@ -3895,7 +3895,7 @@ except Exception:
                 color: Appearance.colors.colOnSecondaryContainer
             }
             StyledComboBox {
-                Layout.preferredWidth: 180 * (Appearance.font?.textGrowth ?? 1)
+                Layout.preferredWidth: 180 * Appearance.font.textGrowth
                 Layout.fillWidth: false
                 model: [
                     Translation.tr("Disabled"),

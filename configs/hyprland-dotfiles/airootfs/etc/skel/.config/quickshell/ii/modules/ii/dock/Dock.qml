@@ -32,6 +32,8 @@ Scope { // Scope
             // over a launcher. Moving the reservation between layers makes
             // pinned sidebars get arranged before it and grow behind the UI.
             PanelWindow {
+                // The dock keeps its own size, apart from UI text size (Appearance.font.sizesFor).
+                property real uiScale: 1
                 screen: perScreen.modelData
                 visible: root.pinned && !GlobalStates.screenLocked
                 color: "transparent"
@@ -65,10 +67,11 @@ Scope { // Scope
                     Qt.callLater(() => { if (dockWindowLoader) dockWindowLoader.active = true; });
                 }
                 sourceComponent: PanelWindow {
+                    property real uiScale: 1
                     id: dockRoot
                     // Window
                     screen: perScreen.modelData
-                    visible: !GlobalStates.screenLocked
+                    visible: !GlobalStates.screenLocked && (!dockRoot.workspaceFullscreen || dockRoot.overlayRequested)
                     contentItem.visible: !GlobalStates.scrollOverviewOpen
 
             // The dock never shares an edge with the bar: a dock stacked on
@@ -107,21 +110,30 @@ Scope { // Scope
             // The strip's outline overlaps its fill, which only shows through
             // a see-through surface, and there the two are painted opaque and
             // faded together the way the notch's pieces are.
+            // Frost and Glass follow the launcher or Alt+Tab backdrop on this output.
+            readonly property bool launcherDimmed: GlobalStates.launcherDimScreens.includes(perScreen.modelData?.name ?? "")
+            readonly property bool usesOverviewBackdrop: (BackdropPresets.dockIsFrost || BackdropPresets.dockIsGlass)
+                && (launcherDimmed || overWindowOverview)
+            property color surfaceColor: usesOverviewBackdrop
+                ? Appearance.dockOverLauncherSurface : Appearance.colors.colDockBackground
+            Behavior on surfaceColor {
+                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+            }
             readonly property bool spanSeamFix: dockSpans && dockRoot.showBackground
-                && Appearance.colors.colDockBackground.a < 1
+                && dockRoot.surfaceColor.a < 1
             // Only the notch draws pieces beside the body, so only it needs the
             // group flattened before the surface is faded, and only it needs the
             // room outside the body that those pieces occupy.
             // The lap the fix hides only shows through a see-through surface,
             // so a fully opaque one skips the flattening pass and its texture.
             readonly property bool notchSeamFix: dockFlares && dockRoot.showBackground
-                && Appearance.colors.colDockBackground.a < 1
+                && dockRoot.surfaceColor.a < 1
             readonly property real flareBleed: notchSeamFix ? Appearance.rounding.dock : 0
             // The notch and the Hug strip never show together; either way their
             // pieces are painted opaque and faded as one.
             readonly property bool seamFix: notchSeamFix || spanSeamFix
-            readonly property color surfaceFill: seamFix ? Appearance.colors.colDockBackgroundOpaque
-                : Appearance.colors.colDockBackground
+            readonly property color surfaceFill: seamFix ? ColorUtils.applyAlpha(dockRoot.surfaceColor, 1)
+                : dockRoot.surfaceColor
             readonly property color surfaceOutline: seamFix ? content.colBorderOpaque : content.colBorder
             // How far each curve laps over the body. One covers the hairline a
             // fractional scale can leave between them; the body's outline is a
@@ -158,21 +170,22 @@ Scope { // Scope
                 : dockEdge === "top" ? Edges.Bottom
                 : dockEdge === "left" ? Edges.Right : Edges.Left
 
-            // Closing the launcher leaves its blurred surface mapped through
-            // the fade and shrink. Stay above it until its configured size lands.
-            readonly property bool overLauncher: GlobalStates.overviewOpen
-                || (GlobalStates.launcherDimWindows[dockRoot.screen?.name ?? ""]?.surfaceShown ?? false)
-            readonly property bool overWindowOverview: GlobalStates.windowOverviewScreen === (dockRoot.screen?.name ?? "")
+            // Raise the Dock on the output showing the launcher, including in
+            // fullscreen, and keep it there through the launcher's closing fade.
+            readonly property var launcher: GlobalStates.launcherWindows[perScreen.modelData.name]
+            readonly property bool overLauncher: (launcher?.requested ?? false) || (launcher?.surfaceShown ?? false)
+            readonly property bool overWindowOverview: GlobalStates.windowOverviewScreen === perScreen.modelData.name
+            readonly property bool overlayRequested: overLauncher || overWindowOverview
+            // An occluded Top surface can stop receiving frame callbacks,
+            // leaving a layer promotion uncommitted. Map directly at Overlay
+            // when a launcher opens over fullscreen.
+            readonly property bool workspaceFullscreen: HyprlandData.activeWorkspaceHasFullscreen(perScreen.modelData.name)
+
             property bool reveal: root.pinned || (Config.options?.dock.hoverToReveal && dockMouseArea.containsMouse) || dockApps.requestDockShow || (!ToplevelManager.activeToplevel?.activated) || overLauncher || overWindowOverview || revealGrace.running
 
-            // The dock is raised above the launcher's dim while the launcher
-            // is open, and there it takes the colors that read over the dim.
-            // Only on the screen the dim is shown on: a dock on another screen
-            // keeps its own. A Frost dock looks the same over the dim as anywhere
-            // else, so it keeps its own too.
             readonly property DockContent content: DockContent {
-                dimmed: GlobalStates.launcherDimScreens.includes(dockRoot.screen?.name ?? "")
-                    && (!Config.options.dock.backdrop.enable || BackdropPresets.dockIsGlass || !(backdropSource.item?.available ?? false))
+                dimmed: dockRoot.launcherDimmed && (dockRoot.usesOverviewBackdrop
+                    || !Config.options.dock.backdrop.enable || !(backdropSource.item?.available ?? false))
             }
             // The content colors as this dock draws them. A button's fill
             // already eases to a new color on the curve the dim fades on, so
@@ -232,11 +245,14 @@ Scope { // Scope
                     return Appearance.sizes.barEdge === edge && !Config.options.bar.autoHide.enable ? Appearance.sizes.verticalBarWidth : 0;
                 return dockRoot.monitorData?.reserved?.[index] ?? 0;
             }
+            // The Island takes only the middle of its edge, so a Hug strip down a side beside it
+            // runs the whole height instead of stopping at the Island's band.
+            readonly property bool spansIslandSide: dockRoot.dockSpans && dockRoot.dockVertical && Appearance.sizes.barIsIsland
             margins {
                 left: dockRoot.dockVertical ? 0 : dockRoot.axisClearance("left", 0)
                 right: dockRoot.dockVertical ? 0 : dockRoot.axisClearance("right", 2)
-                top: dockRoot.dockVertical ? dockRoot.axisClearance("top", 1) : 0
-                bottom: dockRoot.dockVertical ? dockRoot.axisClearance("bottom", 3) : 0
+                top: dockRoot.dockVertical && !dockRoot.spansIslandSide ? dockRoot.axisClearance("top", 1) : 0
+                bottom: dockRoot.dockVertical && !dockRoot.spansIslandSide ? dockRoot.axisClearance("bottom", 3) : 0
             }
 
             // How much of this screen the row may run along. The surface is
@@ -248,7 +264,9 @@ Scope { // Scope
             readonly property var monitorData: HyprlandData.monitors.find(m => m.name === dockRoot.screen?.name)
             readonly property real axisBudget: {
                 const reserved = dockRoot.monitorData?.reserved ?? [0, 0, 0, 0];
-                const along = dockRoot.dockVertical ? ((reserved[1] ?? 0) + (reserved[3] ?? 0)) : ((reserved[0] ?? 0) + (reserved[2] ?? 0));
+                // A Hug strip beside the Island runs the whole height, past what the Island reserves.
+                const along = dockRoot.spansIslandSide ? 0
+                    : dockRoot.dockVertical ? ((reserved[1] ?? 0) + (reserved[3] ?? 0)) : ((reserved[0] ?? 0) + (reserved[2] ?? 0));
                 const extent = dockRoot.dockVertical ? (dockRoot.screen?.height ?? 0) : (dockRoot.screen?.width ?? 0);
                 return extent - along - Appearance.sizes.hyprlandGapsOut * 2;
             }
@@ -336,7 +354,7 @@ Scope { // Scope
             implicitHeight: dockRoot.dockVertical ? dockBackground.implicitHeight : dockRoot.dockExtent + dockRoot.magnifyHeadroom
             WlrLayershell.namespace: "quickshell:dock" + (dockRoot.dockEdge === "bottom" ? ""
                 : dockRoot.dockEdge.charAt(0).toUpperCase() + dockRoot.dockEdge.slice(1))
-            WlrLayershell.layer: dockRoot.overLauncher || dockRoot.overWindowOverview ? WlrLayer.Overlay : WlrLayer.Top
+            WlrLayershell.layer: dockRoot.overlayRequested ? WlrLayer.Overlay : WlrLayer.Top
             color: "transparent"
 
             mask: Region {
@@ -561,15 +579,13 @@ Scope { // Scope
                             active: dockRoot.showBackground && (Config.options.dock.backdrop.enable || Appearance.colors.colDockBackground.a < 1)
                             sourceComponent: ScreenWallpaperSource {}
                         }
-                        // Over the launcher's dim, Solid and Glass fade to their plain see-through
-                        // surface, which the dim's own colors are worked out for. The backdrop stays
-                        // loaded, since a new one shows a frame of unplaced wallpaper before its sample.
+                        // Keep the wallpaper sample ready to fade back in when the launcher closes.
                         SurfaceBackdrop {
                             id: dockBackdrop
                             settings: Config.options.dock.backdrop
                             source: backdropSource.item
-                            opacity: (!Config.options.dock.backdrop.enable || BackdropPresets.dockIsGlass)
-                                && (dockRoot.overLauncher || dockRoot.overWindowOverview) ? 0 : 1
+                            opacity: dockRoot.usesOverviewBackdrop || ((!Config.options.dock.backdrop.enable || BackdropPresets.dockIsGlass)
+                                && (dockRoot.overLauncher || dockRoot.overWindowOverview)) ? 0 : 1
                             Behavior on opacity {
                                 animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
                             }
@@ -596,7 +612,7 @@ Scope { // Scope
                             anchors.bottomMargin: dockRoot.dockVertical ? -dockRoot.flareBleed : 0
                             anchors.leftMargin: dockRoot.dockVertical ? 0 : -dockRoot.flareBleed
                             anchors.rightMargin: dockRoot.dockVertical ? 0 : -dockRoot.flareBleed
-                            opacity: dockRoot.notchSeamFix ? Appearance.colors.colDockBackground.a : 1
+                            opacity: dockRoot.notchSeamFix ? dockRoot.surfaceColor.a : 1
                             layer.enabled: dockRoot.notchSeamFix
                             layer.smooth: true
 
@@ -726,7 +742,7 @@ Scope { // Scope
                                     return edge === "top" ? v : edge === "bottom" ? height - v : u;
                                 }
                                 preferredRendererType: Shape.CurveRenderer
-                                opacity: dockRoot.spanSeamFix ? Appearance.colors.colDockBackground.a : 1
+                                opacity: dockRoot.spanSeamFix ? dockRoot.surfaceColor.a : 1
                                 layer.enabled: dockRoot.spanSeamFix
                                 layer.smooth: true
 
@@ -874,7 +890,7 @@ Scope { // Scope
                                         // size it is given is a font cache key of
                                         // its own, so a fraction here mints a face
                                         // the rounding was meant to prevent.
-                                        iconSize: Math.round(Appearance.font.pixelSize.larger
+                                        iconSize: Math.round(Appearance.font.basePixelSize.larger
                                             * dockRoot.fittedIconSize / Appearance.sizes.dockIconStock)
                                         color: root.pinned ? dockRoot.content.m3onPrimary : dockRoot.content.colOnLayer0
                                     }

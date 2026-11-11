@@ -11,6 +11,7 @@ import qs.modules.common.functions
 
 MouseArea {
     id: root
+    property real uiScale: QsWindow.window?.uiScale ?? 1
     property var contentColors: Appearance.barContent
     required property SystemTrayItem item
     property bool targetMenuOpen: false
@@ -155,12 +156,13 @@ MouseArea {
     }
 
     signal menuOpened(qsWindow: var)
-    signal menuClosed()
+    signal menuOpening(var window)
+    signal menuClosed(var window)
 
     hoverEnabled: true
     acceptedButtons: Qt.LeftButton | Qt.RightButton
-    implicitWidth: 20
-    implicitHeight: 20
+    implicitWidth: 20 * root.uiScale
+    implicitHeight: 20 * root.uiScale
     onPressed: (event) => {
         switch (event.button) {
         case Qt.LeftButton:
@@ -193,6 +195,7 @@ MouseArea {
             anchor {
                 window: root.QsWindow.window
                 item: root
+                adjustment: PopupAdjustment.Flip | PopupAdjustment.Slide
                 gravity: Config.options.bar.vertical
                     ? (Config.options.bar.bottom ? Edges.Left : Edges.Right)
                     : (Config.options.bar.bottom ? Edges.Top : Edges.Bottom)
@@ -200,9 +203,10 @@ MouseArea {
                     ? (Config.options.bar.bottom ? Edges.Left : Edges.Right)
                     : (Config.options.bar.bottom ? Edges.Top : Edges.Bottom)
             }
-            onMenuOpened: (window) => root.menuOpened(window);
-            onMenuClosed: {
-                root.menuClosed();
+            onMenuOpening: window => root.menuOpening(window)
+            onMenuOpened: window => root.menuOpened(window)
+            onMenuClosed: window => {
+                root.menuClosed(window);
                 menu.active = false;
             }
         }
@@ -259,8 +263,8 @@ MouseArea {
     // The grab comes from Qt's pixmap store, so this draws it at once with no provider.
     Canvas {
         id: iconReader
-        width: 24
-        height: 24
+        width: 24 * root.uiScale
+        height: 24 * root.uiScale
         opacity: 0
         onPaint: {
             const shot = root.grab;
@@ -325,7 +329,7 @@ MouseArea {
 
     PopupToolTip {
         id: tooltip
-        extraVisibleCondition: root.containsMouse
+        extraVisibleCondition: root.containsMouse && !menu.active
         alternativeVisibleCondition: extraVisibleCondition
         anchorEdges: (!Config.options.bar.bottom && !Config.options.bar.vertical) ? Edges.Bottom : Edges.Top
     }

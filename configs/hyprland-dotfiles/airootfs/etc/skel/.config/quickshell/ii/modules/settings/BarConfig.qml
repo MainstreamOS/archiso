@@ -56,28 +56,22 @@ ContentPage {
             checked: Config.options.bar.island.desktopNotifications
             onCheckedChanged: Config.options.bar.island.desktopNotifications = checked
         }
-        ConfigSlider {
-            buttonIcon: "zoom_in"
-            text: Translation.tr("Dynamic Island size")
-            from: 80
-            to: 180
-            stopIndicatorValues: [100]
-            usePercentTooltip: true
-            value: Math.round((Config.options.bar.island.expandedScale ?? 1.0) * 100)
-            onMoved: {
-                const stepped = Math.round(value) / 100;
-                if (Math.abs(stepped - (Config.options.bar.island.expandedScale ?? 1.0)) < 0.001)
-                    return;
-                Config.options.bar.island.expandedScale = stepped;
-            }
-        }
-        ConfigResetButton {
-            visible: Math.abs((Config.options.bar.island.expandedScale ?? 1.0) - 1.0) > 0.01
-            Layout.leftMargin: 8
-            Layout.topMargin: 2
-            buttonText: Translation.tr("Reset to default")
-            onClicked: Config.options.bar.island.expandedScale = 1.0
-        }
+    }
+
+    ContentSection {
+        visible: root.island
+        icon: "dashboard_customize"
+        title: Translation.tr("Island panels")
+        IslandPanelEditor {}
+    }
+
+    // ── Widget layout ─────────────────────────────────────────────────────────
+    ContentSection {
+        icon: "reorder"
+        visible: !root.island
+        title: Translation.tr("Widget layout")
+
+        BarLayoutEditor {}
     }
 
     ContentSection {
@@ -123,13 +117,6 @@ ContentPage {
     }
 
     ContentSection {
-        visible: root.island
-        icon: "dashboard_customize"
-        title: Translation.tr("Island panels")
-        IslandPanelEditor {}
-    }
-
-    ContentSection {
         visible: root.island && root.phoneConnected
         icon: "shield_person"
         title: Translation.tr("Contact privacy")
@@ -148,15 +135,6 @@ ContentPage {
                 onCheckedChanged: Config.options.bar.island[modelData.key] = checked
             }
         }
-    }
-
-    // ── Widget layout ─────────────────────────────────────────────────────────
-    ContentSection {
-        icon: "reorder"
-        visible: !root.island
-        title: Translation.tr("Widget layout")
-
-        BarLayoutEditor {}
     }
 
     // ── Time & Date ───────────────────────────────────────────────────────────
@@ -258,7 +236,7 @@ ContentPage {
                             icon: "arrow_forward",
                             value: 3 // bottom: true, vertical: true
                         }
-                    ].filter(option => (option.value & 2) === 0 || (!root.island && Appearance.sizes.barSidesAllowed))
+                    ].map(option => Object.assign({ enabled: (option.value & 2) === 0 || (!root.island && Appearance.sizes.barSidesAllowed) }, option))
                 }
             }
             ContentSubsection {
@@ -294,7 +272,7 @@ ContentPage {
 
         ConfigSwitch {
             visible: Config.options.bar.autoHide.enable
-            buttonIcon: "open_in_full"
+            buttonIcon: "padding"
             text: Translation.tr("Move windows aside while the hidden bar shows")
             checked: Config.options.bar.autoHide.pushWindows
             onCheckedChanged: Config.options.bar.autoHide.pushWindows = checked
@@ -348,8 +326,50 @@ ContentPage {
         title: Translation.tr("Shape")
         readonly property bool surfaceShape: Appearance.sizes.barFloats
         readonly property bool widgetShape: !root.island && !Config.options.bar.borderless
-        // Saved values from other styles must not leave an empty section.
-        visible: shapeSection.surfaceShape || shapeSection.widgetShape
+
+        // The bar and the closed Island each keep their own size, and the Island's panels a third.
+        ConfigSlider {
+            readonly property real saved: (root.island ? Config.options.bar.island.scale : Config.options.bar.scale) ?? 1.0
+            buttonIcon: "straighten"
+            text: Translation.tr("Size")
+            from: 80
+            to: 150
+            stepSize: 10
+            stopIndicatorValues: [100]
+            tooltipContent: `${Math.round(value)}%`
+            value: Math.round(saved * 100)
+            onMoved: {
+                const stepped = Math.round(value / 10) / 10;
+                if (Math.abs(stepped - saved) < 0.001)
+                    return;
+                if (root.island)
+                    Config.options.bar.island.scale = stepped;
+                else
+                    Config.options.bar.scale = stepped;
+            }
+            StyledToolTip {
+                extraVisibleCondition: root.island
+                text: Translation.tr("The Island while it's closed")
+            }
+        }
+        ConfigSlider {
+            visible: root.island
+            buttonIcon: "open_in_full"
+            text: Translation.tr("Panel size")
+            from: 80
+            to: 180
+            stepSize: 10
+            stopIndicatorValues: [100]
+            tooltipContent: `${Math.round(value)}%`
+            value: Math.round((Config.options.bar.island.expandedScale ?? 1.0) * 100)
+            onMoved: {
+                const stepped = Math.round(value / 10) / 10;
+                if (Math.abs(stepped - (Config.options.bar.island.expandedScale ?? 1.0)) < 0.001)
+                    return;
+                Config.options.bar.island.expandedScale = stepped;
+            }
+            StyledToolTip { text: Translation.tr("The Island while it's open") }
+        }
 
         ConfigSwitch {
             visible: shapeSection.surfaceShape && !root.island
@@ -418,15 +438,22 @@ ContentPage {
                 || (shapeSection.surfaceShape && Config.options.bar.floatRadius >= 0)
                 || (!root.island && shapeSection.surfaceShape
                     && Config.options.bar[Appearance.sizes.barIsNotch ? "notchWidth" : "floatWidth"] >= 0)
+                || Math.abs(((root.island ? Config.options.bar.island.scale : Config.options.bar.scale) ?? 1.0) - 1.0) > 0.01
+                || (root.island && Math.abs((Config.options.bar.island.expandedScale ?? 1.0) - 1.0) > 0.01)
             Layout.leftMargin: 8
             Layout.topMargin: 2
             buttonText: Translation.tr("Reset to default shape")
+            // And reset only those, so the other bar style keeps what it was given.
             onClicked: {
-                if (!root.island) Config.options.bar.widgetRadius = -1
-                Config.options.bar.floatRadius = -1
+                if (!root.island && shapeSection.widgetShape) Config.options.bar.widgetRadius = -1
+                if (shapeSection.surfaceShape) Config.options.bar.floatRadius = -1
                 if (!root.island) {
-                    Config.options.bar.floatWidth = -1
-                    Config.options.bar.notchWidth = -1
+                    if (shapeSection.surfaceShape)
+                        Config.options.bar[Appearance.sizes.barIsNotch ? "notchWidth" : "floatWidth"] = -1
+                    Config.options.bar.scale = 1.0
+                } else {
+                    Config.options.bar.island.scale = 1.0
+                    Config.options.bar.island.expandedScale = 1.0
                 }
             }
         }

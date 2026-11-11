@@ -56,12 +56,12 @@ Item {
     property bool workspaceStyle: false
     // Sits on a panel its parent draws, so it brings no outline or shadow of its own.
     property bool bare: false
+    property bool populateGrid: true
     property real uiScale: 1
+    readonly property QtObject fontSizes: Appearance.font.sizesFor(QsWindow.window)
     property string wallpaper: ""
     property real surfaceRadius: Appearance.rounding.dockBody
     property var contentColors: Appearance.drawerContent
-    // Under Frost, show the wallpaper behind the list the way the dock does.
-    property alias samplesWallpaper: wallpaperBackdrop.wanted
     property color colBackground: workspaceStyle ? Appearance.m3colors.m3background
         : Appearance.sizes.dockShowBackground ? Appearance.drawerSurface : "transparent"
     property real hoverElevation: workspaceStyle && drawerHover.hovered && !_isDraggingApp && !folderPopupVisible ? 1 : 0
@@ -69,7 +69,7 @@ Item {
     property real wheelVelocity: 0
     property double lastWheelTime: 0
     property bool compactCells: false
-    property real appLabelSize: Appearance.font.pixelSize.smaller * uiScale
+    property real appLabelSize: fontSizes.smaller * uiScale
     readonly property real rowHeight: appGrid.cellHeight
 
     // Drag-to-workspace signals — Overview.qml listens to these.
@@ -117,7 +117,7 @@ Item {
     implicitHeight: root.expanded ? root.expandedHeight : root.collapsedHeight
 
     Behavior on implicitHeight {
-        enabled: !root.workspaceStyle || GlobalStates.overviewOpen
+        enabled: !root.workspaceStyle
         NumberAnimation {
             duration: Appearance.animation.elementResize.duration
             easing.type: Appearance.animation.elementResize.type
@@ -125,7 +125,6 @@ Item {
         }
     }
 
-    function prepareGrid() { appGrid.forceLayout(); }
 
     Connections {
         target: AppFolderManager
@@ -294,12 +293,7 @@ Item {
         // Each launcher supplies its material; the standalone list follows
         // the dock unless its caller chooses another surface.
         radius: root.surfaceRadius
-        color: wallpaperBackdrop.shown ? Appearance.colors.colDockBackground : root.colBackground
-        LauncherWallpaperBackdrop {
-            id: wallpaperBackdrop
-            wanted: false
-            radius: drawerBackground.radius
-        }
+        color: root.colBackground
 
         Item {
             anchors.fill: parent
@@ -509,14 +503,14 @@ Item {
                             ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
                     }
 
-                    model: root.getFilteredApps()
+                    model: root.populateGrid ? root.getFilteredApps() : []
 
                     // Show "no results" message
                     Label {
                         anchors.centerIn: parent
-                        visible: appGrid.count === 0 && (root.searchText.length > 0 || root.appSource !== null)
+                        visible: root.populateGrid && appGrid.count === 0 && (root.searchText.length > 0 || root.appSource !== null)
                         text: root.emptyText
-                        font.pixelSize: Appearance.font.pixelSize.normal * root.uiScale
+                        font.pixelSize: root.fontSizes.normal * root.uiScale
                         color: root.contentColors.colSubtextRead
                     }
 

@@ -253,10 +253,15 @@ gpu_base_cmdline_tokens() {
 # key is already set reads the same line this writer would build on.
 _gpu_cmdline_current() {
     local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
+    local limine_conf="${LIMINE_CONF:-/boot/limine.conf}"
     if [[ -f "$kc" ]]; then
         cat "$kc"
-    elif [[ -f /boot/limine.conf ]]; then
-        awk -F': *' 'tolower($1) ~ /(kernel_)?cmdline$/ {print $2; exit}' /boot/limine.conf 2>/dev/null || true
+    elif [[ -f "$limine_conf" ]]; then
+        # Remove just the option prefix. Arguments like cryptdevice keep
+        # their colon-separated mapper name and options.
+        awk 'tolower($0) ~ /^[[:space:]]*(kernel_)?cmdline[[:space:]]*:/ {
+            sub(/^[^:]*:[[:space:]]*/, ""); print; exit
+        }' "$limine_conf" 2>/dev/null || true
     elif [[ -r /proc/cmdline ]]; then
         sed -E 's/\bBOOT_IMAGE=[^ ]*//g; s/\binitrd=[^ ]*//g' /proc/cmdline
     fi
@@ -558,9 +563,8 @@ HINT
 }
 
 # ── nvidia_is_display_gpu ───────────────────────────────────────────────────
-# Returns 0 if NVIDIA drives the display (desktop, dGPU-only laptop, or MUX switch),
-# or returns 1 if an integrated GPU (Intel/AMD) is the boot display GPU on a hybrid laptop.
-# Reads cached sysfs IDs rather than lspci, preventing waking suspended dGPUs from D3cold.
+# 0 when NVIDIA drives the display, 1 when an Intel or AMD GPU does on a hybrid laptop.
+# Reads sysfs rather than lspci, which would wake a suspended NVIDIA GPU.
 nvidia_is_display_gpu() {
     local pci_dir="${GPU_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
     [[ -d "$pci_dir" ]] || return 0
@@ -593,7 +597,7 @@ nvidia_is_display_gpu() {
     done
 
     # If no NVIDIA device is found in sysfs (e.g. unit tests without mocked sysfs),
-    # assume display GPU to preserve default behaviour.
+    # assume display GPU to preserve default behavior.
     [[ "$has_nvidia" == true ]] || return 0
 
     # On hybrid systems where another GPU is the boot display GPU and NVIDIA is not,
@@ -606,10 +610,8 @@ nvidia_is_display_gpu() {
 }
 
 # ── nvidia_write_env <user_home> ────────────────────────────────────────────
-# NVIDIA Wayland env + Hyprland conf. LIBVA/GBM always on display GPUs; NVD_BACKEND on
-# turing/maxwell only. On hybrid laptops where Intel/AMD drives the display,
-# LIBVA/GBM are retired to avoid black video in Chromium/Firefox/Electron.
-# Cursors + GL anti-flicker go through Hyprland conf.
+# NVIDIA Wayland env and Hyprland conf; NVD_BACKEND on Turing and Maxwell only. LIBVA/GBM only when
+# NVIDIA drives the display: set on a hybrid laptop's Intel or AMD display, they black out browser video.
 # __GLX_VENDOR_LIBRARY_NAME is NOT set (GLX-only; no effect on the native
 # Wayland/Qt6 path and breaks XWayland windows/screenshare) and is retired from
 # older installs; same for the dead wlroots-era WLR_NO_HARDWARE_CURSORS.
@@ -625,9 +627,7 @@ nvidia_write_env() {
             turing|maxwell) hypr_env_upsert "$uh" NVD_BACKEND direct ;;
         esac
     else
-        hypr_env_retire "$uh" LIBVA_DRIVER_NAME
-        hypr_env_retire "$uh" GBM_BACKEND
-        hypr_env_retire "$uh" NVD_BACKEND
+        nvidia_retire_offload_env "$uh"
     fi
 
     hypr_config_upsert "$uh" no_hardware_cursors 'hl.config({ cursor = { no_hardware_cursors = true } })'
@@ -635,6 +635,15 @@ nvidia_write_env() {
     case "$NVIDIA_GEN" in
         maxwell) nvidia_write_qs_hint "$uh" ;;
     esac
+}
+
+# ── nvidia_retire_offload_env <user_home> ───────────────────────────────────
+# Takes out the lines nvidia_write_env sets only while NVIDIA drives the display. Just those exact
+# lines, so a value the user set for one of these names is kept.
+nvidia_retire_offload_env() {
+    local env_lua="$1/.config/hypr/custom/env.lua"
+    [[ -f "$env_lua" ]] || return 0
+    sed -i -E '/^[[:space:]]*hl\.env\("(LIBVA_DRIVER_NAME", "nvidia|GBM_BACKEND", "nvidia-drm|NVD_BACKEND", "direct)"\)[[:space:]]*$/d' "$env_lua"
 }
 
 # ── nvidia_enable_services <enable_powerd:bool> [enable_sleep:bool] ─────────

@@ -1,6 +1,7 @@
 import qs.modules.common.widgets
 import qs.modules.common
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import qs.services
 
@@ -14,12 +15,15 @@ RowLayout {
     property string buttonIcon: ""
     property alias value: slider.value
     property alias stopIndicatorValues: slider.stopIndicatorValues
+    property alias stepSize: slider.stepSize
+    // A percent of the track's range unless a row says what its value means.
+    property alias tooltipContent: slider.tooltipContent
     property bool usePercentTooltip: true
     property real from: slider.from
     property real to: slider.to
     // Wide enough for the longest honest label a page carries — "Gap between
     // windows" is not sayable in fewer words — so no row ends in an ellipsis.
-    property real textWidth: 160
+    property real textWidth: 160 * Appearance.font.textGrowth
     // The track fills whatever is left over unless a width is asked for. A row
     // whose label needs the room is better served by a shorter track than by a
     // label written over it.
@@ -36,6 +40,7 @@ RowLayout {
     // track still follows the bound value either way, so a setting changed
     // elsewhere moves the handle without being written back.
     signal moved()
+    readonly property alias pressed: slider.pressed
 
     RowLayout {
         id: row
@@ -64,6 +69,7 @@ RowLayout {
         value: root.value
         from: root.from
         to: root.to
+        snapMode: stepSize > 0 ? Slider.SnapAlways : Slider.NoSnap
         onMoved: root.moved()
         Layout.fillWidth: root.sliderWidth <= 0
         Layout.preferredWidth: root.sliderWidth > 0 ? root.sliderWidth : -1
