@@ -78,7 +78,7 @@ command -v gpu_detect >/dev/null 2>&1 && { gpu_detect || true; }
 GPU_REPO_RECOVERY_ATTEMPTED=0
 _install_pkgs_impl() {
     local report="$1"; shift
-    local p transaction_log avail=()
+    local p transaction_log attempt why avail=() missing=() relaxed=()
     for p in "$@"; do
         if pacman -Si "$p" >/dev/null 2>&1; then
             avail+=("$p")
@@ -91,10 +91,19 @@ _install_pkgs_impl() {
     [[ ${#avail[@]} -eq 0 ]] && return 0
     info "Installing: ${avail[*]}"
     transaction_log=$(mktemp) || { "$report" "Could not create the GPU package transaction log."; return 1; }
-    if LC_ALL=C pacman -S --noconfirm --needed "${avail[@]}" 2>&1 | tee "$transaction_log"; then
-        rm -f "$transaction_log"
-        return 0
-    fi
+    # The 32-bit half of a driver stack is dozens of downloads, and one stalled
+    # file on a weak Wi-Fi link fails them all. Later tries wait longer.
+    for attempt in 1 2 3; do
+        if LC_ALL=C pacman -S --noconfirm --needed "${relaxed[@]}" "${avail[@]}" 2>&1 | tee "$transaction_log"; then
+            rm -f "$transaction_log"
+            return 0
+        fi
+        grep -qE 'failed retrieving file|failed to retrieve some files|download library error|Operation too slow|timed out|Could not resolve host' "$transaction_log" || break
+        (( attempt < 3 )) || break
+        info "Download failed; trying again (attempt $((attempt + 1)) of 3)."
+        relaxed=(--disable-download-timeout)
+        sleep 5
+    done
     # An ISO can carry older core metadata than the refreshed multilib repo.
     # Refresh every database and upgrade together; refreshing alone can leave
     # the installed libraries out of step with the requested driver packages.
@@ -102,13 +111,25 @@ _install_pkgs_impl() {
        && grep -qF 'failed to prepare transaction (could not satisfy dependencies)' "$transaction_log"; then
         GPU_REPO_RECOVERY_ATTEMPTED=1
         info "Dependency resolution failed; refreshing repositories and retrying with a full system upgrade."
-        if LC_ALL=C pacman -Syyu --noconfirm --needed "${avail[@]}" 2>&1; then
+        if LC_ALL=C pacman -Syyu --noconfirm --needed "${avail[@]}" 2>&1 | tee "$transaction_log"; then
             rm -f "$transaction_log"
             return 0
         fi
     fi
+    # Name what is really missing and why, so the report does not blame a
+    # driver that is installed, and pacman's own words outlive the install.
+    for p in "${avail[@]}"; do
+        pacman -Qq "$p" >/dev/null 2>&1 || missing+=("$p")
+    done
+    why=$(grep -E '^error: ' "$transaction_log" | tail -n 2 | tr '\n' ' ' | tr -s ' ' | cut -c1-160)
+    mkdir -p /var/log/mainstream-install 2>/dev/null \
+        && cat "$transaction_log" 2>/dev/null >> /var/log/mainstream-install/gpu-pacman.log
     rm -f "$transaction_log"
-    "$report" "pacman failed for: ${avail[*]}"
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        warn "pacman could not update: ${avail[*]}. The installed versions stay.${why:+ $why}"
+        return 0
+    fi
+    "$report" "pacman failed for: ${missing[*]}.${why:+ $why}"
 }
 install_pkgs()     { _install_pkgs_impl note_failure "$@"; }
 install_pkgs_opt() { _install_pkgs_impl warn "$@"; }
