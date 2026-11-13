@@ -197,54 +197,42 @@ Scope {
             GlobalStates.setLauncherDim(registeredScreen, false);
         }
 
-        // Sample the wallpaper directly and blur in-surface so the backdrop fades
-        // in exact lockstep with controls. This prevents the compositor blur flash on close.
-        Loader {
+        // Sample the wallpaper directly and blur in-surface, so the backdrop is drawn
+        // with the controls and no compositor blur can flash on close. It eases in
+        // alongside them but leaves sooner, so no blur is left for the last frames.
+        // Always loaded, even when keepSurfaceAlive is off. It is only the half-size
+        // wallpaper, so holding it costs little, and the decode stays out of the open.
+        ScreenWallpaperSource {
             id: wallpaperSource
-            active: panelWindow.preloadSurface || panelWindow.requested || contentFade.opacity > 0
-            sourceComponent: ScreenWallpaperSource {}
         }
 
         Item {
             id: overviewBackdrop
             anchors.fill: parent
-            visible: opacity > 0 && (wallpaperSource.item?.available ?? false)
+            visible: opacity > 0 && wallpaperSource.available
             opacity: 0
 
             readonly property bool shouldBeOpen: GlobalStates.overviewOpen && panelWindow.monitorIsFocused
+            readonly property int fadeOutMs: 40 // shorter than the controls' 200 ms, see above
+            // Direction, target and duration are set together here rather than bound, so
+            // the duration can never lag behind the target. It runs on from wherever the
+            // opacity is, so closing halfway through opening does not jump.
             onShouldBeOpenChanged: {
-                if (shouldBeOpen) {
-                    backdropFadeOut.stop();
-                    backdropFadeIn.from = overviewBackdrop.opacity;
-                    backdropFadeIn.start();
-                } else {
-                    backdropFadeIn.stop();
-                    backdropFadeOut.from = overviewBackdrop.opacity;
-                    backdropFadeOut.start();
-                }
+                backdropFade.to = shouldBeOpen ? 1 : 0;
+                backdropFade.duration = shouldBeOpen ? Appearance.animation.elementMoveFast.duration : fadeOutMs;
+                backdropFade.restart();
             }
 
             NumberAnimation {
-                id: backdropFadeIn
+                id: backdropFade
                 target: overviewBackdrop
                 property: "opacity"
-                to: 1
-                duration: Appearance.animation.elementMoveFast.duration
-                easing.type: Easing.OutQuad
-            }
-
-            NumberAnimation {
-                id: backdropFadeOut
-                target: overviewBackdrop
-                property: "opacity"
-                to: 0
-                duration: 130 // Fades out early (130ms vs 200ms) so zero blur lingers into final frames
                 easing.type: Easing.OutQuad
             }
 
             onVisibleChanged: if (visible) wallpaperSample.scheduleUpdate()
 
-            readonly property var pic: wallpaperSource.item?.picture
+            readonly property var pic: wallpaperSource.picture
 
             ShaderEffectSource {
                 id: wallpaperSample
@@ -265,8 +253,8 @@ Scope {
                 hideSource: false
                 live: false
                 textureSize: Qt.size(
-                    Math.ceil(parent.width * (panelWindow.screen?.scale ?? 1) * 0.25),
-                    Math.ceil(parent.height * (panelWindow.screen?.scale ?? 1) * 0.25)
+                    Math.ceil(parent.width * (panelWindow.monitorData?.scale ?? 1) * 0.25),
+                    Math.ceil(parent.height * (panelWindow.monitorData?.scale ?? 1) * 0.25)
                 )
             }
 
@@ -306,7 +294,7 @@ Scope {
 
         Rectangle {
             anchors.fill: parent
-            visible: opacity > 0 && !(wallpaperSource.item?.available ?? false)
+            visible: opacity > 0 && !wallpaperSource.available
             color: Appearance.launcherDimColor
             opacity: overviewBackdrop.opacity * Appearance.launcherDimOpacity
         }
@@ -676,6 +664,15 @@ Scope {
             clip: true
             visible: !panelWindow.useScrollingLauncher
             enabled: !panelWindow.useScrollingLauncher
+            // Same slide as the scrolling launcher above: it starts raised, and
+            // drops into place once the first frame is up.
+            transform: Translate {
+                y: panelWindow.framePresented ? 0 : -40 * panelWindow.launcherUiScale
+                Behavior on y {
+                    enabled: panelWindow.requested
+                    animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this, { alwaysRunToEnd: false })
+                }
+            }
             // Disable scrolling when workspacesOnly mode is active —
             // there's nothing below the workspace previews in that view,
             // so allowing the flickable to scroll just lets the user

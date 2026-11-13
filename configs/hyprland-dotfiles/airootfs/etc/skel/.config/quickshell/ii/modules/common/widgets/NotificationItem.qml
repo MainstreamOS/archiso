@@ -14,6 +14,7 @@ Item { // Notification item area
     property var notificationObject
     property bool expanded: false
     property bool onlyNotification: false
+    readonly property string link: Notifications.linkFor(notificationObject)
     property real fontSize: Appearance.font.pixelSize.small
     property real padding: onlyNotification ? 0 : 8
     property real summaryElideRatio: 0.85
@@ -292,7 +293,7 @@ Item { // Notification item area
                             // own they are what the row is for, and a third button
                             // that only takes a copy of the wording gets in the way.
                             NotificationActionButton {
-                                visible: notificationObject.actions.length === 0
+                                visible: notificationObject.actions.length === 0 && root.link.length === 0
                                 Layout.fillWidth: true
                                 urgency: notificationObject.urgency
                                 implicitWidth: (actionsFlickable.width - actionRowLayout.spacing) / 2
@@ -321,7 +322,17 @@ Item { // Notification item area
                                     text: "content_copy"
                                 }
                             }
-                            
+
+                            NotificationActionButton {
+                                visible: root.link.length > 0
+                                Layout.fillWidth: true
+                                buttonText: Translation.tr("Open link")
+                                urgency: notificationObject.urgency
+                                onClicked: {
+                                    Qt.openUrlExternally(root.link)
+                                    GlobalStates.sidebarRightOpen = false
+                                }
+                            }
                         }
                     }
                 }

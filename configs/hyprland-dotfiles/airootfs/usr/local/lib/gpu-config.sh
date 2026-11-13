@@ -23,6 +23,9 @@
 _gpu_lspci()      { lspci 2>/dev/null || true; }
 _gpu_lspci_nn()   { lspci -nn 2>/dev/null || true; }
 _gpu_sys_vendor() { cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true; }
+# The lspci class names of a display device. Matched whole and in their own
+# case: a bare "3D" also matches hex ids such as [8086:43d2].
+_GPU_DISPLAY_CLASS='VGA compatible controller|3D controller|Display controller'
 _gpu_installed_nvidia_branch() {
     # Which frozen NVIDIA branch, if any, is installed on the system being
     # asked about. Empty on a fresh install and inside a not-yet-provisioned
@@ -43,7 +46,8 @@ _gpu_installed_nvidia_branch() {
 #   INTEL_GEN (xe|modern|legacy|none)
 # Generation ladder (PCI device-id decimal): 7682 Turing+ (0x1E02 TITAN RTX /
 # 0x1E03 RTX 2080 Ti 12GB are the lowest Turing IDs), 4928 Maxwell-Volta,
-# 4032 Kepler, 1728 Fermi, below Fermi -> prefermi (nouveau).
+# 4032 Kepler, 1728 Fermi, below Fermi -> prefermi (nouveau). Fermi, Kepler and
+# the last Tesla parts interleave above 1728, so id windows settle those.
 # AMD "old" = pre-GCN: dec < 26112 AND NOT an APU (4864-5887 exemption), OR a
 # pre-GCN name (HD 2xxx-6xxx / RV / RS / R[67]xx), OR one of the pre-GCN fusion
 # APU id windows (Llano/Sumo 0x9640-0x964f, Wrestler 0x9802-0x980a, Trinity/
@@ -77,7 +81,7 @@ gpu_detect() {
     local lspci_nn lspci_names gpu_lines
     lspci_nn="$(_gpu_lspci_nn)"
     lspci_names="$(_gpu_lspci)"
-    gpu_lines="$(grep -iE 'VGA|3D|Display' <<<"$lspci_nn" || true)"
+    gpu_lines="$(grep -E "$_GPU_DISPLAY_CLASS" <<<"$lspci_nn" || true)"
     [[ -n "$gpu_lines" ]] || return 1
 
     case "$(_gpu_sys_vendor)" in
@@ -101,12 +105,17 @@ gpu_detect() {
         NVIDIA_PCI_DEC=$((16#${pci_id:-0}))
         if   [[ $NVIDIA_PCI_DEC -ge 7682 ]]; then NVIDIA_GEN=turing
         elif [[ $NVIDIA_PCI_DEC -ge 4928 ]]; then NVIDIA_GEN=maxwell
-        # Fermi and Kepler interleave: GF119 0x1040, GF110 0x1080, GF117 0x1140
-        # and GF116 0x1240 all sit above GK107 at 0x0FC0, while Kepler owns
-        # 0x0FC0-0x103F, 0x1180-0x123F and 0x1280 up. A 390xx card handed
-        # 470xx here has no driver at all.
+        # Tesla parts above the first Fermi id: G98, the MCP7x and MCP89
+        # chipsets and GT215/216/218 fill 0x06E0-0x0DBF, and GT218 returns at
+        # 0x10C0-0x10DF. 390xx does not drive them and blacklists nouveau.
+        elif (( (NVIDIA_PCI_DEC >= 16#06e0 && NVIDIA_PCI_DEC <= 16#0dbf) \
+             || (NVIDIA_PCI_DEC >= 16#10c0 && NVIDIA_PCI_DEC <= 16#10df) )); then NVIDIA_GEN=prefermi
+        # Fermi and Kepler interleave: GF119 0x1040, GF110 0x1080, GF117 0x1140,
+        # GF114 0x1200 and GF116 0x1240 all sit above GK107 at 0x0FC0, while
+        # Kepler owns 0x0FC0-0x103F, 0x1180-0x11FF and 0x1280 up. A 390xx card
+        # handed 470xx here has no driver at all.
         elif (( (NVIDIA_PCI_DEC >= 16#1040 && NVIDIA_PCI_DEC <= 16#117f) \
-             || (NVIDIA_PCI_DEC >= 16#1240 && NVIDIA_PCI_DEC <= 16#127f) )); then NVIDIA_GEN=fermi
+             || (NVIDIA_PCI_DEC >= 16#1200 && NVIDIA_PCI_DEC <= 16#127f) )); then NVIDIA_GEN=fermi
         elif [[ $NVIDIA_PCI_DEC -ge 4032 ]]; then NVIDIA_GEN=kepler
         elif [[ $NVIDIA_PCI_DEC -ge 1728 ]]; then NVIDIA_GEN=fermi
         else                                       NVIDIA_GEN=prefermi
@@ -118,13 +127,13 @@ gpu_detect() {
         amd_id="$(grep '1002:' <<<"$gpu_lines" | grep -oE '1002:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 || true)"
         AMD_DEC=$((16#${amd_id:-ffff}))
         if [[ $AMD_DEC -lt 26112 ]] && ! [[ $AMD_DEC -ge 4864 && $AMD_DEC -le 5887 ]]; then IS_OLD_AMD=true; fi
-        amd_name="$(grep -iE 'VGA|3D|Display' <<<"$lspci_names" | grep -iE 'AMD|ATI|Radeon' | head -1 || true)"
+        amd_name="$(grep -E "$_GPU_DISPLAY_CLASS" <<<"$lspci_names" | grep -iE 'AMD|ATI|Radeon' | head -1 || true)"
         if grep -iqE '\bHD [2-6][0-9]{3}\b|\bRS[0-9]+\b|\bRV[0-9]+\b|\bR[67][0-9]{2}\b' <<<"$amd_name"; then IS_OLD_AMD=true; fi
         # Modern integrated Radeon (Ryzen APUs) — some new IDs sit below the
         # APU-exemption window (e.g. Krackan 0x1114), so rescue them by name.
         # 'Radeon NxxxM' / bare 'Radeon Graphics' never appear on pre-GCN parts.
         local amd_display_names
-        amd_display_names="$(grep -iE 'VGA|3D|Display' <<<"$lspci_names" || true)"
+        amd_display_names="$(grep -E "$_GPU_DISPLAY_CLASS" <<<"$lspci_names" || true)"
         if grep -iqE '\bRadeon [678][0-9]0M\b|Radeon Graphics' <<<"$amd_display_names"; then IS_OLD_AMD=false; fi
         # Pre-GCN fusion APUs (radeon module, no RADV) — exact id windows win
         # over the name tests above; see the header for the GCN parts excluded.
@@ -138,7 +147,7 @@ gpu_detect() {
     if [[ $HAS_INTEL == true ]]; then
         local intel_id intel_name
         intel_id="$(grep -oE '8086:[0-9a-fA-F]{4}' <<<"$gpu_lines" | head -1 | cut -d: -f2 | tr 'A-F' 'a-f' || true)"
-        intel_name="$(grep -iE 'VGA|3D|Display' <<<"$lspci_names" | grep -i 'Intel' | head -1 || true)"
+        intel_name="$(grep -E "$_GPU_DISPLAY_CLASS" <<<"$lspci_names" | grep -i 'Intel' | head -1 || true)"
         # 46 Alder Lake, 4c Rocket Lake, 56 DG2/Alchemist, 64 Lunar Lake,
         # 7d Meteor/Arrow Lake, 9a Tiger Lake, a7 Raptor Lake, b0 Panther Lake,
         # e2 Battlemage, 4905-4909 DG1. Gen9 'Iris Plus'/'Iris Pro' deliberately
@@ -178,6 +187,22 @@ _gpu_frozen_family() {
             NVIDIA_LOCAL_PKGS=(nvidia-390xx-dkms nvidia-390xx-utils lib32-nvidia-390xx-utils) ;;
     esac
 }
+# The driver branch this system runs or is about to get: mainline, 580xx, 470xx,
+# 390xx or none. A frozen branch already installed wins over the card's own, as
+# it does in the classification below, so an RTX card on the legacy edition
+# reads as 580xx.
+_gpu_nvidia_branch() {
+    local installed
+    installed="$(_gpu_installed_nvidia_branch)"
+    if [[ -n "$installed" ]]; then printf '%s\n' "$installed"; return 0; fi
+    case "${NVIDIA_GEN:-none}" in
+        turing)  printf 'mainline\n' ;;
+        maxwell) printf '580xx\n' ;;
+        kepler)  printf '470xx\n' ;;
+        fermi)   printf '390xx\n' ;;
+        *)       printf 'none\n' ;;
+    esac
+}
 gpu_classify_nvidia_driver() {
     NVIDIA_DRIVER_FAMILY=none
     NVIDIA_REPO_PKGS=() NVIDIA_LOCAL_PKGS=()
@@ -211,6 +236,7 @@ gpu_classify_nvidia_driver() {
 # ── Write seams (caller sets these before sourcing; defaults suit chroot/root) ─
 #   GPU_SUDO        '' (chroot/root/test) or 'sudo' (dots live) — prefixes /etc writes
 #   KERNEL_CMDLINE  default /etc/kernel/cmdline   (point at a temp file in tests)
+#   LIMINE_CONF     default: the first limine.conf found on the usual ESP mounts (read only)
 #   MKINITCPIO_CONF default /etc/mkinitcpio.conf
 #   MODPROBE_DIR    default /etc/modprobe.d
 #   FSTAB_FILE      default /etc/fstab            (read only, for the resume= swap)
@@ -245,27 +271,90 @@ gpu_base_cmdline_tokens() {
 }
 
 # ── cmdline_upsert <token>... ───────────────────────────────────────────────
-# The ONE cmdline writer: per-key dedup upsert into $KERNEL_CMDLINE (single
-# line). Seeds from the existing file, else /boot/limine.conf's cmdline:, else
+# The ONE cmdline writer: per-key dedup upsert into $KERNEL_CMDLINE, kept as a
+# single line under any comment lines the file already had. Seeds from the
+# existing file, else this system's own cmdline: in limine.conf, else
 # /proc/cmdline (stripping BOOT_IMAGE=/initrd=). limine regenerates limine.conf
 # from /etc/kernel/cmdline, so this never writes limine.conf directly.
 # _gpu_cmdline_current is that seed on its own, so a caller deciding whether a
 # key is already set reads the same line this writer would build on.
-_gpu_cmdline_current() {
-    local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
-    if [[ -f "$kc" ]]; then
-        cat "$kc"
-    elif [[ -f /boot/limine.conf ]]; then
-        awk -F': *' 'tolower($1) ~ /(kernel_)?cmdline$/ {print $2; exit}' /boot/limine.conf 2>/dev/null || true
-    elif [[ -r /proc/cmdline ]]; then
-        sed -E 's/\bBOOT_IMAGE=[^ ]*//g; s/\binitrd=[^ ]*//g' /proc/cmdline
+_gpu_proc_cmdline() { cat /proc/cmdline 2>/dev/null || true; }
+# The limine.conf this system boots from: the caller's when it knows the ESP,
+# else the first of the places an install mounts one.
+_gpu_limine_conf() {
+    local f
+    if [[ -n "${LIMINE_CONF:-}" ]]; then
+        [[ ! -f "$LIMINE_CONF" ]] || printf '%s\n' "$LIMINE_CONF"
+        return 0
     fi
+    for f in /boot/limine.conf /boot/efi/limine.conf /efi/limine.conf; do
+        if [[ -f "$f" ]]; then printf '%s\n' "$f"; return 0; fi
+    done
+}
+# On a shared ESP, only trust an entry whose root, unlock options and
+# filesystem flags match the running kernel. Fall back when identity is
+# missing or there are multiple different matches.
+_gpu_limine_cmdline() {
+    local conf running="$1"
+    conf="$(_gpu_limine_conf)"
+    [[ -n "$conf" ]] || return 0
+    printf '%s\n' "$running" | awk '
+        function boot_key(line,    i, n, args, root, flags, crypto, type, key) {
+            n = split(line, args, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) {
+                if (args[i] ~ /^root=/) {
+                    if (root != "") return ""
+                    root = args[i]
+                } else if (args[i] ~ /^rootflags=/) {
+                    if (flags != "") return ""
+                    flags = args[i]
+                } else if (args[i] ~ /^rootfstype=/) {
+                    type = args[i]
+                } else if (args[i] ~ /^(cryptdevice|rd[.]luks[.][^=]+)=/) {
+                    crypto = crypto " " args[i]
+                }
+            }
+            return root == "" ? "" : root "|" flags "|" type "|" crypto
+        }
+        NR == FNR { running = boot_key($0); next }
+        running != "" && tolower($0) ~ /^[[:space:]]*(kernel_)?cmdline[[:space:]]*:/ {
+            sub(/\r$/, ""); sub(/^[^:]*:[[:space:]]*/, "")
+            if (boot_key($0) != running) next
+            if (!seen) { seen = 1; first = $0 }
+            else if ($0 != first) ambiguous = 1
+        }
+        END { if (seen && !ambiguous) print first }
+    ' - "$conf" 2>/dev/null || true
+}
+_gpu_cmdline_current() {
+    local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}" seed running
+    if [[ -f "$kc" ]]; then
+        # mkinitcpio skips this file's comment lines, so they are no arguments.
+        grep -v '^[[:space:]]*#' "$kc" || true
+        return 0
+    fi
+    running="$(_gpu_proc_cmdline)"
+    seed="$(_gpu_limine_cmdline "$running")"
+    if [[ -n "${seed//[[:space:]]/}" ]]; then
+        printf '%s\n' "$seed"
+    else
+        sed -E 's/\bBOOT_IMAGE=[^ ]*//g; s/\binitrd=[^ ]*//g' <<<"$running"
+    fi
+}
+# Writes the tokens back as one line, under the comment lines already there.
+_gpu_cmdline_write() {
+    local kc="$1"; shift
+    {
+        if [[ -f "$kc" ]]; then grep '^[[:space:]]*#' "$kc" || true; fi
+        printf '%s\n' "$*"
+    } | _gpu_write_file "$kc"
 }
 cmdline_upsert() {
     local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}" current=""
     current="$(_gpu_cmdline_current)"
-    local -a toks=(); local t
-    for t in $current; do toks+=("$t"); done
+    # read splits on blanks alone, so a token holding * or [ is never globbed.
+    local -a toks=()
+    read -ra toks <<<"${current//$'\n'/ }" || true
     local new key i found
     for new in "$@"; do
         key="${new%%=*}"; found=false
@@ -274,7 +363,7 @@ cmdline_upsert() {
         done
         [[ $found == false ]] && toks+=("$new") || true
     done
-    printf '%s\n' "${toks[*]}" | _gpu_write_file "$kc"
+    _gpu_cmdline_write "$kc" "${toks[@]}"
 }
 
 # ── cmdline_remove <key>... ─────────────────────────────────────────────────
@@ -284,15 +373,16 @@ cmdline_upsert() {
 cmdline_remove() {
     local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}" current="" t key keep
     current="$(_gpu_cmdline_current)"
-    local -a toks=()
-    for t in $current; do
+    local -a all=() toks=()
+    read -ra all <<<"${current//$'\n'/ }" || true
+    for t in "${all[@]}"; do
         keep=true
         for key in "$@"; do
             if [[ "${t%%=*}" == "$key" ]]; then keep=false; break; fi
         done
         [[ $keep == true ]] && toks+=("$t") || true
     done
-    printf '%s\n' "${toks[*]}" | _gpu_write_file "$kc"
+    _gpu_cmdline_write "$kc" "${toks[@]}"
 }
 
 # ── write_modprobe_conf <nvidia|amd> ────────────────────────────────────────
@@ -307,8 +397,9 @@ write_modprobe_conf() {
             # fbdev=1 exists only since driver 545 (nvidia-open / 580xx); the
             # 470xx/390xx legacy branches reject the unknown param and fail to
             # load nvidia-drm, so emit it only for the modern branches.
-            local fbdev=""
-            case "${NVIDIA_GEN:-}" in turing|maxwell) fbdev=" fbdev=1" ;; esac
+            local fbdev="" branch
+            branch="$(_gpu_nvidia_branch)"
+            case "$branch" in mainline|580xx) fbdev=" fbdev=1" ;; esac
             # How a driver survives suspend is the driver's own business, and
             # since 595 mainline answers it differently from the legacy branches:
             # nvidia-utils ships nvidia-sleep.conf asking for kernel suspend
@@ -319,8 +410,8 @@ write_modprobe_conf() {
             # leaves both set at once. Say nothing to the branch that speaks for
             # itself.
             local sleep_opts=""
-            case "${NVIDIA_GEN:-}" in
-                turing) ;;
+            case "$branch" in
+                mainline) ;;
                 *) sleep_opts=$'options nvidia NVreg_PreserveVideoMemoryAllocations=1\noptions nvidia NVreg_TemporaryFilePath=/var/tmp\n' ;;
             esac
             printf 'options nvidia-drm modeset=1%s\n%s' "$fbdev" "$sleep_opts" \
@@ -357,7 +448,7 @@ mkinitcpio_add_modules() {
 # uses, and it is what the initramfs named before any of this was asked.
 intel_kms_module() {
     local addr drv=""
-    addr="$(_gpu_lspci_d | grep -iE 'VGA compatible controller|3D controller|Display controller' \
+    addr="$(_gpu_lspci_d | grep -E "$_GPU_DISPLAY_CLASS" \
             | grep -i 'Intel' | head -1 | awk '{print $1}' || true)"
     [[ -n "$addr" ]] && drv="$(_gpu_bound_driver "$addr")" || true
     case "$drv" in
@@ -409,7 +500,9 @@ nvidia_strip_gsp_firmware() {
     ${GPU_SUDO:-} tee "$dir/strip-nvidia-gsp" >/dev/null <<'HOOKEOF'
 #!/bin/bash
 build() {
+    # The proprietary driver's layout, then nouveau's.
     rm -f "$BUILDROOT"/usr/lib/firmware/nvidia/*/gsp_*.bin*
+    rm -f "$BUILDROOT"/usr/lib/firmware/nvidia/*/gsp/gsp-*.bin*
 }
 help() {
     echo "Drops the unused NVIDIA GSP firmware (Turing+ only) from the initramfs."
@@ -460,12 +553,15 @@ _gpu_bound_driver() {
     [[ -e "$link" ]] || return 0
     basename "$(readlink -f "$link")" 2>/dev/null || true
 }
+# The mounted ESP's size in MiB, wherever the install put it, or 0.
 _gpu_esp_mib() {
-    if mountpoint -q /boot/efi 2>/dev/null; then
-        echo $(( $(findmnt -bno SIZE /boot/efi 2>/dev/null || echo 0) / 1048576 ))
-    else
-        echo 0
-    fi
+    local mp
+    for mp in /boot/efi /efi /boot; do
+        [[ "$(findmnt -no FSTYPE --mountpoint "$mp" 2>/dev/null)" == vfat ]] || continue
+        echo $(( $(findmnt -bno SIZE --mountpoint "$mp" 2>/dev/null || echo 0) / 1048576 ))
+        return 0
+    done
+    echo 0
 }
 # Whether a proprietary NVIDIA driver is actually installed. When a legacy card
 # falls back to nouveau (its frozen branch was unavailable), forcing the
@@ -844,7 +940,7 @@ gpu_apply_autoconfig() {
             [[ $IS_RDNA4 == true ]] && cmdline_args+=("amdgpu.sg_display=0") || true
         fi
     fi
-    if [[ $HAS_NVIDIA == true && $NVIDIA_PCI_DEC -ge 1728 ]] && _gpu_nvidia_has_driver; then
+    if [[ $HAS_NVIDIA == true && $NVIDIA_GEN != prefermi ]] && _gpu_nvidia_has_driver; then
         # The userspace packages being present says nothing about whether a
         # module exists for the kernel about to boot. Dressing a driverless
         # kernel in modeset flags and suspend services hides the failure behind
@@ -861,7 +957,9 @@ gpu_apply_autoconfig() {
             write_modprobe_conf nvidia
             cmdline_args+=("nvidia_drm.modeset=1")
             local _pw=false _sleep=true
-            if [[ "$NVIDIA_GEN" == turing ]]; then _pw=true; _sleep=false; fi
+            # The driver decides this, not the card: an RTX card on a frozen
+            # branch still suspends the legacy way.
+            if [[ "$(_gpu_nvidia_branch)" == mainline ]]; then _pw=true; _sleep=false; fi
             nvidia_enable_services "$_pw" "$_sleep"
         else
             note_failure "nvidia: driver installed but no module for kernel ${_k:-unknown}, so the GPU configuration was skipped"
@@ -910,7 +1008,7 @@ gpu_apply_hypr_tweaks() {
     # Resolve driver presence once (a pacman query) and reuse for both branches.
     local has_nv_drv=false
     if [[ $HAS_NVIDIA == true ]] && _gpu_nvidia_has_driver && nvidia_module_present; then has_nv_drv=true; fi
-    if [[ $has_nv_drv == true && $NVIDIA_PCI_DEC -ge 1728 ]]; then
+    if [[ $has_nv_drv == true && $NVIDIA_GEN != prefermi ]]; then
         nvidia_write_env "$uh"
         hypridle_fix_nvidia "$uh"
     fi

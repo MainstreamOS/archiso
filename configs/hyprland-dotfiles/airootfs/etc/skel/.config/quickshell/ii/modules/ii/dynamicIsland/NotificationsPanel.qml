@@ -181,6 +181,9 @@ ColumnLayout {
         ? (Notifications.list.find(n => n.notificationId === root.entry.notificationId) ?? null)
         : null
     readonly property bool entryCanReply: Boolean(liveNotif?.canReply)
+    // A hidden message keeps its link hidden too: the address is part of the text.
+    readonly property string entryLink: root.privateBody ? "" : Notifications.linkFor(root.entry)
+    readonly property int buttonCount: (root.entry?.actions?.length ?? 0) + (root.entryCanReply ? 1 : 0) + (root.entryLink ? 1 : 0)
     readonly property string entryReplyPlaceholder: liveNotif?.inlineReplyPlaceholder || ""
 
     Connections {
@@ -273,37 +276,61 @@ ColumnLayout {
 
         IslandButton { symbol: "chevron_right"; enabled: root.currentIndex + 1 < root.entries.length; onClicked: { root.cancelReply(); root.currentIndex++; } }
         Item { Layout.fillWidth: true }
-        RowLayout {
-            spacing: 6 * Appearance.sizes.islandScale
-            Repeater {
-                model: (root.entry?.actions ?? []).filter(a => a && (a.text || a.identifier))
-                delegate: IslandButton {
-                    required property var modelData
-                    required property int index
+        Flickable {
+            id: notificationActions
+            visible: actionButtons.implicitWidth > 0
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: actionButtons.implicitWidth
+            Layout.maximumWidth: actionButtons.implicitWidth
+            Layout.preferredHeight: actionButtons.implicitHeight
+            contentWidth: actionButtons.width
+            flickableDirection: Flickable.HorizontalFlick
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
 
-                    readonly property string actionText: modelData.text || modelData.identifier || ""
-                    readonly property string actionId: modelData.identifier || modelData.text || ""
-                    readonly property int totalButtons: (root.entry?.actions?.length ?? 0) + (root.entryCanReply ? 1 : 0)
+            Connections {
+                target: root
+                function onEntryChanged() { notificationActions.contentX = 0; }
+            }
 
-                    symbol: root.actionSymbol(actionText, actionId)
-                    text: totalButtons <= 2 ? actionText : (totalButtons === 3 && actionText.length <= 7) ? actionText : ""
+            RowLayout {
+                id: actionButtons
+                spacing: 6 * Appearance.sizes.islandScale
+                Repeater {
+                    model: (root.entry?.actions ?? []).filter(a => a && (a.text || a.identifier))
+                    delegate: IslandButton {
+                        required property var modelData
 
-                    ToolTip.visible: hovered && text === "" && actionText.length > 0
-                    ToolTip.text: actionText
-                    ToolTip.delay: 300
+                        readonly property string actionText: modelData.text || modelData.identifier || ""
+                        readonly property string actionId: modelData.identifier || modelData.text || ""
 
-                    onClicked: Notifications.attemptInvokeAction(root.entry.notificationId, actionId, actionText)
+                        symbol: root.actionSymbol(actionText, actionId)
+                        text: root.buttonCount <= 2 ? actionText : (root.buttonCount === 3 && actionText.length <= 7) ? actionText : ""
+
+                        ToolTip.visible: hovered && text === "" && actionText.length > 0
+                        ToolTip.text: actionText
+                        ToolTip.delay: 300
+
+                        onClicked: Notifications.attemptInvokeAction(root.entry.notificationId, actionId, actionText)
+                    }
                 }
             }
-            IslandButton {
-                visible: root.entryCanReply
-                symbol: "reply"
-                text: Translation.tr("Reply")
-                onClicked: {
-                    root.replying = true;
-                    Qt.callLater(() => replyInput.forceActiveFocus());
-                }
+        }
+        IslandButton {
+            visible: root.entryCanReply
+            symbol: "reply"
+            text: Translation.tr("Reply")
+            onClicked: {
+                root.replying = true;
+                Qt.callLater(() => replyInput.forceActiveFocus());
             }
+        }
+        IslandButton {
+            visible: root.entryLink.length > 0
+            symbol: "open_in_browser"
+            text: Translation.tr("Open link")
+            onClicked: Qt.openUrlExternally(root.entryLink)
         }
     }
 

@@ -64,15 +64,15 @@ has_external_monitor() {
   fi
 
   # 2. Check sysfs DRM connection status (including USB-C and Unknown dock connectors)
+  local status connector state
   for status in /sys/class/drm/card*-*/status; do
     [ -f "$status" ] || continue
-    local connector
     connector=$(basename "$(dirname "$status")")
     connector="${connector#card*-}"
     if [[ "$connector" =~ ^(eDP|LVDS|DSI)- ]]; then
       continue
     fi
-    if [ "$(< "$status" 2>/dev/null)" = "connected" ]; then
+    if { IFS= read -r state < "$status"; } 2>/dev/null && [[ "$state" == connected ]]; then
       return 0
     fi
   done
@@ -149,6 +149,7 @@ reconcile_inhibitor() {
 }
 
 # Hyprland's Lua config has no `hyprctl keyword`, so monitors change through hl.monitor.
+# It changes only the fields it is given, so turning a panel back on has to say so.
 set_monitor() {
   hyprctl eval "hl.monitor({ $1 })" >/dev/null 2>&1 || true
 }
@@ -224,13 +225,13 @@ handle_open() {
     read -r mode pos scale transform < "$STATE_FILE" || true
     if [ -n "$mode" ] && [ -n "$pos" ] && [ -n "$scale" ]; then
       # A rotated panel, as some small laptops have, comes back the right way up.
-      set_monitor "output = \"$internal\", mode = \"$mode\", position = \"$pos\", scale = \"$scale\", transform = ${transform:-0}"
+      set_monitor "output = \"$internal\", disabled = false, mode = \"$mode\", position = \"$pos\", scale = \"$scale\", transform = ${transform:-0}"
     else
-      set_monitor "output = \"$internal\", mode = \"preferred\", position = \"auto\", scale = \"auto\""
+      set_monitor "output = \"$internal\", disabled = false, mode = \"preferred\", position = \"auto\", scale = \"auto\""
     fi
     rm -f "$STATE_FILE"
   elif ! is_monitor_enabled "$internal"; then
-    set_monitor "output = \"$internal\", mode = \"preferred\", position = \"auto\", scale = \"auto\""
+    set_monitor "output = \"$internal\", disabled = false, mode = \"preferred\", position = \"auto\", scale = \"auto\""
   fi
 }
 

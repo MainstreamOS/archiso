@@ -56,58 +56,66 @@ elif [[ -n "$MAIN_USER" ]]; then
             info "GE-Proton: Latest tag is $_GE_TAG"
 
             # --- 2. Download + extract ---
-            _GE_INSTALL_DIR="$_GE_COMPAT_DIR/$_GE_TAG"
-            if [[ -d "$_GE_INSTALL_DIR" ]]; then
-                info "GE-Proton: $_GE_TAG already present — skipping download."
-            else
-                # GE-Proton now ships an -aarch64 tarball alongside the x86_64
-                # build; a broad endswith(".tar.gz") match returns two urls and
-                # corrupts the curl arg. Match the exact x86_64 asset name.
-                _GE_URL=""
-                if command -v jq &>/dev/null; then
-                    _GE_URL=$(echo "$_GE_JSON" | \
-                        jq -r --arg tag "$_GE_TAG" '.assets[] | select(.name == ($tag + ".tar.gz")) | .browser_download_url' \
-                        2>/dev/null) || true
-                else
-                    _GE_URL=$(echo "$_GE_JSON" | python3 -c "
+            # Newer releases ship "<tag>-x86_64.tar.gz", which unpacks to a folder of
+            # that name; older ones drop the suffix. ARM archives never match.
+            _GE_NAME=""
+            _GE_URL=""
+            _GE_TOOL=""
+            IFS=$'\t' read -r _GE_NAME _GE_URL < <(printf '%s' "$_GE_JSON" | python3 -c '
 import sys, json
 tag = sys.argv[1]
-for a in json.load(sys.stdin)['assets']:
-    if a['name'] == tag + '.tar.gz':
-        print(a['browser_download_url']); break
-" "$_GE_TAG" 2>/dev/null) || true
-                fi
-
-                if [[ -z "$_GE_URL" ]]; then
-                    warn "GE-Proton: No .tar.gz asset found for $_GE_TAG — skipping."
+assets = {a.get("name"): a.get("browser_download_url") for a in json.load(sys.stdin).get("assets") or []}
+for name in (tag + "-x86_64", tag):
+    if assets.get(name + ".tar.gz"):
+        print(name, assets[name + ".tar.gz"], sep="\t")
+        break
+' "$_GE_TAG" 2>/dev/null) || true
+            _GE_INSTALL_DIR="$_GE_COMPAT_DIR/$_GE_NAME"
+            if [[ -z "$_GE_NAME" || -z "$_GE_URL" ]]; then
+                warn "GE-Proton: No x86_64 archive found for $_GE_TAG, skipping."
+            elif [[ -f "$_GE_INSTALL_DIR/compatibilitytool.vdf" ]]; then
+                info "GE-Proton: $_GE_NAME already present, skipping download."
+            else
+                mkdir -p "$_GE_COMPAT_DIR"
+                # Unpack beside the final folder and move it in whole, so a failed run
+                # never leaves a half-unpacked tool that looks installed.
+                rm -rf "$_GE_COMPAT_DIR"/.ge-proton.* || true
+                _GE_STAGE=$(mktemp -d "$_GE_COMPAT_DIR/.ge-proton.XXXXXX") || _GE_STAGE=""
+                if [[ -z "$_GE_STAGE" ]]; then
+                    warn "GE-Proton: Could not create a download folder, skipping."
                 else
-                    mkdir -p "$_GE_COMPAT_DIR"
-                    _GE_TMP=$(mktemp --suffix=.tar.gz)
-                    info "GE-Proton: Downloading $_GE_TAG..."
-                    if curl -fL --progress-bar -o "$_GE_TMP" "$_GE_URL"; then
-                        info "GE-Proton: Extracting to $_GE_COMPAT_DIR..."
-                        if tar -xzf "$_GE_TMP" -C "$_GE_COMPAT_DIR" && [[ -d "$_GE_INSTALL_DIR" ]]; then
-                            info "GE-Proton: Installed $_GE_TAG to $_GE_INSTALL_DIR"
-                        else
-                            warn "GE-Proton: archive did not extract to $_GE_INSTALL_DIR — skipping."
-                            rm -rf "$_GE_INSTALL_DIR"
-                        fi
-                        rm -f "$_GE_TMP"
+                    info "GE-Proton: Downloading $_GE_NAME..."
+                    if ! curl -fL --progress-bar -o "$_GE_STAGE/download.tar.gz" "$_GE_URL"; then
+                        warn "GE-Proton: Download failed, skipping."
+                    elif ! tar -xzf "$_GE_STAGE/download.tar.gz" -C "$_GE_STAGE" \
+                        || [[ ! -f "$_GE_STAGE/$_GE_NAME/compatibilitytool.vdf" ]]; then
+                        warn "GE-Proton: Archive did not unpack to $_GE_NAME, skipping."
+                    elif rm -rf "$_GE_INSTALL_DIR" && mv "$_GE_STAGE/$_GE_NAME" "$_GE_INSTALL_DIR"; then
+                        info "GE-Proton: Installed $_GE_NAME to $_GE_INSTALL_DIR"
                     else
-                        warn "GE-Proton: Download failed — skipping."
-                        rm -f "$_GE_TMP"
+                        warn "GE-Proton: Could not move $_GE_NAME into place, skipping."
                     fi
+                    rm -rf "$_GE_STAGE" || true
                 fi
             fi
 
             # --- 3. Seed / patch config.vdf ---
             # Pointing Steam at a tool directory that is not there breaks every
             # game launch until the user notices the setting.
-            if [[ ! -d "$_GE_INSTALL_DIR" ]]; then
-                warn "GE-Proton: $_GE_TAG is not installed — leaving config.vdf alone."
-            elif mkdir -p "$_GE_CFG_DIR" && [[ ! -f "$_GE_CFG" ]]; then
-                info "GE-Proton: Creating $_GE_CFG seeded with $_GE_TAG..."
-                cat > "$_GE_CFG" <<EOF
+            if [[ -z "$_GE_NAME" || ! -f "$_GE_INSTALL_DIR/compatibilitytool.vdf" ]]; then
+                warn "GE-Proton: $_GE_TAG is not installed, leaving config.vdf alone."
+            else
+                # Steam knows a tool by the name its compatibilitytool.vdf declares,
+                # which so far has always matched the folder.
+                _GE_TOOL=$(python3 -c '
+import re, sys
+m = re.search(r"\"compat_tools\"\s*\{\s*\"([^\"]+)\"", open(sys.argv[1], errors="replace").read())
+print(m.group(1) if m else "")
+' "$_GE_INSTALL_DIR/compatibilitytool.vdf" 2>/dev/null) || true
+                [[ -n "$_GE_TOOL" ]] || _GE_TOOL="$_GE_NAME"
+                if mkdir -p "$_GE_CFG_DIR" && [[ ! -f "$_GE_CFG" ]]; then
+                    info "GE-Proton: Creating $_GE_CFG seeded with $_GE_TOOL..."
+                    cat > "$_GE_CFG" <<EOF
 "InstallConfigStore"
 {
 	"Software"
@@ -120,7 +128,7 @@ for a in json.load(sys.stdin)['assets']:
 				{
 					"0"
 					{
-						"name"		"$_GE_TAG"
+						"name"		"$_GE_TOOL"
 						"config"	""
 						"priority"	"1"
 					}
@@ -130,36 +138,97 @@ for a in json.load(sys.stdin)['assets']:
 	}
 }
 EOF
-                info "GE-Proton: $_GE_CFG created — global default: $_GE_TAG"
-            else
-                info "GE-Proton: Patching existing $_GE_CFG → global default: $_GE_TAG..."
-                python3 - "$_GE_CFG" "$_GE_TAG" <<'PYEOF' \
-                    || warn "GE-Proton: config.vdf patch failed — set Proton version manually in Steam."
-import sys, re
-vdf_path, tag = sys.argv[1], sys.argv[2]
-with open(vdf_path) as f:
+                    info "GE-Proton: $_GE_CFG created, global default: $_GE_TOOL"
+                else
+                    info "GE-Proton: Patching existing $_GE_CFG, global default: $_GE_TOOL..."
+                    python3 - "$_GE_CFG" "$_GE_TOOL" <<'PYEOF' \
+                        || warn "GE-Proton: config.vdf patch failed, set the Proton version in Steam."
+import os, sys, tempfile
+
+# Write through a symlink rather than replacing it with a plain file.
+vdf_path, tool = os.path.realpath(sys.argv[1]), sys.argv[2]
+with open(vdf_path, encoding="utf-8", errors="surrogateescape") as f:
     content = f.read()
-zero_block = (
-    '\n\t\t\t\t\t"0"\n'
-    '\t\t\t\t\t{\n'
-    f'\t\t\t\t\t\t"name"\t\t"{tag}"\n'
-    '\t\t\t\t\t\t"config"\t""\n'
-    '\t\t\t\t\t\t"priority"\t"1"\n'
-    '\t\t\t\t\t}\n\t\t\t\t'
-)
-ctm_re = re.compile(r'("CompatToolMapping"\s*\{)(.*?)(\})', re.DOTALL)
-m = ctm_re.search(content)
-if m:
-    body = re.sub(r'\s*"0"\s*\{[^}]*\}', '', m.group(2), flags=re.DOTALL)
-    new_content = (
-        content[:m.start()] + m.group(1) + zero_block + body + m.group(3) + content[m.end():]
+
+def skip_space(text, i):
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+def string_end(text, i):
+    if text[i] != '"':
+        raise ValueError(f"expected a quoted token at offset {i}")
+    i += 1
+    while text[i] != '"':
+        i += 2 if text[i] == "\\" else 1
+    return i + 1
+
+def value_end(text, i):
+    # A value is a quoted string or a brace block of key and value pairs.
+    if text[i] == '"':
+        return string_end(text, i)
+    if text[i] != "{":
+        raise ValueError(f"expected a value at offset {i}")
+    i = skip_space(text, i + 1)
+    while text[i] != "}":
+        i = skip_space(text, value_end(text, skip_space(text, string_end(text, i))))
+    return i + 1
+
+def patched(content):
+    key = content.find('"CompatToolMapping"')
+    if key < 0:
+        return None
+    start = skip_space(content, key + len('"CompatToolMapping"'))
+    if content[start] != "{":
+        raise ValueError("CompatToolMapping is not a block")
+    zero_block = (
+        '\n\t\t\t\t\t"0"\n'
+        '\t\t\t\t\t{\n'
+        f'\t\t\t\t\t\t"name"\t\t"{tool}"\n'
+        '\t\t\t\t\t\t"config"\t\t""\n'
+        '\t\t\t\t\t\t"priority"\t\t"1"\n'
+        '\t\t\t\t\t}'
     )
-    with open(vdf_path, 'w') as f:
+    # Every earlier global default goes, so the new one is the only "0" entry.
+    out, i = [content[:start + 1], zero_block], start + 1
+    while True:
+        entry = skip_space(content, i)
+        if content[entry] == "}":
+            out.append(content[i:])
+            break
+        name_end = string_end(content, entry)
+        end = value_end(content, skip_space(content, name_end))
+        if content[entry:name_end] != '"0"':
+            out.append(content[i:end])
+        i = end
+    new_content = "".join(out)
+    # Refuse to write anything that no longer reads as one whole document.
+    root = skip_space(new_content, 0)
+    if skip_space(new_content, value_end(new_content, skip_space(new_content, string_end(new_content, root)))) != len(new_content):
+        raise ValueError("patched config.vdf does not parse")
+    return new_content
+
+try:
+    new_content = patched(content)
+except (ValueError, IndexError) as error:
+    sys.stderr.write(f"Warning: config.vdf could not be read ({error}), leaving it alone.\n")
+    sys.exit(1)
+if new_content is None:
+    sys.stderr.write("Warning: CompatToolMapping not found in config.vdf, skipping patch.\n")
+    sys.exit(0)
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(vdf_path)), prefix=".config.vdf.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write(new_content)
-    print(f"Patched: global Proton default → {tag}")
-else:
-    sys.stderr.write("Warning: CompatToolMapping not found in config.vdf — skipping patch.\n")
+    os.chmod(tmp, os.stat(vdf_path).st_mode & 0o7777)
+    os.replace(tmp, vdf_path)
+except BaseException:
+    os.unlink(tmp)
+    raise
+print(f"Patched: global Proton default is now {tool}")
 PYEOF
+                fi
             fi
 
             # --- 3b. Link ~/.steam to the Steam data dir ---

@@ -385,6 +385,7 @@ Item {
         mediaPlayer.videoOutput = null;
         mediaPlayer.isVideo = isVideo;
         mediaPlayer.uid = attachment.uid;
+        mediaPlayer.attachment = attachment;
         Phone.useAttachment(attachment, "play");
     }
 
@@ -458,6 +459,7 @@ Item {
         mediaPlayer.source = "";
         mediaPlayer.uid = "";
         mediaPlayer.isVideo = false;
+        mediaPlayer.attachment = null;
     }
 
     PhoneVoiceRecorder {
@@ -638,10 +640,22 @@ Item {
         id: mediaPlayer
         property string uid: ""
         property bool isVideo: false
+        property var attachment: null
+        property string refetched: ""
         audioOutput: AudioOutput {}
         loops: (mediaPlayer.isVideo || mediaPlayer.uid.startsWith("link:")) ? MediaPlayer.Infinite : 1
         onErrorOccurred: (error, errorString) => {
             const isLink = mediaPlayer.uid.startsWith("link:");
+            const attachment = mediaPlayer.attachment;
+            // A copy on this computer that has gone is fetched from the phone once before giving up.
+            if (!isLink && attachment && mediaPlayer.refetched !== mediaPlayer.uid) {
+                mediaPlayer.refetched = mediaPlayer.uid;
+                mediaPlayer.stop();
+                mediaPlayer.source = "";
+                Phone.forgetAttachment(String(attachment.uid), Phone.deviceId);
+                Phone.useAttachment(attachment, "play");
+                return;
+            }
             root.notice((isLink ? Translation.tr("Could not play this video: %1") : Translation.tr("Could not play this attachment: %1")).arg(errorString));
             root.stopMedia();
         }
@@ -731,6 +745,7 @@ Item {
         }
         function onReachableChanged() { if (!Phone.reachable) root.composerPickerOpen = false; }
         function onOpenThreadChanged() {
+            messageList.historyAnchor = null;
             root.composerPickerOpen = false;
             root.stopMedia();
             root.switchDraft();
@@ -738,6 +753,8 @@ Item {
             messageList.wasAtBottom = true;
             root.snapToBottom();
         }
+        function onOlderMessagesAdding() { messageList.captureHistoryAnchor(); }
+        function onOlderMessagesAdded() { messageList.restoreHistoryAnchor(); }
     }
 
     Connections {
@@ -1086,13 +1103,49 @@ Item {
                 animateAppearance: false
                 model: Phone.threadMessages
                 property bool wasAtBottom: true
+                property var historyAnchor: null
                 readonly property bool isAtBottom: messageList.atYEnd || (messageList.contentHeight > 0 && messageList.contentY + messageList.height >= messageList.contentHeight - 50)
-                onContentYChanged: if (messageList.userScrolling) messageList.wasAtBottom = messageList.isAtBottom
-                onMovementEnded: messageList.wasAtBottom = messageList.isAtBottom
+                readonly property bool nearTop: contentY <= originY + Math.max(48, height / 3)
+
+                function captureHistoryAnchor(): void {
+                    messageList.forceLayout();
+                    const top = messageList.contentY;
+                    const x = messageList.width / 2;
+                    for (let y = top + 1; y < top + messageList.height; y += 4) {
+                        const anchor = messageList.itemAt(x, y);
+                        if (!anchor) continue;
+                        messageList.historyAnchor = { uid: anchor.modelData.uid, offset: anchor.y - top };
+                        return;
+                    }
+                }
+
+                function restoreHistoryAnchor(): void {
+                    const anchor = messageList.historyAnchor;
+                    if (!anchor) return;
+                    messageList.forceLayout();
+                    const index = Phone.threadMessages.findIndex(m => m.uid === anchor.uid);
+                    if (index >= 0) {
+                        messageList.positionViewAtIndex(index, ListView.Beginning);
+                        messageList.forceLayout();
+                        const item = messageList.itemAtIndex(index);
+                        if (item) messageList.contentY = messageList.clampToWheelRange(item.y - anchor.offset);
+                    }
+                    messageList.historyAnchor = null;
+                }
+
+                onContentYChanged: if (messageList.userScrolling) {
+                    messageList.wasAtBottom = messageList.isAtBottom;
+                    if (messageList.nearTop && !messageList.historyAnchor) Phone.loadOlderMessages();
+                }
+                onMovementEnded: {
+                    messageList.wasAtBottom = messageList.isAtBottom;
+                    if (nearTop && !historyAnchor) Phone.loadOlderMessages();
+                }
+                onUserScrollingChanged: if (userScrolling && nearTop && !historyAnchor) Phone.loadOlderMessages()
                 onFlickEnded: messageList.wasAtBottom = messageList.isAtBottom
-                onCountChanged: if (messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) root.snapToBottom()
-                onHeightChanged: if (messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) root.snapToBottom()
-                onContentHeightChanged: if (messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) messageList.positionViewAtEnd()
+                onCountChanged: if (!messageList.historyAnchor && messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) root.snapToBottom()
+                onHeightChanged: if (!messageList.historyAnchor && messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) root.snapToBottom()
+                onContentHeightChanged: if (!messageList.historyAnchor && messageList.wasAtBottom && !messageList.userScrolling && !root.reactionBarOpen && !reactionScrollAnim.running && root.pendingReactionMessage === null) messageList.positionViewAtEnd()
                 onMovingChanged: if (moving) root.closeReactionBar()
                 onFlickStarted: root.closeReactionBar()
 
@@ -1103,6 +1156,7 @@ Item {
 
                     Rectangle {
                         anchors.centerIn: parent
+                        visible: !Phone.olderRequest
                         height: 22
                         implicitWidth: dayHeaderLabel.implicitWidth + 18
                         radius: 11
@@ -1116,6 +1170,12 @@ Item {
                             font.weight: Font.Medium
                             color: Appearance.colors.colSubtext
                         }
+                    }
+                    MaterialLoadingIndicator {
+                        anchors.centerIn: parent
+                        visible: !!Phone.olderRequest
+                        loading: visible
+                        implicitSize: 20
                     }
                 }
 
@@ -1470,6 +1530,8 @@ Item {
                                         scale: thumbMouse.pressed ? 0.94 : 1
                                         onStatusChanged: {
                                             if (status === Image.Error && !attachmentItem.fullFailed && (attachmentItem.modelData.thumb ?? "").length > 0) {
+                                                // The next open asks the phone for the file again.
+                                                Phone.forgetAttachment(String(attachmentItem.modelData.uid ?? ""), Phone.deviceId);
                                                 attachmentItem.fullFailed = true;
                                             }
                                         }
@@ -1495,6 +1557,8 @@ Item {
                                         scale: thumbMouse.pressed ? 0.94 : 1
                                         onStatusChanged: {
                                             if (status === Image.Error && !attachmentItem.fullFailed && (attachmentItem.modelData.thumb ?? "").length > 0) {
+                                                // The next open asks the phone for the file again.
+                                                Phone.forgetAttachment(String(attachmentItem.modelData.uid ?? ""), Phone.deviceId);
                                                 attachmentItem.fullFailed = true;
                                             }
                                         }
