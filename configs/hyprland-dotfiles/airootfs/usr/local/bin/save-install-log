@@ -37,10 +37,16 @@ mkdir -p "$dest" 2>/dev/null || exit 0
 # ~/.cache; check root's too and take the newest.
 latest=$(ls -t /home/*/.cache/calamares/session.log /root/.cache/calamares/session.log 2>/dev/null | head -n1)
 if [[ -n "$latest" && -f "$latest" ]]; then
-    if cp -f "$latest" "$dest/session.log" 2>/dev/null; then
+    # Calamares logs the password hashes it hands to usermod; never keep them.
+    if (umask 077; sed -E \
+            -e '/"(usermod|useradd|chpasswd)"/ s/("-p" )"[^"]*"/\1"[redacted]"/g' \
+            -e 's/\$(y|gy|7|6|5|2[abxy]|1)\$[^"[:space:]]*/[redacted]/g' \
+            "$latest" > "$dest/session.log.tmp") 2>/dev/null \
+        && mv -f "$dest/session.log.tmp" "$dest/session.log" 2>/dev/null; then
         chmod 0600 "$dest/session.log" 2>/dev/null || true
         log_health "INFO: session log saved from $latest"
     else
+        rm -f "$dest/session.log.tmp" 2>/dev/null
         log_health "WARN: could not copy session log from $latest"
     fi
 else
