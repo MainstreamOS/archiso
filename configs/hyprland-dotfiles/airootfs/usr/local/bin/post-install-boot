@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # post-install-boot — Configuring boot and graphics
+if [[ "${POST_BOOT_SOURCE_ONLY:-0}" != 1 ]]; then
 source /usr/local/lib/mainstream-postinstall-common.sh
 
 info "Verifying target environment..."
@@ -157,17 +158,19 @@ if gpu_detect; then
 else
     warn "No GPU detected via lspci, skipping GPU configuration."
 fi
+fi # POST_BOOT_SOURCE_ONLY != 1
 
 # Holding back resume= alone does not stop hibernation: on UEFI, systemd
 # records where the image went in the HibernateLocation EFI variable and
 # resumes from that. This turns hibernation off outright, so logind stops
 # offering it.
 _block_hibernation() {
-    mkdir -p /etc/systemd/sleep.conf.d \
+    local dropin="${POST_BOOT_NO_HIB_DROPIN:-/etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf}"
+    mkdir -p "$(dirname "$dropin")" \
         && printf '%s\n' '[Sleep]' AllowHibernation=no \
             AllowSuspendThenHibernate=no AllowHybridSleep=no \
-            > /etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf \
-        || warn "Could not write /etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf; hibernation stays on."
+            > "$dropin" \
+        || warn "Could not write $dropin; hibernation stays on."
 }
 
 # The swap partitions systemd-gpt-auto-generator may turn on by itself when
@@ -179,6 +182,7 @@ _block_hibernation() {
 # here, so anything judged for safety below is judged for any of them.
 _gpt_auto_swaps() {
     local disk name ptype flags
+    [[ -n "${DISK_HOST_DEV:-}" ]] || return 0
     disk=$(lsblk -dno PKNAME "$DISK_HOST_DEV" 2>/dev/null) || disk=""
     [[ -n "$disk" ]] || return 0
     [[ "$disk" == /* ]] || disk="/dev/$disk"
@@ -209,7 +213,7 @@ _swap_is_encrypted() {
 # since turning a swap on rewrites its signature. It fails when fstab still
 # names none of them, because the generator then turns one on after all.
 _fstab_keep_swaps_off() {
-    local fstab=/etc/fstab dev partuuid lead="" named=0
+    local fstab="${POST_BOOT_FSTAB:-/etc/fstab}" dev partuuid lead="" named=0
     local -a notes=(
         "# Swap partitions on this disk that this install did not set up, kept off."
         "# Any swap line here stops systemd from turning one on by its GPT type."
@@ -239,14 +243,200 @@ _fstab_keep_swaps_off() {
         return 1
     fi
     (( ${#lines[@]} > 0 )) || return 0
-    [[ -n "$(tail -c1 "$fstab")" ]] && lead=$'\n'
-    grep -qxF "${notes[0]}" "$fstab" || lead+=$'\n'"$(printf '%s\n' "${notes[@]}")"$'\n'
+    if [[ -s "$fstab" && -n "$(tail -c1 "$fstab" 2>/dev/null || true)" ]]; then
+        lead=$'\n'
+    fi
+    if ! grep -qxF "${notes[0]}" "$fstab"; then
+        lead+=$'\n'"$(printf '%s\n' "${notes[@]}")"$'\n'
+    fi
     if { printf '%s' "$lead"; printf '%s\n' "${lines[@]}"; } >> "$fstab"; then
         info "Kept swap partitions ${devs[*]} off with noauto lines in $fstab."
     else
         warn "Could not write $fstab, so systemd will still turn one of the swap partitions ${devs[*]} on by its GPT type at boot."
         return 1
     fi
+}
+
+_btrfs_swap_has_space() {
+    local root_mnt="$1" swap_mib="$2" headroom_mib="$3"
+    local required_mib=$(( swap_mib + headroom_mib ))
+    local avail_mib=""
+    avail_mib=$(df -Pm "$root_mnt" 2>/dev/null | awk 'NR==2 {print $4}') || avail_mib=""
+    if [[ ! "$avail_mib" =~ ^[0-9]+$ ]]; then
+        warn "Could not read available space on $root_mnt; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+    if (( avail_mib < required_mib )); then
+        info "Insufficient disk space for Btrfs hibernation swapfile (${avail_mib} MiB free, need ${required_mib} MiB = ${swap_mib} MiB RAM + ${headroom_mib} MiB headroom); skipping."
+        return 1
+    fi
+    return 0
+}
+
+# Provision a dedicated top-level Btrfs @swap subvolume and /swap/swapfile for
+# hibernation (priority 10, strictly below zram's default 100). On LUKS2 roots,
+# @swap lives inside the encrypted container so hibernation images stay
+# encrypted and sd-encrypt unlocks the backing device before
+# systemd-hibernate-resume runs. Returns 0 when configured, 1 when skipped or
+# unable to provision.
+_setup_btrfs_swapfile_hibernation() {
+    local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
+    local fstab="${POST_BOOT_FSTAB:-/etc/fstab}"
+    local dropin="${POST_BOOT_NO_HIB_DROPIN:-/etc/systemd/sleep.conf.d/50-mainstream-no-hibernate.conf}"
+    local meminfo="${PROC_MEMINFO:-/proc/meminfo}"
+    local headroom_mib="${SWAPFILE_HEADROOM_MIB:-16384}"
+    local root_mnt="${POST_BOOT_ROOT_MOUNT:-/}"
+    local swap_dir="${POST_BOOT_SWAP_DIR:-/swap}"
+    local swapfile="${swap_dir}/swapfile"
+    local backing_dev="" fs_uuid="" resume_spec="" swap_mib="" offset=""
+    local top_mnt="" mounted_swap_dir=0 fstab_has_swap_mnt=0
+
+    if [[ ! "$headroom_mib" =~ ^[0-9]+$ ]]; then
+        headroom_mib=16384
+    fi
+
+    [[ "${ROOT_FSTYPE:-}" == btrfs ]] || return 1
+    [[ -n "${ROOT_SPEC:-}" ]] || return 1
+    if grep -Eq '(^|[[:space:]])resume=' "$kc" 2>/dev/null; then
+        return 1
+    fi
+    if ! command -v btrfs >/dev/null 2>&1; then
+        info "btrfs tool not available; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+    if [[ ! -f "$fstab" ]]; then
+        warn "No $fstab present; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+
+    if [[ -n "${LUKS_UUID:-}" ]]; then
+        if [[ -z "${LUKS_MAPPER_NAME:-}" ]]; then
+            warn "Encrypted root detected without LUKS_MAPPER_NAME; skipping Btrfs swapfile hibernation."
+            return 1
+        fi
+        backing_dev="/dev/mapper/${LUKS_MAPPER_NAME}"
+    else
+        backing_dev="${ROOT_PART_DEV:-}"
+    fi
+    if [[ -z "$backing_dev" ]]; then
+        warn "Could not resolve root Btrfs backing device; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+
+    fs_uuid=$(blkid -s UUID -o value "$backing_dev" 2>/dev/null) || fs_uuid=""
+    if [[ -z "$fs_uuid" ]]; then
+        fs_uuid=$(lsblk -dno UUID "$backing_dev" 2>/dev/null) || fs_uuid=""
+    fi
+    if [[ -z "$fs_uuid" ]]; then
+        warn "Could not read filesystem UUID for $backing_dev; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+
+    if [[ -n "${LUKS_UUID:-}" ]]; then
+        resume_spec="/dev/mapper/${LUKS_MAPPER_NAME}"
+    else
+        resume_spec="UUID=${fs_uuid}"
+    fi
+
+    swap_mib=$(awk '/MemTotal:/ {printf "%d", ($2 + 1023) / 1024}' "$meminfo" 2>/dev/null) || swap_mib=""
+    if [[ ! "$swap_mib" =~ ^[0-9]+$ ]] || (( swap_mib == 0 )); then
+        warn "Could not read MemTotal from $meminfo; skipping Btrfs swapfile hibernation."
+        return 1
+    fi
+    if (( swap_mib < 1024 )); then
+        swap_mib=1024
+    fi
+
+    if awk '$1 !~ /^#/ && $2 == "/swap" { found = 1 } END { exit !found }' "$fstab" 2>/dev/null; then
+        fstab_has_swap_mnt=1
+    fi
+
+    # Check free space before touching the filesystem on fresh installs so a
+    # tight disk never gets an empty @swap subvolume left behind.
+    if [[ ! -f "$swapfile" ]] && (( ! fstab_has_swap_mnt )); then
+        _btrfs_swap_has_space "$root_mnt" "$swap_mib" "$headroom_mib" || return 1
+    fi
+
+    if ! findmnt -n --mountpoint "$swap_dir" >/dev/null 2>&1; then
+        trap 'trap - RETURN; if [[ -n "${top_mnt:-}" ]]; then umount "$top_mnt" 2>/dev/null || true; rmdir "$top_mnt" 2>/dev/null || true; top_mnt=""; fi; if (( ${mounted_swap_dir:-0} )); then umount "$swap_dir" 2>/dev/null || true; mounted_swap_dir=0; fi' RETURN
+        top_mnt=$(mktemp -d "${TMPDIR:-/tmp}/mainstream-btrfs-top.XXXXXX") || {
+            warn "Could not create temporary mountpoint for Btrfs @swap; skipping swapfile hibernation."
+            return 1
+        }
+        if ! mount -t btrfs -o subvolid=5 "$backing_dev" "$top_mnt" 2>/dev/null; then
+            warn "Could not mount Btrfs top-level volume $backing_dev (subvolid=5); skipping swapfile hibernation."
+            return 1
+        fi
+        if [[ ! -d "$top_mnt/@swap" ]]; then
+            if ! btrfs subvolume create "$top_mnt/@swap" >/dev/null 2>&1; then
+                warn "Could not create Btrfs @swap subvolume on $backing_dev; skipping swapfile hibernation."
+                return 1
+            fi
+            info "Created Btrfs @swap subvolume on $backing_dev."
+        fi
+        umount "$top_mnt" 2>/dev/null || warn "Could not cleanly unmount temporary Btrfs mount $top_mnt."
+        rmdir "$top_mnt" 2>/dev/null || true
+        top_mnt=""
+
+        if ! mkdir -p "$swap_dir"; then
+            warn "Could not create $swap_dir; skipping swapfile hibernation."
+            return 1
+        fi
+        if ! mount -t btrfs -o subvol=/@swap,defaults,noatime "$backing_dev" "$swap_dir" 2>/dev/null; then
+            warn "Could not mount @swap at $swap_dir; skipping swapfile hibernation."
+            return 1
+        fi
+        mounted_swap_dir=1
+    fi
+
+    if [[ ! -f "$swapfile" ]]; then
+        if (( fstab_has_swap_mnt )); then
+            _btrfs_swap_has_space "$root_mnt" "$swap_mib" "$headroom_mib" || return 1
+        fi
+        if ! btrfs filesystem mkswapfile --size "${swap_mib}m" --uuid clear "$swapfile" >/dev/null 2>&1; then
+            rm -f "$swapfile" 2>/dev/null || true
+            warn "Could not create Btrfs swapfile at $swapfile; skipping swapfile hibernation."
+            return 1
+        fi
+        info "Created ${swap_mib} MiB Btrfs swapfile at $swapfile."
+    fi
+
+    offset=$(btrfs inspect-internal map-swapfile -r "$swapfile" 2>/dev/null | tr -d '[:space:]') || offset=""
+    if [[ ! "$offset" =~ ^[1-9][0-9]*$ ]]; then
+        warn "Could not read valid positive resume_offset for $swapfile (got '${offset:-empty}'); skipping swapfile hibernation."
+        return 1
+    fi
+
+    if (( ! fstab_has_swap_mnt )); then
+        if [[ -s "$fstab" && -n "$(tail -c1 "$fstab" 2>/dev/null || true)" ]]; then
+            printf '\n' >> "$fstab"
+        fi
+        if ! printf 'UUID=%s /swap btrfs subvol=/@swap,defaults,noatime 0 0\n' "$fs_uuid" >> "$fstab"; then
+            warn "Could not write /swap mount entry to $fstab; skipping swapfile hibernation."
+            return 1
+        fi
+    fi
+    if ! awk '$1 == "/swap/swapfile" && $3 == "swap" { found = 1 } END { exit !found }' "$fstab" 2>/dev/null; then
+        if [[ -s "$fstab" && -n "$(tail -c1 "$fstab" 2>/dev/null || true)" ]]; then
+            printf '\n' >> "$fstab"
+        fi
+        if ! printf '/swap/swapfile none swap defaults,pri=10 0 0\n' >> "$fstab"; then
+            warn "Could not write /swap/swapfile entry to $fstab; skipping swapfile hibernation."
+            return 1
+        fi
+    fi
+
+    if ! cmdline_upsert "resume=${resume_spec}" "resume_offset=${offset}"; then
+        warn "Could not update $kc with resume=${resume_spec} resume_offset=${offset}."
+        return 1
+    fi
+    if (( mounted_swap_dir )); then
+        umount "$swap_dir" 2>/dev/null || warn "Could not cleanly unmount $swap_dir."
+        mounted_swap_dir=0
+    fi
+    rm -f "$dropin" 2>/dev/null || true
+    info "Hibernation configured via Btrfs swapfile /swap/swapfile (${swap_mib} MiB, resume=${resume_spec} resume_offset=${offset})."
+    return 0
 }
 
 # Where hibernation may write memory has nothing to do with the graphics, so
@@ -256,19 +446,20 @@ _fstab_keep_swaps_off() {
 # Calamares leaves out a swap partition it did not format, systemd turns on a
 # swap partition it finds on the root's disk, another system's included.
 _apply_hibernation_policy() {
-    local src swap_dev partuuid kept_off=0 kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
+    local src swap_dev partuuid kept_off=0 has_bad_swap=0
+    local kc="${KERNEL_CMDLINE:-/etc/kernel/cmdline}"
+    local fstab="${POST_BOOT_FSTAB:-/etc/fstab}"
     local -a fstab_swaps=() swaps=()
     # UUID= and PARTUUID= come back as device paths, and an entry that matches
     # no device as an empty line. Any swap line at all, a swap file's or a
     # noauto one's too, keeps the generator from turning on a partition.
-    mapfile -t fstab_swaps < <(findmnt --fstab -n -e -t swap -o SOURCE 2>/dev/null)
+    mapfile -t fstab_swaps < <(findmnt --fstab --tab-file "$fstab" -n -e -t swap -o SOURCE 2>/dev/null)
     if (( ${#fstab_swaps[@]} > 0 )); then
         # Only a swap that fstab turns on can take a hibernation image. A
         # noauto line keeps its swap off, and the ones this install writes
         # name another system's partitions: resuming from one would restore
-        # or throw away that system's hibernation. With none turned on,
-        # hibernation stays as an earlier run of this step left it.
-        mapfile -t fstab_swaps < <(findmnt --fstab -n -e -t swap -O nonoauto -o SOURCE 2>/dev/null)
+        # or throw away that system's hibernation.
+        mapfile -t fstab_swaps < <(findmnt --fstab --tab-file "$fstab" -n -e -t swap -O nonoauto -o SOURCE 2>/dev/null)
         # The first swap entry on a partition. A swap file has no PARTUUID to
         # resume from.
         for src in "${fstab_swaps[@]}"; do
@@ -282,49 +473,88 @@ _apply_hibernation_policy() {
     else
         mapfile -t swaps < <(_gpt_auto_swaps)
         if (( ${#swaps[@]} > 0 )); then
-            info "No swap in /etc/fstab, so systemd would turn on a swap partition of the root's disk by its GPT type: ${swaps[*]}."
+            info "No swap in $fstab, so systemd would turn on a swap partition of the root's disk by its GPT type: ${swaps[*]}."
         fi
         # A plain swap beside a plain root stays with systemd, so hibernation
         # still has somewhere to go. Once one swap line is written systemd
         # turns on none of them, so they are all named then, and fstab says
         # which partitions are off.
         for swap_dev in "${swaps[@]}"; do
-            if [[ -n "$LUKS_UUID" ]] || _swap_is_encrypted "$swap_dev"; then
-                _fstab_keep_swaps_off "${swaps[@]}" && kept_off=1
+            if [[ -n "${LUKS_UUID:-}" ]] || _swap_is_encrypted "$swap_dev"; then
+                if _fstab_keep_swaps_off "${swaps[@]}"; then
+                    kept_off=1
+                fi
                 break
             fi
         done
     fi
-    (( ${#swaps[@]} > 0 )) || return 0
-    for swap_dev in "${swaps[@]}"; do
-        if _swap_is_encrypted "$swap_dev"; then
-            if (( kept_off )); then
-                info "Swap $swap_dev is encrypted, so it is kept off and hibernation is turned off."
-            else
-                info "Swap $swap_dev is encrypted and opens only after the root, too late to resume from, so hibernation is turned off."
+
+    if (( ${#swaps[@]} > 0 )); then
+        for swap_dev in "${swaps[@]}"; do
+            if _swap_is_encrypted "$swap_dev"; then
+                if (( kept_off )); then
+                    info "Foreign encrypted swap $swap_dev is kept off (noauto)."
+                    has_bad_swap=1
+                else
+                    info "Swap $swap_dev is encrypted and opens only after the root, too late to resume from, so hibernation is turned off."
+                    _block_hibernation
+                    return 0
+                fi
+                break
             fi
-            _block_hibernation
+            if [[ -n "${LUKS_UUID:-}" ]]; then
+                if (( kept_off )); then
+                    info "Root is encrypted and foreign swap partition $swap_dev is not; keeping it off (noauto) and trying encrypted Btrfs swapfile."
+                    has_bad_swap=1
+                else
+                    warn "Root is encrypted but swap partition $swap_dev is not, so hibernation is turned off: it would write memory, encryption keys included, to that partition unencrypted."
+                    _block_hibernation
+                    return 0
+                fi
+                break
+            fi
+        done
+
+        if (( ! has_bad_swap )); then
+            swap_dev=${swaps[0]}
+            partuuid=$(lsblk -dno PARTUUID "$swap_dev" 2>/dev/null) || partuuid=""
+            if [[ -z "$partuuid" ]]; then
+                return 0
+            fi
+            if grep -Eq '(^|[[:space:]])resume=' "$kc" 2>/dev/null; then
+                return 0
+            fi
+            cmdline_upsert "resume=PARTUUID=$partuuid"
+            info "Hibernation resumes from swap partition $swap_dev."
             return 0
         fi
-        if [[ -n "$LUKS_UUID" ]]; then
-            if (( kept_off )); then
-                info "Root is encrypted and swap partition $swap_dev is not, so it is kept off and hibernation is turned off."
-            else
-                warn "Root is encrypted but swap partition $swap_dev is not, so hibernation is turned off: it would write memory, encryption keys included, to that partition unencrypted."
-            fi
-            _block_hibernation
-            return 0
-        fi
-    done
-    swap_dev=${swaps[0]}
-    partuuid=$(lsblk -dno PARTUUID "$swap_dev" 2>/dev/null) || partuuid=""
-    [[ -n "$partuuid" ]] || return 0
+    fi
+
+    # No usable swap partition (zram-only layout, or foreign GPT swap kept
+    # noauto). If resume= is already configured, keep it as-is.
     if grep -Eq '(^|[[:space:]])resume=' "$kc" 2>/dev/null; then
+        info "Hibernation resume= is already configured in $kc."
         return 0
     fi
-    cmdline_upsert "resume=PARTUUID=$partuuid"
-    info "Hibernation resumes from swap partition $swap_dev."
+
+    # Attempt dedicated Btrfs @swap/swapfile hibernation (stays encrypted inside
+    # the LUKS2 root container on encrypted installs).
+    if _setup_btrfs_swapfile_hibernation; then
+        return 0
+    fi
+
+    # On an encrypted root (or when a foreign encrypted swap had to be kept off)
+    # without a valid resume swap, block hibernation outright so UEFI
+    # HibernateLocation cannot target an unsafe or unusable device.
+    if [[ -n "${LUKS_UUID:-}" ]] || (( has_bad_swap )); then
+        info "No usable hibernation swap available; turning hibernation off."
+        _block_hibernation
+    fi
+    return 0
 }
+if [[ "${POST_BOOT_SOURCE_ONLY:-0}" == 1 ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 _apply_hibernation_policy
 
 # Apple hardware quirks. Sourced after the GPU library because it reuses

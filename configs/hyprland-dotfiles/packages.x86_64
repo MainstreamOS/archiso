@@ -211,6 +211,8 @@ bolt
 nvme-cli
 smartmontools
 tpm2-tss
+sbctl
+libfido2
 upower
 brightnessctl
 hyprpolkitagent
