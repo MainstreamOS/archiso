@@ -990,6 +990,7 @@ METAPKGS=(
     "mainstream-extras"
     "mainstream-bibata-modern-classic-bin"
     "mainstream-gaming"
+    "mainstream-assistance"
     "mainstream-welcome-installer"
 )
 # mainstream-microtex-git is built separately below — its cmake source build
