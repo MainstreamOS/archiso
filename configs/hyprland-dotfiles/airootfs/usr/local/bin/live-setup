@@ -120,24 +120,7 @@ for i in $(seq 1 30); do
 done
 
 # ---------------------------------------------------------------------------
-# 3. Start swww daemon and wait until it is connected to Wayland
-# ---------------------------------------------------------------------------
-if ! pgrep -x swww-daemon &>/dev/null; then
-    swww-daemon &
-fi
-
-for i in $(seq 1 20); do
-    swww query &>/dev/null && break
-    sleep 0.5
-done
-
-# Set the wallpaper via swww (belt-and-suspenders alongside QS rendering)
-if [[ -f "$DEFAULT_WALL" ]]; then
-    swww img "$DEFAULT_WALL" --transition-type fade --transition-duration 1 2>/dev/null || true
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Generate Material You colors
+# 3. Generate Material You colors
 #    On the live ISO the venv is normally not created, but it may be pre-baked
 #    into skel by build.sh. We repair paths just in case, then run a fast-path
 #    matugen call to ensure the desktop is themed (neutral) before switchwall.
@@ -163,7 +146,7 @@ if command -v matugen &>/dev/null && [[ -f "$DEFAULT_WALL" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Disable lockscreen and sleep on the live ISO
+# 4. Disable lockscreen and sleep on the live ISO
 #    Users are just trying out the desktop — locking/sleeping is annoying and
 #    can make recovery awkward since the live password may not be obvious.
 # ---------------------------------------------------------------------------
@@ -183,13 +166,13 @@ IDLE_EOF
 hyprctl dispatch 'hl.dsp.exec_cmd("hypridle")' 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 6. Rebuild font cache and reload Hyprland config
+# 5. Rebuild font cache and reload Hyprland config
 # ---------------------------------------------------------------------------
 fc-cache -fv 2>/dev/null || true
 hyprctl reload 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 7. Warn pre-Turing NVIDIA users (Fermi 0x06C0..just below Turing 0x1E04) that
+# 6. Warn pre-Turing NVIDIA users (Fermi 0x06C0..just below Turing 0x1E04) that
 #    they get only software rendering here and should use the NVIDIA (legacy)
 #    edition. Standard edition only: the legacy edition ships the nvidia-580xx
 #    live driver and serves Kepler/Fermi at install, so skip it there — detected
