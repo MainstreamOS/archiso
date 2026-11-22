@@ -2283,6 +2283,40 @@ check_quickshell_stripped() {
     fi
     return 0
 }
+# The version of <pkg> that pacstrap installed into the image, read from the
+# image's own package database. The name is matched inside desc, because the
+# directory glob for hyprland also fits hyprland-guiutils and its like.
+image_pkg_version() {
+    local pkg="$1" d
+    for d in "${WORK_DIR}/x86_64/airootfs/var/lib/pacman/local/${pkg}"-*/; do
+        [[ -r "${d}desc" ]] || continue
+        awk -v want="$pkg" '
+            /^%NAME%$/    { getline name }
+            /^%VERSION%$/ { getline ver }
+            END { if (name == want) print ver }' "${d}desc"
+    done
+}
+# The prebuilt plugins in skel and both of their guard stamps come from the
+# build host's Hyprland, while pacstrap syncs on its own and can install a
+# newer one. The stamps would then agree with each other, and the guard would
+# load a plugin built for a different compositor into the live session.
+verify_plugin_stamps() {
+    local img f v wrong=""
+    img="$(image_pkg_version hyprland)"
+    [[ -n "$img" ]] \
+        || die "Could not read the Hyprland version installed in the image, so the plugin stamps cannot be checked against it."
+    for f in "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins/hyprland-version" \
+             "$PROFILE_DIR"/airootfs/etc/skel/.local/share/hyprland/plugins/*.builtfor; do
+        [[ -f "$f" || "$f" == */hyprland-version ]] || continue
+        v=""
+        [[ -r "$f" ]] && { IFS= read -r v < "$f" || true; }
+        [[ "$v" == "$img" ]] || wrong+="${wrong:+, }${f##*/} says ${v:-nothing}"
+    done
+    if [[ -n "$wrong" ]]; then
+        die "The image installed Hyprland $img, but the prebuilt plugins are stamped for another version ($wrong), so the live session would load them into a compositor they were not built for. Update the build host so it has Hyprland $img (pacman -Syu), then build again with --refresh."
+    fi
+    success "Verified the plugin stamps match the image's Hyprland $img."
+}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -2404,6 +2438,8 @@ if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
     fi
     success "Verified the legacy-NVIDIA edition carries a built nvidia kernel module."
 fi
+
+verify_plugin_stamps
 
 # ── Find the output ISO ───────────────────────────────────────────────────
 ISO_PATH="$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)"
