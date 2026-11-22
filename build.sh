@@ -1163,6 +1163,8 @@ fi
 # which run whether or not packages were rebuilt, so it cannot live inside the
 # phase-1 block below.
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
+# The same goes for the dotfiles archive the package phase leaves for the image.
+DOTS_ARCHIVE="$PROFILE_DIR/airootfs/usr/local/share/dots-hyprland.tar.zst"
 # Filled in by the package phase; a build without one clones nothing.
 DOTS_COMMIT=""
 
@@ -1867,10 +1869,10 @@ fi
 rm -rf "$DOTS_WORK"
 mkdir -p "$DOTS_WORK"
 # The install unpacks this archive instead of cloning GitHub. Removed before
-# the clone so a build whose clone fails ships no stale copy; the installer
-# then falls back to cloning.
-DOTS_ARCHIVE="$PROFILE_DIR/airootfs/usr/local/share/dots-hyprland.tar.zst"
-rm -f "$DOTS_ARCHIVE"
+# the clone so a package phase that stops partway leaves no stale copy for a
+# later build to ship beside a newer skel; the ISO phase refuses to build
+# without it.
+rm -f "$DOTS_ARCHIVE" "$DOTS_ARCHIVE.part"
 chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 
 _dots_localize
@@ -1924,10 +1926,13 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             mkdir -p "$(dirname "$DOTS_ARCHIVE")"
             # Nothing at install time runs git in the unpacked tree, so the
             # history and the README's images would only be carried along.
+            # Written beside its name and moved into place, so an interrupted
+            # run cannot leave half an archive where the next build finds it.
             tar --zstd -C "$(dirname "$DOTS_WORK")" \
                 --exclude=.git --exclude=.github \
                 --transform "s|^$(basename "$DOTS_WORK")|dotfiles-setup|S" \
-                -cf "$DOTS_ARCHIVE" "$(basename "$DOTS_WORK")" \
+                -cf "$DOTS_ARCHIVE.part" "$(basename "$DOTS_WORK")" \
+                && mv -f "$DOTS_ARCHIVE.part" "$DOTS_ARCHIVE" \
                 || die "Could not archive the dotfiles for the install"
             info "Dotfiles archived for the install ($(du -h "$DOTS_ARCHIVE" | cut -f1))"
 
@@ -2622,6 +2627,12 @@ verify_staged_headers() {
 info "═══════════════════════════════════════════════════════════════"
 info "  PHASE 2: Building ISO"
 info "═══════════════════════════════════════════════════════════════"
+
+# The install unpacks the dotfiles from this archive, and offline it has no
+# other source. Only a package phase makes it, and one that stopped partway
+# has removed the old one.
+[[ -s "$DOTS_ARCHIVE" ]] \
+    || die "The dotfiles archive is missing from the profile ($DOTS_ARCHIVE). An install from this image would have to clone the dotfiles instead, and would stop without a network. Run the build with --refresh to make it."
 
 # ── Standard-edition slimming: drop legacy NVIDIA prebuilts ────────────────
 # A prior --nvidia build leaves them in this persistent dir (bundled into the
