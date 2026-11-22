@@ -33,7 +33,7 @@ elif [[ -n "$MAIN_USER" ]]; then
 
     # --- 1. Resolve latest tag (e.g. "GE-Proton10-5") ---
     _GE_JSON=""
-    _GE_JSON=$(curl -fsSL "$_GE_API" 2>/dev/null) || true
+    _GE_JSON=$(curl -fsSL --connect-timeout 15 --max-time 30 "$_GE_API" 2>/dev/null) || true
 
     if [[ -z "$_GE_JSON" ]]; then
         warn "GE-Proton: GitHub API query failed — check network. Skipping."
@@ -85,7 +85,10 @@ for name in (tag + "-x86_64", tag):
                     warn "GE-Proton: Could not create a download folder, skipping."
                 else
                     info "GE-Proton: Downloading $_GE_NAME..."
-                    if ! curl -fL --progress-bar -o "$_GE_STAGE/download.tar.gz" "$_GE_URL"; then
+                    # Gives up on a stalled transfer, not on a slow one.
+                    if ! curl -fL --connect-timeout 15 --speed-limit 10240 --speed-time 60 \
+                            --max-time 2400 --progress-bar \
+                            -o "$_GE_STAGE/download.tar.gz" "$_GE_URL"; then
                         warn "GE-Proton: Download failed, skipping."
                     elif ! tar -xzf "$_GE_STAGE/download.tar.gz" -C "$_GE_STAGE" \
                         || [[ ! -f "$_GE_STAGE/$_GE_NAME/compatibilitytool.vdf" ]]; then
