@@ -63,14 +63,23 @@ rm -f /etc/mkinitcpio.d/*.preset || true
 # replaced by ones built for a kernel it does not have — a driverless first
 # boot that every check still reports as clean. Reinstalling linux here keeps
 # the kernel in lockstep with whatever the driver step installs minutes later.
+KERNEL_REINSTALLED=false
 if ping -c1 -W3 archlinux.org &>/dev/null; then
     info "Network available — reinstalling the $KERNEL_PKG kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
-    if ! pacman -S --noconfirm --overwrite "*" "$KERNEL_PKG"; then
-        log "ERROR: the $KERNEL_PKG package could not be reinstalled — the system would not boot."
-        exit 1
+    #
+    # Bounded below this step's own timeout, and stopped with the interrupt
+    # pacman handles by releasing its database lock.
+    if timeout -k 30 -s INT 1500 pacman -S --noconfirm --overwrite "*" "$KERNEL_PKG"; then
+        KERNEL_REINSTALLED=true
+    else
+        warn "The $KERNEL_PKG package could not be reinstalled from the repositories; using the kernel this image carries instead."
+        # A pacman that had to be killed leaves its lock behind, and every
+        # later package step of the install would stop on it.
+        rm -f /var/lib/pacman/db.lck
     fi
-else
+fi
+if [[ "$KERNEL_REINSTALLED" != true ]]; then
     # Offline, the live image itself is the kernel source. The ISO build empties
     # /boot before squashing and the linux package ships no /boot files — the
     # image there is produced by the mkinitcpio hook during a pacman
@@ -84,10 +93,10 @@ else
     done | sort -V | tail -n1)
 
     if [[ -n "$KVER" ]]; then
-        info "No network — restoring /boot/vmlinuz-$KERNEL_PKG from the live image (kernel $KVER)..."
+        info "Restoring /boot/vmlinuz-$KERNEL_PKG from the live image (kernel $KVER)..."
         install -Dm644 "/usr/lib/modules/$KVER/vmlinuz" "/boot/vmlinuz-$KERNEL_PKG"
     else
-        log "ERROR: no kernel image under /usr/lib/modules and no network to fetch one — the system would not boot."
+        log "ERROR: no kernel image under /usr/lib/modules and none could be fetched, so the system would not boot."
         exit 1
     fi
 fi
