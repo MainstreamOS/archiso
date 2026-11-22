@@ -952,6 +952,11 @@ Environment:
                   committed work travels; the build says so and marks the image
                   as a test. Requires --refresh or --clean, because the dotfiles
                   are only cloned during a package phase.
+  CALAMARES_REF   Build the installer from this tag, commit or branch of the
+                  Calamares fork instead of the tip of its mainstream branch,
+                  to pin a known-good one during an incident. Requires
+                  --cleancal, --clean or --release, and goes after sudo as in
+                  the example below, because sudo drops it otherwise.
 
 Release options:
   --release X.Y.Z Full clean release build cut as that version: a complete
@@ -979,6 +984,8 @@ Examples:
   sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
   sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
+  sudo CALAMARES_REF=v3.4.3 ./build.sh --cleancal
+                                      # Rebuild calamares from a pinned ref.
   sudo DOTFILES_REPO=/home/you/dots-hyprland ./build.sh --refresh --macbook
                                       # Build from a local dotfiles clone. Needs
                                       # a package phase, and the path must be
@@ -1032,6 +1039,12 @@ if [[ -n "$RELEASE_VERSION" ]]; then
         echo "ERROR: --release: '$RELEASE_VERSION' is not a version (X.Y.Z, major at most two digits)." >&2
         exit 1
     fi
+fi
+
+# The value ends up in a command line and in a git source fragment.
+if [[ -n "${CALAMARES_REF:-}" && ! "$CALAMARES_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "ERROR: CALAMARES_REF: '$CALAMARES_REF' is not a tag, commit or branch name." >&2
+    exit 1
 fi
 
 # ── Verbose sub-build output ────────────────────────────────────────────────
@@ -1186,6 +1199,12 @@ DOTS_COMMIT=""
 # they cannot detect from the log.
 if [[ "$DOTFILES_REPO" != "$_DOTFILES_REPO_DEFAULT" && "$REFRESH_PKGS" != true ]]; then
     die "DOTFILES_REPO is set but no package phase was requested, so the dotfiles would not be cloned at all. Add --refresh (or --clean) to build from $DOTFILES_REPO."
+fi
+# The same for the installer's pin: calamares-mainstream is skipped while a
+# package of its version is already built, so without a rebuild the pin would
+# be read and then ignored.
+if [[ -n "${CALAMARES_REF:-}" && "$CLEAN_CALAMARES" != true && "$CLEAN_BUILD" != true ]]; then
+    die "CALAMARES_REF is set, but calamares-mainstream is only rebuilt from it by --cleancal, --clean or --release. Add one of them to build the installer from $CALAMARES_REF."
 fi
 
 if [[ "$REFRESH_PKGS" == true ]]; then
@@ -1609,10 +1628,17 @@ build_local_pkg() {
     cp -a "$pkgdir" "$tmp_build_dir"
     chown -R "$BUILD_USER":"$BUILD_USER" "$tmp_build_dir"
 
+    # The installer's PKGBUILD takes the ref of the fork to build from.
+    local pin=""
+    if [[ "$pkgname" == calamares-mainstream && -n "${CALAMARES_REF:-}" ]]; then
+        pin="CALAMARES_REF='$CALAMARES_REF'"
+        info "calamares-mainstream is built from the pinned ref $CALAMARES_REF."
+    fi
+
     info "Building local package: $pkgname..."
     if run_quiet "$pkgname" su "$BUILD_USER" -c "
         cd '$tmp_build_dir'
-        PACMAN=/usr/local/bin/pacman-noconfirm \
+        $pin PACMAN=/usr/local/bin/pacman-noconfirm \
         PKGDEST='$TEMP_OUTPUT' \
         makepkg -sf --noconfirm --skippgpcheck 2>&1
     "; then

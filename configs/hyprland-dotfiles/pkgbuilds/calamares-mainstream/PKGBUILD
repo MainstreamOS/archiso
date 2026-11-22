@@ -16,7 +16,7 @@
 #
 # To pin to an older known-good commit during incidents, set
 # CALAMARES_REF in the build environment, e.g.:
-#   CALAMARES_REF=v3.4.3 sudo ./build.sh --cleancal
+#   sudo CALAMARES_REF=v3.4.3 ./build.sh --cleancal
 
 pkgname=calamares-mainstream
 pkgver=3.4.3
@@ -73,11 +73,15 @@ makedepends=(
 provides=('calamares')
 conflicts=('calamares')
 
-# Source the mainstream branch directly. The #branch= fragment makes
-# makepkg track the tip of that branch; pkgver() below derives a
-# repeatable version string from the working tree.
-_branch="${CALAMARES_REF:-mainstream}"
-source=("calamares::git+https://github.com/MainstreamOS/calamares.git#branch=${_branch}")
+_ref="${CALAMARES_REF:-mainstream}"
+if [[ "$_ref" =~ ^[0-9a-f]{7,40}$ ]]; then
+    _fragment="commit=${_ref}"
+elif [[ "$_ref" =~ ^(v[0-9].*|[0-9]+(\.[0-9]+)*)$ ]]; then
+    _fragment="tag=${_ref}"
+else
+    _fragment="branch=${_ref}"
+fi
+source=("calamares::git+https://github.com/MainstreamOS/calamares.git#${_fragment}")
 sha256sums=('SKIP')
 
 build() {
