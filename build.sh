@@ -2341,24 +2341,48 @@ echo ""
 
 fi  # end REFRESH_PKGS
 
+# True when version <have> meets "<op> <want>", ordered the way pacman orders
+# versions.
+dep_version_ok() {
+    local have="$1" op="$2" want="$3" c
+    c=$(vercmp "$have" "$want" 2>/dev/null) || return 1
+    case "$op" in
+        '=')  (( c == 0 )) ;;
+        '>=') (( c >= 0 )) ;;
+        '<=') (( c <= 0 )) ;;
+        '>')  (( c > 0 )) ;;
+        '<')  (( c < 0 )) ;;
+        *)    return 1 ;;
+    esac
+}
+
 # The ISO carries its own package repo, and the mainstream-* meta-packages are
 # what pull the rest in. A dependency present in neither that repo nor Arch's is
 # only discovered when a user clicks install and pacman refuses, by which point
 # the image has shipped. Runs whether or not this invocation rebuilt packages,
 # since what matters is the repo about to be baked in.
 verify_bundled_deps() {
-    local pkgdir="$PKG_OUTPUT_DIR" f name dep bare m repo p
+    local pkgdir="$PKG_OUTPUT_DIR" f name ver dep bare op want m repo p v ok note
     local -a missing=()
-    local -A provided=()
+    # have_ver lists the versions on offer for a name, the package's own and
+    # those of versioned provides; have_exact holds each provides entry whole.
+    local -A provided=() have_ver=() have_exact=()
     [[ -d "$pkgdir" ]] || return 0
 
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
-        name=$(pacman -Qpq "$f" 2>/dev/null) || continue
+        read -r name ver < <(pacman -Qp "$f" 2>/dev/null) || continue
+        [[ -n "$name" ]] || continue
         provided["$name"]=1
+        have_ver["$name"]+="$ver "
         # A dependency can also be met by a provides, so those count as present.
         while IFS= read -r p; do
-            [[ -n "$p" ]] && provided["${p%%[<>=]*}"]=1
+            [[ -n "$p" ]] || continue
+            provided["${p%%[<>=]*}"]=1
+            have_exact["$p"]=1
+            if [[ "$p" == *=* ]]; then
+                have_ver["${p%%=*}"]+="${p#*=} "
+            fi
         done < <(bsdtar -xOf "$f" .PKGINFO 2>/dev/null | sed -n 's/^provides = //p')
     done < <(find "$pkgdir" -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' 2>/dev/null)
 
@@ -2377,26 +2401,57 @@ verify_bundled_deps() {
         while IFS= read -r dep; do
             bare=${dep%%[<>=]*}
             [[ -n "$bare" ]] || continue
-            [[ -n "${provided[$bare]:-}" ]] && continue
+            # What follows the name is the operator and the version asked for.
+            op=${dep#"$bare"}
+            want=${op##*[<>=]}
+            op=${op%"$want"}
+            ok=false
+            if [[ -n "${provided[$bare]:-}" ]]; then
+                if [[ -z "$op" ]]; then
+                    ok=true
+                elif [[ "$bare" == *.so ]]; then
+                    # A soname version is a label, not something to order.
+                    if [[ -n "${have_exact[$dep]:-}" ]]; then
+                        ok=true
+                    fi
+                else
+                    for v in ${have_ver[$bare]:-}; do
+                        if dep_version_ok "$v" "$op" "$want"; then
+                            ok=true
+                            break
+                        fi
+                    done
+                fi
+            fi
+            [[ "$ok" == true ]] && continue
             # Whatever Arch itself ships is fine. [mainstream] is deliberately
             # not accepted: the build host runs Mainstream, so its own online
             # repo would answer for anything and hide exactly the gap this
             # looks for — the installed system may have no network, and the
             # bundled repo is all it has.
-            if [[ -z "${arch_repo_of[$bare]+set}" ]]; then
+            if [[ -z "${arch_repo_of[$dep]+set}" ]]; then
                 # -Sddp resolves provides, so soname and virtual dependencies
                 # (libgl, ttf-font, libmpv.so) report the repo that really
                 # satisfies them; `pacman -Si` matches package names only and
-                # would call every one of them missing. LC_ALL=C keeps output
-                # parseable on a translated host, and `|| true` stops the
+                # would call every one of them missing. The whole dependency is
+                # passed, so a version it names has to be met too. LC_ALL=C
+                # keeps output parseable on a translated host, --noconfirm and
+                # the empty stdin keep a choice between providers from waiting
+                # on a terminal nobody is watching, and `|| true` stops the
                 # non-zero exit for an unresolvable name from killing the build
                 # under `set -e` before it can be reported.
-                repo=$(LC_ALL=C pacman -Sddp --print-format '%r' "$bare" 2>/dev/null | head -1) || true
-                arch_repo_of["$bare"]="$repo"
+                repo=$(LC_ALL=C pacman -Sddp --noconfirm --print-format '%r' "$dep" </dev/null 2>/dev/null | head -1) || true
+                arch_repo_of["$dep"]="$repo"
             fi
-            repo="${arch_repo_of[$bare]}"
-            [[ -n "$repo" && "$repo" != "mainstream" ]] && continue
-            missing+=("$m needs $bare${repo:+ (only in [$repo], not bundled)}")
+            repo="${arch_repo_of[$dep]}"
+            case "$repo" in
+                core|extra|multilib) continue ;;
+            esac
+            note="${repo:+ (only in [$repo], not bundled)}"
+            if [[ -n "$op" && -n "${have_ver[$bare]:-}" ]]; then
+                note=" (bundled at ${have_ver[$bare]% }, which does not satisfy it)"
+            fi
+            missing+=("$m needs $dep$note")
         done < <(bsdtar -xOf "$f" .PKGINFO 2>/dev/null | sed -n 's/^depend = //p')
     done < <(find "$pkgdir" -maxdepth 1 -name '*.pkg.tar.zst' ! -name '*-debug-*' 2>/dev/null)
 
