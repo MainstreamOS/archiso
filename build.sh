@@ -176,6 +176,29 @@ add_mainstream_db() {
             rm -f "$sig"
         fi
     done
+    # One file per package name. A download beside a local build of the same
+    # package leaves two, repo-add indexes whichever it is handed last, and the
+    # other still rides on the image. The name and version are read from the
+    # package, since a file name pattern misses versions that start with a
+    # letter. The highest version stays.
+    local f name ver
+    local -A kept_file=() kept_ver=()
+    while IFS= read -r f; do
+        read -r name ver < <(pacman -Qp "$f" 2>/dev/null) || continue
+        [[ -n "$name" && -n "$ver" ]] || continue
+        if [[ -z "${kept_file[$name]:-}" ]]; then
+            kept_file[$name]="$f"
+            kept_ver[$name]="$ver"
+        elif (( $(vercmp "$ver" "${kept_ver[$name]}") > 0 )); then
+            info "$name is bundled twice: keeping $ver, removing ${kept_file[$name]##*/}."
+            rm -f "${kept_file[$name]}" "${kept_file[$name]}.sig"
+            kept_file[$name]="$f"
+            kept_ver[$name]="$ver"
+        else
+            info "$name is bundled twice: keeping ${kept_ver[$name]}, removing ${f##*/}."
+            rm -f "$f" "$f.sig"
+        fi
+    done < <(find "$repo_dir" -maxdepth 1 -type f -name '*.pkg.tar.zst' ! -name '*-debug-*' | sort)
     # repo-add only ADDS — start from a clean DB so any previously-indexed
     # (and now-excluded) GPU driver entries are dropped, not carried forward.
     rm -f "$repo_dir"/mainstream.db{,.tar.gz,.tar.gz.old} \
@@ -1751,7 +1774,9 @@ chown "$BUILD_USER":"$BUILD_USER" "$GIT_PKGS_DIR"
 MICROTEX_PKG="mainstream-microtex-git"
 MICROTEX_SRC="$DIST_ARCH_PATH/$MICROTEX_PKG"
 existing_microtex=$(find "$PKG_OUTPUT_DIR" -name "${MICROTEX_PKG}-*.pkg.tar.zst" ! -name "*-debug-*" 2>/dev/null | head -1)
-if [[ -n "$existing_microtex" ]] && [[ "$CLEAN_BUILD" == false ]]; then
+if [[ -n "${GITHUB_PROVIDED[$MICROTEX_PKG]:-}" ]]; then
+    info "$MICROTEX_PKG: using the [mainstream] GitHub build, skipping local rebuild."
+elif [[ -n "$existing_microtex" ]] && [[ "$CLEAN_BUILD" == false ]]; then
     info "$MICROTEX_PKG — already built, skipping."
 elif [[ ! -d "$MICROTEX_SRC" ]]; then
     warn "$MICROTEX_PKG — directory missing at $MICROTEX_SRC, skipping."
