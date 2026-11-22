@@ -228,6 +228,20 @@ detect_dkms_version() {
     printf '%s\n' "$v"
 }
 
+# The standard image carries the mainline driver, whose userspace blacklists
+# nouveau. A card left on nouveau cannot use it, so it comes off the target.
+remove_mainline_nvidia() {
+    local p present=()
+    for p in nvidia-open nvidia-open-dkms nvidia-dkms nvidia-utils; do
+        # pacman -Q also answers for a package that only provides the name.
+        [[ "$(pacman -Qq "$p" 2>/dev/null)" == "$p" ]] && present+=("$p")
+    done
+    [[ ${#present[@]} -eq 0 ]] && return 0
+    info "Removing the mainline NVIDIA driver so nouveau can load: ${present[*]}"
+    pacman -Rns --noconfirm "${present[@]}" 2>&1 \
+        || warn "Could not remove ${present[*]}; nouveau stays blacklisted until they are gone."
+}
+
 # Standard edition has no legacy NVIDIA prebuilts: fall back to nouveau so the
 # target still boots, and breadcrumb the user to the NVIDIA (legacy) edition.
 # Never runs on the NVIDIA edition (prebuilts present there).
@@ -235,6 +249,7 @@ legacy_nvidia_fallback() {
     local gen="$1"
     warn "Legacy NVIDIA ($gen): proprietary prebuilts not on this edition — falling back to nouveau."
     install_pkgs mesa lib32-mesa
+    remove_mainline_nvidia
     note_failure "Legacy NVIDIA ($gen): proprietary drivers are not on this (standard) edition — installed nouveau as a fallback. For full acceleration, reinstall using the MainstreamOS NVIDIA (legacy) edition ISO."
 }
 
@@ -435,6 +450,7 @@ if $HAS_NVIDIA; then
         nouveau|*)
             # Pre-Fermi (Tesla / older) — nouveau is the only realistic option.
             install_pkgs mesa lib32-mesa
+            remove_mainline_nvidia
             ;;
     esac
 
