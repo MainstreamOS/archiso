@@ -2231,13 +2231,21 @@ if command -v uv &>/dev/null && [[ -f "$REQUIREMENTS" ]]; then
         printf '3.12\n' > "$VENV_SKEL_PATH/.python-version"
         info "Pre-baked Python 3.12 venv into skel (interpreter: $TARGET_PY)."
     else
-        warn "Pre-baked venv incomplete (venv=$_venv_rc pip=$_pip_rc import=$_imp_rc) — post-install will build it at install time."
         rm -rf "$VENV_SKEL_PATH"
+        # The install-time fallback needs PyPI, so an offline install from an
+        # image without the environment gets no color generation at all.
+        if [[ -n "$RELEASE_VERSION" ]]; then
+            die "The Python color environment could not be pre-baked (venv=$_venv_rc pip=$_pip_rc import=$_imp_rc), and a release image has to carry it. Check the connection to PyPI and build again."
+        fi
+        warn "Pre-baked venv incomplete (venv=$_venv_rc pip=$_pip_rc import=$_imp_rc) — post-install will build it at install time."
     fi
     set -e
 else
     command -v uv &>/dev/null || warn "uv not on build host — venv deferred to install time."
     [[ -f "$REQUIREMENTS" ]] || warn "requirements.txt missing at $REQUIREMENTS — install-time venv build may fail."
+    if [[ -n "$RELEASE_VERSION" ]]; then
+        die "The Python color environment was not pre-baked, and a release image has to carry it. Install uv on the build host, check that the dotfiles carry sdata/uv/requirements.txt, and build again."
+    fi
 fi
 
 
