@@ -1907,24 +1907,52 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             done
         fi
 
-        # Every script under usr/local/bin that dots-hyprland owns, refreshed
+        # What updatems-system installs on a machine that updates, as "mode
+        # source destination" lines. The refresh below follows the same list,
+        # so the image and an update take each file from the same place. Run as
+        # the build user, so a copy from before the flag stops at its root check
+        # rather than starting on its root work.
+        _root_list="$(su "$BUILD_USER" -c "bash '$DOTS_WORK/sdata/update/updatems-system' --list-root-files" 2>/dev/null)" \
+            || _root_list=""
+
+        # Every root helper, policy, rule and unit dots-hyprland owns, refreshed
         # from the clone the way skel already is, so a dots commit cannot leave
         # the image running a script several versions behind its own skel.
-        # Driven off what the profile ships, like the policy loop below, so a
-        # new helper still needs its committed copy before the clone refreshes it.
-        for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/*; do
-            [[ -f "$_dst" ]] || continue
-            for _dir in polkit update keyring boot provision sddm; do
-                _src="$DOTS_WORK/sdata/$_dir/$(basename "$_dst")"
-                [[ -f "$_src" ]] || continue
-                install -Dm755 "$_src" "$_dst"
-                break
+        # Only what the profile already ships is refreshed, so a new helper
+        # still needs its committed copy before the clone refreshes it.
+        if [[ -n "$_root_list" ]]; then
+            while read -r _mode _src _dst; do
+                [[ -n "$_dst" && -f "$PROFILE_DIR/airootfs$_dst" ]] || continue
+                [[ -f "$DOTS_WORK/$_src" ]] \
+                    || die "updatems-system lists $_dst as installed from $_src, but the clone has no such file"
+                install -D -m"$_mode" "$DOTS_WORK/$_src" "$PROFILE_DIR/airootfs$_dst"
+            done <<< "$_root_list"
+        else
+            # A clone from before updatems-system could print its list. Its
+            # helpers are matched by name in the folders they lived in then.
+            for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/*; do
+                [[ -f "$_dst" ]] || continue
+                for _dir in polkit update keyring boot provision sddm; do
+                    _src="$DOTS_WORK/sdata/$_dir/$(basename "$_dst")"
+                    [[ -f "$_src" ]] || continue
+                    install -Dm755 "$_src" "$_dst"
+                    break
+                done
             done
-        done
+            for _dst in "$PROFILE_DIR"/airootfs/usr/share/polkit-1/actions/*.policy \
+                        "$PROFILE_DIR"/airootfs/usr/share/polkit-1/rules.d/*.rules; do
+                [[ -f "$_dst" ]] || continue
+                _from="$DOTS_WORK/sdata/polkit/$(basename "$_dst")"
+                [[ -f "$_from" ]] || continue
+                install -Dm644 "$_from" "$_dst"
+            done
+        fi
 
-        # The same for the dots-owned pieces that are not plain bin scripts. The
-        # install steps source these shared libraries from the image rather than
-        # cloning dots and sourcing it as root at install time.
+        # The dots-owned pieces no update installs, so the list does not carry
+        # them: shared libraries the install steps source from the image rather
+        # than cloning dots and sourcing it as root at install time, and the
+        # login screen's keyboard bridge. The ones the list does carry stay
+        # here for a clone that cannot print it.
         for _pair in \
             "sdata/lib/gpu-config.sh:644:usr/local/lib/gpu-config.sh" \
             "sdata/lib/wifi-country.sh:644:usr/local/lib/wifi-country.sh" \
@@ -1934,21 +1962,12 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             "sdata/polkit/power-key-helper.sh:755:usr/local/bin/power-key-helper" \
             "sdata/lib/provision-user.sh:644:usr/local/lib/mainstream-provision-user.sh" \
             "sdata/lib/venv-common.sh:644:usr/local/lib/mainstream-venv-common.sh" \
+            "sdata/sddm/pixie-sddm-keyboard-bridge.sh:755:usr/local/bin/pixie-sddm-keyboard-bridge.sh" \
             "sdata/firewalld/MainstreamWorkstation.xml:644:etc/firewalld/zones/MainstreamWorkstation.xml" \
             "sdata/system-sleep/hyprland-dpms.sh:755:usr/lib/systemd/system-sleep/hyprland-dpms.sh"; do
             _src="$DOTS_WORK/${_pair%%:*}"; _rest="${_pair#*:}"
             [[ -f "$_src" ]] || continue
             install -D -m"${_rest%%:*}" "$_src" "$PROFILE_DIR/airootfs/${_rest#*:}"
-        done
-        # Driven off what the profile already ships rather than off what the
-        # dotfiles hold, so this refreshes the image and never adds a rule or an
-        # action to it. Anything genuinely new is still a deliberate addition.
-        for _dst in "$PROFILE_DIR"/airootfs/usr/share/polkit-1/actions/*.policy \
-                    "$PROFILE_DIR"/airootfs/usr/share/polkit-1/rules.d/*.rules; do
-            [[ -f "$_dst" ]] || continue
-            _from="$DOTS_WORK/sdata/polkit/$(basename "$_dst")"
-            [[ -f "$_from" ]] || continue
-            install -Dm644 "$_from" "$_dst"
         done
 
         # A machine installed from this image keeps its root helpers and
@@ -1958,11 +1977,8 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # the build stops until the list names it. The login screen's pieces
         # are left out of the test, since updatems-system installs those only
         # where there is a login screen. A clone whose updatems-system cannot
-        # print its list predates it, and is not held to it. Run as the build
-        # user, so a copy from before the flag stops at its root check rather
-        # than starting on its root work.
-        if _root_list="$(su "$BUILD_USER" -c "bash '$DOTS_WORK/sdata/update/updatems-system' --list-root-files" 2>/dev/null)" \
-           && [[ -n "$_root_list" ]]; then
+        # print its list predates it, and is not held to it.
+        if [[ -n "$_root_list" ]]; then
             _unlisted=()
             for _dst in "$PROFILE_DIR"/airootfs/usr/local/bin/* \
                         "$PROFILE_DIR"/airootfs/usr/share/polkit-1/actions/*.policy \
@@ -1981,6 +1997,34 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
             done
             if [[ ${#_unlisted[@]} -gt 0 ]]; then
                 die "the image ships ${_unlisted[*]} from the dotfiles, but updatems-system's ROOT_FILES does not list them, so installed machines would never be updated past install day; add them there"
+            fi
+
+            # The other way round: a helper, policy or unit an update installs
+            # but the image does not ship is missing from every new install
+            # until its first update. What the mainstream-system package
+            # carries (sdata/dist-arch) arrives with that package instead.
+            _installer_placed=(
+                # post-install-login installs these from the unpacked dotfiles,
+                # and only where there is a login screen.
+                /usr/local/bin/sddm-bg-helper
+                /usr/share/polkit-1/actions/org.illogicalimpulse.sddm-bg.policy
+                /usr/share/polkit-1/rules.d/50-sddm-bg.rules
+                # post-install-system writes these two units itself.
+                /etc/systemd/system/pacman-keyring-init.service
+                /etc/systemd/system/pacman-keyring-init.timer
+            )
+            _unshipped=()
+            while read -r _mode _src _dst; do
+                case "$_dst" in
+                    /usr/local/bin/*|/usr/share/polkit-1/*|/usr/lib/systemd/system/*) ;;
+                    *) continue ;;
+                esac
+                [[ "$_src" == sdata/dist-arch/* ]] && continue
+                [[ " ${_installer_placed[*]} " == *" $_dst "* ]] && continue
+                [[ -f "$PROFILE_DIR/airootfs$_dst" ]] || _unshipped+=("$_dst")
+            done <<< "$_root_list"
+            if [[ ${#_unshipped[@]} -gt 0 ]]; then
+                die "updatems-system's ROOT_FILES installs ${_unshipped[*]}, but the image does not ship them, so a new install would lack them until its first update; add them to airootfs, or to the list of pieces the installer places itself"
             fi
         fi
 
