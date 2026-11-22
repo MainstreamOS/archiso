@@ -438,6 +438,10 @@ restore_profile_overlay() {
 # boot's switch to the online repo; they are the [mainstream] targets of pac in
 # dots' mainstream-welcome-install, and belong here when it gains one.
 WELCOME_PKGS=(sunshine wivrn-server wivrn-dashboard xrizer lib32-xrizer xr-hardware wayvr)
+# What an install step adds by hardware match instead of by name in a list:
+# post-install-boot installs what mainstream-hardware-quirks prints, and that
+# script leaves out a fix whose package the image does not carry.
+HARDWARE_PKGS=(mainstream-tas2783-dkms)
 declare -a LOCAL_BUILT_PKGS=()
 mainstream_unneeded_pkgs() {
     local db="$1" dir d n b f line section
@@ -472,7 +476,7 @@ mainstream_unneeded_pkgs() {
     done
     rm -rf "$dir"
 
-    seeds=("${METAPKGS[@]}" "${AUR_DEPS[@]%%::*}" "${LOCAL_BUILT_PKGS[@]}" "${WELCOME_PKGS[@]}")
+    seeds=("${METAPKGS[@]}" "${AUR_DEPS[@]%%::*}" "${LOCAL_BUILT_PKGS[@]}" "${WELCOME_PKGS[@]}" "${HARDWARE_PKGS[@]}")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' \
         "$PROFILE_DIR/packages.x86_64")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -nE \
