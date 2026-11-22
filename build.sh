@@ -2015,6 +2015,12 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
                 install -Dm644 "$f" \
                     "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-mac/asahi_firmware/$(basename "$f")"
             done
+            # The license texts the NOTICE names go with the pieces they cover.
+            for f in "$DOTS_WORK"/sdata/mac/LICENSE-*.txt; do
+                [[ -f "$f" ]] || continue
+                install -Dm644 "$f" \
+                    "$PROFILE_DIR/airootfs/usr/local/lib/mainstream-mac/$(basename "$f")"
+            done
         fi
 
         # What updatems-system installs on a machine that updates, as "mode
