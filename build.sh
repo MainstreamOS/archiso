@@ -1864,6 +1864,11 @@ info "Purging stale copies of locally-built packages from host pacman cache..."
 _purged=0
 for _pkg in "$PKG_OUTPUT_DIR"/*.pkg.tar.zst; do
     [[ -f "$_pkg" ]] || continue
+    # Arch's own packages, staged for the offline Broadcom set. The host's
+    # cached copies are those same files, not stale builds of ours.
+    case "$(basename "$_pkg")" in
+        broadcom-wl-dkms-[0-9]*|dkms-[0-9]*|linux-headers-[0-9]*|pahole-[0-9]*) continue ;;
+    esac
     _cached="/var/cache/pacman/pkg/$(basename "$_pkg")"
     if [[ -f "$_cached" ]]; then
         rm -f "$_cached"
