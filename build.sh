@@ -52,6 +52,8 @@ warn()    { log "WARN:  $*"; }
 # Filled in once SCRIPT_DIR is known; die() copes with it being empty, since a
 # failure can happen before that point.
 STATUS_FILE="${STATUS_FILE:-}"
+# Set once this run has written its own outcome there.
+_RESULT_RECORDED=false
 
 _notify_user() {
     [[ -n "${SUDO_USER:-}" ]] || return 0
@@ -62,8 +64,8 @@ _notify_user() {
         notify-send -a "ISO build" -u "$1" "$2" "$3" 2>/dev/null || true
 }
 
-die() {
-    log "FATAL: $*"
+_record_failure() {
+    _RESULT_RECORDED=true
     if [[ -n "${STATUS_FILE:-}" ]]; then
         {
             printf 'result   : FAILED\n'
@@ -75,7 +77,47 @@ die() {
         [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$STATUS_FILE" 2>/dev/null || true
     fi
     _notify_user critical "Build FAILED" "$*"
+}
+
+die() {
+    log "FATAL: $*"
+    _record_failure "$*"
     exit 1
+}
+
+# Every way out of the build passes through here: a die, a command failing
+# under set -e, an interrupt, and the normal end. What a package phase puts on
+# the host (a build account with passwordless sudo among it) and what the build
+# leaves root-owned in the checkout must not outlive the run, and a run that
+# ends badly without a word is still written down as failed.
+declare -a _BUILD_TMP=()
+_on_exit() {
+    local rc=$? t
+    set +e
+    restore_profile_overlay
+    if [[ -n "${BUILD_USER:-}" ]]; then
+        for t in "${PKG_WORK_DIR:-}" "${TEMP_OUTPUT:-}" "${BUILD_SCRIPT:-}" "${AUR_SCRIPT:-}" \
+                 "${DOTS_WORK:-}" "${_DOTS_LOCAL_MIRROR:-}" "${PACMAN_WRAPPER:-}" \
+                 "${_BUILD_TMP[@]+"${_BUILD_TMP[@]}"}"; do
+            [[ -n "$t" ]] && rm -rf -- "$t"
+        done
+        id "$BUILD_USER" &>/dev/null && userdel -r "$BUILD_USER" 2>/dev/null
+        rm -f /etc/sudoers.d/"$BUILD_USER"
+    fi
+    # Root wrote into the operator's checkout: refreshed scripts, the regenerated
+    # netinstall list, the bundled repo. Left as root's they cannot be committed,
+    # discarded or cleaned without sudo. Skipped while anything is mounted under
+    # the profile, since a recursive chown would reach through the mount.
+    if [[ -n "${SUDO_USER:-}" && -d "${PROFILE_DIR:-}" ]] \
+       && ! findmnt -lno TARGET 2>/dev/null \
+            | awk -v p="$(realpath -- "$PROFILE_DIR")/" 'index($0, p) == 1 { found = 1 } END { exit !found }'; then
+        chown -hR "${SUDO_USER}:" "$PROFILE_DIR" 2>/dev/null
+    fi
+    if (( rc != 0 )) && [[ "$_RESULT_RECORDED" != true ]]; then
+        log "FATAL: the build stopped with exit status $rc."
+        _record_failure "The build stopped with exit status $rc before it finished. The last lines on the terminal and the detail log say where."
+    fi
+    return 0
 }
 success() { log "OK:    $*"; }
 
@@ -935,6 +977,21 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+# Emptied first, so the handler only ever acts on what this run assigned and
+# never on a like-named variable the environment carried in.
+BUILD_USER="" PKG_WORK_DIR="" TEMP_OUTPUT="" BUILD_SCRIPT="" AUR_SCRIPT="" DOTS_WORK="" PACMAN_WRAPPER=""
+trap _on_exit EXIT
+
+# Written before any work, so the result an earlier run left cannot be read as
+# this one's while it is still going.
+{
+    printf 'result   : RUNNING\n'
+    printf 'edition  : %s\n' "$_edition"
+    printf 'detail   : %s\n' "$DETAIL_LOG"
+    printf 'started  : %s\n' "$(date '+%F %T')"
+} > "$STATUS_FILE" 2>/dev/null || true
+[[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$STATUS_FILE" 2>/dev/null || true
+
 # An edition overlay rewrites tracked profile files and puts them back on exit.
 # A build that was killed or lost power never got that far, and the next build
 # would read the overlaid files as the standard profile, so the backup it left
@@ -943,8 +1000,10 @@ if [[ -d "$_OVERLAY_BAK_PATH" ]]; then
     warn "An earlier build left its edition overlay in the profile; restoring the profile from $_OVERLAY_BAK_PATH."
     _OVERLAY_BAK_DIR="$_OVERLAY_BAK_PATH"
     restore_profile_overlay
-    [[ -z "$_OVERLAY_BAK_DIR" ]] \
-        || die "Could not restore the profile from $_OVERLAY_BAK_PATH. Put those files back by hand, remove that directory, then build again."
+    if [[ -n "$_OVERLAY_BAK_DIR" ]]; then
+        _OVERLAY_BAK_DIR=""
+        die "Could not restore the profile from $_OVERLAY_BAK_PATH. Put those files back by hand, remove that directory, then build again."
+    fi
     info "Profile restored."
 fi
 
@@ -1442,6 +1501,7 @@ build_local_pkg() {
     fi
 
     local tmp_build_dir="/tmp/local-pkg-${pkgname}"
+    _BUILD_TMP+=("$tmp_build_dir")
     rm -rf "$tmp_build_dir"
     cp -a "$pkgdir" "$tmp_build_dir"
     chown -R "$BUILD_USER":"$BUILD_USER" "$tmp_build_dir"
@@ -1587,6 +1647,7 @@ for entry in "${AUR_DEPS[@]}"; do
     # kernel module has no separate AUR repo, so grabbing only the entry-named
     # artifact silently dropped it (the ISO shipped userspace with no driver).
     rm -f "$TEMP_OUTPUT"/*.pkg.tar.zst 2>/dev/null || true
+    _BUILD_TMP+=("/tmp/aur-dep-${entry##*::}")
     if run_quiet "$entry" su "$BUILD_USER" -c "bash '$AUR_SCRIPT' '$entry' '$TEMP_OUTPUT'"; then
         mapfile -t built < <(find "$TEMP_OUTPUT" -name "*.pkg.tar.zst" ! -name "*-debug-*")
         if [[ ${#built[@]} -gt 0 ]]; then
@@ -2096,6 +2157,7 @@ prebuild_hyprland_plugin() {
     info "Pre-building $name plugin from $repo_url ($branch)..."
 
     local work="/tmp/iso-plugin-$name"
+    _BUILD_TMP+=("$work")
     rm -rf "$work"
 
     if ! su "$BUILD_USER" -c "git clone --depth=1 --branch '$branch' '$repo_url' '$work'"; then
@@ -2384,8 +2446,6 @@ for _bin in mkfs.fat mmd mcopy xorriso mksquashfs mkfs.erofs pacstrap curl tar m
     fi
 done
 
-trap 'restore_profile_overlay' EXIT
-
 # ── Work directory ─────────────────────────────────────────────────────────
 # The live root is built fresh every time. mkarchiso skips every step it has
 # already stamped in the work directory, pacstrap included, so a reused root
@@ -2606,6 +2666,7 @@ _status_file="$STATUS_FILE"
     printf 'dotfiles : %s\n' "$DOTFILES_REPO"
     printf 'finished : %s\n' "$(date '+%F %T')"
 } > "$_status_file" 2>/dev/null || true
+_RESULT_RECORDED=true
 [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$_status_file" 2>/dev/null || true
 
 echo ""
