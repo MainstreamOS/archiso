@@ -523,6 +523,17 @@ mainstream_unneeded_pkgs() {
 declare -A GITHUB_PROVIDED=()
 declare -A FAILED_DOWNLOADS=()
 
+# True when <dir> holds a package file whose package name is exactly <name>.
+# The name is read from the package: a file name cannot tell foo from foo-bar.
+repo_has_pkg() {
+    local dir="$1" name="$2" f
+    for f in "$dir/$name"-*.pkg.tar.zst; do
+        [[ -f "$f" ]] || continue
+        [[ "$(pacman -Qpq "$f" 2>/dev/null)" == "$name" ]] && return 0
+    done
+    return 1
+}
+
 # Check <db> against its detached signature <sig> with the project key the
 # profile ships. The keyring is made from that one key in a directory of its
 # own, so no other key can satisfy the check and no user keyring is read or
@@ -704,6 +715,31 @@ download_mainstream_repo_pkgs() {
             unset "GITHUB_PROVIDED[$parent]"
         fi
     done
+
+    # A package nothing here compiles exists only as that download. Nothing
+    # bundled depends on most of them, so without one the image still builds and
+    # every later check passes, and the installed system simply lacks the app.
+    local e
+    local -a lost=()
+    local -A from_aur=() built_here=()
+    for e in "${AUR_DEPS[@]%%::*}"; do from_aur[$e]=1; done
+    # mainstream-microtex-git is compiled from the dotfiles' PKGBUILD further on.
+    for e in "${!from_aur[@]}" "${METAPKGS[@]}" "${LOCAL_BUILT_PKGS[@]}" mainstream-microtex-git; do
+        built_here[$e]=1
+    done
+    for failed in "${!FAILED_DOWNLOADS[@]}"; do
+        [[ -n "${GITHUB_PROVIDED[$failed]:-}" || -n "${built_here[$failed]:-}" ]] && continue
+        # A 32-bit sibling comes out of its parent's build.
+        parent="${failed#lib32-}"
+        [[ "$parent" != "$failed" && -n "${from_aur[$parent]:-}" ]] && continue
+        repo_has_pkg "$repo_dir" "$failed" && continue
+        lost+=("$failed")
+    done
+    if (( ${#lost[@]} > 0 )); then
+        local lostmsg="did not download, and nothing in this build compiles them: ${lost[*]}"
+        [[ "$CLEAN_BUILD" == true ]] && die "These packages $lostmsg. The image would be built without them and every install from it would lack them; check the connection to github.com and re-run."
+        warn "These packages $lostmsg. No copy from an earlier build is here either, so this image will not carry them."
+    fi
 
     info "Pulled ${#GITHUB_PROVIDED[@]} prebuilt package(s) from the [mainstream] GitHub repo."
 }
