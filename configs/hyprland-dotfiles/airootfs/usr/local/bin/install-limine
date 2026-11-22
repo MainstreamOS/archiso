@@ -70,7 +70,7 @@ rm -f /etc/mkinitcpio.d/*.preset || true
 # boot that every check still reports as clean. Reinstalling linux here keeps
 # the kernel in lockstep with whatever the driver step installs minutes later.
 KERNEL_REINSTALLED=false
-if ping -c1 -W3 archlinux.org &>/dev/null; then
+if curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
     info "Network available — reinstalling the $KERNEL_PKG kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
     #

@@ -5,7 +5,7 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 info "Installing pixie SDDM theme..."
 
 SDDM_THEME_DIR="/usr/share/sddm/themes/pixie"
-if ping -c1 -W3 github.com &>/dev/null; then
+if curl -fsS --max-time 8 -o /dev/null https://github.com &>/dev/null; then
     if git clone --depth=1 https://github.com/MainstreamOS/pixie-sddm.git "$SDDM_THEME_DIR"; then
         info "pixie SDDM theme installed successfully."
     else

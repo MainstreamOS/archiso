@@ -73,7 +73,7 @@ if [[ -f "$DOTS_ARCHIVE" ]]; then
 else
     NEED_CLONE=true
     info "No dotfiles archive on this image. Checking network connectivity..."
-    if ! ping -c1 -W5 github.com &>/dev/null; then
+    if ! curl -fsS --max-time 8 -o /dev/null https://github.com &>/dev/null; then
         die "No network connectivity. Cannot clone dotfiles. Aborting."
     fi
     info "Network OK."

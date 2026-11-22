@@ -50,7 +50,7 @@ pacman-key --populate archlinux
 
 # Only sync package databases if network is available
 info "Checking network connectivity..."
-if ping -c1 -W3 archlinux.org &>/dev/null; then
+if curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
     # Sort mirrors by speed so all subsequent downloads are fast.
     # reflector runs on the live ISO boot, but the chroot gets a fresh
     # unsorted mirrorlist from pacman-mirrorlist — fix it here.
