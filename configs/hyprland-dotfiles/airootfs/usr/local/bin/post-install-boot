@@ -791,24 +791,55 @@ if ! /usr/bin/mkinitcpio -P; then
 fi
 
 info "Building Limine boot entries..."
-if ! limine-mkinitcpio; then
-    log "ERROR: limine-mkinitcpio failed; refusing to install an unbootable system."
-    exit 1
-fi
-if [[ "$IS_UEFI" == true ]]; then
-    # limine-mkinitcpio skips a kernel whose UKI fails to build, and a reused
-    # partition can hold an older one, so only a pin that matches proves this build.
-    _uki="/boot/efi/EFI/Linux/mainstream_${KERNEL_PKG}.efi"
-    _uki_rel=${_uki#/boot/efi/}
-    _pin=$(grep -ioE "^[[:space:]]*(image_)?path:[[:space:]]*boot\(\):/+${_uki_rel//./\\.}#[0-9a-f]{128}" \
-        /boot/efi/limine.conf 2>/dev/null | tail -n1) || _pin=""
-    _pin=${_pin##*#}
-    if [[ ! -s "$_uki" || -z "$_pin" || "$(b2sum < "$_uki" | cut -c1-128)" != "${_pin,,}" ]]; then
-        esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}')
-        log "ERROR: UKI missing or not pinned in limine.conf after Limine build (free ESP space: ${esp_free:-?} MiB)."
-        exit 1
+# Present only when install-limine kept another system's limine.conf on a
+# shared EFI partition: the config this install would otherwise start from.
+# If the entries cannot be built into the kept file, it takes that file's
+# place and they are built once more, so the install still ends bootable.
+_fresh_conf=/var/lib/mainstream/limine.conf.fresh
+while :; do
+    _boot_err=""
+    if ! limine-mkinitcpio; then
+        _boot_err="limine-mkinitcpio failed; refusing to install an unbootable system."
+    elif [[ "$IS_UEFI" == true ]]; then
+        # limine-mkinitcpio skips a kernel whose UKI fails to build, and a reused
+        # partition can hold an older one, so only a pin that matches proves this build.
+        _uki="/boot/efi/EFI/Linux/mainstream_${KERNEL_PKG}.efi"
+        _uki_rel=${_uki#/boot/efi/}
+        _pins=$(grep -ioE "^[[:space:]]*(image_)?path:[[:space:]]*boot\(\):/+${_uki_rel//./\\.}#[0-9a-f]{128}" \
+            /boot/efi/limine.conf 2>/dev/null) || _pins=""
+        _pin=${_pins##*$'\n'}
+        _pin=${_pin##*#}
+        if [[ ! -s "$_uki" || -z "$_pin" || "$(b2sum < "$_uki" | cut -c1-128)" != "${_pin,,}" ]]; then
+            esp_free=$(df -m /boot/efi 2>/dev/null | awk 'NR==2 {print $4}') || esp_free=""
+            _boot_err="UKI missing or not pinned in limine.conf after Limine build (free ESP space: ${esp_free:-?} MiB)."
+        elif [[ -s "$_fresh_conf" ]]; then
+            # A kept file that pins this image under another checksum as well
+            # holds an entry for a system whose boot image was just replaced.
+            while IFS= read -r _p; do
+                _p=${_p##*#}
+                [[ "${_p,,}" == "${_pin,,}" ]] \
+                    || _boot_err="the kept limine.conf has an entry for a boot image this install replaced."
+            done <<<"$_pins"
+        fi
     fi
+    [[ -n "$_boot_err" ]] || break
+    if [[ -s "$_fresh_conf" ]] && cp -f "$_fresh_conf" "$BOOT_PATH/limine.conf"; then
+        rm -f "$_fresh_conf"
+        _fresh_conf=""
+        warn "The boot menu kept on the EFI partition could not be used: $_boot_err It was replaced with a new one; the dated copy saved beside it holds the old entries."
+        continue
+    fi
+    log "ERROR: $_boot_err"
+    exit 1
+done
+# The kept menu took the entry. One set to start without showing would boot
+# the other system every time with no way to choose this one, so it waits.
+if [[ -n "$_fresh_conf" && -s "$_fresh_conf" ]] \
+   && grep -qiE '^[[:space:]]*timeout:[[:space:]]*0[[:space:]]*$' "$BOOT_PATH/limine.conf"; then
+    sed -i -E 's/^([[:space:]]*timeout:[[:space:]]*)0[[:space:]]*$/\15/I' "$BOOT_PATH/limine.conf" \
+        && warn "The boot menu kept on the EFI partition was set to start without showing. It now waits 5 seconds so Mainstream OS can be chosen."
 fi
+[[ -z "$_fresh_conf" ]] || rm -f "$_fresh_conf"
 
 # limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
 # cmdline). Two cleanups leave the menu as exactly that entry + Windows:

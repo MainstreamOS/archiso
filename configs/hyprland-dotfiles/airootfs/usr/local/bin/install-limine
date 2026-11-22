@@ -212,8 +212,50 @@ fi
 TEMPLATE="/etc/limine.conf.template"
 
 CONF_DEST="$BOOT_PATH/limine.conf"
+# Where the config made from the template is written: into place, unless the
+# EFI partition is shared and another system's boot menu is already on it.
+# That file stays, with a dated copy beside it, for limine-mkinitcpio to add
+# this system's entry to, and the config from the template is set aside for
+# post-install-boot to fall back on if the kept file cannot take the entry.
+CONF_OUT="$CONF_DEST"
+CONF_FRESH="/var/lib/mainstream/limine.conf.fresh"
 
 if [ -f "$TEMPLATE" ]; then
+    if [ "$IS_UEFI" = true ] && grep -qE '^[[:space:]]*/' "$CONF_DEST" 2>/dev/null; then
+        CONF_BACKUP="$CONF_DEST.$(date +%Y%m%d-%H%M%S).bak"
+        cp -f "$CONF_DEST" "$CONF_BACKUP" || CONF_BACKUP=""
+        # A Mainstream OS block in that file starts the boot image this install
+        # is about to replace, so it belongs to a system that is going away and
+        # is not a reason to keep the file. A top-level entry starts a line
+        # with a single "/".
+        mkdir -p "${CONF_FRESH%/*}"
+        CONF_PRUNED="$CONF_FRESH.kept"
+        awk '
+            /^\/\+?Mainstream OS/ { skip=1; next }
+            /^\/[^\/]/            { skip=0 }
+            skip { next }
+            { print }
+        ' "$CONF_DEST" > "$CONF_PRUNED" || cp -f "$CONF_DEST" "$CONF_PRUNED"
+        if grep -qE '^[[:space:]]*/' "$CONF_PRUNED"; then
+            if ! cmp -s "$CONF_PRUNED" "$CONF_DEST"; then
+                cp -f "$CONF_PRUNED" "$CONF_DEST.new" && mv -f "$CONF_DEST.new" "$CONF_DEST" \
+                    || warn "The entry of an earlier Mainstream OS install could not be removed from the boot menu kept on the EFI partition."
+            fi
+            if [ -n "$CONF_BACKUP" ]; then
+                warn "Kept the boot menu already on the EFI partition ($CONF_DEST, copy saved as $CONF_BACKUP). Mainstream OS is added to it, and its default entry stays as that menu set it."
+            else
+                warn "Kept the boot menu already on the EFI partition ($CONF_DEST); a copy of it could not be saved. Mainstream OS is added to it."
+            fi
+            CONF_OUT="$CONF_FRESH"
+        elif [ -n "$CONF_BACKUP" ]; then
+            _msg="Replaced the boot menu of an earlier Mainstream OS install on the EFI partition ($CONF_DEST, copy saved as $CONF_BACKUP)."
+            info "$_msg"
+            _ms_health "INFO: $_msg"
+        else
+            warn "Replaced the boot menu of an earlier Mainstream OS install on the EFI partition ($CONF_DEST); a copy of it could not be saved."
+        fi
+        rm -f "$CONF_PRUNED"
+    fi
     info "Deploying configuration..."
     # `|` delimiter avoids clashes with the `/dev/mapper/...` path in the LUKS
     # branch. The current template carries REPLACE_ME_CMDLINE and gets the whole
@@ -223,14 +265,14 @@ if [ -f "$TEMPLATE" ]; then
     # carries, which is the name limine-mkinitcpio looks for when it replaces it.
     if grep -q 'REPLACE_ME_CMDLINE' "$TEMPLATE"; then
         sed -e "s|REPLACE_ME_KERNEL|$KERNEL_PKG|g" \
-            -e "s|REPLACE_ME_CMDLINE|$KERNEL_CMDLINE|g" "$TEMPLATE" > "$CONF_DEST"
+            -e "s|REPLACE_ME_CMDLINE|$KERNEL_CMDLINE|g" "$TEMPLATE" > "$CONF_OUT"
     elif grep -q 'REPLACE_ME_ROOT_SPEC' "$TEMPLATE"; then
-        sed "s|REPLACE_ME_ROOT_SPEC|$ROOT_SPEC|g" "$TEMPLATE" > "$CONF_DEST"
+        sed "s|REPLACE_ME_ROOT_SPEC|$ROOT_SPEC|g" "$TEMPLATE" > "$CONF_OUT"
     else
-        sed "s|REPLACE_ME_UUID|${ROOT_PARTUUID:-}|g" "$TEMPLATE" > "$CONF_DEST"
+        sed "s|REPLACE_ME_UUID|${ROOT_PARTUUID:-}|g" "$TEMPLATE" > "$CONF_OUT"
     fi
     rm -f "$TEMPLATE"
-    info "Config deployed to $CONF_DEST, template removed."
+    info "Config deployed to $CONF_OUT, template removed."
 elif [ -f "$CONF_DEST" ]; then
     info "Config already deployed at $CONF_DEST — skipping."
 else
