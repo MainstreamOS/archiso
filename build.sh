@@ -2623,7 +2623,7 @@ verify_plugin_stamps() {
     local img f v wrong=""
     img="$(image_pkg_version hyprland)"
     [[ -n "$img" ]] \
-        || die "Could not read the Hyprland version installed in the image, so the plugin stamps cannot be checked against it."
+        || die_rejecting_iso "Could not read the Hyprland version installed in the image, so the plugin stamps cannot be checked against it."
     for f in "$PROFILE_DIR/airootfs/var/lib/hyprland-plugins/hyprland-version" \
              "$PROFILE_DIR"/airootfs/etc/skel/.local/share/hyprland/plugins/*.builtfor; do
         [[ -f "$f" || "$f" == */hyprland-version ]] || continue
@@ -2632,9 +2632,19 @@ verify_plugin_stamps() {
         [[ "$v" == "$img" ]] || wrong+="${wrong:+, }${f##*/} says ${v:-nothing}"
     done
     if [[ -n "$wrong" ]]; then
-        die "The image installed Hyprland $img, but the prebuilt plugins are stamped for another version ($wrong), so the live session would load them into a compositor they were not built for. Update the build host so it has Hyprland $img (pacman -Syu), then build again with --refresh."
+        die_rejecting_iso "The image installed Hyprland $img, but the prebuilt plugins are stamped for another version ($wrong), so the live session would load them into a compositor they were not built for. Update the build host so it has Hyprland $img (pacman -Syu), then build again with --refresh."
     fi
     success "Verified the plugin stamps match the image's Hyprland $img."
+}
+# For a check that fails once mkarchiso has written the image. Left under its
+# own name in the output directory it looks like any finished ISO, so it is
+# renamed before the build stops.
+die_rejecting_iso() {
+    if [[ -n "${ISO_PATH:-}" && -f "${ISO_PATH:-}" ]] && mv -f -- "$ISO_PATH" "$ISO_PATH.rejected"; then
+        [[ -n "${SUDO_USER:-}" ]] && chown "${SUDO_USER}:" "$ISO_PATH.rejected" 2>/dev/null || true
+        warn "The image failed a check after it was built and is kept as $ISO_PATH.rejected."
+    fi
+    die "$@"
 }
 # The offline Broadcom driver set is only good for the kernel its headers
 # belong to. Staged for another one, the image's own prune hook drops the whole
@@ -2654,7 +2664,7 @@ verify_staged_headers() {
         staged+="${staged:+, }${v:-unreadable}"
     done
     why="The image installed linux $img, but the linux-headers staged for the offline Broadcom Wi-Fi driver are ${staged:-missing}, so a 2012-2015 Mac gets no Wi-Fi driver from an offline install. Update the build host's package database (pacman -Syu), then build again with --refresh."
-    [[ -n "$RELEASE_VERSION" ]] && die "$why"
+    [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
     warn "$why"
 }
 # #############################################################################
@@ -2789,21 +2799,6 @@ apply_profile_overlay
     -o "${OUT_DIR}" \
     "${PROFILE_DIR}"
 
-# DKMS reports success even when it built nothing (no kernel headers), and
-# mkinitcpio only warns about a MODULES= entry it cannot find, so a driverless
-# legacy ISO builds cleanly all the way to here and only fails on the user's
-# machine — as software rendering, since nvidia-580xx-utils blacklists nouveau.
-if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
-    if ! find "${WORK_DIR}/x86_64/airootfs/usr/lib/modules" \
-         -path '*/updates/dkms/nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
-        die "Legacy-NVIDIA edition built with no nvidia kernel module — the DKMS build produced nothing (check linux-headers in packages.x86_64)."
-    fi
-    success "Verified the legacy-NVIDIA edition carries a built nvidia kernel module."
-fi
-
-verify_plugin_stamps
-verify_staged_headers
-
 # ── Find the output ISO ───────────────────────────────────────────────────
 ISO_PATH="$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)"
 if [[ -z "${ISO_PATH}" ]]; then
@@ -2811,6 +2806,21 @@ if [[ -z "${ISO_PATH}" ]]; then
     exit 1
 fi
 echo ">>> ISO created: ${ISO_PATH}"
+
+# DKMS reports success even when it built nothing (no kernel headers), and
+# mkinitcpio only warns about a MODULES= entry it cannot find, so a driverless
+# legacy ISO builds cleanly all the way to here and only fails on the user's
+# machine — as software rendering, since nvidia-580xx-utils blacklists nouveau.
+if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
+    if ! find "${WORK_DIR}/x86_64/airootfs/usr/lib/modules" \
+         -path '*/updates/dkms/nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
+        die_rejecting_iso "Legacy-NVIDIA edition built with no nvidia kernel module — the DKMS build produced nothing (check linux-headers in packages.x86_64)."
+    fi
+    success "Verified the legacy-NVIDIA edition carries a built nvidia kernel module."
+fi
+
+verify_plugin_stamps
+verify_staged_headers
 
 # The two ways this image gets booted rest on different structures, so both are
 # checked. Ventoy keeps the .iso as a file and chainloads a boot image out of
@@ -2826,7 +2836,7 @@ grep -qE '^El Torito boot img :.*[[:space:]]BIOS[[:space:]]+y[[:space:]]' <<<"${
     || _ET_FAULT="no bootable UEFI image in the El Torito catalog"
 if [[ -n "${_ET_FAULT}" ]]; then
     printf '%s\n' "${_ET_REPORT}" >&2
-    die "El Torito check failed: ${_ET_FAULT}. Booting this ISO from Ventoy would fail."
+    die_rejecting_iso "El Torito check failed: ${_ET_FAULT}. Booting this ISO from Ventoy would fail."
 fi
 success "Verified the ISO offers bootable BIOS and UEFI El Torito images."
 
@@ -2850,7 +2860,7 @@ grep -q 'System area summary:.*isohybrid' <<<"${_MBR_REPORT}" \
     || _MBR_FAULT="the EFI system partition has no 0xef MBR entry"
 if [[ -n "${_MBR_FAULT}" ]]; then
     printf '%s\n' "${_MBR_REPORT}" >&2
-    die "Boot layout check failed: ${_MBR_FAULT}. The bootmodes in profiledef.sh are what decide this."
+    die_rejecting_iso "Boot layout check failed: ${_MBR_FAULT}. The bootmodes in profiledef.sh are what decide this."
 fi
 success "Verified the ISO carries a hybrid MBR with both a bootable and an EFI entry."
 
