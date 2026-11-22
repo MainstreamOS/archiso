@@ -1608,8 +1608,9 @@ download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
 # Arch's own packages for the 2012-2015 Macs whose Broadcom chip only the
 # out-of-tree wl driver serves. Those machines have no Wi-Fi until it is
 # built, so the install cannot fetch it: the files ride on the image and
-# post-install-boot installs them by PCI match. Headers come from the same
-# sync as the kernel pacstrap will install, so the DKMS build matches it.
+# post-install-boot installs them by PCI match. The headers come from the
+# build host's package database, while pacstrap syncs on its own, so the two
+# can name different kernels; the finished image is checked for that.
 download_arch_repo_pkgs() {
     local dir="$1"; shift
     info "Staging Arch repo packages for offline install: $*"
@@ -2553,6 +2554,27 @@ verify_plugin_stamps() {
     fi
     success "Verified the plugin stamps match the image's Hyprland $img."
 }
+# The offline Broadcom driver set is only good for the kernel its headers
+# belong to. Staged for another one, the image's own prune hook drops the whole
+# set, and the Macs it is for get no Wi-Fi driver from an offline install.
+verify_staged_headers() {
+    local img f v staged="" why
+    img="$(image_pkg_version linux)"
+    # An edition built around another kernel does not install Arch's.
+    [[ -n "$img" ]] || return 0
+    for f in "$PKG_OUTPUT_DIR"/linux-headers-[0-9]*.pkg.tar.zst; do
+        [[ -f "$f" ]] || continue
+        v=$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}') || true
+        if [[ "$v" == "$img" ]]; then
+            success "Verified the staged linux-headers match the image's kernel $img."
+            return 0
+        fi
+        staged+="${staged:+, }${v:-unreadable}"
+    done
+    why="The image installed linux $img, but the linux-headers staged for the offline Broadcom Wi-Fi driver are ${staged:-missing}, so a 2012-2015 Mac gets no Wi-Fi driver from an offline install. Update the build host's package database (pacman -Syu), then build again with --refresh."
+    [[ -n "$RELEASE_VERSION" ]] && die "$why"
+    warn "$why"
+}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -2674,6 +2696,7 @@ if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
 fi
 
 verify_plugin_stamps
+verify_staged_headers
 
 # ── Find the output ISO ───────────────────────────────────────────────────
 ISO_PATH="$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)"
