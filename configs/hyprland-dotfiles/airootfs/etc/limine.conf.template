@@ -34,9 +34,9 @@ backdrop:              191A1F
 # placeholder inside the same OS block — that placeholder is what tells the
 # tool where to insert snapshot boot entries. A flat parent breaks both.
 /+Mainstream OS\\
-    //linux
+    //REPLACE_ME_KERNEL
         protocol: linux
-        kernel_path: boot():///vmlinuz-linux
+        kernel_path: boot():///vmlinuz-REPLACE_ME_KERNEL
         cmdline: REPLACE_ME_CMDLINE
-        module_path: boot():///initramfs-linux.img
+        module_path: boot():///initramfs-REPLACE_ME_KERNEL.img
     //Snapshots

@@ -219,8 +219,11 @@ if [ -f "$TEMPLATE" ]; then
     # branch. The current template carries REPLACE_ME_CMDLINE and gets the whole
     # canonical cmdline substituted in; REPLACE_ME_ROOT_SPEC / REPLACE_ME_UUID
     # are accepted for backwards compatibility with older templates.
+    # REPLACE_ME_KERNEL names the temporary entry after the kernel this image
+    # carries, which is the name limine-mkinitcpio looks for when it replaces it.
     if grep -q 'REPLACE_ME_CMDLINE' "$TEMPLATE"; then
-        sed "s|REPLACE_ME_CMDLINE|$KERNEL_CMDLINE|g" "$TEMPLATE" > "$CONF_DEST"
+        sed -e "s|REPLACE_ME_KERNEL|$KERNEL_PKG|g" \
+            -e "s|REPLACE_ME_CMDLINE|$KERNEL_CMDLINE|g" "$TEMPLATE" > "$CONF_DEST"
     elif grep -q 'REPLACE_ME_ROOT_SPEC' "$TEMPLATE"; then
         sed "s|REPLACE_ME_ROOT_SPEC|$ROOT_SPEC|g" "$TEMPLATE" > "$CONF_DEST"
     else
