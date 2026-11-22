@@ -416,7 +416,7 @@ apply_profile_overlay() {
     # This replaces the whole line, so the virtual adapters the base config
     # carries have to be repeated here or this edition alone loses them and
     # stops booting in a guest.
-    sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 radeon nvidia nvidia_modeset nvidia_drm vmwgfx vboxvideo virtio-gpu hyperv_drm qxl bochs)/' \
+    sed -i -e 's/^MODULES=.*/MODULES=(amdgpu i915 xe radeon nvidia nvidia_modeset nvidia_drm vmwgfx vboxvideo virtio-gpu hyperv_drm qxl bochs)/' \
            -e 's/modconf\( nvidia-gsp-strip\)\?/modconf nvidia-gsp-strip/' \
            "${PROFILE_DIR}/${_OVERLAY_ARCHISO_CONF}"
     info "Legacy-NVIDIA overlay applied: nvidia-580xx live driver + early KMS; iso_name → mainstreamos-desktop-linux-legacy-nvidia."
