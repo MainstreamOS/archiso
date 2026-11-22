@@ -1132,6 +1132,8 @@ fi
 # which run whether or not packages were rebuilt, so it cannot live inside the
 # phase-1 block below.
 PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
+# Filled in by the package phase; a build without one clones nothing.
+DOTS_COMMIT=""
 
 # The dotfiles are cloned and the skel redeployed inside the package phase, so
 # without it DOTFILES_REPO is read and then quietly ignored and the ISO is built
@@ -1404,6 +1406,11 @@ _dots_localize
 if ! su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$PKG_WORK_DIR'"; then
     die "git clone failed. Check the branch name and repo URL."
 fi
+# The one commit this image is made from. The skel clone further down is held
+# to it, and it is what a release tag has to point at.
+DOTS_COMMIT="$(su "$BUILD_USER" -c "git -C '$PKG_WORK_DIR' rev-parse HEAD" 2>/dev/null)" || DOTS_COMMIT=""
+[[ -n "$DOTS_COMMIT" ]] || die "Could not read which commit the dotfiles clone is at."
+info "Dotfiles commit: $DOTS_COMMIT"
 
 DIST_ARCH_PATH="$PKG_WORK_DIR/sdata/dist-arch"
 if [[ ! -d "$DIST_ARCH_PATH" ]]; then
@@ -1842,6 +1849,11 @@ chown "$BUILD_USER":"$BUILD_USER" "$DOTS_WORK"
 
 _dots_localize
 if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submodules --branch '$DOTFILES_BRANCH' '$DOTFILES_REPO' '$DOTS_WORK'"; then
+    # A push to the branch while the packages were building would put the
+    # meta-packages of one commit and the desktop of another under one stamp.
+    _skel_commit="$(su "$BUILD_USER" -c "git -C '$DOTS_WORK' rev-parse HEAD" 2>/dev/null)" || _skel_commit=""
+    [[ "$_skel_commit" == "$DOTS_COMMIT" ]] \
+        || die "The dotfiles changed while the build ran: the packages were built from $DOTS_COMMIT, and the desktop would now come from ${_skel_commit:-a clone whose commit cannot be read}. Build again so both come from one commit."
     if [[ -d "$DOTS_WORK/dots" ]]; then
         # The installer no longer seeds the session's keyboard layout; the
         # dotfiles read it from localed themselves. A ref from before that read
@@ -2840,6 +2852,7 @@ _status_file="$STATUS_FILE"
     printf 'sha256   : %s\n' "$(cut -d' ' -f1 "${ISO_PATH}.sha256")"
     printf 'edition  : %s\n' "$_edition"
     printf 'dotfiles : %s\n' "$DOTFILES_REPO"
+    printf 'commit   : %s\n' "${DOTS_COMMIT:-not cloned in this run}"
     printf 'finished : %s\n' "$(date '+%F %T')"
 } > "$_status_file" 2>/dev/null || true
 _RESULT_RECORDED=true
