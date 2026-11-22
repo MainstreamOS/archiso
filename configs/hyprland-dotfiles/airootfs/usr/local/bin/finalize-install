@@ -297,6 +297,14 @@ LOOSE_FILES=(
     # the single writer of nvidia-drm options; fbdev=1 here would override its
     # per-generation gate and can black-screen legacy (470xx/390xx) drivers.
     /etc/modprobe.d/nvidia-live.conf
+    # Loads nvidia_drm for the live session, which keeps the driver out of its
+    # initramfs. On the installed system udev loads the modules by itself.
+    /etc/udev/rules.d/70-nvidia-live.rules
+    # Lets an account named liveuser start the installer without a password.
+    /usr/share/polkit-1/rules.d/49-calamares.rules
+    # Image-build hook. It clears liveuser's password whenever hyprland is
+    # installed, which on the target would reach a real account of that name.
+    /etc/pacman.d/hooks/liveuser-setup.hook
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
     /usr/local/bin/calamares-launch
     /etc/systemd/resolved.conf.d/archiso.conf
@@ -338,6 +346,9 @@ LOOSE_DIRS=(
     # so the home directory itself stays on disk pointing at a
     # non-existent user. Sweep it.
     /home/liveuser
+    # The installer's configuration. The running installer reads the live
+    # system's copy, and nothing on the installed system reads this one.
+    /etc/calamares
 )
 for d in "${LOOSE_DIRS[@]}"; do
     if [[ -d "$d" ]]; then
@@ -394,6 +405,10 @@ rm -f /etc/systemd/system/choose-mirror.service \
 rm -f /etc/systemd/system/multi-user.target.wants/mainstream-live-mac-quirks.service \
       /etc/systemd/system/mainstream-live-mac-quirks.service \
       /usr/local/bin/live-mac-quirks
+# The BIOS partition-layout unit is the same case: it only prepares the
+# installer's configuration, and only in the live session.
+rm -f /etc/systemd/system/multi-user.target.wants/mainstream-bios-partition-layout.service \
+      /etc/systemd/system/mainstream-bios-partition-layout.service
 info "Removed dangling live-only service symlinks."
 
 # ── Install baseline snapshot ────────────────────────────────────────────────
