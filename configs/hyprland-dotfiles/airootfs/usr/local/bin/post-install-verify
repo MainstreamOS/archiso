@@ -88,7 +88,7 @@ INTEL_PKGS=(
     vulkan-intel lib32-vulkan-intel intel-media-driver
     intel-compute-runtime libva-intel-driver xf86-video-intel
 )
-GPU_NN=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+GPU_NN=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' || true)
 if [[ -n "$GPU_NN" ]]; then
     HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
     grep -q "\[10de:" <<<"$GPU_NN" && HAS_NVIDIA=true || true

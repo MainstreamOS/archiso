@@ -173,10 +173,13 @@ find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -delete 2>/de
 # breaks if something genuinely still needs one. mesa / lib32-mesa are shared
 # by every vendor path and are never touched. Firmware (linux-firmware-*) is
 # left alone: the linux-firmware meta-package depends on all vendor splits.
-GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+# The class names are matched whole and in their own case, as gpu-config.sh
+# does: a bare "3D" also matches hex ids such as [8086:43d2].
+GPU_CLASS='VGA compatible controller|3D controller|Display controller'
+GPU_INFO=$(lspci 2>/dev/null | grep -E "$GPU_CLASS" || true)
 HAS_NVIDIA=false; HAS_AMD=false; HAS_INTEL=false
 if [[ -n "$GPU_INFO" ]]; then
-    GPU_NN=$(lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true)
+    GPU_NN=$(lspci -nn 2>/dev/null | grep -E "$GPU_CLASS" || true)
     grep -q "\[10de:" <<<"$GPU_NN" && HAS_NVIDIA=true || true
     grep -q "\[1002:" <<<"$GPU_NN" && HAS_AMD=true    || true
     grep -q "\[8086:" <<<"$GPU_NN" && HAS_INTEL=true  || true
