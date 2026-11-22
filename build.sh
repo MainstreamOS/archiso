@@ -1364,13 +1364,6 @@ mkdir -p "$PKG_OUTPUT_DIR"
 chmod -R 775 "$PKG_OUTPUT_DIR"
 info "Package output directory: $PKG_OUTPUT_DIR"
 
-# Fix the build-time pacman.conf to point to the actual output directory
-BUILD_PACMAN_CONF="$PROFILE_DIR/pacman.conf"
-if [[ -f "$BUILD_PACMAN_CONF" ]]; then
-    sed -i "s|^Server = file:///.*pkgs$|Server = file://$PKG_OUTPUT_DIR|" "$BUILD_PACMAN_CONF"
-    info "Updated build pacman.conf repo path to: file://$PKG_OUTPUT_DIR"
-fi
-
 # Apply clean build if requested
 if [[ "$CLEAN_BUILD" == true ]]; then
     info "Clean build — removing all existing pre-built packages..."
@@ -2663,6 +2656,21 @@ info "════════════════════════�
 # has removed the old one.
 [[ -s "$DOTS_ARCHIVE" ]] \
     || die "The dotfiles archive is missing from the profile ($DOTS_ARCHIVE). An install from this image would have to clone the dotfiles instead, and would stop without a network. Run the build with --refresh to make it."
+
+# The same for the bundled repo: without its packages pacstrap has nothing to
+# install the image's own packages from.
+compgen -G "$PKG_OUTPUT_DIR/*.pkg.tar.zst" > /dev/null \
+    || die "The bundled repo at $PKG_OUTPUT_DIR holds no packages. Run the build with --refresh to fill it."
+
+# Fix the build-time pacman.conf to point to the actual output directory. Done
+# on every build, not only when packages are rebuilt: the committed path is one
+# checkout's, and a build from another would otherwise install from that one's
+# repo while bundling its own.
+BUILD_PACMAN_CONF="$PROFILE_DIR/pacman.conf"
+if [[ -f "$BUILD_PACMAN_CONF" ]]; then
+    sed -i "s|^Server = file:///.*pkgs$|Server = file://$PKG_OUTPUT_DIR|" "$BUILD_PACMAN_CONF"
+    info "Updated build pacman.conf repo path to: file://$PKG_OUTPUT_DIR"
+fi
 
 # ── Standard-edition slimming: drop legacy NVIDIA prebuilts ────────────────
 # A prior --nvidia build leaves them in this persistent dir (bundled into the
