@@ -163,6 +163,8 @@ add_mainstream_db() {
     # Debug packages are never installed (not in packages.x86_64); drop any an
     # earlier build left here so they neither index nor bloat the live squashfs.
     rm -f "$repo_dir"/*-debug-*.pkg.tar.zst 2>/dev/null || true
+    # A partial download an interrupted run left would ride on the image too.
+    rm -f "$repo_dir"/.download-* 2>/dev/null || true
     # Retired proprietary font packages — nothing builds these anymore; drop
     # copies an earlier build left behind so they are never re-indexed.
     rm -f "$repo_dir"/ttf-google-sans-*.pkg.tar.zst \
@@ -541,6 +543,8 @@ verify_mainstream_db() {
 download_mainstream_repo_pkgs() {
     local repo_dir="$1"
     local rel="https://github.com/MainstreamOS/packages/releases/download/mainstream-repo"
+    # Partial downloads an interrupted run left behind.
+    rm -f "$repo_dir"/.download-*
     info "Fetching the [mainstream] GitHub repo package list..."
     # The db is the list: it names every package the repo serves, under the file
     # name the release publishes it as (an epoch's ':' already '_'). It comes from
@@ -618,7 +622,10 @@ download_mainstream_repo_pkgs() {
         # Downloaded beside the local build rather than over it: a package built
         # a moment ago can carry a newer version than the published one, and
         # writing to its name would destroy it before anything compared the two.
-        tmpf="$repo_dir/.download-$$-$base"
+        # The name must not end in .pkg.tar.zst: an interrupted run leaves this
+        # file behind, and everything that looks for packages here goes by that
+        # suffix.
+        tmpf="$repo_dir/.download-$$-$base.part"
         fetched=false
         if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$tmpf" "$url" 2>/dev/null; then
             if [[ -n "${db_sha[$base]:-}" \
@@ -1286,7 +1293,7 @@ fi
 # Apply clean build if requested
 if [[ "$CLEAN_BUILD" == true ]]; then
     info "Clean build — removing all existing pre-built packages..."
-    rm -f "$PKG_OUTPUT_DIR"/*.pkg.tar.zst
+    rm -f "$PKG_OUTPUT_DIR"/*.pkg.tar.zst "$PKG_OUTPUT_DIR"/.download-*
     info "Package output directory cleared."
 
     # Also clear previous output so stale ISOs in out/ do not accumulate.
