@@ -1191,6 +1191,9 @@ PKG_OUTPUT_DIR="$PROFILE_DIR/airootfs/usr/local/share/pkgs"
 DOTS_ARCHIVE="$PROFILE_DIR/airootfs/usr/local/share/dots-hyprland.tar.zst"
 # Filled in by the package phase; a build without one clones nothing.
 DOTS_COMMIT=""
+# Set by the package phase when the installer was compiled against another
+# kpmcore than the image carries.
+KPMCORE_NOTE=""
 
 # The dotfiles are cloned and the skel redeployed inside the package phase, so
 # without it DOTFILES_REPO is read and then quietly ignored and the ISO is built
@@ -1667,6 +1670,16 @@ info "Building local PKGBUILDs..."
 # preference to Arch's stock package.
 build_local_pkg "kpmcore"
 build_local_pkg "calamares-mainstream"
+# Calamares is compiled against the kpmcore installed on this host, then runs
+# on the image against the one built from pkgbuilds/kpmcore. When those are
+# different releases of the library, the summary says so.
+_kpm_ours="$(bash -c "cd '$LOCAL_PKGBUILDS_DIR/kpmcore' && source PKGBUILD 2>/dev/null && echo \${pkgver}" 2>/dev/null || true)"
+_kpm_host="$(pacman -Q kpmcore 2>/dev/null | awk '{print $2}' || true)"
+_kpm_host="${_kpm_host#*:}"
+_kpm_host="${_kpm_host%-*}"
+if [[ -n "$_kpm_ours" && -n "$_kpm_host" && "$_kpm_ours" != "$_kpm_host" ]]; then
+    KPMCORE_NOTE="Calamares is compiled against the kpmcore installed on this host, $_kpm_host, but the image runs it on kpmcore $_kpm_ours from pkgbuilds/kpmcore. Bump pkgbuilds/kpmcore to $_kpm_host."
+fi
 build_local_pkg "wvkbd"
 # mpris-hyprland: per-tab MPRIS bridge for Firefox/Zen (lighter
 # plasma-browser-integration replacement). Builds the Rust host + bundles the
@@ -2448,6 +2461,12 @@ echo " Package Build Summary: $SUCCESS_COUNT/$TOTAL packages successful"
 echo " Output: $PKG_OUTPUT_DIR"
 echo "============================================================"
 
+if [[ -n "$KPMCORE_NOTE" ]]; then
+    echo ""
+    warn "kpmcore version mismatch:"
+    warn "  $KPMCORE_NOTE"
+fi
+
 if [[ ${#FAILED_PKGS[@]} -ne 0 ]]; then
     echo ""
     warn "The following packages failed:"
@@ -2997,6 +3016,9 @@ echo "Result: $_status_file    Detail log: $DETAIL_LOG"
 # one thing worth reading twice.
 if [[ "$DOTFILES_REPO" == "$_DOTS_LOCAL_MIRROR" ]]; then
     warn "These dotfiles came from a local clone, so this image cannot be reproduced from the remote. Test build."
+fi
+if [[ -n "$KPMCORE_NOTE" ]]; then
+    warn "$KPMCORE_NOTE"
 fi
 echo ""
 echo "Write to USB:  dd if='${ISO_PATH}' of=/dev/sdX bs=4M status=progress"
