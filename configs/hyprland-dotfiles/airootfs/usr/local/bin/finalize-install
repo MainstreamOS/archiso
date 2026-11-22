@@ -18,6 +18,9 @@
 #   - Live-only sudoers drop-ins (g_wheel NOPASSWD, liveuser) and the
 #     /home/liveuser directory Calamares' removeuser leaves behind
 #
+# With --security-cleanup only the live-session settings are removed (sudoers
+# drop-ins, SSH root login, tty1 autologin, volatile logs, suspend block).
+#
 # CPU detection mirrors post-install — vendor_id from /proc/cpuinfo.
 # =============================================================================
 
@@ -72,6 +75,61 @@ remove_pkgs() {
     done
     return 0
 }
+
+# ── Live-session settings ────────────────────────────────────────────────────
+# Kept apart from LOOSE_FILES so --security-cleanup can remove them alone; the
+# installer runs that as an emergency job, since a failed install can still boot.
+LIVE_SESSION_FILES=(
+    # /etc/sudoers.d/builduser is a build-time artifact (the ISO build's
+    # AUR-prebuild step creates a builduser); post-install purges it too.
+    # Sweep here as well in case it survived onto the target. Removing a
+    # file that isn't there is a no-op.
+    /etc/sudoers.d/builduser
+    /etc/sudoers.d/builduser-install
+    # /etc/sudoers.d/g_wheel grants %wheel passwordless sudo for the
+    # live ISO so the liveuser can run the installer. Carrying it
+    # forward to the installed system would silently give every
+    # wheel-group user NOPASSWD sudo, which is a hard "no" for a
+    # general-audience desktop. Calamares' users module will generate
+    # a proper wheel sudoers entry that DOES prompt for a password
+    # (sudoersGroup: wheel in users.conf).
+    /etc/sudoers.d/g_wheel
+    # /etc/sudoers.d/liveuser grants the liveuser passwordless sudo.
+    # The liveuser account itself is removed by calamares' removeuser
+    # module, but the sudoers file isn't owned by any package so it
+    # lingers on disk pointing at a non-existent user.
+    /etc/sudoers.d/liveuser
+    # Storage=volatile keeps the live ISO from writing journals to the
+    # live image's overlay, but on an installed system it means every boot's
+    # logs vanish at shutdown — undebuggable. Remove it; journald's
+    # default Storage=auto persists once /var/log/journal exists (created
+    # below).
+    /etc/systemd/journald.conf.d/volatile-storage.conf
+    # tty1 autologin for the (now-removed) liveuser — on the installed system
+    # this would make agetty try to auto-login a nonexistent user on tty1.
+    /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    # do-not-suspend keeps the installer from being interrupted by a lid close
+    # or suspend key during install; on the installed system it would disable
+    # suspend/hibernate/lid handling entirely. Remove so power management works.
+    /etc/systemd/logind.conf.d/do-not-suspend.conf
+    # Root password login over SSH is a live-session convenience (headless
+    # install debugging). sshd ships disabled on the target, but the moment a
+    # user enables it this drop-in would silently accept password-based root
+    # logins — remove it so sshd_config defaults (prohibit-password) apply.
+    /etc/ssh/sshd_config.d/10-archiso.conf
+)
+
+# Only removes files, so it is safe to repeat and safe on a target that an
+# earlier step left half finished.
+if [[ "${1:-}" == "--security-cleanup" ]]; then
+    for f in "${LIVE_SESSION_FILES[@]}"; do
+        if [[ -e "$f" ]]; then
+            info "Removing live-only file: $f"
+            rm -f "$f" || warn "Could not remove $f"
+        fi
+    done
+    exit 0
+fi
 
 # ── CPU detection ────────────────────────────────────────────────────────────
 CPU_VENDOR=$(awk -F: '/vendor_id/ {gsub(/ /,"",$2); print $2; exit}' /proc/cpuinfo)
@@ -256,43 +314,6 @@ esac
 # Shipped via airootfs/etc/ but useless on the installed system. pacman
 # -Rns can't touch these (no owning package); rm them by hand.
 LOOSE_FILES=(
-    # /etc/sudoers.d/builduser is a build-time artifact (the ISO build's
-    # AUR-prebuild step creates a builduser); post-install purges it too.
-    # Sweep here as well in case it survived onto the target. Removing a
-    # file that isn't there is a no-op.
-    /etc/sudoers.d/builduser
-    /etc/sudoers.d/builduser-install
-    # /etc/sudoers.d/g_wheel grants %wheel passwordless sudo for the
-    # live ISO so the liveuser can run the installer. Carrying it
-    # forward to the installed system would silently give every
-    # wheel-group user NOPASSWD sudo, which is a hard "no" for a
-    # general-audience desktop. Calamares' users module will generate
-    # a proper wheel sudoers entry that DOES prompt for a password
-    # (sudoersGroup: wheel in users.conf).
-    /etc/sudoers.d/g_wheel
-    # /etc/sudoers.d/liveuser grants the liveuser passwordless sudo.
-    # The liveuser account itself is removed by calamares' removeuser
-    # module, but the sudoers file isn't owned by any package so it
-    # lingers on disk pointing at a non-existent user.
-    /etc/sudoers.d/liveuser
-    # Storage=volatile keeps the live ISO from writing journals to the
-    # live image's overlay, but on an installed system it means every boot's
-    # logs vanish at shutdown — undebuggable. Remove it; journald's
-    # default Storage=auto persists once /var/log/journal exists (created
-    # below).
-    /etc/systemd/journald.conf.d/volatile-storage.conf
-    # tty1 autologin for the (now-removed) liveuser — on the installed system
-    # this would make agetty try to auto-login a nonexistent user on tty1.
-    /etc/systemd/system/getty@tty1.service.d/autologin.conf
-    # do-not-suspend keeps the installer from being interrupted by a lid close
-    # or suspend key during install; on the installed system it would disable
-    # suspend/hibernate/lid handling entirely. Remove so power management works.
-    /etc/systemd/logind.conf.d/do-not-suspend.conf
-    # Root password login over SSH is a live-session convenience (headless
-    # install debugging). sshd ships disabled on the target, but the moment a
-    # user enables it this drop-in would silently accept password-based root
-    # logins — remove it so sshd_config defaults (prohibit-password) apply.
-    /etc/ssh/sshd_config.d/10-archiso.conf
     # Live-session NVIDIA KMS defaults. On the installed system gpu-config is
     # the single writer of nvidia-drm options; fbdev=1 here would override its
     # per-generation gate and can black-screen legacy (470xx/390xx) drivers.
@@ -318,7 +339,7 @@ LOOSE_FILES=(
     # installed system, where os-release carries the version.
     /version
 )
-for f in "${LOOSE_FILES[@]}"; do
+for f in "${LIVE_SESSION_FILES[@]}" "${LOOSE_FILES[@]}"; do
     if [[ -e "$f" ]]; then
         info "Removing live-only file: $f"
         rm -f "$f" || warn "Could not remove $f"
