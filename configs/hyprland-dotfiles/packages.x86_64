@@ -234,6 +234,7 @@ bc
 7zip
 curl
 wget
+patchelf
 
 # ==============================================================================
 # Calamares installer (live only — removed by packages.conf on install)
