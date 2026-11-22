@@ -700,12 +700,17 @@ download_mainstream_repo_pkgs() {
     # cleanly it gets skipped, and the sibling then silently never exists: that
     # is how a hard dependency goes missing from the ISO with nothing in the
     # build log marking it. Drop the parent's prebuilt so it is rebuilt whole.
-    local failed parent
+    # Only a parent the AUR loop builds, though: dropping one that nothing
+    # rebuilds would lose the half that did download along with the other.
+    local failed parent e
+    local -A from_aur=()
+    for e in "${AUR_DEPS[@]%%::*}"; do from_aur[$e]=1; done
     for failed in "${!FAILED_DOWNLOADS[@]}"; do
         # A later asset for the same name may have succeeded.
         [[ -n "${GITHUB_PROVIDED[$failed]:-}" ]] && continue
         parent="${failed#lib32-}"
-        if [[ "$parent" != "$failed" && -n "${GITHUB_PROVIDED[$parent]:-}" ]]; then
+        if [[ "$parent" != "$failed" && -n "${GITHUB_PROVIDED[$parent]:-}" \
+              && -n "${from_aur[$parent]:-}" ]]; then
             warn "$failed is a split sibling of $parent and did not download — rebuilding $parent locally so both halves exist."
             # The AUR loop also skips anything already sitting in the output dir
             # (on a non-clean build), so the downloaded parent has to go too —
@@ -719,10 +724,8 @@ download_mainstream_repo_pkgs() {
     # A package nothing here compiles exists only as that download. Nothing
     # bundled depends on most of them, so without one the image still builds and
     # every later check passes, and the installed system simply lacks the app.
-    local e
     local -a lost=()
-    local -A from_aur=() built_here=()
-    for e in "${AUR_DEPS[@]%%::*}"; do from_aur[$e]=1; done
+    local -A built_here=()
     # mainstream-microtex-git is compiled from the dotfiles' PKGBUILD further on.
     for e in "${!from_aur[@]}" "${METAPKGS[@]}" "${LOCAL_BUILT_PKGS[@]}" mainstream-microtex-git; do
         built_here[$e]=1
