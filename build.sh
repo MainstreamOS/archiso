@@ -361,8 +361,7 @@ PRESET
     local entry
     for entry in "${PROFILE_DIR}"/efiboot/loader/entries/*.conf \
                  "${PROFILE_DIR}"/syslinux/archiso_sys-linux.cfg \
-                 "${PROFILE_DIR}"/syslinux/archiso_pxe-linux.cfg \
-                 "${PROFILE_DIR}"/grub/grub.cfg; do
+                 "${PROFILE_DIR}"/syslinux/archiso_pxe-linux.cfg; do
         [[ -f "$entry" ]] || continue
         _overlay_stash "${entry#"${PROFILE_DIR}"/}"
         # Matched so a second pass over an already rewritten file is a no-op,
