@@ -133,6 +133,9 @@ GUEST_VMWARE=(
 GUEST_VBOX=(
     virtualbox-guest-utils
 )
+# Units of the guest tools kept for this hypervisor. The dangling-link sweep
+# further down leaves their enable links in place.
+KEPT_GUEST_UNITS=()
 case "$(systemd-detect-virt 2>/dev/null || true)" in
     kvm|qemu)
         remove_pkgs "${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}"
@@ -140,10 +143,12 @@ case "$(systemd-detect-virt 2>/dev/null || true)" in
     vmware)
         remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VBOX[@]}"
         systemctl enable vmtoolsd.service 2>/dev/null || true
+        KEPT_GUEST_UNITS=(vmtoolsd vmware-vmblock-fuse)
         ;;
     oracle)
         remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}"
         systemctl enable vboxservice.service 2>/dev/null || true
+        KEPT_GUEST_UNITS=(vboxservice)
         ;;
     *)
         remove_pkgs "${GUEST_QEMU[@]}" "${GUEST_VMWARE[@]}" "${GUEST_VBOX[@]}"
@@ -369,6 +374,7 @@ fi
 for _u in cloud-config cloud-final cloud-init-local cloud-init-main cloud-init-network \
           hv_fcopy_daemon hv_kvp_daemon hv_vss_daemon vmtoolsd vmware-vmblock-fuse \
           vboxservice ModemManager choose-mirror livecd-talk livecd-alsa-unmuter; do
+    [[ " ${KEPT_GUEST_UNITS[*]} " == *" ${_u} "* ]] && continue
     rm -f /etc/systemd/system/*.target.wants/"${_u}".service
 done
 rm -f /etc/systemd/system/cloud-init.target.wants/*.service 2>/dev/null || true
