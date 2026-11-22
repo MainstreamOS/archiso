@@ -24,6 +24,7 @@ import abc
 import os
 from string import Template
 import subprocess
+import time
 
 import libcalamares
 from libcalamares.utils import check_target_env_call, target_env_call
@@ -49,6 +50,27 @@ custom_status_message = None
 INSTALL = object()
 REMOVE = object()
 mode_packages = None  # Changes to INSTALL or REMOVE
+
+
+def _record_skipped_package(package):
+    """Append a skipped package to the target's install health log.
+
+    The Calamares log stays on the live system, so without this nothing on
+    the installed system says the app was left out. The line has the shape
+    the install scripts' warn helper writes.
+    """
+    name = package.get("package", "") if isinstance(package, dict) else package
+    root = libcalamares.globalstorage.value("rootMountPoint")
+    if not root or not name:
+        return
+    log_dir = os.path.join(root, "var/log/mainstream-install")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "health.log"), "a") as log:
+            log.write("{} [packages] WARN: Could not install {}; it was skipped.\n".format(
+                time.strftime("%F %T"), name))
+    except OSError as e:
+        libcalamares.utils.warning("Could not write the install health log: " + str(e))
 
 
 def _change_mode(mode):
@@ -140,6 +162,7 @@ class PackageManager(metaclass=abc.ABCMeta):
                 self.install_package(package)
             except subprocess.CalledProcessError:
                 libcalamares.utils.warning("Could not install package %s" % package)
+                _record_skipped_package(package)
 
     def operation_remove(self, package_list):
         if all([isinstance(x, str) for x in package_list]):
