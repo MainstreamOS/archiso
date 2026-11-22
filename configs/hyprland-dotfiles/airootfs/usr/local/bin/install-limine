@@ -167,8 +167,10 @@ if [ "$IS_UEFI" = true ]; then
         --label "Mainstream" \
         --loader "\\EFI\\limine\\BOOTX64.EFI" \
         --unicode; then
-        log "ERROR: could not create the Mainstream UEFI NVRAM entry. Refusing to report a bootable installation."
-        exit 1
+        # Not fatal: the firmware finds the copy at EFI/BOOT/BOOTX64.EFI
+        # written above without any entry of its own.
+        warn "Could not create the Mainstream firmware boot entry; this system starts from the default loader path instead."
+        note_boot_failure "The firmware boot entry could not be written. If this computer does not start Mainstream OS by itself, choose its disk from the firmware boot menu."
     fi
 else
     info "Installing BIOS MBR..."
