@@ -50,9 +50,10 @@ file_permissions=(
   ["/usr/local/bin/live-setup"]="0:0:755"
   ["/usr/local/bin/choose-mirror"]="0:0:755"
 
-  # SDDM user Hyprland greeter config (sddm uid:gid = 963:963)
-  ["/var/lib/sddm/.config/hypr"]="963:963:700"
-  ["/var/lib/sddm/.config/hypr/hyprland.lua"]="963:963:600"
+  # Greeter config. Root's on the image, where the login screen never runs;
+  # post-install-login gives it to the sddm account by name at install.
+  ["/var/lib/sddm/.config/hypr"]="0:0:700"
+  ["/var/lib/sddm/.config/hypr/hyprland.lua"]="0:0:600"
 
   ["/var/lib/hyprland-plugins"]="0:0:755"
   ["/var/lib/hyprland-plugins/hyprland-version"]="0:0:644"
