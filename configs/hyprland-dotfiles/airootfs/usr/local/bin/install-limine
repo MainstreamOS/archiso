@@ -13,6 +13,12 @@ _ms_health() {
     printf '%s [%s] %s\n' "$(date '+%F %T')" "${0##*/}" "$*" \
         >> /var/log/mainstream-install/health.log 2>/dev/null || true
 }
+# A boot problem the install carries on past. post-install-verify reads this
+# file and reports what is in it at the first login.
+note_boot_failure() {
+    mkdir -p /var/lib/mainstream 2>/dev/null || return 0
+    printf '%s\n' "$*" >> /var/lib/mainstream/boot-install-failed.log 2>/dev/null || true
+}
 
 # --- Boot Layout Check ---
 # The shared library reads what the partitioning step built and refuses, in
@@ -173,16 +179,17 @@ else
         cp -f /usr/share/limine/limine-bios.sys "$BOOT_PATH/limine-bios.sys"
     else
         log "CRITICAL: /usr/share/limine/limine-bios.sys missing in chroot!"
+        exit 1
     fi
-    # Use modern limine CLI syntax. Still non-fatal — a half-installed system is
-    # worse than one the user can repair from a live USB — but no longer silent:
-    # warn() lands in /var/log/mainstream-install/health.log, which the health
-    # report surfaces. post-install-verify only checks that the files exist, so
-    # without this a failed MBR write reported a clean install.
+    # Use modern limine CLI syntax. Still non-fatal, since a half-installed
+    # system is worse than one the user can repair from a live USB, but not
+    # silent: post-install-verify only checks that the files exist, so the
+    # failure is recorded where it reports from.
     if limine bios-install "$TARGET_DISK"; then
         info "BIOS stages written to $TARGET_DISK"
     else
         warn "limine bios-install failed on $TARGET_DISK — this system may not boot. Repair with: limine bios-install $TARGET_DISK"
+        note_boot_failure "The boot loader could not be written to $TARGET_DISK, so this system may not start. Repair from a live USB with: limine bios-install $TARGET_DISK"
     fi
 
     # Keeping stages 1-2 (MBR) and stage 3 (limine-bios.sys) in step across

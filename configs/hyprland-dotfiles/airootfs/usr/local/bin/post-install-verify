@@ -248,6 +248,12 @@ else
         fail "BIOS boot files missing from /boot (vmlinuz-${_kpkg} / limine-bios.sys)"
     fi
 fi
+# The boot loader step carries on past some failures and leaves them here.
+if [[ -s /var/lib/mainstream/boot-install-failed.log ]]; then
+    fail "boot setup reported problems: $(tr '\n' ' ' < /var/lib/mainstream/boot-install-failed.log | tr -s ' ' | cut -c1-240)"
+else
+    pass "no boot setup problems recorded"
+fi
 if [[ -s /boot/efi/limine.conf || -s /boot/limine.conf ]]; then
     pass "limine.conf present"
 else
