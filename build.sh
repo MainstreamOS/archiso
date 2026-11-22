@@ -505,6 +505,17 @@ mainstream_unneeded_pkgs() {
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -nE \
         's/^[[:space:]]*- name:[[:space:]]*([A-Za-z0-9@._+-]+)[[:space:]]*$/\1/p' \
         "$PROFILE_DIR/airootfs/etc/calamares/modules/netinstall.conf")
+    # The packages built a moment ago come from the dotfiles being baked in, and
+    # the published db can be a release behind them. What they depend on is read
+    # from the packages themselves, so a dependency the db has not heard of yet
+    # is still kept.
+    for n in "${METAPKGS[@]}" "${LOCAL_BUILT_PKGS[@]}"; do
+        for f in "$PKG_OUTPUT_DIR/$n"-*.pkg.tar.zst; do
+            [[ -f "$f" && "$(pacman -Qpq "$f" 2>/dev/null)" == "$n" ]] || continue
+            mapfile -t -O "${#seeds[@]}" seeds < <(bsdtar -xOf "$f" .PKGINFO 2>/dev/null \
+                | sed -n 's/^depend = \([^<>=]*\).*/\1/p')
+        done
+    done
     for f in "${seeds[@]}"; do
         [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
     done
