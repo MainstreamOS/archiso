@@ -1109,9 +1109,13 @@ if [[ -n "$RELEASE_VERSION" ]]; then
     # answers the tag question rather than failing into "no tag yet" and quietly
     # stamping a release built from the branch. Both forms cover a bare source
     # as well as a working one.
-    if git -c safe.directory="$DOTFILES_REPO" -c safe.directory="$DOTFILES_REPO/.git" \
-        ls-remote --tags --refs "$DOTFILES_REPO" 2>/dev/null \
-        | awk -F/ '{print $NF}' | grep -qxF "$RELEASE_VERSION"; then
+    # A lookup that fails says nothing about the tag, and reading it as "no tag
+    # yet" would build a published release from the branch tip under its name.
+    _remote_tags="$(git -c safe.directory="$DOTFILES_REPO" -c safe.directory="$DOTFILES_REPO/.git" \
+        ls-remote --tags --refs "$DOTFILES_REPO")" \
+        || die "Could not list the tags of $DOTFILES_REPO, so there is no telling whether $RELEASE_VERSION is already published. Check the connection and re-run."
+    if awk -F/ -v tag="$RELEASE_VERSION" '$NF == tag { found = 1 } END { exit !found }' \
+        <<< "$_remote_tags"; then
         DOTFILES_BRANCH="$RELEASE_VERSION"
         info "Tag $RELEASE_VERSION is published — dots-hyprland pinned to it."
     else
