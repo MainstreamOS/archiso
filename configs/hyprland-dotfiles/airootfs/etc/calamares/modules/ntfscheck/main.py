@@ -98,17 +98,18 @@ def run():
     # "alongside" shrinks an existing NTFS volume, and "manual" can resize one
     # or keep one beside the new system. Which partitions a manual layout
     # touches is known only inside the partition module, whose plan reaches
-    # global storage after this runs, so manual checks every NTFS partition
-    # except those on drives that can be unplugged: a USB disk last pulled
-    # from a Windows machine without ejecting is often dirty, and is almost
-    # never part of the layout. Erase and replace either wipe or leave it
-    # untouched, so there is nothing to guard.
+    # global storage after this runs, and the same holds for the partition
+    # alongside shrinks, so both check every NTFS partition except those on
+    # drives that can be unplugged: a USB disk last pulled from a Windows
+    # machine without ejecting is often dirty, and is almost never part of
+    # the layout. Erase and replace either wipe or leave it untouched, so
+    # there is nothing to guard.
     choices = libcalamares.globalstorage.value("partitionChoices") or {}
     install = choices.get("install")
     if install not in ("alongside", "manual"):
         return None
 
-    for device in ntfs_devices(skip_external=(install == "manual")):
+    for device in ntfs_devices(skip_external=True):
         if ntfs_blocks_resize(device):
             libcalamares.utils.warning(
                 "Refusing to install ({0}): dirty/hibernated NTFS on {1}".format(
@@ -132,12 +133,12 @@ def run():
             return (
                 _("Cannot resize the Windows partition"),
                 _("Your Windows installation was shut down in a dirty or "
-                  "hibernated state, and your Windows partition is refusing "
-                  "to be resized. Start Windows, hold Shift while you choose "
-                  "Shut down from the Start menu, then retry the "
+                  "hibernated state, and the Windows partition {0} is "
+                  "refusing to be resized. Start Windows, hold Shift while "
+                  "you choose Shut down from the Start menu, then retry the "
                   "installation. With Fast Startup on, a normal Shut down "
                   "hibernates Windows again, so either hold Shift or turn "
-                  "Fast Startup off in Power Options."),
+                  "Fast Startup off in Power Options.").format(device),
             )
 
     return None
