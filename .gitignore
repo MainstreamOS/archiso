@@ -17,3 +17,4 @@ man/version.rst
 build*.log
 last-build.txt
 __pycache__/
+.edition-overlay-backup/

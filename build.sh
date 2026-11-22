@@ -325,7 +325,9 @@ PRESET
 
 apply_profile_overlay() {
     [[ "${NVIDIA_PROFILE:-false}" == true || "${MACBOOK_PROFILE:-false}" == true ]] || return 0
-    _OVERLAY_BAK_DIR="$(mktemp -d /tmp/edition-overlay-bak-XXXXXX)"
+    mkdir "$_OVERLAY_BAK_PATH" \
+        || die "Could not create the overlay backup at $_OVERLAY_BAK_PATH; the profile is left as it was."
+    _OVERLAY_BAK_DIR="$_OVERLAY_BAK_PATH"
     if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
         apply_macbook_overlay
         return 0
@@ -358,10 +360,13 @@ restore_profile_overlay() {
     # Restore all three even if one fails (never leave a half-overlaid tree),
     # keep the backup on error, and always return 0 so trap cleanup continues.
     local rc=0 rel
-    while read -r rel; do
-        [[ -n "$rel" ]] || continue
-        cp -a "$_OVERLAY_BAK_DIR/${rel//\//__}" "${PROFILE_DIR}/${rel}" || rc=1
-    done < "$_OVERLAY_BAK_DIR/.files"
+    # A build stopped before its first file was stashed leaves no list.
+    if [[ -r "$_OVERLAY_BAK_DIR/.files" ]]; then
+        while read -r rel; do
+            [[ -n "$rel" ]] || continue
+            cp -a "$_OVERLAY_BAK_DIR/${rel//\//__}" "${PROFILE_DIR}/${rel}" || rc=1
+        done < "$_OVERLAY_BAK_DIR/.files"
+    fi
     if [[ -r "$_OVERLAY_BAK_DIR/.created" ]]; then
         while read -r rel; do
             [[ -n "$rel" ]] || continue
@@ -735,6 +740,9 @@ NVIDIA_PROFILE=false
 MACBOOK_PROFILE=false
 # Backup dir for the --nvidia profile overlay (set/cleared by apply/restore).
 _OVERLAY_BAK_DIR=""
+# Where that backup lives. Beside the checkout rather than in /tmp, so it is
+# still there after a reboot when a build died without restoring the profile.
+_OVERLAY_BAK_PATH="$SCRIPT_DIR/.edition-overlay-backup"
 
 # =============================================================================
 # ARGUMENT PARSING
@@ -925,6 +933,19 @@ run_quiet() {
 if [[ ${EUID} -ne 0 ]]; then
     echo "ERROR: ${0##*/} must be run as root (mkarchiso requires root)." >&2
     exit 1
+fi
+
+# An edition overlay rewrites tracked profile files and puts them back on exit.
+# A build that was killed or lost power never got that far, and the next build
+# would read the overlaid files as the standard profile, so the backup it left
+# is put back before anything reads the profile.
+if [[ -d "$_OVERLAY_BAK_PATH" ]]; then
+    warn "An earlier build left its edition overlay in the profile; restoring the profile from $_OVERLAY_BAK_PATH."
+    _OVERLAY_BAK_DIR="$_OVERLAY_BAK_PATH"
+    restore_profile_overlay
+    [[ -z "$_OVERLAY_BAK_DIR" ]] \
+        || die "Could not restore the profile from $_OVERLAY_BAK_PATH. Put those files back by hand, remove that directory, then build again."
+    info "Profile restored."
 fi
 
 _DOTFILES_REPO_DEFAULT="https://github.com/MainstreamOS/dots-hyprland.git"
