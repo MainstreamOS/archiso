@@ -64,7 +64,9 @@ Scope {
     }
 
     function dismissExternal(address) {
-        for (const panel of overviewVariants.instances) {
+        for (const loader of overviewVariants.instances) {
+            if (!loader.active) continue;
+            const panel = loader.item;
             if (!panel.monitorIsFocused) continue;
             if (panel.useScrollingLauncher) {
                 const launcher = panel.scrollingLauncherItem;
@@ -97,9 +99,25 @@ Scope {
         id: overviewVariants
         model: Quickshell.screens
 
-    PanelWindow {
-        id: panelWindow
+    LazyLoader {
+        id: panelLoader
         required property ShellScreen modelData
+        readonly property bool openRequested: GlobalStates.overviewOpen
+
+        // Build each launcher window alongside desktop startup. Opening the
+        // launcher finishes any pending creation so the first request works.
+        loading: true
+        onOpenRequestedChanged: {
+            if (!openRequested || active) return;
+            active = true;
+            // This window was created during the open signal and missed it.
+            if (openRequested) item?.prepareOpen();
+        }
+        Component.onCompleted: if (openRequested) active = true
+
+    component: PanelWindow {
+        id: panelWindow
+        readonly property ShellScreen modelData: panelLoader.modelData
         screen: modelData
         property string searchingText: ""
         property string launcherLayout: ""
@@ -374,20 +392,21 @@ Scope {
                     panelWindow.resetDrawer();
                     flickable.contentY = 0;
                 } else {
-                    panelWindow.keyboardPrimed = panelWindow.contentItem.Window.active;
-                    panelWindow.launcherLayout = panelWindow.currentWorkspaceLayout;
-                    if (!overviewScope.dontAutoCancelSearch) {
-                        searchWidget.cancelSearch();
-                    }
-                    // Reset drawer state on open.
-                    panelWindow.resetDrawer();
-                    // Focus the search box as the surface takes keyboard focus.
-                    if (panelWindow.useScrollingLauncher)
-                        Qt.callLater(panelWindow.beginScrollingLauncher);
-                    else
-                        Qt.callLater(searchWidget.focusSearchInput);
+                    panelWindow.prepareOpen();
                 }
             }
+        }
+
+        function prepareOpen() {
+            keyboardPrimed = contentItem.Window.active;
+            launcherLayout = currentWorkspaceLayout;
+            if (!overviewScope.dontAutoCancelSearch) searchWidget.cancelSearch();
+            resetDrawer();
+            // Focus the search box as the surface takes keyboard focus.
+            if (useScrollingLauncher)
+                Qt.callLater(beginScrollingLauncher);
+            else
+                Qt.callLater(searchWidget.focusSearchInput);
         }
 
         onMonitorIsFocusedChanged: {
@@ -955,10 +974,14 @@ Scope {
 
     }   // end PanelWindow
 
+    }   // end LazyLoader
+
     }   // end Variants
 
     function dismissOverview() {
-        for (const panel of overviewVariants.instances) {
+        for (const loader of overviewVariants.instances) {
+            if (!loader.active) continue;
+            const panel = loader.item;
             if (panel.monitorIsFocused && panel.useScrollingLauncher && GlobalStates.overviewOpen) {
                 panel.closeScrollingLauncher();
                 return;
@@ -967,23 +990,16 @@ Scope {
         GlobalStates.overviewOpen = false;
     }
 
-    function toggleClipboard() {
+    function toggleSearchPrefix(prefix: string) {
         if (GlobalStates.overviewOpen && overviewScope.dontAutoCancelSearch) {
             overviewScope.dismissOverview();
             return;
         }
         overviewScope.dontAutoCancelSearch = true;
-        for (const w of overviewVariants.instances) w.setSearchingText(Config.options.search.prefix.clipboard);
-        GlobalStates.overviewOpen = true;
-    }
-
-    function toggleEmojis() {
-        if (GlobalStates.overviewOpen && overviewScope.dontAutoCancelSearch) {
-            overviewScope.dismissOverview();
-            return;
+        for (const loader of overviewVariants.instances) {
+            loader.active = true;
+            loader.item?.setSearchingText(prefix);
         }
-        overviewScope.dontAutoCancelSearch = true;
-        for (const w of overviewVariants.instances) w.setSearchingText(Config.options.search.prefix.emojis);
         GlobalStates.overviewOpen = true;
     }
 
@@ -1015,7 +1031,7 @@ Scope {
             GlobalStates.superReleaseMightTrigger = false;
         }
         function clipboardToggle() {
-            overviewScope.toggleClipboard();
+            overviewScope.toggleSearchPrefix(Config.options.search.prefix.clipboard);
         }
     }
 
@@ -1066,7 +1082,7 @@ Scope {
         description: "Toggle clipboard query on overview widget"
 
         onPressed: {
-            overviewScope.toggleClipboard();
+            overviewScope.toggleSearchPrefix(Config.options.search.prefix.clipboard);
         }
     }
 
@@ -1075,7 +1091,7 @@ Scope {
         description: "Toggle emoji query on overview widget"
 
         onPressed: {
-            overviewScope.toggleEmojis();
+            overviewScope.toggleSearchPrefix(Config.options.search.prefix.emojis);
         }
     }
 }

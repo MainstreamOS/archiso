@@ -93,6 +93,59 @@ test('a long post excerpt ends on a whole word and never inside an emoji', () =>
     assert.equal(resolve(phone('X', 'Someone', unbroken)), 'https://x.com/search?q=' + 'a'.repeat(119));
 });
 
+test('a YouTube notice searches for the channel and video it names', () => {
+    const search = query => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
+    assert.equal(resolve(phone('YouTube', 'Veritasium', 'Why the sky is blue &amp; sunsets are red')),
+        search('Veritasium Why the sky is blue & sunsets are red'));
+    assert.equal(resolve(phone('YouTube', 'Veritasium uploaded: Why the sky is blue', '')),
+        search('Veritasium Why the sky is blue'));
+    assert.equal(resolve(phone('YouTube', 'New video from Veritasium', 'Why the sky is blue…')),
+        search('Veritasium Why the sky is blue'));
+    assert.equal(resolve(phone('YouTube', '\u{1F534} Gacha Smack is live now: Story time', 'Story time')),
+        search('\u{1F534} Gacha Smack Story time'));
+    assert.equal(resolve(phone('YouTube', 'YouTube', '')), 'https://www.youtube.com/');
+    assert.equal(resolve(phone('YouTube', 'Veritasium', 'Watch https://youtu.be/abc')), 'https://youtu.be/abc');
+    assert.equal(resolve(phone('YouTube', 'ZEE5', 'Dont Be Quite | A ZEE5 Initiative | Watch Vedha on Now on ZEE5')),
+        search('Dont Be Quite | A ZEE5 Initiative | Watch Vedha on Now on ZEE5'));
+    assert.equal(resolve(phone('YouTube', 'Vox', 'Voxel engines explained')), search('Vox Voxel engines explained'));
+    assert.equal(resolve(phone('YouTube', 'Channel', 'Season 2 premiere: what to expect')),
+        search('Channel Season 2 premiere: what to expect'));
+    assert.equal(resolve(phone('YouTube', 'Fireship uploaded: <div> vs <span>', '')), search('Fireship <div> vs <span>'));
+});
+
+test('a YouTube video alert opens the video its phone key names', () => {
+    const alert = key => ({...phone('YouTube', 'Channel', 'Video'), kdeInternalId: key});
+    assert.equal(resolve(alert('0|com.google.android.youtube|0|wc58LDd96AQ::ece5218b-02f7-46f4-8301-1d167fb3d8b2|10288')),
+        'https://www.youtube.com/watch?v=wc58LDd96AQ');
+    assert.equal(resolve({
+        ...phone('YouTube', '\u{1F534} Channel is live now: Stream title', 'Stream title'),
+        kdeInternalId: '0|com.google.android.youtube|0|dQw4w9WgXcQ::ece5218b-02f7-46f4-8301-1d167fb3d8b2|10288',
+    }), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    assert.equal(resolve(alert('0|com.google.android.youtube|0|qof3T-pbe-J3ncWroVopjA::14e9d6c6-3174-47bb-b3e0-cfb19d838768|10288')),
+        'https://www.youtube.com/results?search_query=Channel%20Video');
+});
+
+test('a YouTube comment activity alert opens comment history', () => {
+    const commentHistory = 'https://www.youtube.com/feed/history/comment_history';
+    assert.equal(resolve({
+        ...phone('YouTube', '5 likes on your comment', '"Bro found the Darkhold lol"'),
+        kdeInternalId: '0|com.google.android.youtube|0|ACTIVITY_COMMENT_LIKE_AGGREGATED-Ugx7fyYqqjW14ZYjB794AaABAg::f1365934-5341-4012-9850-064b28093301|10253',
+    }), commentHistory);
+    assert.equal(resolve({
+        ...phone('YouTube', 'New comment activity', '"Nice video"'),
+        kdeInternalId: '0|com.google.android.youtube|0|ACTIVITY_COMMENT_REPLY-Ugx7fyYqqjW14ZYjB794AaABAg::f1365934-5341-4012-9850-064b28093301|10253',
+    }), commentHistory);
+    for (const summary of [
+        '1 like on your reply',
+        'Someone replied to your comment',
+        'Someone mentioned you in a comment',
+        'Creator hearted your comment',
+        'Creator hearted your reply',
+    ]) {
+        assert.equal(resolve(phone('YouTube', summary, '"Example comment text"')), commentHistory);
+    }
+});
+
 test('Discord uses its own actions for both mirrored and desktop notifications', () => {
     assert.equal(resolve(phone('Discord', 'Sender', 'New message')), '');
     assert.equal(resolve(phone('Discord', 'Sender', 'See https://example.com/shared')), '');

@@ -31,8 +31,12 @@ Singleton {
             const remaining = Object.assign({}, root.messageRequests);
             delete remaining[request];
             root.messageRequests = remaining;
-            if (success && root.messageDrafts[pending.key] === pending.text) {
-                root.messageDrafts = Object.assign({}, root.messageDrafts, {[pending.key]: ""});
+            if (!success && pending.text && !(root.messageDrafts[pending.key] || "").trim()) {
+                root.messageDrafts = Object.assign({}, root.messageDrafts, {[pending.key]: pending.text});
+            } else if (success && pending.text && (root.messageDrafts[pending.key] || "").trim() === pending.text) {
+                const drafts = Object.assign({}, root.messageDrafts);
+                delete drafts[pending.key];
+                root.messageDrafts = drafts;
             }
             root.messageReplyFinished(pending.key, success, pending.text);
         }
@@ -180,7 +184,7 @@ Singleton {
         && (!n.phoneOrigin || NotificationPolicy.panelFor(n) === "notifications")).map(n => ({
         id: "notification:" + n.notificationId, notificationId: n.notificationId,
         summary: n.summary, body: n.body, image: n.image, sourceApp: n.sourceApp, appName: n.appName,
-        appIcon: n.headerIcon, imageRole: n.imageRole,
+        appIcon: n.headerIcon, imageRole: n.imageRole, kdeInternalId: n.kdeInternalId,
         phoneOrigin: n.phoneOrigin, actions: n.actions, time: n.time
     }))).sort((a, b) => b.time - a.time)
     readonly property var call: calls[0] ?? null
