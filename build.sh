@@ -469,6 +469,28 @@ mainstream_unneeded_pkgs() {
 # build left.
 declare -A GITHUB_PROVIDED=()
 declare -A FAILED_DOWNLOADS=()
+
+# Check <db> against its detached signature <sig> with the project key the
+# profile ships. The keyring is made from that one key in a directory of its
+# own, so no other key can satisfy the check and no user keyring is read or
+# written. Prints the reason on failure.
+verify_mainstream_db() {
+    local db="$1" sig="$2" key="$PROFILE_DIR/airootfs/usr/local/share/mainstream.pub"
+    local kr out rc=0
+    [[ -s "$key" ]] || { echo "no public key at $key"; return 1; }
+    kr=$(mktemp -d) || return 1
+    if ! gpg --homedir "$kr" --batch --no-options --dearmor \
+             -o "$kr/mainstream.gpg" "$key" 2>/dev/null; then
+        echo "could not read the public key at $key"
+        rc=1
+    elif ! out=$(gpgv --homedir "$kr" --keyring "$kr/mainstream.gpg" "$sig" "$db" 2>&1); then
+        tail -n1 <<< "$out"
+        rc=1
+    fi
+    rm -rf "$kr"
+    return "$rc"
+}
+
 download_mainstream_repo_pkgs() {
     local repo_dir="$1"
     local rel="https://github.com/MainstreamOS/packages/releases/download/mainstream-repo"
@@ -478,21 +500,39 @@ download_mainstream_repo_pkgs() {
     # releases/download like the packages themselves, never from api.github.com,
     # whose 60 requests an hour for an unauthenticated address are shared by
     # everything behind it, a VPN exit included.
-    local files="" dberr="" dbtmp unneeded="" unneeded_dirs="" uname
+    local files="" dberr="" dbtmp sigtmp sum fn unneeded="" unneeded_dirs="" uname
+    local why="" hint="check the connection to github.com and re-run"
+    local -A db_sha=()
     dbtmp=$(mktemp)
-    if dberr=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused \
-                    -o "$dbtmp" "$rel/mainstream.db" 2>&1); then
+    sigtmp=$(mktemp)
+    if ! dberr=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused \
+                      -o "$dbtmp" "$rel/mainstream.db" 2>&1); then
+        why="Could not read the [mainstream] db${dberr:+ ($dberr)}"
+    # The db names every package and the checksum each download is held to, so
+    # nothing in it is used until the project key has vouched for it.
+    elif ! dberr=$(curl -fsSL --retry 5 --retry-delay 4 --retry-connrefused \
+                        -o "$sigtmp" "$rel/mainstream.db.sig" 2>&1) \
+         || ! dberr=$(verify_mainstream_db "$dbtmp" "$sigtmp"); then
+        why="Could not verify the [mainstream] db against the project key${dberr:+ ($dberr)}"
+        hint="check that the release carries a mainstream.db.sig made with that key and re-run"
+    else
         files=$(tar xzOf "$dbtmp" --wildcards '*/desc' 2>/dev/null \
             | awk '/^%FILENAME%$/ { getline; print }' \
             | grep -E '^[^/]+\.pkg\.tar\.zst$') || files=""
         unneeded=$(mainstream_unneeded_pkgs "$dbtmp") || unneeded=""
+        while read -r sum fn; do
+            [[ -n "$fn" ]] || continue
+            db_sha["$fn"]="$sum"
+        done < <(tar xzOf "$dbtmp" --wildcards '*/desc' 2>/dev/null \
+            | awk '/^%FILENAME%$/ { getline fn; next }
+                   /^%SHA256SUM%$/ { getline sum; if (fn != "") print sum, fn; fn = "" }')
+        [[ -n "$files" ]] || why="Could not read the [mainstream] db"
     fi
-    rm -f "$dbtmp"
-    if [[ -z "$files" ]]; then
-        local why="Could not read the [mainstream] db${dberr:+ ($dberr)}"
+    rm -f "$dbtmp" "$sigtmp"
+    if [[ -n "$why" ]]; then
         # python312 and the netinstall/Welcome packages exist nowhere else, and a
         # clean build has just emptied the only place an earlier copy could be.
-        [[ "$CLEAN_BUILD" == true ]] && die "$why. The image needs packages only it carries (python312 among them); check the connection to github.com and re-run."
+        [[ "$CLEAN_BUILD" == true ]] && die "$why. The image needs packages only it carries (python312 among them); $hint."
         warn "$why — nothing is downloaded from it this run; what only [mainstream] carries must be left from an earlier build."
         return 0
     fi
@@ -506,7 +546,7 @@ download_mainstream_repo_pkgs() {
             rm -f "$repo_dir/$uname"-[0-9]*.pkg.tar.zst{,.sig}
         done <<< "$unneeded"
     fi
-    local url f name base skip m stem
+    local url f name base skip m stem fetched
     while read -r base; do
         [[ -n "$base" ]] || continue
         url="$rel/$base"
@@ -532,7 +572,16 @@ download_mainstream_repo_pkgs() {
         # a moment ago can carry a newer version than the published one, and
         # writing to its name would destroy it before anything compared the two.
         tmpf="$repo_dir/.download-$$-$base"
+        fetched=false
         if curl -fL --retry 5 --retry-delay 4 --retry-connrefused -o "$tmpf" "$url" 2>/dev/null; then
+            if [[ -n "${db_sha[$base]:-}" \
+                  && "$(sha256sum "$tmpf" | cut -d' ' -f1)" == "${db_sha[$base]}" ]]; then
+                fetched=true
+            else
+                warn "$base does not match the checksum the signed db gives for it; discarding the download."
+            fi
+        fi
+        if [[ "$fetched" == true ]]; then
             name=$(pacman -Qpq "$tmpf" 2>/dev/null || true)
             if [[ -n "$name" ]]; then
                 remote_ver=$(pacman -Qp "$tmpf" 2>/dev/null | awk '{print $2}')
