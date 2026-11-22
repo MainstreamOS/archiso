@@ -168,10 +168,29 @@ if [ "$IS_UEFI" = true ]; then
     fi
 
     PART_NUM=$(lsblk -no PARTN "$EFI_DEV")
-    if ! efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
+    # Firmware entries an earlier install left for the Limine loader on this
+    # partition. They are removed once the new entry exists, so one is listed.
+    EFI_PARTUUID=$(lsblk -no PARTUUID "$EFI_DEV" 2>/dev/null) || EFI_PARTUUID=""
+    OLD_BOOTNUMS=()
+    if [[ -n "$EFI_PARTUUID" ]]; then
+        while IFS= read -r _entry; do
+            [[ "$_entry" =~ ^Boot([0-9A-Fa-f]{4})[*[:space:]] ]] || continue
+            _num=${BASH_REMATCH[1]}
+            _entry=${_entry,,}
+            if [[ "$_entry" == *",${EFI_PARTUUID,,},"* && "$_entry" == *'\efi\limine\'* ]]; then
+                OLD_BOOTNUMS+=("$_num")
+            fi
+        done < <(efibootmgr -v 2>/dev/null || true)
+    fi
+    if efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
         --label "Mainstream" \
         --loader "\\EFI\\limine\\limine_x64.efi" \
         --unicode; then
+        for _num in "${OLD_BOOTNUMS[@]}"; do
+            efibootmgr --bootnum "$_num" --delete-bootnum >/dev/null \
+                || info "Could not remove the earlier firmware boot entry Boot$_num."
+        done
+    else
         # Not fatal: the firmware finds the copy at EFI/BOOT/BOOTX64.EFI
         # written above without any entry of its own.
         warn "Could not create the Mainstream firmware boot entry; this system starts from the default loader path instead."
