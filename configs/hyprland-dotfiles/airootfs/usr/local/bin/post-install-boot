@@ -582,19 +582,35 @@ if [[ -r "$MAC_LIB" ]]; then
         # plain package files, since a machine that needs it has no Wi-Fi to
         # fetch it with. Its DKMS hook builds the module against the kernel
         # installed here. The sync repos are the fallback for a wired install
-        # on an image that did not carry them.
+        # on an image that did not carry them, or whose headers are for another
+        # kernel version than the one installed.
         if mac_needs_wl_driver; then
             wl_files=()
+            wl_why="no bundled packages"
             # The staged headers are Arch's. On the MacBook edition the kernel
             # is linux-t2, so building against them would build for a kernel
             # that is not running: take the whole set from the repositories
             # instead, where the matching headers live.
             if mac_kernel_is_stock; then
-                for pat in broadcom-wl-dkms dkms linux-headers pahole; do
-                    for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
-                        [[ -f "$f" ]] && wl_files+=("$f")
-                    done
+                # An install with a network connection has replaced the image's
+                # kernel with the repositories', and headers of any other
+                # version build the module for a kernel that is not there.
+                wl_kernel_ver="$(pacman -Q linux 2>/dev/null | awk '{print $2}')" || wl_kernel_ver=""
+                wl_headers_ver=""
+                for f in /usr/local/share/pkgs/linux-headers-[0-9]*.pkg.tar.zst; do
+                    [[ -f "$f" ]] || continue
+                    wl_headers_ver="$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}')" || wl_headers_ver=""
                 done
+                if [[ -n "$wl_kernel_ver" && "$wl_headers_ver" == "$wl_kernel_ver" ]]; then
+                    for pat in broadcom-wl-dkms dkms linux-headers pahole; do
+                        for f in /usr/local/share/pkgs/${pat}-[0-9]*.pkg.tar.zst; do
+                            [[ -f "$f" ]] && wl_files+=("$f")
+                        done
+                    done
+                elif [[ -n "$wl_headers_ver" ]]; then
+                    wl_why="bundled headers $wl_headers_ver do not match kernel ${wl_kernel_ver:-unknown}"
+                    info "The $wl_why; taking the wl driver from the repositories."
+                fi
             fi
             if (( ${#wl_files[@]} > 0 )); then
                 info "Installing the Broadcom wl driver from the image: ${wl_files[*]##*/}"
@@ -603,7 +619,7 @@ if [[ -r "$MAC_LIB" ]]; then
             else
                 # shellcheck disable=SC2046
                 pacman -S --noconfirm --needed $(mac_wl_packages) 2>&1 \
-                    || note_failure "wl driver install failed (no bundled packages, sync repos unreachable)"
+                    || note_failure "wl driver install failed ($wl_why, sync repos unreachable)"
             fi
         fi
         mac_apply_autoconfig
