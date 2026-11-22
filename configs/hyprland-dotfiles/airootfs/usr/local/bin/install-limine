@@ -157,6 +157,11 @@ if [ "$IS_UEFI" = true ]; then
     if [ -f "$INSTALLER_EFI" ]; then
         cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/limine/BOOTX64.EFI"
         cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/BOOT/BOOTX64.EFI"
+        # limine_x64.efi is the copy limine-install replaces on every Limine
+        # upgrade, so it is the one the firmware entry below names. One that
+        # is already there is left for limine-install to judge and update.
+        [ -s "$BOOT_PATH/EFI/limine/limine_x64.efi" ] \
+            || cp -f "$INSTALLER_EFI" "$BOOT_PATH/EFI/limine/limine_x64.efi"
     else
         log "CRITICAL: no Limine BOOTX64.EFI available in chroot!"
         exit 1
@@ -165,7 +170,7 @@ if [ "$IS_UEFI" = true ]; then
     PART_NUM=$(lsblk -no PARTN "$EFI_DEV")
     if ! efibootmgr --create --disk "$TARGET_DISK" --part "$PART_NUM" \
         --label "Mainstream" \
-        --loader "\\EFI\\limine\\BOOTX64.EFI" \
+        --loader "\\EFI\\limine\\limine_x64.efi" \
         --unicode; then
         # Not fatal: the firmware finds the copy at EFI/BOOT/BOOTX64.EFI
         # written above without any entry of its own.

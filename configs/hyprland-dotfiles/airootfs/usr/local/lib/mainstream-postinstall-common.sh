@@ -48,9 +48,12 @@ write_limine_defaults() {  # $1 = the boot partition to pin, optional
     # offers an entry that boots the menu back into the menu. The install prunes
     # that one, though probing runs again whenever the entries are regenerated,
     # so it can return after a kernel update until something prunes it there too.
+    # ENABLE_LIMINE_FALLBACK has every Limine update rewrite EFI/BOOT/BOOTX64.EFI
+    # too, which otherwise stays at the version the install wrote.
     cat > "$limine_defaults" << 'LIMINEDEF'
 TARGET_OS_NAME="Mainstream OS\\"
 FIND_BOOTLOADERS=yes
+ENABLE_LIMINE_FALLBACK=yes
 SNAPPER_CONFIG_NAME=root
 ENABLE_UKI=yes
 CUSTOM_UKI_NAME="mainstream"
