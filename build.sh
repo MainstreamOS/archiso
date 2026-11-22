@@ -1000,6 +1000,14 @@ _edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
 [[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
 [[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
 
+# One image cannot be both: the two editions replace the same kernel line in
+# packages.x86_64, and the second overlay to run would sed a line the first one
+# had already taken.
+if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_PROFILE" == true ]]; then
+    echo "ERROR: --nvidia and --macbook build different images; pick one." >&2
+    exit 1
+fi
+
 # A mistyped version should not cost a sudo prompt and a wait, so these run
 # before the root check rather than with the rest of the release setup.
 if [[ "$_WANT_RELEASE_VERSION" == true ]]; then
@@ -1300,13 +1308,6 @@ NVIDIA_DEPS=(
 # Append (not branch) so the build loop below, which iterates AUR_DEPS, builds them.
 if [[ "$NVIDIA_PROFILE" == true ]]; then
     AUR_DEPS+=("${NVIDIA_DEPS[@]}")
-fi
-
-# One image cannot be both: the two editions replace the same kernel line in
-# packages.x86_64, and the second overlay to run would sed a line the first one
-# had already taken.
-if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_PROFILE" == true ]]; then
-    die "--nvidia and --macbook build different images; pick one."
 fi
 
 # ── Preflight checks ───────────────────────────────────────────────────────
