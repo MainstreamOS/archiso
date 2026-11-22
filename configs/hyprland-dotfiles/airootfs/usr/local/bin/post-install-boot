@@ -684,24 +684,15 @@ KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
     printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
 done | sort -V | tail -n1 | cut -d' ' -f2)"
 [[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
-if [[ "$IS_UEFI" == true ]]; then
-    # UEFI boots the UKI, so no fallback image is built.
-    cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
+# No fallback preset on either firmware: UEFI boots the UKI, and on BIOS the
+# boot menu starts the images limine-mkinitcpio builds, which has its own
+# setting for a fallback.
+cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
 PRESETS=('default')
 ALL_kver='/boot/vmlinuz-${KERNEL_PKG}'
 default_config='/etc/mkinitcpio.conf'
 default_image='/boot/initramfs-${KERNEL_PKG}.img'
 PRESET
-else
-    cat > "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" << PRESET
-PRESETS=('default' 'fallback')
-ALL_kver='/boot/vmlinuz-${KERNEL_PKG}'
-default_config='/etc/mkinitcpio.conf'
-default_image='/boot/initramfs-${KERNEL_PKG}.img'
-fallback_config='/etc/mkinitcpio.conf'
-fallback_options='-S autodetect'
-PRESET
-fi
 # A preset for a kernel that is not installed fails mkinitcpio -P and takes the
 # whole install down with it, so nothing but this one is left in place.
 for _p in /etc/mkinitcpio.d/*.preset; do
