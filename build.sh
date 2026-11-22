@@ -1334,7 +1334,13 @@ done
 # These are required to build certain AUR packages (e.g. otf-space-grotesk)
 # and must be present on the host before the AUR build loop runs.
 info "Installing host build dependencies for AUR packages..."
-pacman -S --noconfirm --needed fontforge python-html2text 2>&1 | grep -v "is up to date" || true
+# Only what is not installed. --needed still upgrades a package that is behind
+# the host's sync database, and one package upgraded by itself on a running
+# desktop is a partial upgrade.
+mapfile -t _host_missing < <(pacman -T fontforge python-html2text || true)
+if (( ${#_host_missing[@]} > 0 )); then
+    pacman -S --noconfirm "${_host_missing[@]}" || true
+fi
 
 # html2markdown is AUR-only — build user must install it via yay
 if ! pacman -Qi html2markdown &>/dev/null; then
@@ -1504,8 +1510,14 @@ TEMP_OUT="$2"
 cd "$PKGPATH"
 
 DEPS=$(bash -c 'source PKGBUILD 2>/dev/null; echo "${depends[@]:-} ${makedepends[@]:-}"' 2>/dev/null || true)
-if [[ -n "$DEPS" ]]; then
-    yay -S --noconfirm --needed --asdeps $DEPS 2>&1 || true
+# Only what is not installed: asking for all of them upgrades the build host's
+# own packages one at a time and marks them as dependencies.
+MISSING=""
+if [[ -n "${DEPS// /}" ]]; then
+    MISSING=$(pacman -T $DEPS 2>/dev/null || true)
+fi
+if [[ -n "$MISSING" ]]; then
+    yay -S --noconfirm --needed --asdeps $MISSING 2>&1 || true
 fi
 
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
@@ -1695,8 +1707,14 @@ fi
 # resolves AUR deps; we then build with --nodeps. Same pattern the
 # meta-package build script uses above.
 DEPS=$(bash -c 'source PKGBUILD 2>/dev/null; echo "${depends[@]:-} ${makedepends[@]:-}"' 2>/dev/null || true)
-if [[ -n "$DEPS" ]]; then
-    yay -S --noconfirm --needed --asdeps $DEPS 2>&1 || true
+# Only what is not installed: asking for all of them upgrades the build host's
+# own packages one at a time and marks them as dependencies.
+MISSING=""
+if [[ -n "${DEPS// /}" ]]; then
+    MISSING=$(pacman -T $DEPS 2>/dev/null || true)
+fi
+if [[ -n "$MISSING" ]]; then
+    yay -S --noconfirm --needed --asdeps $MISSING 2>&1 || true
 fi
 
 PACMAN=/usr/local/bin/pacman-noconfirm PKGDEST="$TEMP_OUT" \
@@ -2270,7 +2288,11 @@ fi
 # Fail the build rather than silently shipping an old guarded-off binary.
 
 info "Installing build deps for plugin prebuild..."
-pacman -S --noconfirm --needed hyprland
+# Only when it is missing: upgrading the compositor by itself would leave the
+# running desktop out of step with the libraries it was built against.
+if [[ -n "$(pacman -T hyprland || true)" ]]; then
+    pacman -S --noconfirm hyprland
+fi
 
 # ── Plugin ABI guard stamps ────────────────────────────────────────────────
 # hyprland/plugins.lua refuses to load a plugin whose .builtfor stamp disagrees
@@ -2665,9 +2687,12 @@ fi
 # here — this runs as root and pacman-installs other build deps too — so a build
 # on a fresh system (which carries none of it) just works. The set mirrors the
 # archiso package's depends.
-pacman -S --noconfirm --needed \
+mapfile -t _host_missing < <(pacman -T \
     arch-install-scripts dosfstools e2fsprogs erofs-utils libarchive \
-    libisoburn mtools squashfs-tools 2>&1 | grep -v "is up to date" || true
+    libisoburn mtools squashfs-tools || true)
+if (( ${#_host_missing[@]} > 0 )); then
+    pacman -S --noconfirm "${_host_missing[@]}" || true
+fi
 
 for _bin in mkfs.fat mmd mcopy xorriso mksquashfs mkfs.erofs pacstrap curl tar make cc; do
     if ! command -v "${_bin}" &>/dev/null; then
