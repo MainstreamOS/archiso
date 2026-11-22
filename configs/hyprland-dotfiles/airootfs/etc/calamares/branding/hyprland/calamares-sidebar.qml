@@ -32,28 +32,24 @@ Rectangle {
     readonly property color colOnSecCont:    "#ece6e9"   // m3onSecondaryContainer
     readonly property color colOutlineVar:   "#49464a"   // m3outlineVariant      — divider
 
-    // Step pretty-name → Material Symbol ligature.
+    // Material Symbol ligature for each step, by position in the sidebar.
     //
-    // Keyed by the module's prettyName() (which is what the ViewManager
-    // model exposes as `display`) instead of position, so inserting or
-    // removing a step in settings.conf doesn't silently shift every
-    // icon down by one. Entries for both the raw netinstall pretty
-    // name ("Package selection") and our post-override label ("Apps")
-    // are kept so the lookup is robust either way.
-    readonly property var stepIcons: ({
-        "Welcome":           "waving_hand",
-        "Location":          "globe",                  // locale module's prettyName
-        "Keyboard":          "keyboard",
-        "Partitions":        "storage",
-        "Users":             "contacts_product",
-        "Get Started":       "rocket_launch",          // installmethod picker
-        "Apps":              "deployed_code_update",   // post-override label
-        "Package selection": "deployed_code_update",   // raw netinstall prettyName
-        "Summary":           "inactive_order",
-        "Install":           "install_desktop",        // ExecutionViewStep
-        "Set Up":            "install_desktop",        // setupMode variant
-        "Finish":            "inventory"
-    })
+    // The model exposes only the step's translated name and its row, so
+    // the row is the one key that holds in every language. The order
+    // follows the `show:` sequence in settings.conf, with the install
+    // step between Summary and Finish; change both together.
+    readonly property var stepIcons: [
+        "waving_hand",            // welcome
+        "globe",                  // locale
+        "keyboard",               // keyboard
+        "storage",                // partition
+        "contacts_product",       // users
+        "rocket_launch",          // installmethod
+        "deployed_code_update",   // netinstall
+        "inactive_order",         // summary
+        "install_desktop",        // the install itself
+        "inventory"               // finished
+    ]
 
     // QML-side label override, keyed by Calamares' built-in display
     // string. Keeps the netinstall section labeled "Apps" without
@@ -63,15 +59,10 @@ Rectangle {
         "Package selection": "Apps"
     })
 
-    // Insert a separator AFTER these steps (keyed by their post-override
-    // display label). Two visual groups:
-    //   "Welcome" alone at top,
-    //   then setup pages up through "Apps" / Install Method / etc.,
-    //   then Summary · Install · Finished.
-    readonly property var separatorAfter: ({
-        "Welcome": true,
-        "Apps":    true
-    })
+    // Rows that end a visual group and get a separator below them, in the
+    // same order as stepIcons: welcome alone at the top, then the setup
+    // pages through netinstall, then Summary, Install and Finish.
+    readonly property var separatorAfter: [0, 6]
 
     readonly property int currentStep: ViewManager.currentStepIndex
 
@@ -106,15 +97,10 @@ Rectangle {
                     }
 
                     // Separator container — collapses to 0 when this step
-                    // is not the tail of a group. Keyed off post-override
-                    // label so reordering settings.conf can't desync it.
+                    // is not the tail of a group.
                     Item {
                         Layout.fillWidth: true
-                        visible: root.separatorAfter[
-                            root.stepLabelOverrides[display] !== undefined
-                                ? root.stepLabelOverrides[display]
-                                : display
-                        ] === true
+                        visible: root.separatorAfter.indexOf(index) !== -1
                         implicitHeight: visible ? 25 : 0   // 12 above + 1 line + 12 below
 
                         Rectangle {
@@ -173,10 +159,9 @@ Rectangle {
                     "opsz": 22
                 })
                 renderType: Text.NativeRendering
-                // Name-keyed lookup so a sequence reorder doesn't desync
-                // icons. Falls back to a neutral circle for any module
-                // whose pretty name we haven't mapped yet.
-                text:       root.stepIcons[navBtn.stepText] || "radio_button_unchecked"
+                // Falls back to a neutral circle for a step past the end
+                // of the list.
+                text:       root.stepIcons[navBtn.stepIdx] || "radio_button_unchecked"
                 // Sidebar entries always render at full strength — current pill
                 // uses onSecondaryContainer, every other step uses onBackground.
                 color:      navBtn.isCurrent ? root.colOnSecCont : root.colOnSurface
