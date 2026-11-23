@@ -19,6 +19,7 @@ kernel_params_x86_64="copytoram=n cow_spacesize=1G"
 bootstrap_tarball_compression=('zstd' '-c' '-T0' '--auto-threads=logical' '--long' '-19')
 file_permissions=(
   ["/etc/shadow"]="0:0:400"
+  ["/etc/gshadow"]="0:0:400"
   ["/root"]="0:0:750"
   ["/root/.gnupg"]="0:0:700"
 
