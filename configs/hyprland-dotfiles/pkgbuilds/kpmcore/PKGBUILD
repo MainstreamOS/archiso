@@ -4,8 +4,8 @@
 # LUKS2 fix for partitions created by Calamares' Alongside mode.
 
 pkgname=kpmcore
-pkgver=26.08.1
-pkgrel=2
+pkgver=26.08.3
+pkgrel=1
 pkgdesc='Library for managing partitions (Mainstream LUKS2 alignment fix)'
 arch=('x86_64')
 url='https://apps.kde.org/partitionmanager/'
@@ -42,7 +42,7 @@ source=(
     'kpmcore-luks2-sector-alignment.patch'
 )
 sha256sums=(
-    '22cac5b6432c4ad606aef72bf884983d9cb7d5245c43e75edd1c5a36f9058668'
+    'de84307a2233e761a9d37ac1ab411363613312a5abc2ce348b366ae081da644b'
     'SKIP'
 )
 
