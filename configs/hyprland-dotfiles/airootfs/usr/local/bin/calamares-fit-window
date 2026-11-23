@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# The installer pins its window to the size in branding.desc and only knows the
+# full screen size, not the part the bar leaves free. On a screen smaller than
+# the designed 1500x800 this writes the free area there instead, so the window
+# and its button row stay on screen. Run in the live session before Calamares.
+
+desc=/etc/calamares/branding/hyprland/branding.desc
+design_w=1500
+design_h=800
+
+[[ -d /run/archiso && -f $desc ]] || exit 0
+
+size=$(hyprctl monitors -j 2>/dev/null | jq -r '
+    (map(select(.focused))[0] // .[0])
+    | (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $px
+    | "\(($px[0] / .scale - .reserved[0] - .reserved[2]) | floor) \(($px[1] / .scale - .reserved[1] - .reserved[3]) | floor)"
+' 2>/dev/null) || exit 0
+read -r w h <<< "$size"
+[[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
+
+# The title bar Hyprland draws above the window needs room too.
+if [[ $(hyprctl getoption plugin:hyprbars:enabled -j 2>/dev/null | jq -r '.bool' 2>/dev/null) == true ]]; then
+    bar=$(hyprctl getoption plugin:hyprbars:bar_height -j 2>/dev/null | jq -r '.int' 2>/dev/null)
+    [[ $bar =~ ^[0-9]+$ ]] && (( h -= bar ))
+fi
+
+(( w > design_w )) && w=$design_w
+(( h > design_h )) && h=$design_h
+
+sudo -n sed -i "s/^windowSize:.*/windowSize:         ${w}px,${h}px/" "$desc" 2>/dev/null
+exit 0

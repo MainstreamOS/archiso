@@ -328,6 +328,7 @@ LOOSE_FILES=(
     /etc/pacman.d/hooks/liveuser-setup.hook
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
     /usr/local/bin/calamares-launch
+    /usr/local/bin/calamares-fit-window
     /etc/systemd/resolved.conf.d/archiso.conf
     /etc/systemd/system/systemd-loop@.service.d/live-medium.conf
     /etc/systemd/system/multi-user.target.wants/systemd-resolved.service

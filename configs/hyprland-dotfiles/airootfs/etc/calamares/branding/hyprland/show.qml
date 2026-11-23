@@ -25,6 +25,12 @@ Presentation {
 
     readonly property color colBg: "#0B0D12"
 
+    // The slides fill the pane of the full-size window edge to edge. A smaller
+    // window has a pane of another shape, where the whole slide is shown
+    // instead of cutting its sides off.
+    readonly property int slideFill: Math.abs(width / height - 3810 / 1785) < 0.05
+                                     ? Image.PreserveAspectCrop : Image.PreserveAspectFit
+
     Rectangle {
         anchors.fill: parent
         color:        presentation.colBg
@@ -57,7 +63,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_welcome.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
@@ -68,7 +74,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_themes.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
@@ -79,7 +85,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_layouts.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
@@ -90,7 +96,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_keybinds.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
@@ -101,7 +107,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_maintenance.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
@@ -112,7 +118,7 @@ Presentation {
         Image {
             anchors.fill: parent
             source:       "slide_almost_there.png"
-            fillMode:     Image.PreserveAspectCrop
+            fillMode:     presentation.slideFill
             smooth:       true
             mipmap:       true
         }
