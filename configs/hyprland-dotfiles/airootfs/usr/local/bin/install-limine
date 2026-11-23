@@ -227,6 +227,43 @@ else
     fi
 fi
 
+# An earlier Mainstream OS keeps copies of its boot images for its snapshots on
+# the EFI partition, in a folder named by its machine id, and they would stay
+# there for good once its menu block is gone. $1 holds the menu blocks just
+# taken out, $2 the menu that is kept. A folder goes only when the removed
+# blocks name it, nothing kept names it, and every root partition those blocks
+# start is gone or is the one being installed to; anything less certain stays.
+remove_gone_boot_copies() {
+    local gone="$1" kept="$2" id spec dev roots=0 own target
+    own="$(tr -d '[:space:]' < /etc/machine-id 2>/dev/null || true)"
+    target="$(readlink -f -- "${LUKS_BACKING_DEV:-$ROOT_PART_DEV}" 2>/dev/null || true)"
+    [[ -s "$gone" && -n "$target" ]] || return 0
+    while IFS= read -r spec; do
+        roots=$((roots + 1))
+        case "$spec" in
+            root=PARTUUID=*)  dev="/dev/disk/by-partuuid/${spec#root=PARTUUID=}" ;;
+            rd.luks.name=*)   spec="${spec#rd.luks.name=}"; dev="/dev/disk/by-uuid/${spec%%=*}" ;;
+            *)                return 0 ;;
+        esac
+        if [[ -e "$dev" && "$(readlink -f -- "$dev")" != "$target" ]]; then
+            info "A Mainstream OS install taken out of the boot menu still has its root partition ($dev), so its boot image copies are left on the EFI partition."
+            return 0
+        fi
+    done < <(grep -oE '(root=[^[:space:]]+|rd\.luks\.name=[^[:space:]]+)' "$gone" | grep -v '^root=/dev/mapper/' | sort -u)
+    (( roots > 0 )) || return 0
+    while IFS= read -r id; do
+        [[ "$id" != "$own" && -d "$BOOT_PATH/$id/limine_history" ]] || continue
+        grep -qiF -- "$id" "$kept" 2>/dev/null && continue
+        if rm -rf -- "$BOOT_PATH/$id/limine_history"; then
+            rmdir -- "$BOOT_PATH/$id" 2>/dev/null || true
+            info "Removed the boot image copies of an earlier Mainstream OS install from the EFI partition ($BOOT_PATH/$id/limine_history)."
+            _ms_health "INFO: Removed the boot image copies of an earlier Mainstream OS install from the EFI partition ($BOOT_PATH/$id/limine_history)."
+        else
+            info "The boot image copies of an earlier Mainstream OS install could not be removed from $BOOT_PATH/$id/limine_history."
+        fi
+    done < <(grep -oE '(machine-id=[0-9a-f]{32}|boot\(\):/[0-9a-f]{32}/limine_history/)' "$gone" | grep -oE '[0-9a-f]{32}' | sort -u)
+}
+
 # --- 4. Configuration Deployment ---
 TEMPLATE="/etc/limine.conf.template"
 
@@ -249,12 +286,15 @@ if [ -f "$TEMPLATE" ]; then
         # with a single "/".
         mkdir -p "${CONF_FRESH%/*}"
         CONF_PRUNED="$CONF_FRESH.kept"
-        awk '
+        CONF_GONE="$CONF_FRESH.gone"
+        : > "$CONF_GONE"
+        awk -v gone="$CONF_GONE" '
             /^\/\+?Mainstream OS/ { skip=1; next }
             /^\/[^\/]/            { skip=0 }
-            skip { next }
+            skip { print > gone; next }
             { print }
-        ' "$CONF_DEST" > "$CONF_PRUNED" || cp -f "$CONF_DEST" "$CONF_PRUNED"
+        ' "$CONF_DEST" > "$CONF_PRUNED" || { cp -f "$CONF_DEST" "$CONF_PRUNED"; : > "$CONF_GONE"; }
+        remove_gone_boot_copies "$CONF_GONE" "$CONF_PRUNED"
         if grep -qE '^[[:space:]]*/' "$CONF_PRUNED"; then
             if ! cmp -s "$CONF_PRUNED" "$CONF_DEST"; then
                 cp -f "$CONF_PRUNED" "$CONF_DEST.new" && mv -f "$CONF_DEST.new" "$CONF_DEST" \
@@ -273,7 +313,7 @@ if [ -f "$TEMPLATE" ]; then
         else
             warn "Replaced the boot menu of an earlier Mainstream OS install on the EFI partition ($CONF_DEST); a copy of it could not be saved."
         fi
-        rm -f "$CONF_PRUNED"
+        rm -f "$CONF_PRUNED" "$CONF_GONE"
     fi
     info "Deploying configuration..."
     # `|` delimiter avoids clashes with the `/dev/mapper/...` path in the LUKS
