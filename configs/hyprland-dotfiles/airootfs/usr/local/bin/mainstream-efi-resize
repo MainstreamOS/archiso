@@ -4,7 +4,8 @@
 # The original boot partition stays bootable until the replacement is verified.
 #
 # Usage: mainstream-efi-resize probe [target_mb] | plan | resize <target_mb> | recover | cancel,
-# printing JSON progress lines.
+# printing JSON progress lines. "mirror", run by a boot hook, brings the old partition's boot files
+# in step while it waits to be retired.
 
 set -euo pipefail
 export LC_ALL=C
@@ -21,6 +22,8 @@ FSTAB_PATH="${EFI_RESIZE_FSTAB:-/etc/fstab}"
 BOOT_LOCK="${EFI_RESIZE_LOCK:-/run/lock/boot-partition.lock}"
 BACKUP_BASE="${EFI_RESIZE_BACKUP_BASE:-/var/cache/mainstream}"
 CUTOVER_STATE="${EFI_RESIZE_STATE:-/var/lib/mainstream/efi-resize.pending}"
+BUILD_STATE="$(dirname -- "$CUTOVER_STATE")/efi-resize.building"
+RETIRE_STATE="$(dirname -- "$CUTOVER_STATE")/efi-resize.retire"
 RESIZE_LOCK=/run/lock/mainstream-efi-resize.lock
 MOUNT_OVERRIDE="${EFI_RESIZE_MOUNT:-}"
 SKIP_NVRAM="${EFI_RESIZE_SKIP_NVRAM:-0}"
@@ -42,6 +45,12 @@ die_json() {
     exit 1
 }
 
+# For the system log: what a best effort step left undone. The progress lines are read as the
+# result of the resize, so these stay out of them.
+log_note() {
+    logger -t mainstream-efi-resize -- "$1" 2>/dev/null || printf '%s\n' "$1" >&2 || true
+}
+
 # Only a partition typed as the EFI System Partition, wherever it is mounted: a FAT data partition
 # at /efi or /boot/efi would otherwise be the one grown and formatted.
 is_esp_partition() {
@@ -56,8 +65,8 @@ find_esp_mount() {
     if [[ -n "$MOUNT_OVERRIDE" ]]; then
         if mountpoint -q "$MOUNT_OVERRIDE" 2>/dev/null; then
             local fstype src
-            fstype="$(findmnt -n -o FSTYPE -M "$MOUNT_OVERRIDE" 2>/dev/null || true)"
-            src="$(findmnt -nv -o SOURCE -M "$MOUNT_OVERRIDE" 2>/dev/null || true)"
+            fstype="$(findmnt -n -o FSTYPE -M "$MOUNT_OVERRIDE" 2>/dev/null | tail -n 1 || true)"
+            src="$(findmnt -nv -o SOURCE -M "$MOUNT_OVERRIDE" 2>/dev/null | tail -n 1 || true)"
             if [[ "$fstype" == "vfat" && -b "$src" ]] && is_esp_partition "$src"; then
                 printf '%s\n' "$MOUNT_OVERRIDE"
                 return 0
@@ -68,10 +77,12 @@ find_esp_mount() {
 
     local mp fstype src
     for mp in /boot/efi /efi /boot; do
+        # An automount that has not fired yet shows only itself until the path is used.
+        stat -- "$mp/." >/dev/null 2>&1 || true
         mountpoint -q "$mp" 2>/dev/null || continue
-        fstype="$(findmnt -n -o FSTYPE -M "$mp" 2>/dev/null || true)"
+        fstype="$(findmnt -n -o FSTYPE -M "$mp" 2>/dev/null | tail -n 1 || true)"
         [[ "$fstype" == "vfat" ]] || continue
-        src="$(findmnt -nv -o SOURCE -M "$mp" 2>/dev/null || true)"
+        src="$(findmnt -nv -o SOURCE -M "$mp" 2>/dev/null | tail -n 1 || true)"
         [[ -n "$src" && -b "$src" ]] || continue
         is_esp_partition "$src" || continue
         printf '%s\n' "$mp"
@@ -167,7 +178,7 @@ analyze_layout() {
         return 1
     fi
 
-    ESP_DEV="$(findmnt -nv -o SOURCE -M "$ESP_MNT" 2>/dev/null || true)"
+    ESP_DEV="$(findmnt -nv -o SOURCE -M "$ESP_MNT" 2>/dev/null | tail -n 1 || true)"
     if [[ -z "$ESP_DEV" || ! -b "$ESP_DEV" ]]; then
         REASON="Could not resolve backing block device for $ESP_MNT."
         return 1
@@ -177,7 +188,7 @@ analyze_layout() {
         return 1
     fi
 
-    ESP_UUID="$(findmnt -n -o UUID -M "$ESP_MNT" 2>/dev/null || true)"
+    ESP_UUID="$(findmnt -n -o UUID -M "$ESP_MNT" 2>/dev/null | tail -n 1 || true)"
     [[ -n "$ESP_UUID" ]] || ESP_UUID="$(blkid -s UUID -o value "$ESP_DEV" 2>/dev/null || true)"
     ESP_DISK="$(resolve_parent_disk "$ESP_DEV" || true)"
     ESP_PARTN="$(resolve_part_num "$ESP_DEV" || true)"
@@ -314,6 +325,8 @@ analyze_layout() {
     if [[ -n "$TAIL_DEV" && -b "$TAIL_DEV" && "$TAIL_DEV" != "$ESP_DEV" ]] && (( part_count < 128 )); then
         TAIL_PARTN="$(resolve_part_num "$TAIL_DEV" || echo 0)"
         TAIL_FSTYPE="$(lsblk -dno FSTYPE "$TAIL_DEV" 2>/dev/null | tr -d ' ' || true)"
+        # What lsblk knows can lag behind a filesystem that was just written to the partition.
+        [[ -n "$TAIL_FSTYPE" ]] || TAIL_FSTYPE="$(blkid -p -s TYPE -o value "$TAIL_DEV" 2>/dev/null || true)"
         TAIL_MNT="$(find_mount_for_dev "$TAIL_DEV" || true)"
 
         if [[ "$TAIL_FSTYPE" == "crypto_LUKS" ]]; then
@@ -490,15 +503,22 @@ await_kernel_part() {
     return 1
 }
 
+# Windows' own folder stays where it is: its boot manager, started from a copy on another partition,
+# asks for the BitLocker recovery key.
 copy_esp_tree() {
     local src_dir="$1" dst_dir="$2"
-    rsync -rltD --no-perms --no-owner --no-group --modify-window=2 "$src_dir/" "$dst_dir/"
+    rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+        --exclude='/[Ee][Ff][Ii]/[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]/' "$src_dir/" "$dst_dir/"
     sync
 }
 
 verify_esp_contents() {
-    local src_dir="$1" dst_dir="$2"
-    diff -rq "$src_dir" "$dst_dir" >/dev/null 2>&1 || return 1
+    local src_dir="$1" dst_dir="$2" differ rc=0
+    differ="$(diff -rq "$src_dir" "$dst_dir" 2>&1)" || rc=$?
+    # The folder copy_esp_tree leaves behind is the one difference allowed.
+    if (( rc != 0 )); then
+        [[ $rc -eq 1 && "${differ,,}" == "only in ${src_dir,,}/efi: microsoft" ]] || return 1
+    fi
     if [[ -f "$dst_dir/limine.conf" ]] && command -v mainstream-boot-verify >/dev/null 2>&1; then
         local rc=0
         # Quick: a rebuild would wait on the boot lock held here, and would write the live partition, not this copy.
@@ -539,7 +559,10 @@ update_fstab_esp_source() {
 
 loader_on_esp() {
     local dir="$1"
-    if [[ -f "$dir/EFI/limine/BOOTX64.EFI" ]]; then
+    # limine-install refreshes and signs this file, and adds its own entry when none names it.
+    if [[ -f "$dir/EFI/limine/limine_x64.efi" ]]; then
+        printf '%s' '\EFI\limine\limine_x64.efi'
+    elif [[ -f "$dir/EFI/limine/BOOTX64.EFI" ]]; then
         printf '%s' '\EFI\limine\BOOTX64.EFI'
     elif [[ -f "$dir/EFI/systemd/systemd-bootx64.efi" ]]; then
         printf '%s' '\EFI\systemd\systemd-bootx64.efi'
@@ -596,13 +619,24 @@ activate_esp() {
     ensure_boot_entry "$@" && promote_boot_entry "$BOOT_ENTRY"
 }
 
+# Prints the record of what the resize built, from whichever record holds it, or null. It travels
+# with the switch so that undoing the switch can also remove the partition.
+saved_build() {
+    jq -ce 'select(type == "object")' "$BUILD_STATE" 2>/dev/null \
+        || jq -ce '.build | select(type == "object")' "$CUTOVER_STATE" 2>/dev/null \
+        || jq -ce '.build | select(type == "object")' "$RETIRE_STATE" 2>/dev/null \
+        || printf 'null\n'
+}
+
 write_cutover_state() {
-    local mp="$1" old="$2" new="$3" uuid="$4" loader="$5" action="${6:-finish}" dir tmp
+    local mp="$1" old="$2" new="$3" uuid="$4" loader="$5" action="${6:-finish}" dir tmp build
     dir="$(dirname -- "$CUTOVER_STATE")"
     mkdir -p "$dir"
+    build="$(saved_build)"
     tmp="$(mktemp "$dir/efi-resize.XXXXXX")"
     jq -nc --arg mount "$mp" --arg old "$old" --arg new "$new" --arg uuid "$uuid" --arg loader "$loader" --arg action "$action" \
-        '{mount:$mount, old:$old, new:$new, uuid:$uuid, loader:$loader, action:$action}' > "$tmp"
+        --argjson build "$build" \
+        '{mount:$mount, old:$old, new:$new, uuid:$uuid, loader:$loader, action:$action, build:$build}' > "$tmp"
     # Flushed before it takes its name, so a power cut never leaves an empty record behind.
     sync -- "$tmp"
     mv -f -- "$tmp" "$CUTOVER_STATE"
@@ -611,6 +645,8 @@ write_cutover_state() {
     ROLLBACK_BTRFS_MNT=""
     ROLLBACK_BOOT_ENTRY=""
     sync -f -- "$dir"
+    # From here the build is a switch to finish, never something to undo.
+    rm -f -- "$BUILD_STATE"
 }
 
 # Fills the caller's fields from the record.
@@ -625,6 +661,53 @@ read_cutover_state() {
         || die_json "The EFI resize record has an invalid partition identifier."
     [[ "$guid" != "$old" && ( "$action" == finish || "$action" == cancel ) ]] \
         || die_json "The EFI resize record has an invalid operation."
+}
+
+# Records that the old partition, with partition id $2, waits to be retired until a start has come
+# from the new one, with partition id $3. The new one's volume id $4 and loader $5 are what undoing
+# the switch needs; $6 counts the starts that came from another partition. The record is stamped
+# with the running start, which is the one that finished the switch or the one last counted.
+write_retire_state() {
+    local dir tmp boot build
+    dir="$(dirname -- "$RETIRE_STATE")"
+    boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    build="$(saved_build)"
+    tmp="$(mktemp "$dir/efi-resize.XXXXXX")" || return 1
+    if jq -nc --arg mount "$1" --arg old "$2" --arg new "$3" --arg uuid "$4" --arg loader "$5" \
+            --arg boot "$boot" --argjson misses "${6:-0}" --argjson build "$build" \
+            '{mount:$mount, old:$old, new:$new, uuid:$uuid, loader:$loader, boot_id:$boot, misses:$misses, build:$build}' > "$tmp" \
+        && sync -- "$tmp" && mv -f -- "$tmp" "$RETIRE_STATE" && sync -f -- "$dir"; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
+# Fills the caller's fields from the record of a waiting retirement. A record without the fields
+# an undo needs leaves them empty.
+read_retire_state() {
+    mp="$(jq -er '.mount' "$RETIRE_STATE" 2>/dev/null)" && old="$(jq -er '.old' "$RETIRE_STATE" 2>/dev/null)" \
+        && guid="$(jq -er '.new' "$RETIRE_STATE" 2>/dev/null)" || return 1
+    [[ "$mp" == /boot || "$mp" == /boot/efi || "$mp" == /efi || ( -n "$MOUNT_OVERRIDE" && "$mp" == "$MOUNT_OVERRIDE" ) ]] \
+        || return 1
+    [[ "$guid" =~ ^[[:xdigit:]-]+$ && "$old" =~ ^[[:xdigit:]-]+$ && "${guid,,}" != "${old,,}" ]] || return 1
+    uuid="$(jq -r '.uuid // ""' "$RETIRE_STATE" 2>/dev/null || true)"
+    loader="$(jq -r '.loader // ""' "$RETIRE_STATE" 2>/dev/null || true)"
+    boot_id="$(jq -r '.boot_id // ""' "$RETIRE_STATE" 2>/dev/null || true)"
+    misses="$(jq -r '.misses // 0' "$RETIRE_STATE" 2>/dev/null || true)"
+    [[ "$uuid" =~ ^[[:xdigit:]-]+$ && -n "$loader" ]] || uuid="" loader=""
+    [[ "$misses" =~ ^[0-9]+$ ]] || misses=0
+}
+
+# Prints the partition id named by the firmware entry this start came from, or nothing when the
+# firmware does not say.
+started_from_part() {
+    local entries cur
+    nvram_skipped && return 0
+    entries="$(efibootmgr -v 2>/dev/null || true)"
+    cur="$(sed -n 's/^BootCurrent: *\([0-9A-Fa-f]\{4\}\).*/\1/p' <<<"$entries" | head -n 1)"
+    [[ -n "$cur" ]] || return 0
+    grep -i "^Boot${cur}[* ]" <<<"$entries" | sed -n 's/.*HD([0-9]*,GPT,\([0-9A-Fa-f-]\{36\}\),.*/\1/p' | head -n 1
 }
 
 # The device mounted at $1, once any pending automount has fired.
@@ -645,11 +728,290 @@ switch_esp_mount() {
             AUTOMOUNT_UNIT="$unit"
             systemctl stop "$unit" || return 2
         fi
-        umount "$mp" || return 2
+        # Stopping an automount can take the filesystem mounted through it along.
+        if mountpoint -q "$mp" 2>/dev/null; then
+            umount "$mp" || return 2
+        fi
     fi
     mount -t vfat -o umask=0077 "$dev" "$mp" && return 0
     [[ -z "$current" ]] || mount -t vfat -o umask=0077 "$current" "$mp" 2>/dev/null || true
     return 1
+}
+
+# Mounts $2 at $1 unless it is mounted there already.
+remount_esp() {
+    if [[ "$(esp_mount_source "$1")" != "$2" ]]; then
+        mount -t vfat -o umask=0077 "$2" "$1" 2>/dev/null || mount "$1" 2>/dev/null \
+            || log_note "The EFI partition $2 could not be mounted at $1 again. Mount it before installing updates."
+    fi
+}
+
+# Gives the new partition $3 the volume id of the old one $2, so an fstab from before the resize, in
+# a snapshot for one, mounts the partition in use. fstab is first made to name the partition id,
+# which nothing here changes, so $3 is found at $1 however far this gets.
+hand_over_esp_id() {
+    local mp="$1" old_dev="$2" dev="$3" guid="$4" old_id new_id unit now
+    if ! command -v fatlabel >/dev/null 2>&1; then
+        log_note "fatlabel is not installed, so the EFI partition ${dev} keeps its own volume id."
+        return 0
+    fi
+    old_id="$(blkid -p -s UUID -o value "$old_dev" 2>/dev/null || true)"
+    new_id="$(blkid -p -s UUID -o value "$dev" 2>/dev/null || true)"
+    if [[ ! "$old_id" =~ ^[[:xdigit:]]{4}-[[:xdigit:]]{4}$ || ! "$new_id" =~ ^[[:xdigit:]]{4}-[[:xdigit:]]{4}$ \
+        || "${old_id^^}" == "${new_id^^}" ]]; then
+        log_note "The EFI volume ids could not be read, so the EFI partition ${dev} keeps its own."
+        return 0
+    fi
+    if ! update_fstab_esp_source "$mp" "PARTUUID=$guid"; then
+        log_note "fstab could not be rewritten, so the EFI partition ${dev} keeps its own volume id."
+        return 0
+    fi
+    # Until systemd has read the new line, its mount unit is tied to the volume id about to change.
+    if [[ -d /run/systemd/system ]] && ! systemctl daemon-reload 2>/dev/null; then
+        log_note "systemd could not reload fstab, so the EFI partition ${dev} keeps its own volume id."
+        return 0
+    fi
+    unit="$(systemd-escape -p --suffix=automount "$mp" 2>/dev/null || true)"
+    if [[ -n "$unit" ]] && systemctl is-active --quiet "$unit" 2>/dev/null; then
+        AUTOMOUNT_UNIT="$unit"
+        if ! systemctl stop "$unit" 2>/dev/null; then
+            log_note "The automount for ${mp} could not be stopped, so the EFI partition ${dev} keeps its own volume id."
+            return 0
+        fi
+    fi
+    # Nothing has changed an id yet, so a busy mountpoint stops here with both partitions as they were.
+    if mountpoint -q "$mp" 2>/dev/null && ! umount "$mp" 2>/dev/null; then
+        log_note "${mp} is busy, so the EFI partition ${dev} keeps its own volume id."
+        return 0
+    fi
+    if mountpoint -q "$mp" 2>/dev/null || findmnt -n -S "$dev" >/dev/null 2>&1 \
+        || findmnt -n -S "$old_dev" >/dev/null 2>&1; then
+        remount_esp "$mp" "$dev"
+        log_note "An EFI partition is still mounted, so the EFI partition ${dev} keeps its own volume id."
+        return 0
+    fi
+
+    fatlabel -i -r "$old_dev" >/dev/null 2>&1 || true
+    sync -- "$old_dev" 2>/dev/null || true
+    now="$(blkid -p -s UUID -o value "$old_dev" 2>/dev/null || true)"
+    if [[ -z "$now" || "${now^^}" == "${old_id^^}" ]]; then
+        remount_esp "$mp" "$dev"
+        log_note "The old EFI partition ${old_dev} did not take a new volume id, so ${dev} keeps its own."
+        return 0
+    fi
+    fatlabel -i "$dev" "${old_id//-/}" >/dev/null 2>&1 || true
+    sync -- "$dev" 2>/dev/null || true
+    now="$(blkid -p -s UUID -o value "$dev" 2>/dev/null || true)"
+    if [[ "${now^^}" == "${new_id^^}" ]]; then
+        # The new partition did not take the id, so the old one gets it back and nothing is lost.
+        fatlabel -i "$old_dev" "${old_id//-/}" >/dev/null 2>&1 || true
+        sync -- "$old_dev" 2>/dev/null || true
+    fi
+    udevadm settle --timeout=10 2>/dev/null || true
+    remount_esp "$mp" "$dev"
+    if [[ "${now^^}" == "${old_id^^}" && "$(esp_mount_source "$mp")" == "$dev" ]]; then
+        log_note "The EFI partition ${dev} took over the volume id ${old_id} from ${old_dev}."
+    else
+        log_note "The EFI partition ${dev} has the volume id ${now:-unknown} where ${old_id} was wanted; fstab names it by partition id."
+    fi
+}
+
+# Runs once a start has come from the new partition. The old one, with partition id $2, must not be
+# able to start or be mounted in place of the one in use, so Mainstream's own loader, menu, boot
+# images and firmware entry on it go. Best effort: whatever cannot be done is left as it was and
+# logged.
+retire_old_esp() {
+    local mp="$1" old="$2" dev="$3" guid="$4"
+    local old_dev o f name mid foreign=0 left="" entries num="" tries
+    local -a ours=(-iname 'mainstream_*.efi')
+    emit_progress "retire" 96 "Retiring the old EFI partition..."
+    old_dev="$(blkid -t "PARTUUID=$old" -o device 2>/dev/null || true)"
+    if [[ ! -b "$old_dev" || "$old_dev" == "$dev" ]] || ! is_esp_partition "$old_dev" \
+        || findmnt -n -S "$old_dev" >/dev/null 2>&1; then
+        log_note "The old EFI partition could not be identified or is mounted, so it was left as it is."
+        return 0
+    fi
+    mid="$(tr -d '[:space:]' < /etc/machine-id 2>/dev/null || true)"
+    mid="${mid,,}"
+    if [[ "$mid" =~ ^[0-9a-f]{32}$ ]]; then
+        ours+=(-o -iname "${mid}_*.efi")
+    else
+        mid=""
+    fi
+    mkdir -p /run/mainstream 2>/dev/null || true
+    o="$(mktemp -d /run/mainstream/old-esp.XXXXXX 2>/dev/null || true)"
+    if [[ -z "$o" ]] || ! mount -t vfat -o umask=0077 "$old_dev" "$o" 2>/dev/null; then
+        [[ -z "$o" ]] || rmdir "$o" 2>/dev/null || true
+        log_note "The old EFI partition ${old_dev} could not be mounted, so it was left as it is."
+        return 0
+    fi
+    TMP_ESP_MNT="$o"
+
+    # Another system's boot images beside Mainstream's mean the loader and its menu are shared.
+    for f in "$o"/*; do
+        name="${f##*/}"
+        name="${name,,}"
+        if [[ -d "$f" && "$name" =~ ^[0-9a-f]{32}$ && "$name" != "$mid" ]]; then
+            foreign=1
+        fi
+    done
+    for f in "$o"/EFI/Linux/*; do
+        [[ -e "$f" ]] || continue
+        name="${f##*/}"
+        name="${name,,}"
+        if [[ "$name" != mainstream_*.efi && ( -z "$mid" || "$name" != "$mid"_*.efi ) ]]; then
+            foreign=1
+        fi
+    done
+    if (( foreign )); then
+        log_note "Another system keeps boot images on the old EFI partition ${old_dev}, so Mainstream's loader there was left in place."
+    else
+        if ! nvram_skipped; then
+            for (( tries = 0; tries < 4; tries++ )); do
+                entries="$(efibootmgr -v 2>/dev/null || true)"
+                num="$(boot_entry_for "$entries" "$old" '\EFI\limine\' || true)"
+                [[ -n "$num" ]] || break
+                efibootmgr -q -b "$num" -B >/dev/null 2>&1 || true
+            done
+            [[ -z "$num" ]] || log_note "The firmware kept a boot entry for the old EFI partition ${old_dev}."
+        fi
+        # The fallback loader goes only when it is a copy of Mainstream's loader.
+        for f in "$o"/EFI/limine/* /usr/share/limine/BOOTX64.EFI; do
+            if [[ -f "$f" && -f "$o/EFI/BOOT/BOOTX64.EFI" ]] && cmp -s -- "$f" "$o/EFI/BOOT/BOOTX64.EFI"; then
+                rm -f -- "$o/EFI/BOOT/BOOTX64.EFI"
+            fi
+        done
+        # The loaders go before the menu, so an interruption never leaves a loader that has no menu.
+        rm -rf -- "$o/EFI/limine"
+        rm -f -- "$o/limine.conf" "$o/limine.conf.old"
+        find "$o/EFI/Linux" -maxdepth 1 -type f \( "${ours[@]}" \) -delete 2>/dev/null
+        [[ -z "$mid" ]] || rm -rf -- "$o/$mid"
+        # systemd writes these two at every start; left behind they would count as someone else's files.
+        rm -f -- "$o/loader/random-seed" "$o/loader/boot-secret-mixin"
+        rmdir "$o/loader" "$o/EFI/Linux" "$o/EFI/BOOT" "$o/EFI" 2>/dev/null
+        left="$(find "$o" -mindepth 1 -print -quit 2>/dev/null)" || left="unknown"
+        sync -f -- "$o" 2>/dev/null
+    fi
+    if ! umount "$o" 2>/dev/null; then
+        log_note "The old EFI partition ${old_dev} could not be unmounted from ${o}."
+        return 0
+    fi
+    rmdir "$o" 2>/dev/null
+    TMP_ESP_MNT=""
+    if (( foreign )); then
+        return 0
+    fi
+    if [[ -n "$left" ]]; then
+        log_note "Files that are not Mainstream's remain on the old EFI partition ${old_dev}, so it keeps its volume id."
+        return 0
+    fi
+    # The record goes before the ids change hands: a second handover would swap them back.
+    rm -f -- "$RETIRE_STATE"
+    sync -f -- "$(dirname -- "$RETIRE_STATE")" 2>/dev/null || true
+    hand_over_esp_id "$mp" "$old_dev" "$dev" "$guid"
+}
+
+# While the old partition waits to be retired the firmware may still start it, and boot updates
+# only reach the one in use. This copies Mainstream's loaders, boot images and menu over to the old
+# one after such an update. Snapshot copies of boot images stay behind, as the old partition is the
+# small one. Runs from a boot hook, under the boot lock its caller holds, and never fails that caller.
+mirror_old_esp() {
+    local mp old guid uuid loader boot_id misses dev old_dev o mid problem=""
+    local -a ours=(--include='/EFI/' --include='/EFI/limine/' --include='/EFI/limine/**'
+        --include='/EFI/Linux/' --include='/EFI/Linux/mainstream_*.efi')
+    read_retire_state || return 0
+    exec 8>>"$RESIZE_LOCK" && flock -s -n 8 || return 0
+    dev="$(blkid -t "PARTUUID=$guid" -o device 2>/dev/null || true)"
+    [[ -b "$dev" && "$(esp_mount_source "$mp")" == "$dev" && -f "$mp/limine.conf" ]] || return 0
+    old_dev="$(blkid -t "PARTUUID=$old" -o device 2>/dev/null || true)"
+    mkdir -p /run/mainstream 2>/dev/null || true
+    if [[ ! -b "$old_dev" || "$old_dev" == "$dev" ]] || ! is_esp_partition "$old_dev" \
+        || findmnt -n -S "$old_dev" >/dev/null 2>&1; then
+        problem="could not be identified or is mounted"
+    elif ! o="$(mktemp -d /run/mainstream/old-esp.XXXXXX 2>/dev/null)" \
+        || ! mount -t vfat -o umask=0077 "$old_dev" "$o" 2>/dev/null; then
+        [[ -z "${o:-}" ]] || rmdir "$o" 2>/dev/null || true
+        problem="could not be mounted"
+    fi
+    if [[ -n "$problem" ]]; then
+        mirror_note "The old EFI partition ${problem}, so its boot files were not updated. Until the next restart, start this computer only from the new EFI partition."
+        return 0
+    fi
+    TMP_ESP_MNT="$o"
+    # Nothing of Mainstream's there means nothing that could be started out of step.
+    if [[ -f "$o/limine.conf" && -d "$o/EFI/limine" ]]; then
+        mid="$(tr -d '[:space:]' < /etc/machine-id 2>/dev/null || true)"
+        [[ ! "${mid,,}" =~ ^[0-9a-f]{32}$ ]] || ours+=(--include="/EFI/Linux/${mid,,}_*.efi")
+        # The default loader path can hold another system's loader.
+        if grep -aq 'Limine [0-9]' -- "$o/EFI/BOOT/BOOTX64.EFI" 2>/dev/null; then
+            ours+=(--include='/EFI/BOOT/' --include='/EFI/BOOT/BOOTX64.EFI')
+        fi
+        # The menu goes last and only after its images, so the old partition is never left with
+        # a menu that names images it does not hold.
+        if rsync -rltD --no-perms --no-owner --no-group --modify-window=2 --delete \
+                "${ours[@]}" --exclude='*' "$mp/" "$o/" >/dev/null 2>&1 \
+            && { cmp -s -- "$mp/limine.conf" "$o/limine.conf" \
+                || { cp -f -- "$mp/limine.conf" "$o/limine.conf.new" \
+                    && mv -f -- "$o/limine.conf.new" "$o/limine.conf"; }; } \
+            && sync -f -- "$o"; then
+            :
+        else
+            rm -f -- "$o/limine.conf.new"
+            mirror_note "The boot files on the old EFI partition ${old_dev} could not be updated; it may be full. Until the next restart, start this computer only from the new EFI partition."
+        fi
+    fi
+    umount "$o" 2>/dev/null && rmdir "$o" 2>/dev/null && TMP_ESP_MNT="" || true
+}
+
+mirror_note() {
+    log_note "$1"
+    printf '[efi-resize] %s\n' "$1"
+}
+
+# Retires the old partition when this start came from the new one. Any other start leaves both
+# partitions in place, so a firmware that ignores the new entry still finds the old loader. A start
+# the firmware says came from another partition puts the new entry first again, and the second such
+# start undoes the switch: boot updates only reach the new partition, so the old one must not stay
+# the one that is started.
+retire_after_restart() {
+    local mp old guid uuid loader boot_id misses dev from now again
+    if ! read_retire_state; then
+        log_note "The record of the old EFI partition cannot be read, so that partition was left as it is."
+        rm -f -- "$RETIRE_STATE"
+        return 0
+    fi
+    dev="$(blkid -t "PARTUUID=$guid" -o device 2>/dev/null || true)"
+    from="$(started_from_part || true)"
+    if [[ ! -b "$dev" || "${from,,}" != "${guid,,}" ]]; then
+        now="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+        # Counted once per start, and never in the start that finished the switch, which still came
+        # from the old entry. Nothing is counted when the firmware does not say where it started.
+        if [[ -z "$from" || "${from,,}" == "${guid,,}" || -z "$uuid" || -z "$now" || -z "$boot_id" \
+            || "$now" == "$boot_id" ]]; then
+            log_note "The old EFI partition was kept, because this start did not come from the new one."
+            return 0
+        fi
+        if (( misses >= 1 )); then
+            cancel_cutover
+            log_note "The firmware would not start from the new EFI partition, so the resize was undone and the old EFI partition is in use again."
+            return 0
+        fi
+        write_retire_state "$mp" "$old" "$guid" "$uuid" "$loader" $(( misses + 1 )) \
+            || log_note "The start from another EFI partition could not be recorded."
+        again="is first in the boot order again"
+        activate_esp "$dev" "$guid" "$loader" || again="could not be put first in the boot order again"
+        log_note "The old EFI partition was kept, because this start did not come from the new one. The new one ${again}; if the next start does not come from it either, the resize is undone."
+        return 0
+    fi
+    if [[ "$(esp_mount_source "$mp")" != "$dev" ]]; then
+        log_note "The old EFI partition was kept, because the new one is not mounted at ${mp}."
+        return 0
+    fi
+    ESP_MNT="$mp"
+    ESP_DEV="$dev"
+    retire_old_esp "$mp" "$old" "$dev" "$guid" || true
+    rm -f -- "$RETIRE_STATE"
+    sync -f -- "$(dirname -- "$RETIRE_STATE")" 2>/dev/null || true
 }
 
 finish_cutover() {
@@ -676,27 +1038,43 @@ finish_cutover() {
     loader_path="${loader//\\//}"
     [[ -f "$mp/$loader_path" ]] || die_json "The replacement EFI loader is missing. Boot updates are paused."
     activate_esp "$dev" "$guid" "$loader" || die_json "The new firmware boot entry could not be activated. Boot updates are paused."
-    update_fstab_esp_source "$mp" "UUID=$uuid" || die_json "Could not save the replacement EFI mount in fstab. Boot updates are paused."
-    if [[ "$(findmnt -en -o MAJ:MIN -M "$mp")" != "$(lsblk -dno MAJ:MIN "$dev")" ]]; then
+    # By partition id, which stays what it is when the volume ids change hands later.
+    update_fstab_esp_source "$mp" "PARTUUID=$guid" || die_json "Could not save the replacement EFI mount in fstab. Boot updates are paused."
+    if [[ "$(findmnt -en -o MAJ:MIN -M "$mp" | tail -n 1)" != "$(lsblk -dno MAJ:MIN "$dev")" ]]; then
         die_json "The mounted EFI partition does not match the replacement. Boot updates are paused."
     fi
     if [[ -d /run/systemd/system ]]; then
         systemctl daemon-reload
     fi
-    rm -f -- "$CUTOVER_STATE"
+    # The old partition keeps its loader and firmware entry until a start has come from the new one.
+    write_retire_state "$mp" "$old" "$guid" "$uuid" "$loader" \
+        || log_note "The old EFI partition could not be recorded for retirement, so it stays as it is."
+    rm -f -- "$BUILD_STATE" "$CUTOVER_STATE"
     sync -f -- "$(dirname -- "$CUTOVER_STATE")"
     ESP_MNT="$mp"
     ESP_DEV="$dev"
+    # A Windows entry in the menu still names the partition Limine starts from, which changed here.
+    if command -v mainstream-limine-windows >/dev/null 2>&1 && [[ -f "$mp/limine.conf" ]]; then
+        mainstream-limine-windows >/dev/null 2>&1 || true
+    fi
     if [[ "${1:-}" == report_recovery ]]; then
         emit_progress "done" 100 "The interrupted EFI resize was completed."
     fi
 }
 
-# Backs out of a prepared switch that cannot finish. The original partition takes the mount, fstab
-# and firmware order back. Remove the replacement's loader files before allowing boot updates.
+# Backs out of a prepared switch that cannot finish, or of a finished one whose old partition still
+# waits to be retired. The original partition takes the mount, fstab and firmware order back. Remove
+# the replacement's loader files before allowing boot updates.
 cancel_cutover() {
-    local mp old guid uuid loader action old_dev old_uuid new_dev current rc entries num original_source
-    read_cutover_state
+    local mp old guid uuid loader action old_dev old_uuid new_dev current rc entries num original_source named
+    local boot_id misses build tmp disk ours=0
+    if [[ -e "$CUTOVER_STATE" ]]; then
+        read_cutover_state
+    else
+        read_retire_state && [[ -n "$uuid" ]] \
+            || die_json "The record of the finished EFI resize cannot be read, so the resize cannot be undone."
+        action=finish
+    fi
     old_dev="$(blkid -t "PARTUUID=$old" -o device || true)"
     old_uuid=""
     [[ ! -b "$old_dev" ]] || old_uuid="$(blkid -s UUID -o value "$old_dev" || true)"
@@ -720,14 +1098,16 @@ cancel_cutover() {
     if [[ "$action" != cancel ]]; then
         write_cutover_state "$mp" "$old" "$guid" "$uuid" "$loader" cancel
     fi
-    if awk -v mp="$mp" -v src="UUID=$uuid" '!/^[[:space:]]*#/ && $2 == mp && $1 == src { found = 1 } END { exit !found }' "$FSTAB_PATH"; then
+    for named in "PARTUUID=$guid" "UUID=$uuid"; do
+        awk -v mp="$mp" -v src="$named" '!/^[[:space:]]*#/ && $2 == mp && $1 == src { found = 1 } END { exit !found }' "$FSTAB_PATH" \
+            || continue
         original_source="UUID=$old_uuid"
         if [[ -f "${FSTAB_PATH}.bak-efi-resize" ]]; then
             original_source="$(awk -v mp="$mp" '!/^[[:space:]]*#/ && NF >= 3 && $2 == mp { print $1; exit }' "${FSTAB_PATH}.bak-efi-resize")"
         fi
-        update_fstab_esp_source "$mp" "$original_source" "UUID=$uuid" \
+        update_fstab_esp_source "$mp" "$original_source" "$named" \
             || die_json "Could not put the original EFI mount back in fstab. Boot updates are paused."
-    fi
+    done
     if ! nvram_skipped; then
         entries="$(efibootmgr -v)" || die_json "The firmware boot entries could not be read. Boot updates are paused."
         num="$(boot_entry_for "$entries" "$guid" "$loader" || true)"
@@ -756,9 +1136,43 @@ cancel_cutover() {
         umount "$TMP_ESP_MNT" || die_json "Could not unmount the replacement EFI partition. Retry cancellation before updating."
         rmdir "$TMP_ESP_MNT"
         TMP_ESP_MNT=""
+        ours=1
     fi
-    rm -f -- "$CUTOVER_STATE"
+    # A partition verified as the replacement goes the way one left by an interrupted build does.
+    # Its build record is back in place before the others go, so an interruption still removes it.
+    build=null
+    (( ! ours )) || build="$(saved_build)"
+    if [[ "$build" != null ]]; then
+        tmp="$(mktemp "$(dirname -- "$BUILD_STATE")/efi-resize.XXXXXX")"
+        printf '%s\n' "$build" > "$tmp"
+        sync -- "$tmp"
+        mv -f -- "$tmp" "$BUILD_STATE"
+    else
+        rm -f -- "$BUILD_STATE"
+    fi
+    # The original partition is the one in use again, so nothing waits to retire it.
+    rm -f -- "$RETIRE_STATE" "$CUTOVER_STATE"
     sync -f -- "$(dirname -- "$CUTOVER_STATE")"
+    if [[ "$build" != null ]]; then
+        disk="$(resolve_parent_disk "$new_dev" || true)"
+        # In a subshell, so a partition that cannot be removed safely does not fail the cancel.
+        set +e
+        ( set -e; undo_interrupted_build ) >/dev/null
+        rc=$?
+        set -e
+        if (( rc == 0 )); then
+            emit_progress "done" 100 "The EFI resize was canceled and the unused replacement partition was removed."
+            return 0
+        fi
+        # With the partition gone from the table its space is still to be given back, which the
+        # record makes the next start retry.
+        if ! sfdisk -d "$disk" 2>/dev/null | dump_parts | awk -v id="${guid^^}" '$5 == id { hit = 1 } END { exit !hit }'; then
+            die_json "The EFI resize was canceled, but the space of the replacement partition was not given back. Restart to retry."
+        fi
+        rm -f -- "$BUILD_STATE"
+        sync -f -- "$(dirname -- "$BUILD_STATE")"
+        log_note "The unused EFI partition ${new_dev} could not be removed, so it was left in place."
+    fi
     emit_progress "done" 100 "The EFI resize was canceled. The unused replacement partition was left in place."
 }
 
@@ -777,6 +1191,23 @@ find_next_free_partn() {
     return 1
 }
 
+# Prints "<id>:" for device $1 in the Btrfs mounted at $2, the prefix a resize takes to address it.
+# Prints nothing when the id cannot be found, which leaves btrfs on its default, device 1.
+btrfs_devid_prefix() {
+    local want id path
+    want="$(readlink -f -- "$1" 2>/dev/null || true)"
+    [[ -n "$want" ]] || return 0
+    while read -r id path; do
+        [[ "$id" =~ ^[0-9]+$ && -n "$path" ]] || continue
+        if [[ "$(readlink -f -- "$path" 2>/dev/null || true)" == "$want" ]]; then
+            printf '%s:' "$id"
+            return 0
+        fi
+    done < <(btrfs filesystem show "$2" 2>/dev/null \
+        | awk '$1 == "devid" { for (i = 3; i < NF; i++) if ($i == "path") { print $2, $(i + 1); break } }')
+    return 0
+}
+
 # Variables tracked for emergency rollback
 TMP_ESP_MNT=""
 SFDISK_BACKUP=""
@@ -784,9 +1215,11 @@ ROLLBACK_DISK=""
 ROLLBACK_BTRFS_MNT=""
 ROLLBACK_BOOT_ENTRY=""
 AUTOMOUNT_UNIT=""
+TAIL_DEVID=""
+BUILD_STATE_WRITTEN=""
 
 cleanup_and_rollback() {
-    local exit_code=$?
+    local exit_code=$? undone=1
     if [[ -n "$TMP_ESP_MNT" ]]; then
         umount "$TMP_ESP_MNT" 2>/dev/null || true
         rmdir "$TMP_ESP_MNT" 2>/dev/null || true
@@ -799,18 +1232,27 @@ cleanup_and_rollback() {
         if [[ -n "$ROLLBACK_DISK" && -n "$SFDISK_BACKUP" && -f "$SFDISK_BACKUP" ]]; then
             if ! sfdisk --force --no-reread "$ROLLBACK_DISK" < "$SFDISK_BACKUP" >/dev/null 2>&1; then
                 rollback_incomplete "The partition table could not be put back; its backup is ${SFDISK_BACKUP}."
+                undone=0
             fi
             refresh_kernel_parttable "$ROLLBACK_DISK"
+        elif [[ -n "$ROLLBACK_DISK" ]]; then
+            undone=0
         fi
         if [[ -n "$ROLLBACK_BTRFS_MNT" ]]; then
             # Grown back only once both the table on disk and the kernel hold the partition at its old
             # size again. Left smaller is safe; grown past the partition is not.
             if disk_part_is "$TAIL_DEV" "$TAIL_START_SEC" "$TAIL_SIZE_SEC" \
                 && await_kernel_part "$TAIL_DEV" "$TAIL_START_SEC" "$TAIL_SIZE_SEC"; then
-                btrfs filesystem resize max "$ROLLBACK_BTRFS_MNT" >/dev/null 2>&1 || true
+                btrfs filesystem resize "${TAIL_DEVID}max" "$ROLLBACK_BTRFS_MNT" >/dev/null 2>&1 || undone=0
             else
                 rollback_incomplete "Btrfs on ${TAIL_DEV} was left smaller, since its partition could not be confirmed back at its old size. The backups are in ${BACKUP_BASE}."
+                undone=0
             fi
+        fi
+        # The record of the build stays while anything it describes is still on the disk.
+        if (( undone )) && [[ -n "$BUILD_STATE_WRITTEN" ]]; then
+            rm -f -- "$BUILD_STATE" || true
+            sync -f -- "$(dirname -- "$BUILD_STATE")" 2>/dev/null || true
         fi
     fi
     if [[ -n "$AUTOMOUNT_UNIT" ]]; then
@@ -825,12 +1267,200 @@ cleanup_and_rollback() {
 }
 
 lock_resize() {
+    local old_umask
     mkdir -p "$(dirname "$BOOT_LOCK")" "$(dirname "$RESIZE_LOCK")"
+    # Any account that can read a lock file can hold it.
+    old_umask="$(umask)"
+    umask 077
     exec 8>"$RESIZE_LOCK" 9>"$BOOT_LOCK"
+    umask "$old_umask"
     flock -w 30 8 && flock -w 30 9 \
         || die_json "Boot partition is currently locked by another system update or snapshot task."
     # Pacman holds its database lock from before the pre-transaction guard until after all boot hooks.
     [[ ! -e /var/lib/pacman/db.lck ]] || die_json "Wait for the package transaction to finish before resizing EFI."
+}
+
+# Prints "<node> <start> <size> <type> <partition id>" for each partition in the sfdisk dump on stdin.
+dump_parts() {
+    awk '$2 == ":" {
+        line = $0
+        sub(/,[[:space:]]*name=".*/, "", line)
+        split("start size type uuid", keys, " ")
+        for (i = 1; i <= 4; i++) {
+            val[i] = "-"
+            if (match(line, keys[i] "=[[:space:]]*[0-9A-Fa-f-]+")) {
+                val[i] = substr(line, RSTART, RLENGTH)
+                sub(/^[a-z]+=[[:space:]]*/, "", val[i])
+            }
+        }
+        print $1, val[1], val[2], toupper(val[3]), toupper(val[4])
+    }'
+}
+
+# Whether partition $1, with partition id $2, is mounted or named in fstab. In doubt it is.
+part_in_use() {
+    local dev="$1" guid="$2" real fsid verdict src
+    real="$(readlink -f -- "$dev" 2>/dev/null || true)"
+    [[ -n "$real" ]] || return 0
+    ! findmnt -n -S "$dev" >/dev/null 2>&1 || return 0
+    [[ -z "$(lsblk -dno MOUNTPOINTS "$dev" 2>/dev/null | tr -d '[:space:]')" ]] || return 0
+    [[ -f "$FSTAB_PATH" ]] || return 1
+    fsid="$(blkid -p -s UUID -o value "$dev" 2>/dev/null || true)"
+    verdict="$(awk -v a="${guid,,}" -v b="${fsid,,}" -v d="$dev" -v r="$real" '
+        /^[[:space:]]*#/ || NF < 2 { next }
+        { l = tolower($0) }
+        index(l, a) || (b != "" && index(l, b)) || $1 == d || $1 == r { named = 1 }
+        END { print (named ? "named" : "clear") }
+    ' "$FSTAB_PATH" 2>/dev/null || true)"
+    [[ "$verdict" == clear ]] || return 0
+    while read -r src; do
+        [[ "$(readlink -f -- "$src" 2>/dev/null || true)" != "$real" ]] || return 0
+    done < <(findmnt --fstab -F "$FSTAB_PATH" -e -n -o SOURCE 2>/dev/null || true)
+    return 1
+}
+
+# Records what is about to be built, before the first write to the disk, so a run that dies before
+# the switch is recorded can be undone later. $4 is the partition being shrunk, when there is one.
+write_build_state() {
+    local partn="$1" start="$2" size="$3" tail="${4:-}" disk_id tail_id="" tstart=0 tsize=0 dir tmp
+    disk_id="$(awk '$1 == "label-id:" { print toupper($2); exit }' "$SFDISK_BACKUP")"
+    [[ "$disk_id" =~ ^[[:xdigit:]-]+$ ]] \
+        || die_json "The partition table on ${ESP_DISK} has no identifier; nothing was changed."
+    if [[ -n "$tail" ]]; then
+        tail_id="$(dump_parts < "$SFDISK_BACKUP" | awk -v d="$tail" '$1 == d { print $5 }')"
+        [[ "$tail_id" =~ ^[[:xdigit:]-]{36}$ ]] \
+            || die_json "The partition ${tail} has no identifier; nothing was changed."
+        tstart="$TAIL_START_SEC"
+        tsize="$TAIL_SIZE_SEC"
+    fi
+    dir="$(dirname -- "$BUILD_STATE")"
+    mkdir -p "$dir"
+    tmp="$(mktemp "$dir/efi-resize.XXXXXX")"
+    jq -nc --arg disk "$ESP_DISK" --arg disk_id "$disk_id" --argjson sector "$SECTOR_SIZE" \
+        --argjson partn "$partn" --argjson start "$start" --argjson size "$size" \
+        --arg tail "$tail_id" --argjson tail_start "$tstart" --argjson tail_size "$tsize" \
+        '{disk:$disk, disk_id:$disk_id, sector:$sector, partn:$partn, start:$start, size:$size,
+          tail:$tail, tail_start:$tail_start, tail_size:$tail_size}' > "$tmp"
+    sync -- "$tmp"
+    mv -f -- "$tmp" "$BUILD_STATE"
+    sync -f -- "$dir"
+    BUILD_STATE_WRITTEN=1
+}
+
+# Reads dump_parts lines on stdin and says what became of a planned build: the new partition at
+# $1 with size $2 and, when $3 names a partition to shrink, that partition from $4 with size $5.
+# Prints "built <node> <partition id> <shrunk node>" when the table holds exactly what the build
+# writes, "unbuilt - - <shrunk node>" when it holds none of it, and nothing for any other table.
+build_verdict() {
+    awk -v nstart="$1" -v nsize="$2" -v tail_id="$3" -v tstart="$4" -v tsize="$5" -v esp="$ESP_GPT_TYPE" '
+        $2 == nstart { hits++; nnode = $1; nsz = $3; ntype = $4; nid = $5 }
+        tail_id != "" && $5 == toupper(tail_id) { tnode = $1; ts = $2; tz = $3; next }
+        tail_id != "" && $2 != nstart && $2 ~ /^[0-9]+$/ && $2 + 0 >= tstart + 0 && $2 + 0 < tstart + tsize { clash = 1 }
+        END {
+            if (tail_id != "" && (tnode == "" || ts != tstart || tz !~ /^[0-9]+$/ || clash)) exit
+            if (tnode == "") tnode = "-"
+            if (hits == 1 && nsz == nsize && ntype == toupper(esp) && nid ~ /^[0-9A-F-]+$/ && length(nid) == 36 \
+                && (tail_id == "" || tz + 0 == nstart - tstart))
+                print "built", nnode, nid, tnode
+            else if (hits == 0 && (tail_id == "" || tz == tsize))
+                print "unbuilt", "-", "-", tnode
+        }'
+}
+
+# Undoes a build that never got as far as recording the switch. The partition goes only when it sits
+# exactly where it was planned and nothing uses it; anything else is left for a check by hand.
+undo_interrupted_build() {
+    local disk disk_id sector partn nstart nsize tail_id tstart tsize dump
+    local state="" new_node="" new_id="" tail_node="" mnt="" backup restored entries num tries stray
+    local manual="An EFI resize was interrupted and could not be undone automatically; nothing was changed. Check the partitions by hand, then remove ${BUILD_STATE}."
+
+    [[ ! -e "$CUTOVER_STATE" ]] || return 0
+    disk="$(jq -er '.disk' "$BUILD_STATE" 2>/dev/null)" && disk_id="$(jq -er '.disk_id' "$BUILD_STATE")" \
+        && sector="$(jq -er '.sector' "$BUILD_STATE")" && partn="$(jq -er '.partn' "$BUILD_STATE")" \
+        && nstart="$(jq -er '.start' "$BUILD_STATE")" && nsize="$(jq -er '.size' "$BUILD_STATE")" \
+        && tail_id="$(jq -er '.tail' "$BUILD_STATE")" && tstart="$(jq -er '.tail_start' "$BUILD_STATE")" \
+        && tsize="$(jq -er '.tail_size' "$BUILD_STATE")" \
+        || die_json "$manual"
+    [[ "$disk" == /dev/* && "$disk_id" =~ ^[[:xdigit:]-]+$ && "$sector" =~ ^[1-9][0-9]*$ \
+        && "$partn" =~ ^[1-9][0-9]*$ && "$nstart" =~ ^[1-9][0-9]*$ && "$nsize" =~ ^[1-9][0-9]*$ \
+        && "$tstart" =~ ^[0-9]+$ && "$tsize" =~ ^[0-9]+$ \
+        && ( -z "$tail_id" || "$tail_id" =~ ^[[:xdigit:]-]{36}$ ) ]] || die_json "$manual"
+
+    dump="$(sfdisk -d "$disk" 2>/dev/null || true)"
+    if [[ "$(awk '$1 == "label-id:" { print toupper($2); exit }' <<<"$dump")" != "${disk_id^^}" ]]; then
+        # Disk names can change from one start to the next.
+        disk="$(lsblk -dnpo NAME,PTUUID 2>/dev/null | awk -v id="${disk_id^^}" 'toupper($2) == id { print $1 }' || true)"
+        [[ -n "$disk" && "$disk" != *$'\n'* && -b "$disk" ]] || die_json "$manual"
+        dump="$(sfdisk -d "$disk" 2>/dev/null || true)"
+        [[ "$(awk '$1 == "label-id:" { print toupper($2); exit }' <<<"$dump")" == "${disk_id^^}" ]] \
+            || die_json "$manual"
+    fi
+    read -r state new_node new_id tail_node \
+        <<<"$(dump_parts <<<"$dump" | build_verdict "$nstart" "$nsize" "$tail_id" "$tstart" "$tsize" || true)" || true
+    [[ "$state" == built || "$state" == unbuilt ]] || die_json "$manual"
+    [[ "$tail_node" != "-" ]] || tail_node=""
+
+    ESP_DISK="$disk"
+    SECTOR_SIZE="$sector"
+    if [[ -n "$tail_id" ]]; then
+        [[ -b "$tail_node" ]] || die_json "$manual"
+        mnt="$(find_mount_for_dev "$tail_node" || true)"
+        [[ -n "$mnt" ]] || die_json "$manual"
+    fi
+
+    if [[ "$state" == built ]]; then
+        [[ "$new_node" == "$(part_path_for_num "$disk" "$partn")" && -b "$new_node" \
+            && "$(awk -v n="$new_node" '$1 == n && $2 == ":"' <<<"$dump")" == *'name="Mainstream EFI"'* ]] \
+            || die_json "$manual"
+        is_esp_partition "$new_node" && kernel_part_is "$new_node" "$nstart" "$nsize" || die_json "$manual"
+        # A run that was killed while it filled the partition left it mounted in its own folder.
+        while read -r stray; do
+            [[ "$stray" =~ ^/run/mainstream/new-esp\.[A-Za-z0-9]+$ ]] || continue
+            umount "$stray" 2>/dev/null && rmdir "$stray" 2>/dev/null || true
+        done < <(findmnt -rn -o TARGET -S "$new_node" 2>/dev/null || true)
+        if part_in_use "$new_node" "$new_id"; then
+            die_json "$manual"
+        fi
+
+        emit_progress "undo" 3 "Removing the partition an interrupted EFI resize left behind..."
+        if ! nvram_skipped; then
+            for (( tries = 0; tries < 4; tries++ )); do
+                entries="$(efibootmgr -v 2>/dev/null || true)"
+                num="$(boot_entry_for "$entries" "$new_id" "" || true)"
+                [[ -n "$num" ]] || break
+                efibootmgr -q -b "$num" -B >/dev/null 2>&1 || true
+            done
+        fi
+        mkdir -p -m 0700 "$BACKUP_BASE"
+        backup="$(mktemp "$BACKUP_BASE/sfdisk-backup.XXXXXX")"
+        printf '%s\n' "$dump" > "$backup"
+        restored="$(awk -v ndev="$new_node" -v tdev="$tail_node" -v tsize="$tsize" '
+            $1 == ndev && $2 == ":" { next }
+            tdev != "" && $1 == tdev && $2 == ":" { sub(/size=[[:space:]]*[0-9]+/, "size= " tsize) }
+            { print }
+        ' <<<"$dump")"
+        sfdisk --force --no-reread "$disk" <<<"$restored" >/dev/null 2>&1 \
+            || die_json "The partition table on ${disk} could not be put back; its backup is ${backup}."
+        refresh_kernel_parttable "$disk"
+        dump="$(sfdisk -d "$disk" 2>/dev/null || true)"
+        if [[ -z "$dump" ]] || dump_parts <<<"$dump" | awk -v s="$nstart" '$2 == s { hit = 1 } END { exit !hit }'; then
+            die_json "The partition table on ${disk} still holds the unused EFI partition; its backup is ${backup}."
+        fi
+        rm -f -- "$backup"
+    fi
+
+    if [[ -n "$tail_id" ]]; then
+        # The same rule as the rollback: grown only once the disk and the kernel hold the old size.
+        TAIL_DEV="$tail_node"
+        if disk_part_is "$TAIL_DEV" "$tstart" "$tsize" && await_kernel_part "$TAIL_DEV" "$tstart" "$tsize"; then
+            btrfs filesystem resize "$(btrfs_devid_prefix "$TAIL_DEV" "$mnt")max" "$mnt" >/dev/null 2>&1 \
+                || die_json "Btrfs on ${TAIL_DEV} could not be grown back to its partition. Run the EFI resize again to retry."
+        else
+            die_json "Btrfs on ${TAIL_DEV} was left smaller, since its partition could not be confirmed back at its old size. Restart, then run the EFI resize again."
+        fi
+    fi
+    rm -f -- "$BUILD_STATE"
+    sync -f -- "$(dirname -- "$BUILD_STATE")"
 }
 
 cmd_resize() {
@@ -841,6 +1471,13 @@ cmd_resize() {
         trap cleanup_and_rollback EXIT
         finish_cutover report_recovery
         return 0
+    fi
+    if [[ -e "$RETIRE_STATE" ]]; then
+        die_json "The last EFI resize is completed at the next restart. Restart, then run the EFI resize again."
+    fi
+    if [[ -e "$BUILD_STATE" ]]; then
+        trap cleanup_and_rollback EXIT
+        undo_interrupted_build
     fi
 
     emit_progress "preflight" 5 "Inspecting GPT layout and free space..."
@@ -867,11 +1504,18 @@ cmd_resize() {
     local new_esp_dev
     new_esp_dev="$(part_path_for_num "$ESP_DISK" "$new_partn")"
 
+    # Enabled before the first write, so a build cut short by a power loss is undone at the next start.
+    if [[ -d /run/systemd/system ]]; then
+        systemctl enable mainstream-efi-resize-recover.service >/dev/null 2>&1 \
+            || die_json "The EFI recovery service could not be enabled; nothing was changed."
+    fi
+
     if [[ "$STRATEGY" == "new_esp_unallocated" ]]; then
         new_esp_start="$GAP_START_SEC"
         if (( new_esp_sec > GAP_SIZE_SEC )); then
             new_esp_sec="$GAP_SIZE_SEC"
         fi
+        write_build_state "$new_partn" "$new_esp_start" "$new_esp_sec"
         ROLLBACK_DISK="$ESP_DISK"
         emit_progress "partition" 25 "Creating new ${target_mb} MB EFI System Partition (${new_esp_dev})..."
         local updated_dump
@@ -895,8 +1539,10 @@ cmd_resize() {
         local shrink_bytes=$(( old_tail_bytes - new_tail_bytes + SHRINK_CUSHION_BYTES ))
 
         emit_progress "shrink" 20 "Shrinking Btrfs filesystem (${TAIL_MNT}) to free ${target_mb} MB at end of disk..."
+        TAIL_DEVID="$(btrfs_devid_prefix "$TAIL_DEV" "$TAIL_MNT")"
+        write_build_state "$new_partn" "$new_esp_start" "$new_esp_sec" "$TAIL_DEV"
         ROLLBACK_BTRFS_MNT="$TAIL_MNT"
-        btrfs filesystem resize "-${shrink_bytes}" "$TAIL_MNT" >/dev/null
+        btrfs filesystem resize "${TAIL_DEVID}-${shrink_bytes}" "$TAIL_MNT" >/dev/null
         btrfs filesystem sync "$TAIL_MNT" >/dev/null 2>&1 || sync
 
         # Verify Btrfs logical device size is strictly <= new_tail_bytes before touching GPT!
@@ -924,7 +1570,7 @@ cmd_resize() {
             || die_json "The kernel did not take the new partition sizes; Btrfs was not grown and nothing was formatted."
 
         emit_progress "reexpand" 55 "Snapping Btrfs filesystem to updated partition boundary..."
-        btrfs filesystem resize max "$TAIL_MNT" >/dev/null
+        btrfs filesystem resize "${TAIL_DEVID}max" "$TAIL_MNT" >/dev/null
         btrfs filesystem sync "$TAIL_MNT" >/dev/null 2>&1 || sync
     else
         die_json "Unhandled resize strategy '${STRATEGY}'."
@@ -949,7 +1595,7 @@ cmd_resize() {
     emit_progress "copy" 80 "Copying bootloader and UKI images to ${new_esp_dev}..."
     mkdir -p /run/mainstream
     TMP_ESP_MNT="$(mktemp -d /run/mainstream/new-esp.XXXXXX)"
-    mount "$new_esp_dev" "$TMP_ESP_MNT"
+    mount -t vfat -o umask=0077 "$new_esp_dev" "$TMP_ESP_MNT"
     copy_esp_tree "$ESP_MNT" "$TMP_ESP_MNT"
 
     emit_progress "verify" 90 "Verifying UKIs and Limine pins on the new partition..."
@@ -966,10 +1612,6 @@ cmd_resize() {
             || die_json "The firmware did not keep a boot entry for the new EFI partition; rolling back cleanly."
         ROLLBACK_BOOT_ENTRY="$BOOT_ENTRY"
     fi
-    if [[ -d /run/systemd/system ]]; then
-        systemctl enable mainstream-efi-resize-recover.service >/dev/null 2>&1 \
-            || die_json "The EFI recovery service could not be enabled; rolling back cleanly."
-    fi
     cp -a -- "$FSTAB_PATH" "${FSTAB_PATH}.bak-efi-resize"
     sync -f -- "$(dirname -- "$FSTAB_PATH")"
     umount "$TMP_ESP_MNT"
@@ -980,16 +1622,18 @@ cmd_resize() {
     write_cutover_state "$ESP_MNT" "$old_guid" "$new_guid" "$new_uuid" "$loader"
     finish_cutover
 
-    if command -v mainstream-limine-windows >/dev/null 2>&1 && [[ -f "$ESP_MNT/limine.conf" ]]; then
-        mainstream-limine-windows >/dev/null 2>&1 || true
-    fi
-
     local final_bytes
     final_bytes="$(lsblk -bdno SIZE "$new_esp_dev" 2>/dev/null | tr -d ' ' || echo 0)"
     emit_progress "done" 100 "EFI boot partition expanded to $(( final_bytes / (1024 * 1024) )) MB on ${new_esp_dev}."
 }
 
 case "${1:-}" in
+    mirror)
+        [[ $EUID == 0 && -e "$RETIRE_STATE" && ! -e "$CUTOVER_STATE" && ! -e "$BUILD_STATE" ]] || exit 0
+        trap '[[ -z "$TMP_ESP_MNT" ]] || { umount "$TMP_ESP_MNT" 2>/dev/null; rmdir "$TMP_ESP_MNT" 2>/dev/null; } || true' EXIT
+        mirror_old_esp || true
+        exit 0
+        ;;
     probe)
         cmd_probe "${2:-2048}"
         ;;
@@ -1001,17 +1645,24 @@ case "${1:-}" in
         ;;
     recover)
         [[ $EUID == 0 ]] || exit 1
-        [[ -e "$CUTOVER_STATE" ]] || exit 0
+        [[ -e "$CUTOVER_STATE" || -e "$BUILD_STATE" || -e "$RETIRE_STATE" ]] || exit 0
         lock_resize
         trap cleanup_and_rollback EXIT
-        if [[ -e "$CUTOVER_STATE" ]]; then finish_cutover; fi
+        if [[ -e "$CUTOVER_STATE" ]]; then
+            finish_cutover
+        elif [[ -e "$BUILD_STATE" ]]; then
+            undo_interrupted_build
+        fi
+        if [[ -e "$RETIRE_STATE" && ! -e "$CUTOVER_STATE" && ! -e "$BUILD_STATE" ]]; then
+            retire_after_restart
+        fi
         ;;
     cancel)
         [[ $EUID == 0 ]] || exit 1
-        [[ -e "$CUTOVER_STATE" ]] || exit 0
+        [[ -e "$CUTOVER_STATE" || -e "$RETIRE_STATE" ]] || exit 0
         lock_resize
         trap cleanup_and_rollback EXIT
-        if [[ -e "$CUTOVER_STATE" ]]; then cancel_cutover; fi
+        if [[ -e "$CUTOVER_STATE" || -e "$RETIRE_STATE" ]]; then cancel_cutover; fi
         ;;
     *)
         echo "Usage: $0 {probe [target_mb]|plan|resize <target_mb>|recover|cancel}" >&2

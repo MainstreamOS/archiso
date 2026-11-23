@@ -5,7 +5,8 @@
 # the disk-mounter.qml UI ("Auto Drive Mount"). A polkit policy ships
 # alongside this script and declares allow_active=auth_admin_keep, so the
 # first admin prompt caches for ~5 minutes and subsequent mount/unmount
-# operations within that window don't re-prompt.
+# operations within that window don't re-prompt. 50-user-manager.rules keeps
+# that to an administrator's own session.
 #
 # Subcommand dispatch:
 #
@@ -35,6 +36,8 @@
 #       fstab entry pointing at it and removes any associated credentials file.
 
 set -euo pipefail
+# pkexec keeps the caller's umask.
+umask 022
 
 # ── Common helpers (used by every subcommand) ─────────────────────────────
 log() { echo "[disk-mounter] $*" >&2; }
@@ -81,18 +84,42 @@ reject_label_unsafe() {  # $1=field name  $2=value
 }
 
 # Constrain the root-created/mounted/chowned mountpoint to a safe path under /mnt.
-validate_mountpoint() {  # $1=mountpoint
+# $2 is given when a mount is about to be created there: "single" allows one
+# folder directly under /mnt, "nested" any depth.
+validate_mountpoint() {  # $1=mountpoint  $2=single|nested (optional)
     if [[ ! "$1" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]]; then
         die "mountpoint must be a safe path under /mnt/"
     fi
     # The regex alone lets '.', '..' and empty segments through (/mnt/.,
     # /mnt/./x, /mnt//x) — those normalise to /mnt itself or escape it.
-    local seg IFS=/
+    local seg path=/mnt depth=0 IFS=/
     for seg in ${1#/mnt/}; do
         if [[ -z "$seg" || "$seg" == "." || "$seg" == ".." ]]; then
             die "mountpoint has an invalid path segment"
         fi
+        # Whoever owns a folder on the way can swap what is below it for a
+        # link, so a new mount only goes under folders that belong to root.
+        if [[ -n "${2:-}" && -e "$path" && "$(stat -c %u "$path")" != 0 ]]; then
+            die "mountpoint is inside a folder that root does not own: $path"
+        fi
+        path="$path/$seg"
+        depth=$((depth + 1))
+        if [[ -L "$path" ]]; then
+            die "mountpoint is, or passes through, a symbolic link: $path"
+        fi
     done
+    if [[ "${2:-}" == single && "$depth" -ne 1 ]]; then
+        die "mountpoint must be a single folder under /mnt/"
+    fi
+}
+
+# A server name or address. It opens the mount source, so it must not be able
+# to read as an option; brackets, colons and % are for IPv6 addresses.
+validate_host() {  # $1=host
+    local re='^[][A-Za-z0-9._:%][][A-Za-z0-9._:%-]*$'
+    if [[ ! "$1" =~ $re ]]; then
+        die "server must be a host name or an IP address"
+    fi
 }
 
 # Resolve the human who invoked pkexec so we can chown native-ownership
@@ -133,10 +160,16 @@ strip_fstab_match() {
 # column rather than a space-wrapped substring, leaving comments/others intact.
 strip_fstab_mountpoint() {  # $1=mountpoint
     [[ -f /etc/fstab ]] || return 0
-    local tmp; tmp="$(mktemp)"
-    awk -v mp="$1" '$0 ~ /^[[:space:]]*#/ || $2 != mp' /etc/fstab > "$tmp"
-    cat "$tmp" > /etc/fstab
+    # Built beside fstab and renamed over it, so a full disk or an
+    # interruption leaves the old file whole.
+    local tmp; tmp="$(mktemp /etc/fstab.XXXXXX)"
+    if awk -v mp="$1" '$0 ~ /^[[:space:]]*#/ || $2 != mp' /etc/fstab > "$tmp" \
+            && chown root:root "$tmp" && chmod 0644 "$tmp" && sync "$tmp" \
+            && mv -f "$tmp" /etc/fstab; then
+        return 0
+    fi
     rm -f "$tmp"
+    die "could not rewrite /etc/fstab, it is unchanged"
 }
 
 # ── Subcommand: mount-block ───────────────────────────────────────────────
@@ -147,9 +180,8 @@ mount_block() {
     fi
     local device="$1" fstype="$2" uuid="$3" mountpoint="$4" label="$5" fstab_mode="$6"
 
-    validate_mountpoint "$mountpoint"
+    validate_mountpoint "$mountpoint" single
     reject_fstab_unsafe uuid "$uuid"
-    reject_fstab_unsafe fstype "$fstype"
     reject_label_unsafe label "$label"
 
     [[ -b "$device" ]] || { log "Not a block device: $device"; exit 1; }
@@ -158,27 +190,44 @@ mount_block() {
     local resolved; resolved="$(blkid -U "$uuid" 2>/dev/null || true)"
     [[ -n "$resolved" && -b "$resolved" ]] || { log "UUID $uuid does not resolve to a block device"; exit 1; }
     device="$resolved"
+    # The type picks the program or driver that mounts the device as root, so
+    # it is read from the device, not taken from the caller, and must be one
+    # the desktop lists.
+    fstype="$(blkid -p -s TYPE -o value "$device" 2>/dev/null || true)"
+    case "$fstype" in
+        ext2|ext3|ext4|btrfs|xfs|f2fs|vfat|exfat|ntfs|hfs|hfsplus|apfs) ;;
+        *) die "cannot mount $device: unsupported filesystem (${fstype:-none found})" ;;
+    esac
     resolve_caller
 
-    # Optional relabel. If $label is non-empty AND differs from the current
-    # on-disk label, swap to per-fstype labelling utility. Failures abort
-    # because the user explicitly asked for the rename.
-    local current_label
+    # Optional relabel with the per-fstype labelling utility, only when a new
+    # name was asked for. The desktop sends the kernel name of the device (or
+    # of the encrypted partition under it) when the drive has no label and
+    # none was typed, so that renames nothing, like an empty label or the
+    # label already on disk.
+    local current_label device_names
     current_label="$(lsblk -no LABEL "$device" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$label" && "$label" != "$current_label" ]]; then
-        case "$fstype" in
-            ext2|ext3|ext4)                          e2label "$device" "$label" ;;
-            vfat|fat|fat16|fat32|msdos)              fatlabel "$device" "$label" ;;
-            ntfs)
-                command -v ntfslabel >/dev/null || { log "ntfslabel not installed (ntfs-3g)"; exit 2; }
-                ntfslabel "$device" "$label" ;;
-            btrfs)                                    btrfs filesystem label "$device" "$label" ;;
-            xfs)                                      xfs_admin -L "$label" "$device" ;;
-            exfat)
-                command -v exfatlabel >/dev/null || { log "exfatlabel not installed (exfatprogs)"; exit 2; }
-                exfatlabel "$device" "$label" ;;
-            *) log "Cannot relabel $fstype filesystem — proceeding without rename" ;;
-        esac
+    device_names="$(lsblk -nrso KNAME "$device" 2>/dev/null || true)"
+    if [[ -n "$label" && "$label" != "$current_label" ]] \
+            && ! grep -qxF -- "$label" <<<"${1##*/}"$'\n'"$device_names"; then
+        # The subshell keeps a failed rename from ending the mount.
+        if ! (
+            case "$fstype" in
+                ext2|ext3|ext4)                          e2label "$device" "$label" ;;
+                vfat|fat|fat16|fat32|msdos)              fatlabel "$device" "$label" ;;
+                ntfs)
+                    command -v ntfslabel >/dev/null || { log "ntfslabel not installed (ntfs-3g)"; exit 2; }
+                    ntfslabel "$device" "$label" ;;
+                btrfs)                                    btrfs filesystem label "$device" "$label" ;;
+                xfs)                                      xfs_admin -L "$label" "$device" ;;
+                exfat)
+                    command -v exfatlabel >/dev/null || { log "exfatlabel not installed (exfatprogs)"; exit 2; }
+                    exfatlabel "$device" "$label" ;;
+                *) log "Cannot relabel $fstype filesystem — proceeding without rename" ;;
+            esac
+        ); then
+            log "Could not rename $device to \"$label\", mounting it without the rename"
+        fi
     fi
 
     local effective_label="${label:-$current_label}"
@@ -190,9 +239,9 @@ mount_block() {
     local mount_opts
     case "$fstype" in
         vfat|fat|fat16|fat32|msdos|exfat|ntfs|ntfs-3g)
-            mount_opts="defaults,nofail,rw,uid=$caller_uid,gid=$caller_gid,umask=0022,$gvfs_opts" ;;
+            mount_opts="defaults,nofail,rw,nosuid,nodev,uid=$caller_uid,gid=$caller_gid,umask=0022,$gvfs_opts" ;;
         *)
-            mount_opts="defaults,nofail,rw,$gvfs_opts" ;;
+            mount_opts="defaults,nofail,rw,nosuid,nodev,$gvfs_opts" ;;
     esac
 
     # Mount NTFS with the in-kernel ntfs3 driver: blkid reports "ntfs",
@@ -207,7 +256,20 @@ mount_block() {
     mount -t "$mount_fstype" -o "$mount_opts" UUID="$uuid" "$mountpoint"
 
     case "$fstype" in
-        ext2|ext3|ext4|btrfs|xfs) chown "$caller_uid:$caller_gid" "$mountpoint" ;;
+        ext2|ext3|ext4|btrfs|xfs)
+            # Only a data volume is handed to the caller. One that holds an
+            # operating system keeps the ownership that system gave its root.
+            local marker os_volume=0
+            for marker in etc/os-release usr/lib/os-release usr/bin @ @home; do
+                if [[ -e "$mountpoint/$marker" || -L "$mountpoint/$marker" ]]; then
+                    os_volume=1
+                fi
+            done
+            if [[ "$os_volume" == 1 ]]; then
+                log "Not changing the owner of $mountpoint: it holds an operating system"
+            else
+                chown "$caller_uid:$caller_gid" "$mountpoint"
+            fi ;;
     esac
 
     if [[ "$fstab_mode" == "fstab" ]]; then
@@ -261,7 +323,7 @@ format_mount() {
     fi
     local device="$1" mountpoint="$2" label="$3" fstab_mode="$4"
 
-    validate_mountpoint "$mountpoint"
+    validate_mountpoint "$mountpoint" single
     reject_label_unsafe label "$label"
     [[ -b "$device" ]] || { log "Not a block device: $device"; exit 1; }
     command -v mkfs.ext4 >/dev/null || { log "mkfs.ext4 not found (install e2fsprogs)"; exit 2; }
@@ -304,12 +366,6 @@ format_mount() {
 # ── Credentials dir (SMB only) ────────────────────────────────────────────
 CREDS_DIR="/etc/disk-mounter-credentials"
 
-# LUKS keyfile location. The app no longer ships a mount-luks flow (the
-# keyfile-on-disk auto-unlock pattern has security tradeoffs we steer
-# users away from), but the unmount path still cleans up keyfiles for
-# anyone who set LUKS up via gnome-disks or by hand-editing crypttab.
-LUKS_KEYS_DIR="/etc/cryptsetup-keys.d"
-
 ensure_creds_dir() {
     mkdir -p "$CREDS_DIR"
     chmod 0700 "$CREDS_DIR"
@@ -332,8 +388,8 @@ mount_smb() {
     fi
     local host="$1" share="$2" mountpoint="$3" label="$4" username="$5" fstab_mode="$6"
 
-    validate_mountpoint "$mountpoint"
-    reject_fstab_unsafe host "$host"
+    validate_mountpoint "$mountpoint" nested
+    validate_host "$host"
     reject_label_unsafe share "$share"
     reject_label_unsafe label "$label"
     reject_label_unsafe username "$username"
@@ -347,7 +403,7 @@ mount_smb() {
     # Base CIFS options. uid/gid stamp the user's ownership on every file
     # (CIFS doesn't carry Unix perms unless the server supports the Unix
     # extensions). file_mode/dir_mode default to a sensible 0644/0755.
-    local mount_opts="rw,nofail,uid=$caller_uid,gid=$caller_gid,file_mode=0644,dir_mode=0755,_netdev,$gvfs_opts"
+    local mount_opts="rw,nofail,nosuid,nodev,uid=$caller_uid,gid=$caller_gid,file_mode=0644,dir_mode=0755,_netdev,$gvfs_opts"
 
     # Source spec uses //host/share with forward slashes (kept verbatim in
     # fstab column 1). The mount takes the raw source; the fstab write escapes
@@ -373,7 +429,7 @@ mount_smb() {
     fi
 
     mkdir -p "$mountpoint"
-    mount -t cifs -o "$mount_opts" "$source" "$mountpoint"
+    mount -t cifs -o "$mount_opts" -- "$source" "$mountpoint"
 
     if [[ "$fstab_mode" == "fstab" ]]; then
         # Strip any earlier line for the same mountpoint (column 2) — the
@@ -393,9 +449,12 @@ mount_nfs() {
     fi
     local host="$1" export_path="$2" mountpoint="$3" label="$4" fstab_mode="$5"
 
-    validate_mountpoint "$mountpoint"
-    reject_fstab_unsafe host "$host"
+    validate_mountpoint "$mountpoint" nested
+    validate_host "$host"
     reject_label_unsafe export "$export_path"
+    if [[ "$export_path" != /* ]]; then
+        die "export must be an absolute path on the server, such as /srv/share"
+    fi
     reject_label_unsafe label "$label"
 
     command -v mount.nfs >/dev/null || command -v mount.nfs4 >/dev/null \
@@ -409,11 +468,11 @@ mount_nfs() {
     # the server's uid/gid are what land on the client. nofail keeps boot
     # going if the server is down; _netdev defers mounting until network
     # is up.
-    local mount_opts="rw,nofail,_netdev,$gvfs_opts"
+    local mount_opts="rw,nofail,nosuid,nodev,_netdev,$gvfs_opts"
 
     local source="${host}:${export_path}"
     mkdir -p "$mountpoint"
-    mount -t nfs -o "$mount_opts" "$source" "$mountpoint"
+    mount -t nfs -o "$mount_opts" -- "$source" "$mountpoint"
 
     if [[ "$fstab_mode" == "fstab" ]]; then
         strip_fstab_mountpoint "$mountpoint"
@@ -430,7 +489,7 @@ unlock_mount() {
     fi
     local device="$1" mountpoint="$2" label="$3" fstab_mode="$4"
 
-    validate_mountpoint "$mountpoint"
+    validate_mountpoint "$mountpoint" single
     reject_label_unsafe label "$label"
     [[ -b "$device" ]] || { log "Not a block device: $device"; exit 1; }
     command -v cryptsetup >/dev/null || { log "cryptsetup not found"; exit 2; }
@@ -555,15 +614,6 @@ unmount() {
         if [[ -e "/dev/mapper/$mapper_name" ]]; then
             cryptsetup close "$mapper_name" 2>/dev/null || \
                 log "WARN: cryptsetup close $mapper_name failed (mapper may still be in use)."
-        fi
-
-        if [[ "$mode" == "remove-fstab" ]]; then
-            # Strip the crypttab declaration too so the mapper doesn't
-            # get re-opened on next boot, and drop the associated
-            # keyfile (if there was one) since it's worthless without
-            # the crypttab entry pointing at it.
-            [[ -f /etc/crypttab ]] && sed -i "\#^${mapper_name}\b#d" /etc/crypttab
-            [[ -f "${LUKS_KEYS_DIR}/${mapper_name}.key" ]] && rm -f "${LUKS_KEYS_DIR}/${mapper_name}.key"
         fi
     fi
 

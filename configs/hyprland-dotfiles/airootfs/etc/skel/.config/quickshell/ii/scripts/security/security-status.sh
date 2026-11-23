@@ -111,8 +111,9 @@ if [[ $windows_detected == false ]]; then
 fi
 
 root_fstype=""
+root_subvol=""
 if command -v findmnt >/dev/null 2>&1; then
-    root_fstype=$(findmnt -n -o FSTYPE "$ROOT_MOUNT" 2>/dev/null | head -n1)
+    read -r root_fstype root_subvol < <(findmnt -n -o FSTYPE,FSROOT "$ROOT_MOUNT" 2>/dev/null | head -n1) || true
 fi
 
 if [[ -r $SECURITY_STATE_FILE && -f $SECURITY_STATE_FILE ]]; then
@@ -134,7 +135,7 @@ if [[ -r $SBCTL_DB_KEY || -r $SBCTL_DB_KEY_ALT ]]; then
 fi
 
 # Why the helper would refuse to change this system's boot setup, in the order it checks.
-if [[ $root_fstype == overlay ]]; then
+if [[ $root_fstype == overlay || $root_subvol =~ (^|/)(@|@?\.)snapshots/[0-9]+/snapshot$ ]]; then
     unsupported_reason=snapshot
 elif ! command -v limine-update >/dev/null 2>&1 || ! command -v limine-mkinitcpio >/dev/null 2>&1 \
         || ! command -v limine-enroll-config >/dev/null 2>&1; then

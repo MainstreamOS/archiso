@@ -2021,6 +2021,7 @@
   "Latest remote tag: %s": "Latest remote tag: %s",
   "Last-applied:      %s": "Last-applied:      %s",
   "Already at %s (use --force to re-apply).": "Already at %s (use --force to re-apply).",
+  "This system is at %s, ahead of the latest release %s (use --force to apply it anyway).": "This system is at %s, ahead of the latest release %s (use --force to apply it anyway).",
   "[DRY-RUN] Would update '%s' -> '%s'": "[DRY-RUN] Would update '%s' -> '%s'",
   "Local edits/untracked present — auto-stashing as: %s": "Local edits/untracked present — auto-stashing as: %s",
   "Pointing %s at %s...": "Pointing %s at %s...",
@@ -3552,5 +3553,10 @@
   "Update Mainstream to manage Secure Boot.": "Update Mainstream to manage Secure Boot.",
   "Set it up in the Secure Boot section.": "Set it up in the Secure Boot section.",
   "Anti-cheat games need Secure Boot turned on. Setting it up here adds your own signing keys alongside Microsoft's, so Mainstream keeps starting, and Windows and hardware that rely on Microsoft's keys keep working.": "Anti-cheat games need Secure Boot turned on. Setting it up here adds your own signing keys alongside Microsoft's, so Mainstream keeps starting, and Windows and hardware that rely on Microsoft's keys keep working.",
-  "Windows or BitLocker was found on this computer. Enrolling Secure Boot keys changes what BitLocker checks at startup (PCR 7) once: pause BitLocker in Windows or have your 48-digit BitLocker recovery key ready first. Microsoft's certificates stay enrolled, so Windows 11 and anti-cheat games on Windows keep working.": "Windows or BitLocker was found on this computer. Enrolling Secure Boot keys changes what BitLocker checks at startup (PCR 7) once: pause BitLocker in Windows or have your 48-digit BitLocker recovery key ready first. Microsoft's certificates stay enrolled, so Windows 11 and anti-cheat games on Windows keep working."
+  "Windows or BitLocker was found on this computer. Enrolling Secure Boot keys changes what BitLocker checks at startup (PCR 7) once: pause BitLocker in Windows or have your 48-digit BitLocker recovery key ready first. Microsoft's certificates stay enrolled, so Windows 11 and anti-cheat games on Windows keep working.": "Windows or BitLocker was found on this computer. Enrolling Secure Boot keys changes what BitLocker checks at startup (PCR 7) once: pause BitLocker in Windows or have your 48-digit BitLocker recovery key ready first. Microsoft's certificates stay enrolled, so Windows 11 and anti-cheat games on Windows keep working.",
+  "Could not add the group %s to the group shadow file": "Could not add the group %s to the group shadow file",
+  "Added the missing group shadow entries for %s": "Added the missing group shadow entries for %s",
+  "Nothing was changed. The update is blocked by packages that are held back from updating on this computer: %s": "Nothing was changed. The update is blocked by packages that are held back from updating on this computer: %s",
+  "All packages held back here: %s": "All packages held back here: %s",
+  "Holds are set on the IgnorePkg or IgnoreGroup line of /etc/pacman.conf. Remove the ones you no longer need, together with the packages that belong with them, then run the update again.": "Holds are set on the IgnorePkg or IgnoreGroup line of /etc/pacman.conf. Remove the ones you no longer need, together with the packages that belong with them, then run the update again."
 }

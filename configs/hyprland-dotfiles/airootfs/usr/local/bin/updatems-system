@@ -655,6 +655,9 @@ if [[ -r "$MAC_LIB_SRC" && -r "$GPU_LIB_SRC" ]] && [[ "$(cat /sys/class/dmi/id/s
         _install_file 0755 "$REPO_DIR/sdata/mac/mainstream-mac-firmware" /usr/local/bin/mainstream-mac-firmware "$(t "Mac firmware fetch")"
         _install_file 0644 "$REPO_DIR/sdata/mac/macrecovery.py" /usr/local/lib/mainstream-mac/macrecovery.py "$(t "macrecovery")"
         _install_file 0644 "$REPO_DIR/sdata/mac/NOTICE" /usr/local/lib/mainstream-mac/NOTICE "$(t "Mac firmware notice")"
+        for f in "$REPO_DIR"/sdata/mac/LICENSE-*.txt; do
+            _install_file 0644 "$f" "/usr/local/lib/mainstream-mac/$(basename "$f")" "$(basename "$f")"
+        done
         for f in "$REPO_DIR"/sdata/mac/asahi_firmware/*.py; do
             _install_file 0644 "$f" "/usr/local/lib/mainstream-mac/asahi_firmware/$(basename "$f")" "asahi_firmware/$(basename "$f")"
         done
@@ -871,6 +874,27 @@ if [[ ! -e "$TPM_STAMP" && -f "/usr/lib/systemd/system/$TPM_UNIT.d/$TPM_DROPIN" 
     else
         warn "$(t "The boot images were not rebuilt; the next kernel update rebuilds them without the Early TPM SRK Setup error.")"
         RC=1
+    fi
+fi
+
+# ── Group shadow file ──────────────────────────────────────────────────────
+# Older images defined these groups without an entry in /etc/gshadow, and the
+# install kept the gap, so the daily shadow.service check fails. Setting a
+# group's members to the list it already has makes gpasswd write the missing
+# entry and nothing else; a group that has one is skipped.
+if [[ -f /etc/gshadow && ! -L /etc/gshadow ]]; then
+    _gs_added=()
+    for _g in wheel network audio video storage lp input power; do
+        _gs_line=$(grep -m1 "^$_g:" /etc/group 2>/dev/null) || continue
+        grep -q "^$_g:" /etc/gshadow 2>/dev/null && continue
+        if gpasswd -M "${_gs_line##*:}" "$_g" >/dev/null 2>&1; then
+            _gs_added+=("$_g")
+        else
+            warn "$(tf "Could not add the group %s to the group shadow file" "$_g")"
+        fi
+    done
+    if (( ${#_gs_added[@]} > 0 )); then
+        ok "$(tf "Added the missing group shadow entries for %s" "${_gs_added[*]}")"
     fi
 fi
 
