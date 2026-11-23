@@ -329,6 +329,7 @@ LOOSE_FILES=(
     # Live-only archiso drop-ins / build artifacts that are inert on the target.
     /usr/local/bin/calamares-launch
     /etc/systemd/resolved.conf.d/archiso.conf
+    /etc/systemd/system/systemd-loop@.service.d/live-medium.conf
     /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
     /etc/initcpio/install/nvidia-gsp-strip
     # The dotfiles the image was built from, unpacked by install-dotfiles into
