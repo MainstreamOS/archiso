@@ -137,6 +137,15 @@ if lspci 2>/dev/null | grep -iqE "VGA|3D|Display" && lspci 2>/dev/null | grep -i
             else
                 fail "NVIDIA driver installed but no module for kernel $_kver, so the card has no driver"
             fi
+            # Every other kernel beside it needs one of its own.
+            while read -r _rel _base; do
+                [[ -n "$_rel" && "$_rel" != "$_kver" ]] || continue
+                if nvidia_module_present "$_rel"; then
+                    pass "NVIDIA module present for kernel $_rel"
+                else
+                    fail "no NVIDIA module for kernel $_rel ($_base), so the card has no driver when it starts"
+                fi
+            done < <(gpu_installed_kernels)
         else
             skip "NVIDIA module check (shared GPU library unavailable)"
         fi
@@ -236,9 +245,11 @@ if [[ -d /sys/firmware/efi ]]; then
         fail "no UKI found under /boot/efi/EFI/Linux/"
     fi
 else
-    # Named for the kernel the edition actually carries, not for Arch's.
+    # Named for the kernel the edition actually carries, not for Arch's, and
+    # not for Mainstream's beside it.
     _kpkg="$(for d in /usr/lib/modules/*/; do
         [[ -r "$d/pkgbase" ]] || continue
+        [[ "$(<"$d/pkgbase")" == linux-mainstream* ]] && continue
         printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
     done | sort -V | tail -n1 | cut -d' ' -f2)"
     [[ -n "$_kpkg" ]] || _kpkg=linux

@@ -107,6 +107,35 @@ if [[ "$KERNEL_REINSTALLED" != true ]]; then
     fi
 fi
 
+# Mainstream's kernel is the default where the image's repository offers it.
+# Arch's kernel stays installed beside it as the fallback entry. It goes in
+# before the GPU step, which builds the NVIDIA module for every kernel, and is
+# left out on an edition whose own kernel is not Arch's.
+MAINSTREAM_KERNEL=linux-mainstream
+# Room for its boot image beside the stock one's, and for the snapshot copies of both.
+MAINSTREAM_KERNEL_MIN_FREE_MIB=512
+install_mainstream_kernel() {
+    local free
+    [[ "$KERNEL_PKG" == linux ]] || return 0
+    if ! pacman -Si "$MAINSTREAM_KERNEL" &>/dev/null || ! pacman -Si "$MAINSTREAM_KERNEL-headers" &>/dev/null; then
+        info "The repository does not offer $MAINSTREAM_KERNEL; Arch's kernel is the only one."
+        return 0
+    fi
+    free=$(df -Pm "$BOOT_PATH" 2>/dev/null | awk 'NR==2 {print $4}') || free=""
+    if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < MAINSTREAM_KERNEL_MIN_FREE_MIB )); then
+        info "$BOOT_PATH has ${free:-unknown} MiB free and a second kernel needs $MAINSTREAM_KERNEL_MIN_FREE_MIB MiB; Arch's kernel is the only one."
+        return 0
+    fi
+    info "Installing $MAINSTREAM_KERNEL beside $KERNEL_PKG..."
+    if timeout -k 30 -s INT 1500 pacman -S --needed --noconfirm "$MAINSTREAM_KERNEL" "$MAINSTREAM_KERNEL-headers"; then
+        info "$MAINSTREAM_KERNEL installed; $KERNEL_PKG stays as the fallback."
+    else
+        warn "$MAINSTREAM_KERNEL could not be installed; Arch's kernel is the only one."
+        rm -f /var/lib/pacman/db.lck
+    fi
+}
+install_mainstream_kernel
+
 # NOTE: mkinitcpio -P is intentionally NOT called here.
 # post-install runs after this and modifies mkinitcpio.conf (GPU modules, resume hook),
 # so it owns the final mkinitcpio -P call to avoid building the initramfs twice.

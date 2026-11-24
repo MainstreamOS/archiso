@@ -702,8 +702,10 @@ fi
 # linux-t2 in place of Arch's linux, and the preset below names the kernel in
 # three separate filenames. pkgbase is what pacman recorded for the package that
 # owns the modules; uname would report the live ISO's kernel instead.
+# Mainstream's kernel sits beside the edition's and is not it.
 KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
     [[ -r "$d/pkgbase" ]] || continue
+    [[ "$(<"$d/pkgbase")" == linux-mainstream* ]] && continue
     printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
 done | sort -V | tail -n1 | cut -d' ' -f2)"
 [[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
@@ -722,6 +724,10 @@ for _p in /etc/mkinitcpio.d/*.preset; do
     [[ -e "$_p" ]] || continue
     [[ "$_p" == "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" ]] || rm -f "$_p"
 done
+# Mainstream's kernel arrived while mkinitcpio's own hook was still in place,
+# which built images in /boot that nothing uses: limine-mkinitcpio below builds
+# that kernel's boot image itself.
+rm -f /boot/initramfs-linux-mainstream.img /boot/initramfs-linux-mainstream-fallback.img
 
 # ---------------------------------------------------------------------------
 # ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
@@ -744,6 +750,20 @@ fi
 # entry is created unbranded ("Mainstream OS", not "Mainstream OS\\") and a
 # stray "EFI fallback" entry gets added.
 write_limine_defaults "$BOOT_PATH"
+# Mainstream's kernel, when install-limine added it, is listed first in this
+# system's block and so is the entry default_entry starts. Never one that would
+# start without the NVIDIA driver another kernel has.
+MAINSTREAM_KERNEL=linux-mainstream
+MAINSTREAM_KERNEL_DEFAULT=false
+if [[ -n "$(gpu_installed_kernels | awk -v k="$MAINSTREAM_KERNEL" '$2 == k')" ]]; then
+    if gpu_kernel_nvidia_ready "$MAINSTREAM_KERNEL"; then
+        MAINSTREAM_KERNEL_DEFAULT=true
+        printf 'BOOT_ORDER="%s, *, *fallback, Snapshots"\n' "$MAINSTREAM_KERNEL" >> "${LIMINE_DEFAULTS_FILE:-/etc/default/limine}"
+        info "$MAINSTREAM_KERNEL is the boot menu's default; $KERNEL_PKG stays as the fallback entry."
+    else
+        warn "$MAINSTREAM_KERNEL has no NVIDIA driver, so $KERNEL_PKG stays the boot menu's default."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # INSTALL SNAPPER + LIMINE AUR PACKAGES (before mkinitcpio -P)
@@ -878,6 +898,16 @@ if [[ -f /boot/efi/limine.conf ]]; then
     sed -i -E 's,^/\+Mainstream OS\\*$,/+Mainstream OS\\\\,; s,^comment: Mainstream OS\\*$,comment: Mainstream OS\\\\,' \
         /boot/efi/limine.conf
     info "Pruned stray limine entries; hook 'Mainstream OS\\' entry branded."
+fi
+
+# A firmware that started an earlier install's kernel still preselects it.
+# The helper points that record at Mainstream's kernel in the same block, and
+# leaves any other record, such as another system's, alone.
+if [[ "$MAINSTREAM_KERNEL_DEFAULT" == true && "$IS_UEFI" == true \
+      && -f /sys/firmware/efi/efivars/LimineLastBootedEntry-03884334-1756-4978-9c8c-86fb8998b4ea \
+      && -x /usr/lib/mainstream/mainstream-kernels ]]; then
+    /usr/lib/mainstream/mainstream-kernels next "$MAINSTREAM_KERNEL" 2>&1 \
+        || info "The boot menu keeps preselecting the entry it started last."
 fi
 
 # Add a boot entry for every Windows install on the machine, not only one that

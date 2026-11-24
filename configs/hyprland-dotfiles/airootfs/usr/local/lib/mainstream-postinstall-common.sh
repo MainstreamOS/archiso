@@ -34,12 +34,13 @@ write_limine_defaults() {  # $1 = the boot partition to pin, optional
     # config-enrollment flag an earlier step set, and nothing would notice
     # until the next kernel update.
     local esp="${1:-}"
-    local enroll_cfg=""
+    local enroll_cfg="" boot_order=""
     if [[ -r "$limine_defaults" ]]; then
         if [[ -z "$esp" ]]; then
             esp=$(sed -n 's/^ESP_PATH=//p' "$limine_defaults" | tail -n1)
         fi
         enroll_cfg=$(sed -n 's/^ENABLE_ENROLL_LIMINE_CONFIG=//p' "$limine_defaults" | tail -n1)
+        boot_order=$(sed -n 's/^BOOT_ORDER=//p' "$limine_defaults" | tail -n1)
     fi
     # Probing is on so another system sharing the disk shows up on its own.
     # It finds systemd-boot and rEFInd; Windows it never looks for, which is why
@@ -67,6 +68,10 @@ LIMINEDEF
     fi
     if [[ -n "$enroll_cfg" ]]; then
         printf 'ENABLE_ENROLL_LIMINE_CONFIG=%s\n' "$enroll_cfg" >> "$limine_defaults"
+    fi
+    # Puts the default kernel first in the menu (post-install-boot).
+    if [[ -n "$boot_order" ]]; then
+        printf 'BOOT_ORDER=%s\n' "$boot_order" >> "$limine_defaults"
     fi
 }
 

@@ -421,6 +421,66 @@ nvidia_ensure_module_for_target() {
     return 1
 }
 
+# Mainstream's kernel (install-limine) has no prebuilt NVIDIA module, so the
+# shared ladder gives it the DKMS driver. One that ends up without a module
+# while Arch's kernel has one comes back out, leaving the install as it would
+# be without it.
+MAINSTREAM_KERNEL=linux-mainstream
+GPU_INSTALL_LIB="${GPU_INSTALL_LIB:-/usr/local/lib/gpu-driver-install.sh}"
+# Offline the target has no Arch package database, so the DKMS driver the image
+# carries for this (build.sh, mainstream-kernel-nvidia.list) is served as a
+# repository of its own while the ladder runs, then taken away again. It is used
+# only beside the very userspace and prebuilt driver the image installed, so a
+# swap the ladder has to undo can put the same prebuilt driver back.
+OFFLINE_NVIDIA_LIST="${OFFLINE_NVIDIA_LIST:-$LOCAL_PKGS_DIR/mainstream-kernel-nvidia.list}"
+OFFLINE_NVIDIA_REPO="${OFFLINE_NVIDIA_REPO:-/var/cache/mainstream-offline-nvidia}"
+PACMAN_CONF="${PACMAN_CONF:-/etc/pacman.conf}"
+offline_nvidia_repo_on() {
+    local names=() files=() f name ver conf
+    pacman -Si nvidia-open-dkms &>/dev/null && return 1
+    [[ -r "$OFFLINE_NVIDIA_LIST" ]] || return 1
+    mapfile -t names < <(grep -v '^[[:space:]]*$' "$OFFLINE_NVIDIA_LIST")
+    mapfile -t files < <(find_local_pkgs "${names[@]}")
+    (( ${#files[@]} > 0 )) || return 1
+    for f in "${files[@]}"; do
+        read -r name ver < <(pacman -Qp "$f" 2>/dev/null) || return 1
+        case "$name" in
+            nvidia-open-dkms) [[ "$(pacman -Q nvidia-utils 2>/dev/null | awk '{print $2}')" == "$ver" ]] ;;
+            nvidia-open) [[ "$(pacman -Q nvidia-open 2>/dev/null | awk '{print $2}')" == "$ver" ]] ;;
+        esac || { info "The offline NVIDIA driver ($name $ver) does not match the installed one."; return 1; }
+    done
+    mkdir -p "$OFFLINE_NVIDIA_REPO" && cp -f "${files[@]}" "$OFFLINE_NVIDIA_REPO/" \
+        && repo-add -q "$OFFLINE_NVIDIA_REPO/mainstream-offline.db.tar.gz" "$OFFLINE_NVIDIA_REPO"/*.pkg.tar.zst \
+        && cp -f "$PACMAN_CONF" "$OFFLINE_NVIDIA_REPO/pacman.conf.orig" || { offline_nvidia_repo_off; return 1; }
+    printf '\n[mainstream-offline]\nSigLevel = Never\nServer = file://%s\n' "$OFFLINE_NVIDIA_REPO" >> "$PACMAN_CONF"
+    # Synced on its own: a refresh of the others would only wait on servers it cannot reach.
+    conf="$OFFLINE_NVIDIA_REPO/sync.conf"
+    printf '[options]\nArchitecture = auto\n[mainstream-offline]\nSigLevel = Never\nServer = file://%s\n' "$OFFLINE_NVIDIA_REPO" > "$conf"
+    pacman -Sy --config "$conf" &>/dev/null || { offline_nvidia_repo_off; return 1; }
+    info "No network: serving the image's DKMS NVIDIA driver for $MAINSTREAM_KERNEL."
+}
+offline_nvidia_repo_off() {
+    [[ -f "$OFFLINE_NVIDIA_REPO/pacman.conf.orig" ]] && cp -f "$OFFLINE_NVIDIA_REPO/pacman.conf.orig" "$PACMAN_CONF"
+    rm -f "${PACMAN_DBPATH:-/var/lib/pacman}/sync/mainstream-offline.db"
+    rm -rf "${OFFLINE_NVIDIA_REPO:?}"
+}
+nvidia_mainstream_kernel() {
+    local offline=false
+    [[ "$(pacman -Qq "$MAINSTREAM_KERNEL" 2>/dev/null)" == "$MAINSTREAM_KERNEL" ]] || return 0
+    if [[ -r "$GPU_INSTALL_LIB" ]] && source "$GPU_INSTALL_LIB"; then
+        info "Building the NVIDIA module for $MAINSTREAM_KERNEL as well."
+        [[ "${NVIDIA_DRIVER_FAMILY:-}" == nvidia-open ]] && offline_nvidia_repo_on && offline=true
+        GPU_SUDO="" GPU_DB_REFRESH=true gpu_nvidia_modules_for_added_kernel "$MAINSTREAM_KERNEL" || true
+        [[ $offline == true ]] && offline_nvidia_repo_off
+    else
+        info "The driver library is missing from $GPU_INSTALL_LIB, so no NVIDIA module can be built for $MAINSTREAM_KERNEL."
+    fi
+    gpu_kernel_nvidia_ready "$MAINSTREAM_KERNEL" && return 0
+    warn "No NVIDIA driver could be built for $MAINSTREAM_KERNEL, so it was removed; Arch's kernel is the only one."
+    pacman -Rns --noconfirm "$MAINSTREAM_KERNEL" "$MAINSTREAM_KERNEL-headers" 2>&1 \
+        || note_failure "$MAINSTREAM_KERNEL has no NVIDIA driver and could not be removed; choose Arch's kernel in the boot menu."
+}
+
 if $HAS_NVIDIA; then
     # NVIDIA_GEN (set by gpu_detect) -> driver family + package sets. The caller
     # owns the install: nvidia-open from the repo, a frozen legacy branch from
@@ -453,6 +513,7 @@ if $HAS_NVIDIA; then
             remove_mainline_nvidia
             ;;
     esac
+    nvidia_mainstream_kernel
 
     mapfile -t _nv_extra < <(nvidia_extra_pkgs)
     install_pkgs_opt "${_nv_extra[@]}"
@@ -461,6 +522,12 @@ if $HAS_NVIDIA; then
     [[ $IS_HYBRID == true ]] && install_pkgs nvidia-prime || true
 
     info "NVIDIA packages installed."
+elif [[ -n "$GPU_INFO" && "$(pacman -Qq nvidia-open 2>/dev/null)" == nvidia-open ]]; then
+    # The image's module for Arch's kernel would keep the boot setup from making a
+    # kernel without it the default; finalize-install removes the rest of the stack.
+    info "No NVIDIA GPU: removing the image's NVIDIA kernel module."
+    pacman -R --noconfirm nvidia-open 2>&1 \
+        || warn "Could not remove nvidia-open; finalize-install tries again."
 fi
 
 # ── Vulkan-provider catch-all ────────────────────────────────────────────────
