@@ -2070,6 +2070,7 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
         # here for a clone that cannot print it.
         for _pair in \
             "sdata/lib/gpu-config.sh:644:usr/local/lib/gpu-config.sh" \
+            "sdata/lib/gpu-driver-install.sh:644:usr/local/lib/gpu-driver-install.sh" \
             "sdata/lib/wifi-country.sh:644:usr/local/lib/wifi-country.sh" \
             "sdata/lib/mac-config.sh:644:usr/local/lib/mac-config.sh" \
             "sdata/lib/boot-layout.sh:644:usr/local/lib/boot-layout.sh" \
