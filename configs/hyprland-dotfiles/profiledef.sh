@@ -139,6 +139,7 @@ file_permissions=(
 
 
   # System config
+  ["/etc/sudoers.d"]="0:0:750"
   ["/etc/sudoers.d/g_wheel"]="0:0:440"
   ["/etc/sudoers.d/liveuser"]="0:0:440"
   ["/etc/sudoers.d/zz-gpu-drivers"]="0:0:440"
