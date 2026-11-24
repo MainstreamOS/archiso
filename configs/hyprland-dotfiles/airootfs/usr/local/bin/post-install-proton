@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# post-install-proton — Installing Proton GE for Steam
+# post-install-proton: Installing Proton for Steam
 source /usr/local/lib/mainstream-postinstall-common.sh
 
 # ---------------------------------------------------------------------------
-# GE-PROTON — install latest release and preseed Steam compat-tool default
+# PROTON: install Proton Mainstream, or GE-Proton when the repository does
+# not offer it, and preseed Steam's compat-tool default
 #
-# Mirrors setup_proton_ge() from 3_files.sh, adapted for chroot (root context):
+# Mirrors setup_proton() from 3.files.sh, adapted for chroot (root context):
+#   0. Install proton-mainstream with pacman when the repository offers it;
+#      otherwise, or when that fails, steps 1 and 2 fetch GE-Proton.
 #   1. Fetch the latest release tag from the GitHub API.
 #   2. Download + extract the tarball into compatibilitytools.d if not present.
 #   3. Seed ~/.local/share/Steam/config/config.vdf with the global CompatToolMapping
@@ -20,15 +23,168 @@ source /usr/local/lib/mainstream-postinstall-common.sh
 #     are linked to it, matching the layout Steam builds on first launch.
 #   - Variables are pre-initialised to "" so set -u is satisfied throughout.
 # ---------------------------------------------------------------------------
+# Makes $2 the global Steam default in config.vdf: a new file holds only that
+# setting, an existing one has just its "0" CompatToolMapping entry replaced.
+_proton_set_default() {  # $1 = label for the log  $2 = tool name
+    if mkdir -p "$_GE_CFG_DIR" && [[ ! -f "$_GE_CFG" ]]; then
+        info "$1: Creating $_GE_CFG seeded with $2..."
+        cat > "$_GE_CFG" <<EOF
+"InstallConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"CompatToolMapping"
+				{
+					"0"
+					{
+						"name"		"$2"
+						"config"	""
+						"priority"	"1"
+					}
+				}
+			}
+		}
+	}
+}
+EOF
+        info "$1: $_GE_CFG created, global default: $2"
+    else
+        info "$1: Patching existing $_GE_CFG, global default: $2..."
+        python3 - "$_GE_CFG" "$2" <<'PYEOF' \
+            || warn "$1: config.vdf patch failed, set the Proton version in Steam."
+import os, sys, tempfile
+
+# Write through a symlink rather than replacing it with a plain file.
+vdf_path, tool = os.path.realpath(sys.argv[1]), sys.argv[2]
+with open(vdf_path, encoding="utf-8", errors="surrogateescape") as f:
+    content = f.read()
+
+def skip_space(text, i):
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+def string_end(text, i):
+    if text[i] != '"':
+        raise ValueError(f"expected a quoted token at offset {i}")
+    i += 1
+    while text[i] != '"':
+        i += 2 if text[i] == "\\" else 1
+    return i + 1
+
+def value_end(text, i):
+    # A value is a quoted string or a brace block of key and value pairs.
+    if text[i] == '"':
+        return string_end(text, i)
+    if text[i] != "{":
+        raise ValueError(f"expected a value at offset {i}")
+    i = skip_space(text, i + 1)
+    while text[i] != "}":
+        i = skip_space(text, value_end(text, skip_space(text, string_end(text, i))))
+    return i + 1
+
+def patched(content):
+    key = content.find('"CompatToolMapping"')
+    if key < 0:
+        return None
+    start = skip_space(content, key + len('"CompatToolMapping"'))
+    if content[start] != "{":
+        raise ValueError("CompatToolMapping is not a block")
+    zero_block = (
+        '\n\t\t\t\t\t"0"\n'
+        '\t\t\t\t\t{\n'
+        f'\t\t\t\t\t\t"name"\t\t"{tool}"\n'
+        '\t\t\t\t\t\t"config"\t\t""\n'
+        '\t\t\t\t\t\t"priority"\t\t"1"\n'
+        '\t\t\t\t\t}'
+    )
+    # Every earlier global default goes, so the new one is the only "0" entry.
+    out, i = [content[:start + 1], zero_block], start + 1
+    while True:
+        entry = skip_space(content, i)
+        if content[entry] == "}":
+            out.append(content[i:])
+            break
+        name_end = string_end(content, entry)
+        end = value_end(content, skip_space(content, name_end))
+        if content[entry:name_end] != '"0"':
+            out.append(content[i:end])
+        i = end
+    new_content = "".join(out)
+    # Refuse to write anything that no longer reads as one whole document.
+    root = skip_space(new_content, 0)
+    if skip_space(new_content, value_end(new_content, skip_space(new_content, string_end(new_content, root)))) != len(new_content):
+        raise ValueError("patched config.vdf does not parse")
+    return new_content
+
+try:
+    new_content = patched(content)
+except (ValueError, IndexError) as error:
+    sys.stderr.write(f"Warning: config.vdf could not be read ({error}), leaving it alone.\n")
+    sys.exit(1)
+if new_content is None:
+    sys.stderr.write("Warning: CompatToolMapping not found in config.vdf, skipping patch.\n")
+    sys.exit(0)
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(vdf_path)), prefix=".config.vdf.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(new_content)
+    os.chmod(tmp, os.stat(vdf_path).st_mode & 0o7777)
+    os.replace(tmp, vdf_path)
+except BaseException:
+    os.unlink(tmp)
+    raise
+print(f"Patched: global Proton default is now {tool}")
+PYEOF
+    fi
+}
+
+_proton_link_and_own() {  # $1 = label for the log
+    mkdir -p "$MAIN_USER_HOME/.steam"
+    ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/steam"
+    ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/root"
+
+    # --- 4. Fix ownership ---
+    # Everything written under $MAIN_USER_HOME must belong to the user,
+    # not root (we are running in chroot as root).
+    chown -R "$MAIN_USER:$MAIN_USER" "$_STEAM_STORE" 2>/dev/null || true
+    chown -h "$MAIN_USER:$MAIN_USER" \
+        "$MAIN_USER_HOME/.steam/steam" "$MAIN_USER_HOME/.steam/root" 2>/dev/null || true
+    chown "$MAIN_USER:$MAIN_USER" \
+        "$MAIN_USER_HOME/.steam" "$MAIN_USER_HOME/.local/share" "$MAIN_USER_HOME/.local" 2>/dev/null || true
+    info "$1: Ownership of Steam dirs set to $MAIN_USER."
+}
+
+# Mainstream's own build, which system updates keep current. Until the
+# repository offers it, GE-Proton stays the default.
+_install_proton_mainstream() {
+    pacman -Si proton-mainstream &>/dev/null || return 1
+    info "Proton Mainstream: Installing from the repository..."
+    if pacman -S --needed --noconfirm proton-mainstream; then
+        info "Proton Mainstream: Installed."
+        return 0
+    fi
+    warn "Proton Mainstream: Install failed, using GE-Proton instead."
+    return 1
+}
+
+_STEAM_STORE="$MAIN_USER_HOME/.local/share/Steam"
+_GE_CFG_DIR="$_STEAM_STORE/config"
+_GE_CFG="$_GE_CFG_DIR/config.vdf"
 if [[ -n "$MAIN_USER" ]] && ! command -v steam &>/dev/null; then
     info "GE-Proton: Steam is not installed — skipping Proton GE seed."
+elif [[ -n "$MAIN_USER" ]] && _install_proton_mainstream; then
+    _proton_set_default "Proton Mainstream" proton-mainstream
+    _proton_link_and_own "Proton Mainstream"
 elif [[ -n "$MAIN_USER" ]]; then
     info "GE-Proton: Installing latest release for $MAIN_USER..."
 
-    _STEAM_STORE="$MAIN_USER_HOME/.local/share/Steam"
     _GE_COMPAT_DIR="$_STEAM_STORE/compatibilitytools.d"
-    _GE_CFG_DIR="$_STEAM_STORE/config"
-    _GE_CFG="$_GE_CFG_DIR/config.vdf"
     _GE_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
 
     # --- 1. Resolve latest tag (e.g. "GE-Proton10-5") ---
@@ -116,138 +272,11 @@ m = re.search(r"\"compat_tools\"\s*\{\s*\"([^\"]+)\"", open(sys.argv[1], errors=
 print(m.group(1) if m else "")
 ' "$_GE_INSTALL_DIR/compatibilitytool.vdf" 2>/dev/null) || true
                 [[ -n "$_GE_TOOL" ]] || _GE_TOOL="$_GE_NAME"
-                if mkdir -p "$_GE_CFG_DIR" && [[ ! -f "$_GE_CFG" ]]; then
-                    info "GE-Proton: Creating $_GE_CFG seeded with $_GE_TOOL..."
-                    cat > "$_GE_CFG" <<EOF
-"InstallConfigStore"
-{
-	"Software"
-	{
-		"Valve"
-		{
-			"Steam"
-			{
-				"CompatToolMapping"
-				{
-					"0"
-					{
-						"name"		"$_GE_TOOL"
-						"config"	""
-						"priority"	"1"
-					}
-				}
-			}
-		}
-	}
-}
-EOF
-                    info "GE-Proton: $_GE_CFG created, global default: $_GE_TOOL"
-                else
-                    info "GE-Proton: Patching existing $_GE_CFG, global default: $_GE_TOOL..."
-                    python3 - "$_GE_CFG" "$_GE_TOOL" <<'PYEOF' \
-                        || warn "GE-Proton: config.vdf patch failed, set the Proton version in Steam."
-import os, sys, tempfile
-
-# Write through a symlink rather than replacing it with a plain file.
-vdf_path, tool = os.path.realpath(sys.argv[1]), sys.argv[2]
-with open(vdf_path, encoding="utf-8", errors="surrogateescape") as f:
-    content = f.read()
-
-def skip_space(text, i):
-    while i < len(text) and text[i].isspace():
-        i += 1
-    return i
-
-def string_end(text, i):
-    if text[i] != '"':
-        raise ValueError(f"expected a quoted token at offset {i}")
-    i += 1
-    while text[i] != '"':
-        i += 2 if text[i] == "\\" else 1
-    return i + 1
-
-def value_end(text, i):
-    # A value is a quoted string or a brace block of key and value pairs.
-    if text[i] == '"':
-        return string_end(text, i)
-    if text[i] != "{":
-        raise ValueError(f"expected a value at offset {i}")
-    i = skip_space(text, i + 1)
-    while text[i] != "}":
-        i = skip_space(text, value_end(text, skip_space(text, string_end(text, i))))
-    return i + 1
-
-def patched(content):
-    key = content.find('"CompatToolMapping"')
-    if key < 0:
-        return None
-    start = skip_space(content, key + len('"CompatToolMapping"'))
-    if content[start] != "{":
-        raise ValueError("CompatToolMapping is not a block")
-    zero_block = (
-        '\n\t\t\t\t\t"0"\n'
-        '\t\t\t\t\t{\n'
-        f'\t\t\t\t\t\t"name"\t\t"{tool}"\n'
-        '\t\t\t\t\t\t"config"\t\t""\n'
-        '\t\t\t\t\t\t"priority"\t\t"1"\n'
-        '\t\t\t\t\t}'
-    )
-    # Every earlier global default goes, so the new one is the only "0" entry.
-    out, i = [content[:start + 1], zero_block], start + 1
-    while True:
-        entry = skip_space(content, i)
-        if content[entry] == "}":
-            out.append(content[i:])
-            break
-        name_end = string_end(content, entry)
-        end = value_end(content, skip_space(content, name_end))
-        if content[entry:name_end] != '"0"':
-            out.append(content[i:end])
-        i = end
-    new_content = "".join(out)
-    # Refuse to write anything that no longer reads as one whole document.
-    root = skip_space(new_content, 0)
-    if skip_space(new_content, value_end(new_content, skip_space(new_content, string_end(new_content, root)))) != len(new_content):
-        raise ValueError("patched config.vdf does not parse")
-    return new_content
-
-try:
-    new_content = patched(content)
-except (ValueError, IndexError) as error:
-    sys.stderr.write(f"Warning: config.vdf could not be read ({error}), leaving it alone.\n")
-    sys.exit(1)
-if new_content is None:
-    sys.stderr.write("Warning: CompatToolMapping not found in config.vdf, skipping patch.\n")
-    sys.exit(0)
-
-fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(vdf_path)), prefix=".config.vdf.")
-try:
-    with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
-        f.write(new_content)
-    os.chmod(tmp, os.stat(vdf_path).st_mode & 0o7777)
-    os.replace(tmp, vdf_path)
-except BaseException:
-    os.unlink(tmp)
-    raise
-print(f"Patched: global Proton default is now {tool}")
-PYEOF
-                fi
+                _proton_set_default "GE-Proton" "$_GE_TOOL"
             fi
 
-            # --- 3b. Link ~/.steam to the Steam data dir ---
-            mkdir -p "$MAIN_USER_HOME/.steam"
-            ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/steam"
-            ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/root"
-
-            # --- 4. Fix ownership ---
-            # Everything written under $MAIN_USER_HOME must belong to the user,
-            # not root (we are running in chroot as root).
-            chown -R "$MAIN_USER:$MAIN_USER" "$_STEAM_STORE" 2>/dev/null || true
-            chown -h "$MAIN_USER:$MAIN_USER" \
-                "$MAIN_USER_HOME/.steam/steam" "$MAIN_USER_HOME/.steam/root" 2>/dev/null || true
-            chown "$MAIN_USER:$MAIN_USER" \
-                "$MAIN_USER_HOME/.steam" "$MAIN_USER_HOME/.local/share" "$MAIN_USER_HOME/.local" 2>/dev/null || true
-            info "GE-Proton: Ownership of Steam dirs set to $MAIN_USER."
+            # --- 3b. Link ~/.steam and fix ownership ---
+            _proton_link_and_own "GE-Proton"
         fi
     fi
 fi
