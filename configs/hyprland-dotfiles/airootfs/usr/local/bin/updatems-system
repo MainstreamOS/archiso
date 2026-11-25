@@ -53,6 +53,7 @@ ROOT_FILES=(
     "0644|sdata/lib/venv-common.sh|/usr/local/lib/mainstream-venv-common.sh"
     "0644|sdata/lib/mac-config.sh|/usr/local/lib/mac-config.sh"
     "0644|sdata/lib/gpu-config.sh|/usr/local/lib/gpu-config.sh"
+    "0644|sdata/lib/gpu-driver-install.sh|/usr/local/lib/gpu-driver-install.sh"
     "0755|scripts/gpu-drivers/gpu-drivers|/usr/local/bin/gpu-drivers"
     "0755|sdata/provision/dotfiles-first-login|/usr/local/bin/dotfiles-first-login"
     "0755|sdata/polkit/user-manager|/usr/local/bin/user-manager"
@@ -590,6 +591,21 @@ if getent group gamemode >/dev/null 2>&1; then
         fi
         mkdir -p "${GAMEMODE_LEDGER%/*}" && printf '%s\n' "$_u" >> "$GAMEMODE_LEDGER"
     done < /etc/passwd
+fi
+
+# ── Proton Mainstream ──────────────────────────────────────────────────────
+# Mainstream's own Proton, which pacman keeps current from here on. Installs
+# from before it existed only have the GE-Proton the installer downloaded.
+# updatems makes it Steam's default for people still on that one. Optional,
+# so a failure here does not fail the update.
+if command -v steam >/dev/null 2>&1 \
+   && ! pacman -Qq proton-mainstream >/dev/null 2>&1 \
+   && pacman -Si proton-mainstream >/dev/null 2>&1; then
+    if _pacman_needed proton-mainstream; then
+        ok "$(t "Installed Proton Mainstream for Steam")"
+    else
+        warn "$(t "Could not install Proton Mainstream; the next update tries again")"
+    fi
 fi
 
 # ── Firewall zone ──────────────────────────────────────────────────────────

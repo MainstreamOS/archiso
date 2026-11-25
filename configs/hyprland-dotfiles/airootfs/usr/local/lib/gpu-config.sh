@@ -37,6 +37,12 @@ _gpu_installed_nvidia_branch() {
     done
     printf ''
 }
+# Whether the DKMS build of the open driver is what is installed. It provides
+# the name nvidia-open, so only an exact answer counts.
+_gpu_installed_nvidia_open_dkms() {
+    command -v pacman >/dev/null 2>&1 || return 1
+    [[ "$(pacman -Qq nvidia-open-dkms 2>/dev/null)" == nvidia-open-dkms ]]
+}
 
 # ── gpu_detect ──────────────────────────────────────────────────────────────
 # Single detection pass. Exports (true/false unless noted):
@@ -220,7 +226,11 @@ gpu_classify_nvidia_driver() {
     case "$NVIDIA_GEN" in
         turing)
             NVIDIA_DRIVER_FAMILY=nvidia-open
-            NVIDIA_REPO_PKGS=(nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver libva-utils) ;;
+            NVIDIA_REPO_PKGS=(nvidia-open nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver libva-utils)
+            # The DKMS build conflicts with the prebuilt one, and pacman refuses
+            # an unattended request for the prebuilt name on a machine that has
+            # the DKMS build. The same family, under the package that is here.
+            if _gpu_installed_nvidia_open_dkms; then NVIDIA_REPO_PKGS[0]=nvidia-open-dkms; fi ;;
         maxwell)
             _gpu_frozen_family 580xx ;;
         kepler)
@@ -638,6 +648,41 @@ nvidia_module_present() {
     [[ -n "$k" ]] || k="$(gpu_target_kernel)"
     [[ -n "$k" ]] || return 1
     _gpu_modinfo "$k" nvidia || _gpu_module_file "$k"
+}
+
+# ── gpu_installed_kernels / gpu_kernels_missing_nvidia ──────────────────────
+# Every kernel this system can boot, one "<release> <package>" per line: a
+# module tree with a kernel image and the name of the package that owns it.
+gpu_installed_kernels() {
+    local d
+    while IFS= read -r d; do
+        [[ -f "$d/vmlinuz" && -r "$d/pkgbase" ]] || continue
+        printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
+    done < <(_gpu_module_dirs | sed 's|/*$||' | sort -V)
+}
+# The ones among them with no loadable nvidia module, in the same form.
+gpu_kernels_missing_nvidia() {
+    local rel base
+    while read -r rel base; do
+        [[ -n "$rel" ]] || continue
+        nvidia_module_present "$rel" || printf '%s %s\n' "$rel" "$base"
+    done < <(gpu_installed_kernels)
+}
+# ── gpu_kernel_nvidia_ready <package> ───────────────────────────────────────
+# Whether that kernel can be started without losing the NVIDIA driver: it has
+# a module, or no installed kernel has one. Fails when it is not installed.
+gpu_kernel_nvidia_ready() {
+    local rel base found=false others=false
+    while read -r rel base; do
+        [[ -n "$rel" ]] || continue
+        if [[ "$base" == "$1" ]]; then
+            found=true
+            nvidia_module_present "$rel" && return 0
+        elif nvidia_module_present "$rel"; then
+            others=true
+        fi
+    done < <(gpu_installed_kernels)
+    [[ $found == true && $others == false ]]
 }
 
 # ── nvidia_write_qs_hint <user_home> ────────────────────────────────────────
