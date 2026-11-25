@@ -291,12 +291,11 @@ if ! lspci -nn 2>/dev/null | grep -iE "Network controller|Wireless" | grep -q "\
     remove_pkgs broadcom-wl-dkms broadcom-wl
 fi
 
-# The legacy-NVIDIA ISO carries linux-headers so its 580xx DKMS module can build
-# in the live environment. Installing that ISO onto an AMD/Intel box leaves the
-# headers behind with nothing to build; drop them only when no DKMS module is
-# registered, since one that is registered needs them again on every kernel bump.
-if [[ -z "$(dkms status 2>/dev/null)" ]]; then
-    info "No DKMS modules registered — removing linux-headers."
+# Arch's headers stay with Arch's kernel, so a DKMS module added later builds for
+# it too. By exact name: the Mainstream kernels' headers provide linux-headers.
+if [[ "$(pacman -Qq linux-headers 2>/dev/null)" == linux-headers \
+      && "$(pacman -Qq linux 2>/dev/null)" != linux ]]; then
+    info "Arch's kernel is not installed, so its linux-headers are removed."
     remove_pkgs linux-headers
 fi
 
