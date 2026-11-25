@@ -622,14 +622,9 @@ if [[ -r "$MAC_LIB" ]]; then
                     || note_failure "wl driver install failed ($wl_why, sync repos unreachable)"
             fi
         fi
+        # On the MacBook edition this also writes the T2 boot options, before the
+        # boot image below is built from /etc/kernel/cmdline.
         mac_apply_autoconfig
-        # The MacBook edition's live image starts with these options for the
-        # T2's devices, and the installed system needs them as much. Written
-        # before the boot image below is built from this command line.
-        if mac_has_t2 && mac_has_t2_support; then
-            cmdline_upsert intel_iommu=on iommu=pt pcie_ports=compat \
-                || warn "Could not add the T2 boot options to /etc/kernel/cmdline."
-        fi
         # The MacBook edition carries the arch-mact2 repository, which packages
         # the Wi-Fi and Bluetooth firmware this machine needs. A few megabytes
         # from there beats 850 MB of recovery image from Apple, so it is tried

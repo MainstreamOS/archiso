@@ -381,14 +381,14 @@ PRESET
                -e 's/initramfs-linux\.img/initramfs-linux-t2.img/g' "$entry"
     done
 
-    # The boot options t2linux's own live ISO carries on every entry: the IOMMU
-    # passthrough and PCIe port settings the T2's devices need, with the T2's
-    # Bluetooth driver held back as theirs is. Every live entry reads them from
+    # The boot options t2linux asks for on every entry, IOMMU passthrough and
+    # in-order suspend and resume for the T2's devices, with the T2's Bluetooth
+    # driver held back as their live ISO does. Every live entry reads them from
     # this one setting, so a profile without it has to stop the build rather
     # than quietly boot a Mac without them.
     grep -q '^kernel_params_x86_64="' "${PROFILE_DIR}/profiledef.sh" \
         || die "profiledef.sh has no kernel_params_x86_64 for the T2 boot options"
-    sed -i -e 's/^kernel_params_x86_64="\(.*\)"$/kernel_params_x86_64="\1 intel_iommu=on iommu=pt pcie_ports=compat modprobe.blacklist=hci_bcm4377"/' \
+    sed -i -e 's/^kernel_params_x86_64="\(.*\)"$/kernel_params_x86_64="\1 intel_iommu=on iommu=pt pm_async=off modprobe.blacklist=hci_bcm4377"/' \
         "${PROFILE_DIR}/profiledef.sh"
 
     # The volume label is left at MAINSTREAM_MB_ either way: mkarchiso stamps it
