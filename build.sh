@@ -158,8 +158,6 @@ recompress_bundled_pkgs() {
 # opengl-driver / vulkan-driver / nvidia-utils provide pulled in by the
 # hyprland/aquamarine stack (and [mainstream] is first in pacman.conf), baking
 # an nvidia driver into AMD/Intel-only ISOs.
-# Set by stage_mainstream_kernel_nvidia further down.
-declare -a MAINSTREAM_KERNEL_NVIDIA_STAGED=()
 add_mainstream_db() {
     local repo_dir="$1"
     # Debug packages are never installed (not in packages.x86_64); drop any an
@@ -226,15 +224,6 @@ add_mainstream_db() {
             ! -name '*-debug-*' | sort)
         pkgs+=("${nvpkgs[@]}")
     fi
-    # The offline set for Mainstream's kernel stays files only, like the wl set.
-    local staged keep=()
-    for f in "${pkgs[@]}"; do
-        for staged in "${MAINSTREAM_KERNEL_NVIDIA_STAGED[@]}"; do
-            [[ "${f##*/}" == "$staged"-[0-9]* ]] && continue 2
-        done
-        keep+=("$f")
-    done
-    pkgs=("${keep[@]}")
     if (( ${#pkgs[@]} == 0 )); then
         warn "No installable (non-GPU-driver) packages in $repo_dir — mainstream repo DB not created."
         return 0
@@ -1727,63 +1716,11 @@ download_arch_repo_pkgs() {
 }
 download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms dkms linux-headers pahole
 
-# Mainstream's kernel needs the DKMS NVIDIA driver, and an offline install has no
-# Arch package database to take it from. When the image carries the kernel, the
-# driver rides along as files with whatever it needs that the image lacks, plus
-# the prebuilt driver the install puts back if a build fails. install-gpu-drivers
-# reads the names from the list and serves them as a repository for that step.
-MAINSTREAM_KERNEL_NVIDIA_PKGS=(nvidia-open-dkms dkms linux-headers)
-MAINSTREAM_KERNEL_NVIDIA_LIST=mainstream-kernel-nvidia.list
-# Names in the closure of $@ that the image's own package list does not already
-# install, resolved against the build host's sync databases.
-arch_pkgs_missing_from_image() {
-    local tmpdb n names=()
-    local -A sync=() image=()
-    while IFS= read -r n; do sync[$n]=1; done < <(pacman -Slq 2>/dev/null)
-    while IFS= read -r n; do
-        [[ -n "${sync[$n]:-}" ]] && names+=("$n")
-    done < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$PROFILE_DIR/packages.x86_64")
-    tmpdb=$(mktemp -d) || return 1
-    mkdir -p "$tmpdb/local"
-    ln -s /var/lib/pacman/sync "$tmpdb/sync"
-    while IFS= read -r n; do image[$n]=1; done < <(pacman -Sp --noconfirm --dbpath "$tmpdb" --print-format '%n' "${names[@]}" 2>/dev/null)
-    # An image list that could not be resolved would stage half of Arch.
-    if (( ${#image[@]} == 0 )); then
-        rm -rf "$tmpdb"
-        return 1
-    fi
-    while IFS= read -r n; do
-        [[ -n "${image[$n]:-}" ]] || printf '%s\n' "$n"
-    done < <(pacman -Sp --noconfirm --dbpath "$tmpdb" --print-format '%n' "$@" 2>/dev/null)
-    rm -rf "$tmpdb"
-}
-stage_mainstream_kernel_nvidia() {
-    local dir="$1" n missing=()
-    rm -f "$dir/$MAINSTREAM_KERNEL_NVIDIA_LIST" "$dir"/nvidia-open-dkms-[0-9]*.pkg.tar.zst* \
-        "$dir"/nvidia-open-[0-9]*.pkg.tar.zst* 2>/dev/null || true
-    repo_has_pkg "$dir" linux-mainstream || return 0
-    # The legacy edition builds its own branch with DKMS, and the MacBook one
-    # does not install Mainstream's kernel.
-    [[ "${NVIDIA_PROFILE:-false}" == true || "${MACBOOK_PROFILE:-false}" == true ]] && return 0
-    # The last line is a dot only when the whole answer came through.
-    mapfile -t missing < <(arch_pkgs_missing_from_image "${MAINSTREAM_KERNEL_NVIDIA_PKGS[@]}" && echo .)
-    if (( ${#missing[@]} == 0 )) || [[ "${missing[-1]}" != . ]]; then
-        warn "Could not tell what the image lacks for the DKMS NVIDIA driver; an offline NVIDIA install keeps Arch's kernel alone."
-        return 0
-    fi
-    unset 'missing[-1]'
-    MAINSTREAM_KERNEL_NVIDIA_STAGED=(nvidia-open "${MAINSTREAM_KERNEL_NVIDIA_PKGS[@]}")
-    for n in "${missing[@]}"; do
-        [[ " ${MAINSTREAM_KERNEL_NVIDIA_STAGED[*]} " == *" $n "* ]] || MAINSTREAM_KERNEL_NVIDIA_STAGED+=("$n")
-    done
-    info "Staging the DKMS NVIDIA driver for Mainstream's kernel: ${MAINSTREAM_KERNEL_NVIDIA_STAGED[*]}"
-    if pacman -Sw --noconfirm --cachedir "$dir" -dd "${MAINSTREAM_KERNEL_NVIDIA_STAGED[@]}"; then
-        printf '%s\n' "${MAINSTREAM_KERNEL_NVIDIA_STAGED[@]}" > "$dir/$MAINSTREAM_KERNEL_NVIDIA_LIST"
-    else
-        warn "Could not stage ${MAINSTREAM_KERNEL_NVIDIA_STAGED[*]}; an offline NVIDIA install keeps Arch's kernel alone."
-    fi
-}
-stage_mainstream_kernel_nvidia "$PKG_OUTPUT_DIR"
+# The image builds its own NVIDIA module, so an offline set an earlier build
+# staged for Mainstream's kernel would only ride along.
+rm -f "$PKG_OUTPUT_DIR/mainstream-kernel-nvidia.list" \
+    "$PKG_OUTPUT_DIR"/nvidia-open-dkms-[0-9]*.pkg.tar.zst* \
+    "$PKG_OUTPUT_DIR"/nvidia-open-[0-9]*.pkg.tar.zst* 2>/dev/null || true
 
 # ── Build AUR dependency packages ──────────────────────────────────────────
 info "Building ${#AUR_DEPS[@]} AUR dependency packages..."
@@ -1984,9 +1921,6 @@ for _pkg in "$PKG_OUTPUT_DIR"/*.pkg.tar.zst; do
     case "$(basename "$_pkg")" in
         broadcom-wl-dkms-[0-9]*|dkms-[0-9]*|linux-headers-[0-9]*|pahole-[0-9]*) continue ;;
     esac
-    for _n in "${MAINSTREAM_KERNEL_NVIDIA_STAGED[@]}"; do
-        [[ "$(basename "$_pkg")" == "$_n"-[0-9]* ]] && continue 2
-    done
     _cached="/var/cache/pacman/pkg/$(basename "$_pkg")"
     if [[ -f "$_cached" ]]; then
         rm -f "$_cached"
@@ -2798,28 +2732,6 @@ verify_staged_headers() {
     [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
     warn "$why"
 }
-# The offline DKMS driver installs only beside the image's own userspace, and the
-# prebuilt driver it would put back has to be the one the image installed.
-verify_staged_kernel_nvidia() {
-    local f name ver img want wrong=""
-    [[ -s "$PKG_OUTPUT_DIR/$MAINSTREAM_KERNEL_NVIDIA_LIST" ]] || return 0
-    for f in "$PKG_OUTPUT_DIR"/nvidia-open-dkms-[0-9]*.pkg.tar.zst "$PKG_OUTPUT_DIR"/nvidia-open-[0-9]*.pkg.tar.zst; do
-        [[ -f "$f" ]] || continue
-        read -r name ver < <(pacman -Qp "$f" 2>/dev/null) || continue
-        case "$name" in
-            nvidia-open-dkms) want=nvidia-utils ;;
-            nvidia-open) want=nvidia-open ;;
-            *) continue ;;
-        esac
-        img="$(image_pkg_version "$want")"
-        [[ "$ver" == "$img" ]] || wrong+="${wrong:+, }$name $ver (image: $want ${img:-none})"
-    done
-    if [[ -n "$wrong" ]]; then
-        warn "The NVIDIA driver staged for Mainstream's kernel does not match the image: $wrong. An offline NVIDIA install keeps Arch's kernel alone; update the build host's package database (pacman -Syu) and build again with --refresh."
-    else
-        success "Verified the NVIDIA driver staged for Mainstream's kernel matches the image."
-    fi
-}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -2974,7 +2886,6 @@ fi
 
 verify_plugin_stamps
 verify_staged_headers
-verify_staged_kernel_nvidia
 
 # The two ways this image gets booted rest on different structures, so both are
 # checked. Ventoy keeps the .iso as a file and chainloads a boot image out of
