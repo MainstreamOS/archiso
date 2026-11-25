@@ -56,12 +56,12 @@ install_choice_list() {
 }
 
 # chosen_kernels: the kernels to install, the preferred boot default first.
-# Without the choices file that is today's pair. The performance kernel turns
-# into Mainstream's on a CPU that cannot start it, since such a machine would
-# not boot, and an empty choice means Mainstream's.
+# Without the choices file that is Mainstream's, which the image carries. The
+# performance kernel turns into Mainstream's on a CPU that cannot start it,
+# since such a machine would not boot, and an empty choice means Mainstream's.
 chosen_kernels() {
     local k out=() seen=" "
-    for k in $(install_choice_list KERNELS "linux-mainstream linux" \
+    for k in $(install_choice_list KERNELS linux-mainstream \
             linux-mainstream-performance linux-mainstream linux); do
         [[ "$k" == linux-mainstream-performance ]] && ! cpu_runs_x86_64_v3 && k=linux-mainstream
         [[ "$seen" == *" $k "* ]] && continue
@@ -78,9 +78,10 @@ chosen_protons() {
     install_choice_list PROTONS mainstream mainstream ge cachyos
 }
 
-# The installed system's own kernel: the edition's (Arch's linux, or linux-t2 on
-# the MacBook edition) when it is installed, otherwise the Mainstream kernel that
-# replaced it. pkgbase is what pacman recorded; uname would name the live kernel.
+# The installed system's own kernel, which names its preset: Arch's linux or the
+# MacBook edition's linux-t2 when it is installed, otherwise the newest
+# Mainstream kernel. pkgbase is what pacman recorded; uname would name the live
+# kernel.
 installed_edition_kernel() {
     local d own="" mainstream=""
     for d in "${MAINSTREAM_MODULES_DIR:-/usr/lib/modules}"/*/; do
@@ -93,5 +94,5 @@ installed_edition_kernel() {
     done
     [[ -n "$own" ]] || own="$mainstream"
     own=$(printf '%s' "$own" | sort -V | tail -n1 | cut -d' ' -f2)
-    printf '%s\n' "${own:-linux}"
+    printf '%s\n' "${own:-linux-mainstream}"
 }

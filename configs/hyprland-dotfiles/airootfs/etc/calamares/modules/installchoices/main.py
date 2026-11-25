@@ -55,7 +55,7 @@ def resolve(method, items, v3):
     """(app source, kernels, protons). Without the Custom app list the install
     keeps today's defaults."""
     if method != "custom":
-        return "native", ["linux-mainstream", "linux"], ["mainstream"]
+        return "native", ["linux-mainstream"], ["mainstream"]
     apps = "flatpak" if "apps:flatpak" in items else "native"
     kernels = []
     for k in KERNELS:
@@ -70,22 +70,29 @@ def resolve(method, items, v3):
     return apps, kernels or ["linux-mainstream"], protons
 
 
-def edition_kernel(root):
-    """The kernel the image installs; an edition with its own (linux-t2) takes no other."""
+def target_kernels(root):
+    """The packages of the kernels whose modules are in the target."""
     modules = os.path.join(root, "usr/lib/modules")
     try:
         entries = sorted(os.listdir(modules))
     except OSError:
         entries = []
+    names = []
     for d in entries:
         try:
             with open(os.path.join(modules, d, "pkgbase")) as f:
                 name = f.read().strip()
         except OSError:
             continue
-        if name and not name.startswith("linux-mainstream"):
-            return name
-    return "linux"
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def edition_kernel(root):
+    """The kernel the image installs; an edition with its own (linux-t2) takes no other."""
+    kernels = target_kernels(root)
+    return kernels[0] if kernels else "linux-mainstream"
 
 
 def run():
@@ -108,7 +115,12 @@ def run():
     libcalamares.utils.debug("install choices: apps %s, kernels %s, protons %s, method %s"
                              % (apps, kernels, protons, method))
 
-    wanted = [k for k in kernels if k.startswith("linux-mainstream")] if edition_kernel(root) == "linux" else []
+    # Only the kernels the target lacks: the store does not list the image's own,
+    # so fetch-online would download it again.
+    wanted = []
+    if edition_kernel(root).startswith("linux-mainstream"):
+        present = target_kernels(root)
+        wanted = [k for k in kernels if k.startswith("linux-mainstream") and k not in present]
     if wanted and os.access(FETCH_ONLINE, os.X_OK):
         args = [FETCH_ONLINE, root]
         for k in wanted:
@@ -119,6 +131,6 @@ def run():
             for line in result.stdout.splitlines():
                 libcalamares.utils.debug(line)
         except (OSError, subprocess.SubprocessError) as e:
-            # The boot loader step then keeps Arch's kernel.
+            # The boot loader step then keeps the image's kernel.
             libcalamares.utils.warning("could not download the chosen kernels: %s" % e)
     return None
