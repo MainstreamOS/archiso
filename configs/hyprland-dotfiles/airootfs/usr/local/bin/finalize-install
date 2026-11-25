@@ -337,6 +337,8 @@ LOOSE_FILES=(
     # /tmp/dotfiles-setup earlier in this run. Nothing after the install reads
     # either one: updatems keeps its own clone under the user's cache.
     /usr/local/share/dots-hyprland.tar.zst
+    # Read only by the installer's packages step, from the live system.
+    /usr/local/share/mainstream-app-variants.list
     # archiso stamps the image's build date here. It says nothing true about an
     # installed system, where os-release carries the version.
     /version

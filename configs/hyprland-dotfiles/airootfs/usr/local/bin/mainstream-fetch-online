@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Adds packages from the signed online [mainstream] repository to the target's
+# local package folder. Runs in the live session: the target chroot cannot check
+# the signature reliably. Failures only mean the install keeps what the image has.
+#   mainstream-fetch-online ROOT [--kernel NAME]... [PACKAGE...]
+set -uo pipefail
+
+REPO_URL=https://github.com/MainstreamOS/packages/releases/download/mainstream-repo
+MIRROR_URL=https://downloads.sourceforge.net/project/mainstreamos/mainstream-repo
+KEY_FILE="${MAINSTREAM_KEY_FILE:-/usr/local/share/mainstream.pub}"
+
+log() { printf '[fetch-online] %s\n' "$*"; }
+
+ROOT="${1:-}"
+[[ -n "$ROOT" && -d "$ROOT" ]] || { log "usage: ${0##*/} ROOT [--kernel NAME] [PACKAGE...]"; exit 2; }
+shift
+wanted=()
+while (( $# )); do
+    case "$1" in
+        --kernel)
+            k="${2:-}"
+            shift 2 || shift
+            [[ "$k" == linux-mainstream* ]] && wanted+=("$k" "$k-headers")
+            ;;
+        *) wanted+=("$1"); shift ;;
+    esac
+done
+(( ${#wanted[@]} )) || { log "nothing to fetch."; exit 0; }
+
+STORE="$ROOT/usr/local/share/pkgs"
+# On the target's disk: the live session's writable space is a small tmpfs.
+WORK="$ROOT/var/cache/mainstream-fetch-online"
+rm -rf "$WORK" && mkdir -p "$WORK" "$STORE" || { log "could not prepare $WORK."; exit 0; }
+trap 'rm -rf "$WORK"' EXIT
+
+fetch() {  # URL-tail, output file
+    local base
+    for base in "$REPO_URL" "$MIRROR_URL"; do
+        curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 15 \
+            --speed-limit 10240 --speed-time 60 -o "$2" "$base/$1" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+if ! fetch mainstream.db "$WORK/mainstream.db" || ! fetch mainstream.db.sig "$WORK/mainstream.db.sig"; then
+    log "could not reach the [mainstream] repository; using what the image carries."
+    exit 0
+fi
+# Nothing in the database is trusted until the project key has vouched for it;
+# each package is then held to the checksum the signed database gives.
+if ! gpg --homedir "$WORK" --batch --no-options --dearmor -o "$WORK/key.gpg" "$KEY_FILE" 2>/dev/null \
+    || ! gpgv --homedir "$WORK" --keyring "$WORK/key.gpg" "$WORK/mainstream.db.sig" "$WORK/mainstream.db" &>/dev/null; then
+    log "the [mainstream] database did not match the project's signing key; nothing was fetched."
+    exit 0
+fi
+
+# By exact name only: a [mainstream] package that provides a common name, such as
+# gtk4-live-css for gtk4, must not be pulled in for something that only needs gtk4.
+declare -A file_of=() sum_of=() deps_of=()
+while IFS=$'\t' read -r name file sum deps; do
+    [[ -n "$name" ]] || continue
+    file_of[$name]=$file
+    sum_of[$name]=$sum
+    deps_of[$name]=$deps
+done < <(tar xzOf "$WORK/mainstream.db" --wildcards '*/desc' 2>/dev/null | awk '
+    function flush() { if (n != "") printf "%s\t%s\t%s\t%s\n", n, f, s, d; n = f = s = d = "" }
+    # Every entry starts with its file name.
+    /^%FILENAME%$/  { flush(); getline f; sec = ""; next }
+    /^%NAME%$/      { getline n; next }
+    /^%SHA256SUM%$/ { getline s; next }
+    /^%DEPENDS%$/   { sec = "d"; next }
+    /^%/            { sec = ""; next }
+    /^$/            { sec = ""; next }
+    sec == "d"      { sub(/[<>=].*/, ""); d = d " " $0; next }
+    END             { flush() }')
+
+# What the folder already serves, so a package the image carries is not fetched again.
+declare -A local_file=()
+if [[ -r "$STORE/mainstream.db" ]]; then
+    while IFS=$'\t' read -r name file; do
+        [[ -n "$name" ]] && local_file[$name]=$file
+    done < <(tar xzOf "$STORE/mainstream.db" --wildcards '*/desc' 2>/dev/null | awk '
+        /^%FILENAME%$/ { getline f; next } /^%NAME%$/ { getline n; print n "\t" f }')
+fi
+
+# The wanted packages and whatever of their dependencies only [mainstream] carries.
+declare -A queued=()
+queue=()
+# Names [mainstream] does not carry are left to the other repositories.
+for name in "${wanted[@]}"; do
+    [[ -n "${file_of[$name]:-}" && -z "${queued[$name]:-}" ]] || continue
+    queued[$name]=1
+    queue+=("$name")
+done
+for (( i = 0; i < ${#queue[@]}; i++ )); do
+    for dep in ${deps_of[${queue[$i]}]}; do
+        [[ -n "${file_of[$dep]:-}" && -z "${queued[$dep]:-}" ]] || continue
+        queued[$dep]=1
+        queue+=("$dep")
+    done
+done
+
+added=()
+for pkg in "${queue[@]}"; do
+    file="${file_of[$pkg]}"
+    # The image's own copy wins, at any version: it is what the image was built against.
+    [[ -n "${local_file[$pkg]:-}" && -f "$STORE/${local_file[$pkg]}" ]] && continue
+    log "fetching $file..."
+    if ! fetch "$file" "$WORK/$file"; then
+        log "could not download $file."
+        continue
+    fi
+    if [[ "$(sha256sum "$WORK/$file" | cut -d' ' -f1)" != "${sum_of[$pkg]}" ]]; then
+        log "$file does not match the signed database; discarded."
+        continue
+    fi
+    mv -f "$WORK/$file" "$STORE/$file" && added+=("$STORE/$file")
+done
+(( ${#added[@]} )) || exit 0
+
+if ! repo-add -q "$STORE/mainstream.db.tar.gz" "${added[@]}"; then
+    log "could not index the fetched packages."
+    exit 0
+fi
+# The target reads its copy of the local database until the next sync.
+mkdir -p "$ROOT/var/lib/pacman/sync"
+cp -f "$STORE/mainstream.db.tar.gz" "$ROOT/var/lib/pacman/sync/mainstream.db"
+log "added to the target's package folder: ${added[*]##*/}"

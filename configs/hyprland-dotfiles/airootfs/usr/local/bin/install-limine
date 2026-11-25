@@ -107,32 +107,43 @@ if [[ "$KERNEL_REINSTALLED" != true ]]; then
     fi
 fi
 
-# Mainstream's kernel is the default where the image's repository offers it.
-# Arch's kernel stays installed beside it as the fallback entry. It goes in
-# before the GPU step, which builds the NVIDIA module for every kernel, and is
-# left out on an edition whose own kernel is not Arch's.
-MAINSTREAM_KERNEL=linux-mainstream
-# Room for its boot image beside the stock one's, and for the snapshot copies of both.
+# The chosen Mainstream kernels go in before the GPU step, which builds the NVIDIA
+# module for every kernel; post-install-boot removes Arch's when it was not chosen.
+CHOICES_LIB=/usr/local/lib/mainstream-install-choices.sh
+# shellcheck source=/dev/null
+[[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
+MAINSTREAM_KERNELS=(linux-mainstream)
+if declare -F chosen_kernels >/dev/null; then
+    read -ra MAINSTREAM_KERNELS <<< "$(chosen_kernels | tr ' ' '\n' | grep '^linux-mainstream' | tr '\n' ' ')"
+fi
+# Room on the boot partition for each one's boot image and its snapshot copies.
 MAINSTREAM_KERNEL_MIN_FREE_MIB=512
 install_mainstream_kernel() {
-    local free
+    local k free added=0
     [[ "$KERNEL_PKG" == linux ]] || return 0
-    if ! pacman -Si "$MAINSTREAM_KERNEL" &>/dev/null || ! pacman -Si "$MAINSTREAM_KERNEL-headers" &>/dev/null; then
-        info "The repository does not offer $MAINSTREAM_KERNEL; Arch's kernel is the only one."
+    if (( ${#MAINSTREAM_KERNELS[@]} == 0 )); then
+        info "Only Arch's kernel was chosen."
         return 0
     fi
-    free=$(df -Pm "$BOOT_PATH" 2>/dev/null | awk 'NR==2 {print $4}') || free=""
-    if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < MAINSTREAM_KERNEL_MIN_FREE_MIB )); then
-        info "$BOOT_PATH has ${free:-unknown} MiB free and a second kernel needs $MAINSTREAM_KERNEL_MIN_FREE_MIB MiB; Arch's kernel is the only one."
-        return 0
-    fi
-    info "Installing $MAINSTREAM_KERNEL beside $KERNEL_PKG..."
-    if timeout -k 30 -s INT 1500 pacman -S --needed --noconfirm "$MAINSTREAM_KERNEL" "$MAINSTREAM_KERNEL-headers"; then
-        info "$MAINSTREAM_KERNEL installed; $KERNEL_PKG stays as the fallback."
-    else
-        warn "$MAINSTREAM_KERNEL could not be installed; Arch's kernel is the only one."
-        rm -f /var/lib/pacman/db.lck
-    fi
+    for k in "${MAINSTREAM_KERNELS[@]}"; do
+        if ! pacman -Si "$k" &>/dev/null || ! pacman -Si "$k-headers" &>/dev/null; then
+            info "The repository does not offer $k."
+            continue
+        fi
+        free=$(df -Pm "$BOOT_PATH" 2>/dev/null | awk 'NR==2 {print $4}') || free=""
+        if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < MAINSTREAM_KERNEL_MIN_FREE_MIB * (added + 1) )); then
+            info "$BOOT_PATH has ${free:-unknown} MiB free, too little for $k as well; it is left out."
+            continue
+        fi
+        info "Installing $k beside $KERNEL_PKG..."
+        if timeout -k 30 -s INT 1500 pacman -S --needed --noconfirm "$k" "$k-headers"; then
+            info "$k installed beside $KERNEL_PKG."
+            added=$((added + 1))
+        else
+            warn "$k could not be installed."
+            rm -f /var/lib/pacman/db.lck
+        fi
+    done
 }
 install_mainstream_kernel
 

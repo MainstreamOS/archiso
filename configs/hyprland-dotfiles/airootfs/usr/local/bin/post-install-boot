@@ -698,17 +698,35 @@ fi
 # Restore a standard installed-system mkinitcpio preset. The UKI is left to
 # limine-mkinitcpio, which pins its hash in limine.conf; a UKI path here would
 # let a plain mkinitcpio -P replace that file without updating its pin.
-# Which kernel this image carries. Editions differ: the MacBook one ships
-# linux-t2 in place of Arch's linux, and the preset below names the kernel in
-# three separate filenames. pkgbase is what pacman recorded for the package that
-# owns the modules; uname would report the live ISO's kernel instead.
-# Mainstream's kernel sits beside the edition's and is not it.
-KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
-    [[ -r "$d/pkgbase" ]] || continue
-    [[ "$(<"$d/pkgbase")" == linux-mainstream* ]] && continue
-    printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
-done | sort -V | tail -n1 | cut -d' ' -f2)"
-[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
+# shellcheck source=/dev/null
+source /usr/local/lib/mainstream-install-choices.sh
+read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
+# The chosen Mainstream kernel that starts by default: the first in order of
+# preference that is installed and has the NVIDIA driver another kernel has.
+CHOSEN_KERNEL=""
+for _k in "${CHOSEN_KERNELS[@]}"; do
+    [[ "$_k" == linux-mainstream* && "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] || continue
+    gpu_kernel_nvidia_ready "$_k" || continue
+    CHOSEN_KERNEL="$_k"
+    break
+done
+# Only the chosen kernels stay. Arch's goes when it was not chosen, once a chosen
+# one is in place, and before the boot loader's hook below would give it an entry.
+# By exact name: pacman -Qq also answers for a package that only provides it.
+if [[ -n "$CHOSEN_KERNEL" && " ${CHOSEN_KERNELS[*]} " != *" linux "* \
+      && "$(pacman -Qq linux 2>/dev/null)" == linux ]]; then
+    _arch_kernel=(linux)
+    [[ "$(pacman -Qq linux-headers 2>/dev/null)" == linux-headers ]] && _arch_kernel+=(linux-headers)
+    if pacman -R --noconfirm "${_arch_kernel[@]}"; then
+        info "Arch's kernel was not chosen and is removed."
+    else
+        warn "Arch's kernel could not be removed, so it stays beside $CHOSEN_KERNEL."
+    fi
+fi
+# Which kernel the system carries as its own. Editions differ: the MacBook one
+# ships linux-t2 in place of Arch's linux, and the preset below names the kernel
+# in three separate filenames.
+KERNEL_PKG="$(installed_edition_kernel)"
 # No fallback preset on either firmware: UEFI boots the UKI, and on BIOS the
 # boot menu starts the images limine-mkinitcpio builds, which has its own
 # setting for a fallback.
@@ -724,10 +742,10 @@ for _p in /etc/mkinitcpio.d/*.preset; do
     [[ -e "$_p" ]] || continue
     [[ "$_p" == "/etc/mkinitcpio.d/${KERNEL_PKG}.preset" ]] || rm -f "$_p"
 done
-# Mainstream's kernel arrived while mkinitcpio's own hook was still in place,
+# Mainstream's kernels arrived while mkinitcpio's own hook was still in place,
 # which built images in /boot that nothing uses: limine-mkinitcpio below builds
-# that kernel's boot image itself.
-rm -f /boot/initramfs-linux-mainstream.img /boot/initramfs-linux-mainstream-fallback.img
+# their boot images itself, and the preset above rebuilds the system's own.
+rm -f /boot/initramfs-linux-mainstream*.img
 
 # ---------------------------------------------------------------------------
 # ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
@@ -750,19 +768,14 @@ fi
 # entry is created unbranded ("Mainstream OS", not "Mainstream OS\\") and a
 # stray "EFI fallback" entry gets added.
 write_limine_defaults "$BOOT_PATH"
-# Mainstream's kernel, when install-limine added it, is listed first in this
-# system's block and so is the entry default_entry starts. Never one that would
-# start without the NVIDIA driver another kernel has.
-MAINSTREAM_KERNEL=linux-mainstream
+# The default Mainstream kernel picked above is listed first in this system's
+# block and so is the entry default_entry starts.
+MAINSTREAM_KERNEL="$CHOSEN_KERNEL"
 MAINSTREAM_KERNEL_DEFAULT=false
-if [[ -n "$(gpu_installed_kernels | awk -v k="$MAINSTREAM_KERNEL" '$2 == k')" ]]; then
-    if gpu_kernel_nvidia_ready "$MAINSTREAM_KERNEL"; then
-        MAINSTREAM_KERNEL_DEFAULT=true
-        printf 'BOOT_ORDER="%s, *, *fallback, Snapshots"\n' "$MAINSTREAM_KERNEL" >> "${LIMINE_DEFAULTS_FILE:-/etc/default/limine}"
-        info "$MAINSTREAM_KERNEL is the boot menu's default; $KERNEL_PKG stays as the fallback entry."
-    else
-        warn "$MAINSTREAM_KERNEL has no NVIDIA driver, so $KERNEL_PKG stays the boot menu's default."
-    fi
+if [[ -n "$MAINSTREAM_KERNEL" ]]; then
+    MAINSTREAM_KERNEL_DEFAULT=true
+    printf 'BOOT_ORDER="%s, *, *fallback, Snapshots"\n' "$MAINSTREAM_KERNEL" >> "${LIMINE_DEFAULTS_FILE:-/etc/default/limine}"
+    info "$MAINSTREAM_KERNEL is the boot menu's default."
 fi
 
 # ---------------------------------------------------------------------------

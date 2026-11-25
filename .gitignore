@@ -19,3 +19,4 @@ last-build.txt
 __pycache__/
 .edition-overlay-backup/
 configs/hyprland-dotfiles/airootfs/etc/mainstream-dotfiles-tag
+configs/hyprland-dotfiles/airootfs/usr/local/share/mainstream-app-variants.list

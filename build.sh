@@ -476,13 +476,16 @@ WELCOME_PKGS=(sunshine wivrn-server wivrn-dashboard xrizer lib32-xrizer xr-hardw
 # script leaves out a fix whose package the image does not carry.
 HARDWARE_PKGS=(mainstream-tas2783-dkms)
 # What an install step installs by name when the image carries it: post-install-proton
-# makes Mainstream's Proton Steam's default, and downloads GE-Proton when it is missing;
-# install-limine adds Mainstream's kernel beside Arch's and makes it the default.
-INSTALL_STEP_PKGS=(proton-mainstream linux-mainstream linux-mainstream-headers)
+# makes Mainstream's Proton Steam's default.
+INSTALL_STEP_PKGS=(proton-mainstream)
+# What the installer downloads from the signed online repository instead of the
+# image carrying it (mainstream-fetch-online), however the lists above name it.
+# The kernels are fetched by choice, so they are named nowhere above.
+ONLINE_ONLY_PKGS=(zen-browser-bin)
 declare -a LOCAL_BUILT_PKGS=()
 mainstream_unneeded_pkgs() {
     local db="$1" dir d n b f line section
-    local -A deps=() base=() by_provide=() needed=() entry_dir=()
+    local -A deps=() base=() by_provide=() needed=() entry_dir=() online_only=()
     local -a queue=() seeds=() dl=() pl=()
     dir=$(mktemp -d)
     if ! tar xzf "$db" -C "$dir" 2>/dev/null; then
@@ -533,10 +536,11 @@ mainstream_unneeded_pkgs() {
     for f in "${seeds[@]}"; do
         [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
     done
+    for n in "${ONLINE_ONLY_PKGS[@]}"; do online_only[$n]=1; done
     while (( ${#queue[@]} )); do
         n=${queue[0]}
         queue=("${queue[@]:1}")
-        [[ -n "${needed[$n]:-}" ]] && continue
+        [[ -n "${needed[$n]:-}" || -n "${online_only[$n]:-}" ]] && continue
         needed[$n]=1
         for f in ${deps[$n]}; do
             [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
@@ -1263,13 +1267,6 @@ METAPKGS=(
 # METAPKGS BUILD_SCRIPT (--nodeps) doesn't provide.
 
 AUR_DEPS=(
-    # Native Zen (default Firefox-fork browser), prebuilt into [mainstream] so
-    # the netinstall installs it with plain `pacman -S` instead of a Flatpak
-    # ref. A sandboxed Flatpak browser can't read /etc/<browser>/policies/ or
-    # reach the native-messaging host, which silently breaks the
-    # mpris-hyprland auto-install; the native build works out of the box.
-    # (Firefox and Chromium are in the official repos, so they need no prebuild.)
-    "zen-browser-bin"
     "ckbcomp"
     "limine-mkinitcpio-hook"
     "limine-snapper-sync"
@@ -1528,6 +1525,20 @@ regenerate_netinstall_extras() {
     info "Regenerated netinstall Included Extras from default-apps.list (${#MAINSTREAM_DEFAULT_APPS[@]} apps)."
 }
 regenerate_netinstall_extras
+
+# The installer's packages step swaps selected apps between their native and
+# Flatpak builds with this list when the Custom install asks for one source.
+install_app_variants() {
+    local variants="$DIST_ARCH_PATH/mainstream-extras/app-variants.list"
+    local dst="$PROFILE_DIR/airootfs/usr/local/share/mainstream-app-variants.list"
+    if [[ -f "$variants" ]]; then
+        install -Dm644 "$variants" "$dst"
+    else
+        warn "app-variants.list not found at $variants; the installer will install apps as listed."
+        rm -f "$dst"
+    fi
+}
+install_app_variants
 
 chown -R "$BUILD_USER":"$BUILD_USER" "$PKG_WORK_DIR"
 info "Clone successful."

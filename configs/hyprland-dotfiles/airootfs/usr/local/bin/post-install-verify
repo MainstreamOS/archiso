@@ -245,14 +245,11 @@ if [[ -d /sys/firmware/efi ]]; then
         fail "no UKI found under /boot/efi/EFI/Linux/"
     fi
 else
-    # Named for the kernel the edition actually carries, not for Arch's, and
-    # not for Mainstream's beside it.
-    _kpkg="$(for d in /usr/lib/modules/*/; do
-        [[ -r "$d/pkgbase" ]] || continue
-        [[ "$(<"$d/pkgbase")" == linux-mainstream* ]] && continue
-        printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
-    done | sort -V | tail -n1 | cut -d' ' -f2)"
-    [[ -n "$_kpkg" ]] || _kpkg=linux
+    # Named for the kernel the system carries as its own: the edition's, or the
+    # Mainstream kernel that replaced it.
+    # shellcheck source=/dev/null
+    source /usr/local/lib/mainstream-install-choices.sh
+    _kpkg="$(installed_edition_kernel)"
     if [[ -f "/boot/vmlinuz-${_kpkg}" && -f /boot/limine-bios.sys ]]; then
         pass "BIOS boot files present in /boot"
     else
@@ -345,6 +342,8 @@ for d in dirs:
                 pass
     except OSError:
         pass
+# The shell shows these native pins as their Flatpak entry when only that is installed.
+flatpak_pins = {"chromium": "org.chromium.chromium", "spotify-launcher": "com.spotify.client"}
 src = open(qml, encoding="utf-8").read()
 bad = []
 for m in re.finditer(r'property\s+list<string>\s+pinnedApps\s*:\s*\[(.*?)\]', src, re.DOTALL):
@@ -352,7 +351,8 @@ for m in re.finditer(r'property\s+list<string>\s+pinnedApps\s*:\s*\[(.*?)\]', sr
     if "settings" not in ids:
         continue
     bad = [i for i in ids
-           if not (i.startswith("folder:") or i.lower() in exempt or i.lower() in avail)]
+           if not (i.startswith("folder:") or i.lower() in exempt or i.lower() in avail
+                   or flatpak_pins.get(i.lower()) in avail)]
 print(",".join(bad))
 PYEOF
         ); then

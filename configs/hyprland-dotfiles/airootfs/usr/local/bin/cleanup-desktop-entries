@@ -27,6 +27,15 @@ if [[ -z "$MAIN_USER" ]]; then
     exit 0
 fi
 
+# The browser default was set before the apps went in; when the Flatpak
+# Chromium is the one installed, it has its own desktop id.
+if [[ ! -f /usr/share/applications/chromium.desktop \
+      && -f /var/lib/flatpak/exports/share/applications/org.chromium.Chromium.desktop ]]; then
+    su -s /bin/bash "$MAIN_USER" -c "env -u BROWSER xdg-settings set default-web-browser org.chromium.Chromium.desktop" || true
+    su -s /bin/bash "$MAIN_USER" -c "xdg-mime default org.chromium.Chromium.desktop x-scheme-handler/http x-scheme-handler/https text/html application/xhtml+xml" || true
+    info "Default browser set to the Flatpak Chromium."
+fi
+
 DESKTOP_DIR="/home/$MAIN_USER/.local/share/applications"
 
 if [[ ! -d "$DESKTOP_DIR" ]]; then
@@ -125,12 +134,15 @@ for directory in app_dirs:
     except OSError:
         pass
 
+# The shell shows these native pins as their Flatpak entry when only that is installed.
+flatpak_pins = {"chromium": "org.chromium.chromium", "spotify-launcher": "com.spotify.client"}
+
 def keep(app_id):
     if app_id.startswith("folder:"):
         return True
     if app_id.lower() in exempt:
         return True
-    return app_id.lower() in available
+    return app_id.lower() in available or flatpak_pins.get(app_id.lower()) in available
 
 src = open(qml_path, encoding="utf-8").read()
 pat = re.compile(r'(property\s+list<string>\s+pinnedApps\s*:\s*\[)(.*?)(\])', re.DOTALL)

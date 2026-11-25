@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: no
+# SPDX-License-Identifier: CC0-1.0
+---
+type:       "job"
+name:       "installchoices"
+interface:  "python"
+script:     "main.py"
+# Mostly the download of the chosen kernels (about 250 MB each).
+weight:     5

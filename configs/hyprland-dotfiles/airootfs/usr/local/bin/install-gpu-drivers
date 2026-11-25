@@ -421,11 +421,17 @@ nvidia_ensure_module_for_target() {
     return 1
 }
 
-# Mainstream's kernel (install-limine) has no prebuilt NVIDIA module, so the
-# shared ladder gives it the DKMS driver. One that ends up without a module
-# while Arch's kernel has one comes back out, leaving the install as it would
-# be without it.
-MAINSTREAM_KERNEL=linux-mainstream
+# The chosen Mainstream kernels (install-limine) have no prebuilt NVIDIA module,
+# so the shared ladder gives each the DKMS driver. One that ends up without a
+# module while Arch's kernel has one comes back out, leaving the install as it
+# would be without it.
+CHOICES_LIB="${CHOICES_LIB:-/usr/local/lib/mainstream-install-choices.sh}"
+# shellcheck source=/dev/null
+[[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
+MAINSTREAM_KERNELS=(linux-mainstream)
+if declare -F chosen_kernels >/dev/null; then
+    read -ra MAINSTREAM_KERNELS <<< "$(chosen_kernels | tr ' ' '\n' | grep '^linux-mainstream' | tr '\n' ' ')"
+fi
 GPU_INSTALL_LIB="${GPU_INSTALL_LIB:-/usr/local/lib/gpu-driver-install.sh}"
 # Offline the target has no Arch package database, so the DKMS driver the image
 # carries for this (build.sh, mainstream-kernel-nvidia.list) is served as a
@@ -457,26 +463,26 @@ offline_nvidia_repo_on() {
     conf="$OFFLINE_NVIDIA_REPO/sync.conf"
     printf '[options]\nArchitecture = auto\n[mainstream-offline]\nSigLevel = Never\nServer = file://%s\n' "$OFFLINE_NVIDIA_REPO" > "$conf"
     pacman -Sy --config "$conf" &>/dev/null || { offline_nvidia_repo_off; return 1; }
-    info "No network: serving the image's DKMS NVIDIA driver for $MAINSTREAM_KERNEL."
+    info "No network: serving the image's DKMS NVIDIA driver for $1."
 }
 offline_nvidia_repo_off() {
     [[ -f "$OFFLINE_NVIDIA_REPO/pacman.conf.orig" ]] && cp -f "$OFFLINE_NVIDIA_REPO/pacman.conf.orig" "$PACMAN_CONF"
     rm -f "${PACMAN_DBPATH:-/var/lib/pacman}/sync/mainstream-offline.db"
     rm -rf "${OFFLINE_NVIDIA_REPO:?}"
 }
-nvidia_mainstream_kernel() {
-    local offline=false
+nvidia_mainstream_kernel() {  # $1 = kernel
+    local offline=false MAINSTREAM_KERNEL="$1"
     [[ "$(pacman -Qq "$MAINSTREAM_KERNEL" 2>/dev/null)" == "$MAINSTREAM_KERNEL" ]] || return 0
     if [[ -r "$GPU_INSTALL_LIB" ]] && source "$GPU_INSTALL_LIB"; then
         info "Building the NVIDIA module for $MAINSTREAM_KERNEL as well."
-        [[ "${NVIDIA_DRIVER_FAMILY:-}" == nvidia-open ]] && offline_nvidia_repo_on && offline=true
+        [[ "${NVIDIA_DRIVER_FAMILY:-}" == nvidia-open ]] && offline_nvidia_repo_on "$MAINSTREAM_KERNEL" && offline=true
         GPU_SUDO="" GPU_DB_REFRESH=true gpu_nvidia_modules_for_added_kernel "$MAINSTREAM_KERNEL" || true
         [[ $offline == true ]] && offline_nvidia_repo_off
     else
         info "The driver library is missing from $GPU_INSTALL_LIB, so no NVIDIA module can be built for $MAINSTREAM_KERNEL."
     fi
     gpu_kernel_nvidia_ready "$MAINSTREAM_KERNEL" && return 0
-    warn "No NVIDIA driver could be built for $MAINSTREAM_KERNEL, so it was removed; Arch's kernel is the only one."
+    warn "No NVIDIA driver could be built for $MAINSTREAM_KERNEL, so it was removed."
     pacman -Rns --noconfirm "$MAINSTREAM_KERNEL" "$MAINSTREAM_KERNEL-headers" 2>&1 \
         || note_failure "$MAINSTREAM_KERNEL has no NVIDIA driver and could not be removed; choose Arch's kernel in the boot menu."
 }
@@ -513,7 +519,9 @@ if $HAS_NVIDIA; then
             remove_mainline_nvidia
             ;;
     esac
-    nvidia_mainstream_kernel
+    for _mk in "${MAINSTREAM_KERNELS[@]}"; do
+        nvidia_mainstream_kernel "$_mk"
+    done
 
     mapfile -t _nv_extra < <(nvidia_extra_pkgs)
     install_pkgs_opt "${_nv_extra[@]}"

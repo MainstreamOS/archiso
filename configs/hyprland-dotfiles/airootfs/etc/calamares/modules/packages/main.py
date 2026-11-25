@@ -504,6 +504,41 @@ class PMXbps(PackageManager):
         self.run_xbps(["xbps", "-Suy"])
 
 
+APP_VARIANTS_FILE = "/usr/local/share/mainstream-app-variants.list"
+FETCH_ONLINE = "/usr/local/bin/mainstream-fetch-online"
+
+
+def load_app_variants(path=APP_VARIANTS_FILE):
+    """Read "native|flatpak-ref" pairs; a missing or unreadable file gives none."""
+    pairs = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                native, _, ref = line.partition("|")
+                native, ref = native.strip(), ref.strip()
+                if native and ref:
+                    pairs.append((native, ref))
+    except OSError:
+        pass
+    return pairs
+
+
+def swap_app_name(name, source, pairs):
+    """The name to install for the chosen app source ("native" or "flatpak").
+
+    Any other source, or a name in neither column, installs as named.
+    """
+    for native, ref in pairs:
+        if source == "flatpak" and name == native:
+            return ref
+        if source == "native" and name == ref:
+            return native
+    return name
+
+
 class PMPacmanFlatpak(PackageManager):
     """
     Hybrid backend: native packages via pacman (official repos only),
@@ -532,6 +567,14 @@ class PMPacmanFlatpak(PackageManager):
         # this flag. Idempotent on rerun (the remote-add is itself
         # idempotent, this just saves a fork per package).
         self.flathub_added = False
+        self.fetched_online = False
+
+        # Only a Custom install picks an app source (the installchoices step
+        # reads its checkbox); the other methods keep installing apps as listed.
+        self.app_source = None
+        if libcalamares.globalstorage.value("installmethod_choice") == "custom":
+            self.app_source = libcalamares.globalstorage.value("installchoices_appsource")
+        self.app_variants = load_app_variants() if self.app_source in ("native", "flatpak") else []
 
         # Pipe pacman/flatpak output to the Calamares log, but DON'T let it
         # overwrite custom_status_message — the per-package iteration in
@@ -545,6 +588,42 @@ class PMPacmanFlatpak(PackageManager):
             libcalamares.utils.debug(line)
 
         self.line_cb = line_cb
+
+    def _fetch_online_once(self):
+        """One download pass for the whole app list: optional entries arrive here
+        one at a time. The listed native names come along too, for the fallback
+        when a swapped Flatpak fails."""
+        if self.fetched_online:
+            return
+        self.fetched_online = True
+        names = []
+        for op in libcalamares.globalstorage.value("packageOperations") or []:
+            for key in ("install", "try_install"):
+                for item in (op.get(key) or []) if isinstance(op, dict) else []:
+                    name = self._unpack(item)[0]
+                    if not name or ":" in name:
+                        continue
+                    for n in (name, swap_app_name(name, self.app_source, self.app_variants)):
+                        if not self._is_flatpak_ref(n) and n not in names:
+                            names.append(n)
+        self._fetch_online(names)
+
+    def _fetch_online(self, names):
+        """Picks that only the online [mainstream] repository carries, such as Zen,
+        are downloaded into the target's package folder first, where pacman -S
+        then finds them. Names it does not carry, or the image already has, are
+        left alone, and a failure leaves the install as it was.
+        """
+        root = libcalamares.globalstorage.value("rootMountPoint")
+        if not names or not root or not os.access(FETCH_ONLINE, os.X_OK):
+            return
+        try:
+            result = subprocess.run([FETCH_ONLINE, root] + names, timeout=1800,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in result.stdout.splitlines():
+                libcalamares.utils.debug(line)
+        except (OSError, subprocess.SubprocessError) as e:
+            libcalamares.utils.warning("could not reach the online [mainstream] repository: %s" % e)
 
     @staticmethod
     def _is_flatpak_ref(name):
@@ -683,8 +762,16 @@ class PMPacmanFlatpak(PackageManager):
         self.reset_progress()
 
         global custom_status_message
+        if not from_local:
+            # The kernel, app source and Proton checkboxes are choices the
+            # installchoices step already read, not packages.
+            pkgs = [p for p in pkgs if ":" not in self._unpack(p)[0]]
+            self._fetch_online_once()
         for idx, pkg in enumerate(pkgs):
             pkg_name, pkg_display = self._unpack(pkg)
+            listed_name = pkg_name
+            if not from_local:
+                pkg_name = swap_app_name(pkg_name, self.app_source, self.app_variants)
             # Surface the current package name under the progress bar.
             # setprogress() is what triggers a UI refresh of the status
             # message, so the order matters — set the message THEN call
@@ -721,11 +808,24 @@ class PMPacmanFlatpak(PackageManager):
                 # the target's /var/lib/flatpak via the env-var
                 # redirect, so the installed system has the apps
                 # available as if the install had run in-chroot.
-                self._flatpak_run(
-                    ["install", "--system",
-                     "--noninteractive", "--assumeyes",
-                     "flathub", pkg_name],
-                    self.line_cb)
+                try:
+                    self._flatpak_run(
+                        ["install", "--system",
+                         "--noninteractive", "--assumeyes",
+                         "flathub", pkg_name],
+                        self.line_cb)
+                except subprocess.CalledProcessError:
+                    # Flathub is out of reach (offline install, say); the
+                    # native build the list named may be in the offline repo.
+                    if listed_name == pkg_name:
+                        raise
+                    libcalamares.utils.warning(
+                        "flatpak install of %s failed; installing %s instead" % (pkg_name, listed_name))
+                    command = [
+                        "pacman", "-S", "--noconfirm", "--needed",
+                        "--noprogressbar", "--", listed_name,
+                    ]
+                    libcalamares.utils.target_env_process_output(command, self.line_cb)
                 continue
             # Native package → pacman -S in the target chroot as root, from
             # the official repos only. No AUR helper: the netinstall list is

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # post-install-proton: Installing Proton for Steam
 source /usr/local/lib/mainstream-postinstall-common.sh
+# shellcheck source=/dev/null
+source /usr/local/lib/mainstream-install-choices.sh
 
 # ---------------------------------------------------------------------------
-# PROTON: install Proton Mainstream, or GE-Proton when the repository does
-# not offer it, and preseed Steam's compat-tool default
+# PROTON: install every Proton picked in the app list (Proton Mainstream unless a
+# Custom install changed that) and preseed Steam's compat-tool default
 #
 # Mirrors setup_proton() from 3.files.sh, adapted for chroot (root context):
-#   0. Install proton-mainstream with pacman when the repository offers it;
-#      otherwise, or when that fails, steps 1 and 2 fetch GE-Proton.
-#   1. Fetch the latest release tag from the GitHub API.
-#   2. Download + extract the tarball into compatibilitytools.d if not present.
-#   3. Seed ~/.local/share/Steam/config/config.vdf with the global CompatToolMapping
-#      default; or patch the existing file's "0" entry without touching
-#      per-game overrides or any other Steam settings.
-#   4. Link ~/.steam/{root,steam} to the store and fix ownership — everything
+#   1. Proton Mainstream comes from the repository; GE-Proton and Proton CachyOS
+#      download their latest release into compatibilitytools.d.
+#   2. Seed ~/.local/share/Steam/config/config.vdf with the global CompatToolMapping
+#      default, the first picked Proton that installed; or patch the existing
+#      file's "0" entry without touching per-game overrides or any other setting.
+#   3. Link ~/.steam/{root,steam} to the store and fix ownership: everything
 #      written under $MAIN_USER_HOME must belong to the user, not root.
 #
 # Notes:
@@ -149,7 +149,7 @@ _proton_link_and_own() {  # $1 = label for the log
     ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/steam"
     ln -sfnT "$_STEAM_STORE" "$MAIN_USER_HOME/.steam/root"
 
-    # --- 4. Fix ownership ---
+    # --- 3. Fix ownership ---
     # Everything written under $MAIN_USER_HOME must belong to the user,
     # not root (we are running in chroot as root).
     chown -R "$MAIN_USER:$MAIN_USER" "$_STEAM_STORE" 2>/dev/null || true
@@ -160,34 +160,120 @@ _proton_link_and_own() {  # $1 = label for the log
     info "$1: Ownership of Steam dirs set to $MAIN_USER."
 }
 
-# Mainstream's own build, which system updates keep current. Until the
-# repository offers it, GE-Proton stays the default.
+# Each installer below sets _PROTON_TOOL to the name Steam knows the tool by
+# once it is in place.
+# Mainstream's own build, which system updates keep current.
 _install_proton_mainstream() {
-    pacman -Si proton-mainstream &>/dev/null || return 1
+    if ! pacman -Si proton-mainstream &>/dev/null; then
+        warn "Proton Mainstream: The repository does not offer it."
+        return 1
+    fi
     info "Proton Mainstream: Installing from the repository..."
     if pacman -S --needed --noconfirm proton-mainstream; then
         info "Proton Mainstream: Installed."
+        _PROTON_TOOL=proton-mainstream
         return 0
     fi
-    warn "Proton Mainstream: Install failed, using GE-Proton instead."
+    warn "Proton Mainstream: Install failed."
     return 1
+}
+
+# Proton CachyOS has no package, so its latest GitHub release is unpacked into
+# compatibilitytools.d like GE-Proton, after its published checksum matches.
+_install_proton_cachyos() {
+    local compat_dir="$_STEAM_STORE/compatibilitytools.d"
+    local api="https://api.github.com/repos/CachyOS/proton-cachyos/releases/latest"
+    local json="" levels="x86_64" name="" url="" sum_url="" install_dir="" stage="" expected="" actual="" tool=""
+    info "Proton CachyOS: Installing latest release for $MAIN_USER..."
+    json=$(curl -fsSL --connect-timeout 15 --max-time 30 "$api" 2>/dev/null) || true
+    if [[ -z "$json" ]]; then
+        warn "Proton CachyOS: GitHub API query failed, check the network. Skipping."
+        return 1
+    fi
+    # The x86_64_v3 build is faster where the CPU runs it; every x86-64 CPU runs the other.
+    cpu_runs_x86_64_v3 && levels="x86_64_v3 x86_64"
+    IFS=$'\t' read -r name url sum_url < <(printf '%s' "$json" | python3 -c '
+import sys, json
+assets = {a.get("name"): a.get("browser_download_url") for a in json.load(sys.stdin).get("assets") or []}
+for level in sys.argv[1].split():
+    for asset in sorted(n for n in assets if n):
+        if asset.startswith("proton-cachyos-") and asset.endswith("-" + level + ".tar.xz"):
+            name = asset[:-len(".tar.xz")]
+            if assets[asset] and assets.get(name + ".sha512sum"):
+                print(name, assets[asset], assets[name + ".sha512sum"], sep="\t")
+                sys.exit(0)
+' "$levels" 2>/dev/null) || true
+    if [[ -z "$name" || -z "$url" || -z "$sum_url" ]]; then
+        warn "Proton CachyOS: No x86_64 archive with a checksum in the latest release, skipping."
+        return 1
+    fi
+    # The name becomes a folder that a failed run removes, so it must look like one.
+    if [[ ! "$name" =~ ^proton-cachyos-[0-9A-Za-z._-]+$ ]]; then
+        warn "Proton CachyOS: unexpected release name '$name', skipping."
+        return 1
+    fi
+    info "Proton CachyOS: Latest release is $name"
+    install_dir="$compat_dir/$name"
+    if [[ -f "$install_dir/compatibilitytool.vdf" ]]; then
+        info "Proton CachyOS: $name already present, skipping download."
+    else
+        mkdir -p "$compat_dir"
+        rm -rf "$compat_dir"/.proton-cachyos.* || true
+        stage=$(mktemp -d "$compat_dir/.proton-cachyos.XXXXXX") || stage=""
+        if [[ -z "$stage" ]]; then
+            warn "Proton CachyOS: Could not create a download folder, skipping."
+            return 1
+        fi
+        info "Proton CachyOS: Downloading $name..."
+        if ! curl -fsSL --connect-timeout 15 --max-time 60 -o "$stage/download.sha512sum" "$sum_url"; then
+            warn "Proton CachyOS: Checksum download failed, skipping."
+        elif ! curl -fL --connect-timeout 15 --speed-limit 10240 --speed-time 60 \
+                --max-time 2400 --progress-bar \
+                -o "$stage/download.tar.xz" "$url"; then
+            warn "Proton CachyOS: Download failed, skipping."
+        elif ! read -r expected _ < "$stage/download.sha512sum" \
+            || [[ ! "$expected" =~ ^[0-9a-fA-F]{128}$ ]] \
+            || ! actual=$(sha512sum "$stage/download.tar.xz") \
+            || [[ "${actual%% *}" != "${expected,,}" ]]; then
+            warn "Proton CachyOS: $name does not match its published checksum, skipping."
+        elif ! tar -xJf "$stage/download.tar.xz" -C "$stage" \
+            || [[ ! -f "$stage/$name/compatibilitytool.vdf" ]]; then
+            warn "Proton CachyOS: Archive did not unpack to $name, skipping."
+        elif rm -rf "$install_dir" && mv "$stage/$name" "$install_dir"; then
+            info "Proton CachyOS: Installed $name to $install_dir"
+        else
+            warn "Proton CachyOS: Could not move $name into place, skipping."
+        fi
+        rm -rf "$stage" || true
+    fi
+
+    if [[ ! -f "$install_dir/compatibilitytool.vdf" ]]; then
+        warn "Proton CachyOS: $name is not installed."
+        return 1
+    else
+        # Steam knows a tool by the name its compatibilitytool.vdf declares.
+        tool=$(python3 -c '
+import re, sys
+m = re.search(r"\"compat_tools\"\s*\{\s*\"([^\"]+)\"", open(sys.argv[1], errors="replace").read())
+print(m.group(1) if m else "")
+' "$install_dir/compatibilitytool.vdf" 2>/dev/null) || true
+        [[ -n "$tool" ]] || tool="$name"
+        _PROTON_TOOL="$tool"
+    fi
 }
 
 _STEAM_STORE="$MAIN_USER_HOME/.local/share/Steam"
 _GE_CFG_DIR="$_STEAM_STORE/config"
 _GE_CFG="$_GE_CFG_DIR/config.vdf"
-if [[ -n "$MAIN_USER" ]] && ! command -v steam &>/dev/null; then
-    info "GE-Proton: Steam is not installed — skipping Proton GE seed."
-elif [[ -n "$MAIN_USER" ]] && _install_proton_mainstream; then
-    _proton_set_default "Proton Mainstream" proton-mainstream
-    _proton_link_and_own "Proton Mainstream"
-elif [[ -n "$MAIN_USER" ]]; then
+# The latest GE-Proton release, unpacked into compatibilitytools.d.
+_install_ge_proton() {
+    local _GE_COMPAT_DIR _GE_API _GE_JSON _GE_TAG _GE_NAME _GE_URL _GE_TOOL _GE_INSTALL_DIR _GE_STAGE
     info "GE-Proton: Installing latest release for $MAIN_USER..."
 
     _GE_COMPAT_DIR="$_STEAM_STORE/compatibilitytools.d"
     _GE_API="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
 
-    # --- 1. Resolve latest tag (e.g. "GE-Proton10-5") ---
+    # --- Resolve the latest tag (e.g. "GE-Proton10-5") ---
     _GE_JSON=""
     _GE_JSON=$(curl -fsSL --connect-timeout 15 --max-time 30 "$_GE_API" 2>/dev/null) || true
 
@@ -211,7 +297,7 @@ elif [[ -n "$MAIN_USER" ]]; then
         else
             info "GE-Proton: Latest tag is $_GE_TAG"
 
-            # --- 2. Download + extract ---
+            # --- Download and extract ---
             # Newer releases ship "<tag>-x86_64.tar.gz", which unpacks to a folder of
             # that name; older ones drop the suffix. ARM archives never match.
             _GE_NAME=""
@@ -258,11 +344,10 @@ for name in (tag + "-x86_64", tag):
                 fi
             fi
 
-            # --- 3. Seed / patch config.vdf ---
             # Pointing Steam at a tool directory that is not there breaks every
             # game launch until the user notices the setting.
             if [[ -z "$_GE_NAME" || ! -f "$_GE_INSTALL_DIR/compatibilitytool.vdf" ]]; then
-                warn "GE-Proton: $_GE_TAG is not installed, leaving config.vdf alone."
+                warn "GE-Proton: $_GE_TAG is not installed."
             else
                 # Steam knows a tool by the name its compatibilitytool.vdf declares,
                 # which so far has always matched the folder.
@@ -272,12 +357,40 @@ m = re.search(r"\"compat_tools\"\s*\{\s*\"([^\"]+)\"", open(sys.argv[1], errors=
 print(m.group(1) if m else "")
 ' "$_GE_INSTALL_DIR/compatibilitytool.vdf" 2>/dev/null) || true
                 [[ -n "$_GE_TOOL" ]] || _GE_TOOL="$_GE_NAME"
-                _proton_set_default "GE-Proton" "$_GE_TOOL"
+                _PROTON_TOOL="$_GE_TOOL"
+                return 0
             fi
-
-            # --- 3b. Link ~/.steam and fix ownership ---
-            _proton_link_and_own "GE-Proton"
         fi
+    fi
+    return 1
+}
+
+_PROTONS=$(chosen_protons)
+if [[ -n "$MAIN_USER" ]] && ! command -v steam &>/dev/null; then
+    info "Proton: Steam is not installed, skipping."
+elif [[ -n "$MAIN_USER" && -z "$_PROTONS" ]]; then
+    info "Proton: none was picked, so Steam keeps its own."
+elif [[ -n "$MAIN_USER" ]]; then
+    # Every picked Proton goes in; Steam's default is the first that did, in
+    # the order of preference chosen_protons keeps.
+    _DEFAULT_TOOL="" _DEFAULT_LABEL=""
+    for _p in $_PROTONS; do
+        _PROTON_TOOL=""
+        case "$_p" in
+            mainstream) _label="Proton Mainstream"; _install_proton_mainstream || true ;;
+            ge) _label="GE-Proton"; _install_ge_proton || true ;;
+            cachyos) _label="Proton CachyOS"; _install_proton_cachyos || true ;;
+        esac
+        if [[ -n "$_PROTON_TOOL" && -z "$_DEFAULT_TOOL" ]]; then
+            _DEFAULT_TOOL="$_PROTON_TOOL" _DEFAULT_LABEL="$_label"
+        fi
+    done
+    if [[ -n "$_DEFAULT_TOOL" ]]; then
+        _proton_set_default "$_DEFAULT_LABEL" "$_DEFAULT_TOOL"
+    fi
+    # A download that failed can still have created Steam's folders as root.
+    if [[ -e "$_STEAM_STORE" ]]; then
+        _proton_link_and_own "${_DEFAULT_LABEL:-Proton}"
     fi
 fi
 
