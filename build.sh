@@ -1722,8 +1722,8 @@ download_arch_repo_pkgs() {
 }
 download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms
 
-# The image builds its own NVIDIA module, so an offline set an earlier build
-# staged for Mainstream's kernel would only ride along.
+# The image builds its own open NVIDIA module, so neither open driver file
+# rides along in its store.
 rm -f "$PKG_OUTPUT_DIR/mainstream-kernel-nvidia.list" \
     "$PKG_OUTPUT_DIR"/nvidia-open-dkms-[0-9]*.pkg.tar.zst* \
     "$PKG_OUTPUT_DIR"/nvidia-open-[0-9]*.pkg.tar.zst* 2>/dev/null || true
@@ -2717,6 +2717,59 @@ die_rejecting_iso() {
     fi
     die "$@"
 }
+# A driverless image builds cleanly to here: DKMS reports success when it built
+# nothing, and mkinitcpio only warns about a MODULES= entry it cannot find.
+verify_image_kernel() {
+    local air="${WORK_DIR}/x86_64/airootfs" bootdir="${WORK_DIR}/iso/arch/boot/x86_64"
+    local want p v d rel="" f extra=() why
+    for f in mok.key mok.pub; do
+        [[ ! -e "$air/var/lib/dkms/$f" ]] \
+            || die_rejecting_iso "The image carries /var/lib/dkms/$f, the signing key DKMS made while building its modules, and every install would copy it. The image's prune hook is what removes it."
+    done
+    for p in linux linux-headers; do
+        v="$(image_pkg_version "$p")"
+        [[ -z "$v" ]] \
+            || die_rejecting_iso "The image installed Arch's $p $v, for a kernel it does not boot. A package in its list depends on $p by name."
+    done
+    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
+        want=linux-t2
+        [[ -n "$(image_pkg_version linux-t2)" ]] \
+            || die_rejecting_iso "The MacBook edition did not install linux-t2."
+        [[ -z "$(image_pkg_version linux-mainstream)" ]] \
+            || die_rejecting_iso "The MacBook edition installed linux-mainstream beside linux-t2."
+    else
+        want=linux-mainstream
+        [[ -n "$(image_pkg_version linux-mainstream)" ]] \
+            || die_rejecting_iso "The image did not install linux-mainstream, the kernel it boots."
+        for d in "$air"/usr/lib/modules/*/; do
+            [[ -r "${d}pkgbase" && "$(<"${d}pkgbase")" == linux-mainstream ]] && rel="${d%/}"
+        done
+        if [[ -z "$rel" ]] || ! find "$rel/updates/dkms" -name 'nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
+            die_rejecting_iso "The image carries no nvidia kernel module for linux-mainstream: the DKMS build produced nothing, so NVIDIA cards would start the live session on software rendering."
+        fi
+        success "Verified the image carries a built nvidia kernel module for linux-mainstream."
+        # Packages that depend on linux-headers by name would otherwise pull in
+        # Arch's headers for a kernel the system does not have.
+        if ! awk '/^%PROVIDES%$/ { p = 1; next } /^$/ { p = 0 }
+                  p && /^linux-headers([<>=]|$)/ { found = 1 } END { exit !found }' \
+                "$air"/var/lib/pacman/local/linux-mainstream-headers-[0-9]*/desc 2>/dev/null; then
+            why="The image's linux-mainstream-headers does not provide linux-headers, so a package that depends on linux-headers installs Arch's headers for a kernel the system does not have. Build again once [mainstream] publishes headers that provide it."
+            [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
+            warn "$why"
+        fi
+    fi
+    for f in "$bootdir"/*; do
+        [[ -e "$f" ]] || continue
+        case "${f##*/}" in
+            "vmlinuz-$want"|"initramfs-$want.img"|*.sig) ;;
+            *) extra+=("${f##*/}") ;;
+        esac
+    done
+    if [[ ! -f "$bootdir/vmlinuz-$want" || ! -f "$bootdir/initramfs-$want.img" ]] || (( ${#extra[@]} > 0 )); then
+        die_rejecting_iso "The image should boot only $want, from vmlinuz-$want and initramfs-$want.img, but its boot directory holds: $(ls -A "$bootdir" 2>/dev/null | paste -sd' ')"
+    fi
+    success "Verified the image boots $want and installs no Arch kernel."
+}
 # Without the staged wl driver a 2012-2015 Mac gets no Wi-Fi driver from an
 # offline install. The MacBook edition takes it from the repositories instead.
 verify_staged_wl() {
@@ -2892,18 +2945,7 @@ if [[ -z "${ISO_PATH}" ]]; then
 fi
 echo ">>> ISO created: ${ISO_PATH}"
 
-# DKMS reports success even when it built nothing (no kernel headers), and
-# mkinitcpio only warns about a MODULES= entry it cannot find, so a driverless
-# legacy ISO builds cleanly all the way to here and only fails on the user's
-# machine — as software rendering, since nvidia-580xx-utils blacklists nouveau.
-if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
-    if ! find "${WORK_DIR}/x86_64/airootfs/usr/lib/modules" \
-         -path '*/updates/dkms/nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
-        die_rejecting_iso "Legacy-NVIDIA edition built with no nvidia kernel module — the DKMS build produced nothing (check linux-headers in packages.x86_64)."
-    fi
-    success "Verified the legacy-NVIDIA edition carries a built nvidia kernel module."
-fi
-
+verify_image_kernel
 verify_plugin_stamps
 verify_staged_wl
 verify_store_kernels
