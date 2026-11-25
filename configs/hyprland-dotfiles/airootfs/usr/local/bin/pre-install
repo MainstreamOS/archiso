@@ -77,7 +77,7 @@ if [ -f "/etc/mkinitcpio.conf.d/archiso.conf" ]; then
     rm -f /etc/mkinitcpio.conf.d/archiso.conf
 fi
 
-# NOTE: We intentionally do NOT delete /etc/mkinitcpio.d/linux.preset here.
+# NOTE: We intentionally do NOT delete the image's archiso preset here.
 # install-limine removes it with the rest of the archiso configs, post-install
 # writes the installed-system preset, and post-install also owns the final
 # mkinitcpio -P call after all config is in place.

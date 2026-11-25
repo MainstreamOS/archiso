@@ -244,14 +244,11 @@ add_mainstream_db() {
 
 # ── Legacy-NVIDIA edition overlay ───────────────────────────────────────────
 # --nvidia: from the same profile, swap the Turing+ live driver for the
-# nvidia-580xx stack + dkms (packages.x86_64) and rename the ISO (profiledef.sh).
+# nvidia-580xx stack (packages.x86_64) and rename the ISO (profiledef.sh).
 # The 580xx module builds against the live kernel via dkms's pacstrap hook (no
-# GSP firmware → stays out of the init). That hook needs linux-headers, which
-# nvidia-580xx-dkms does not depend on and the base list drops — without it the
-# build is a silent no-op and the ISO ships userspace with no kernel module.
-# The standard edition needs none of this: nvidia-open is prebuilt against the
-# packaged kernel. Backed up + restored on ANY exit (trap) so the tree and later
-# standard builds aren't mutated.
+# GSP firmware → stays out of the init), from the dkms and kernel headers the
+# base list carries for the standard edition's DKMS driver. Backed up + restored
+# on ANY exit (trap) so the tree and later standard builds aren't mutated.
 _OVERLAY_ARCHISO_CONF="airootfs/etc/mkinitcpio.conf.d/archiso.conf"
 
 # Everything an edition rewrites goes through here first, so restore_profile_
@@ -274,11 +271,11 @@ _overlay_creates() {
 }
 
 # ── MacBook edition overlay ─────────────────────────────────────────────────
-# --macbook: the same profile built around the T2 kernel instead of Arch's, so
-# an Intel Mac has a working built-in keyboard and trackpad in the installer
-# itself. Nothing in mainline drives the T2's input transport, and the trackpad
-# additionally needs changes to two in-tree HID drivers, so a module cannot
-# stand in for the kernel here.
+# --macbook: the same profile built around the T2 kernel instead of
+# Mainstream's, so an Intel Mac has a working built-in keyboard and trackpad in
+# the installer itself. Nothing in mainline drives the T2's input transport,
+# and the trackpad additionally needs changes to two in-tree HID drivers, so a
+# module cannot stand in for the kernel here.
 #
 # The pieces come from arch-mact2, the community repository the rest of the T2
 # ecosystem builds on. It is unsigned, which is why this is a separate image:
@@ -301,22 +298,18 @@ Server = https://mirror.funami.tech/arch-mact2/os/x86_64
 '
 apply_macbook_overlay() {
     _overlay_stash packages.x86_64 profiledef.sh pacman.conf \
-        airootfs/etc/pacman.conf airootfs/etc/mkinitcpio.d/linux.preset
+        airootfs/etc/pacman.conf airootfs/etc/mkinitcpio.d/linux-mainstream.preset
 
-    # The T2 kernel replaces Arch's rather than joining it: two kernels would
-    # pay for the second one three times over in the image, on every download,
-    # for a machine that only ever boots one of them. linux-firmware is left
-    # alone by the anchors.
-    sed -i -e 's/^linux$/linux-t2/' \
-           -e 's/^linux-headers$/linux-t2-headers/' \
+    # The T2 kernel replaces Mainstream's rather than joining it: two kernels
+    # would pay for the second one three times over in the image, on every
+    # download, for a machine that only ever boots one of them. linux-firmware
+    # is left alone by the anchors. Its headers and the DKMS NVIDIA driver go
+    # too: no Intel Mac has an NVIDIA GPU newer than Kepler, and the driver
+    # covers Turing and newer. The userspace stays.
+    sed -i -e 's/^linux-mainstream$/linux-t2/' \
+           -e '/^linux-mainstream-headers$/d' \
+           -e '/^nvidia-open-dkms$/d' \
            "${PROFILE_DIR}/packages.x86_64"
-    # nvidia-open depends on `linux` by name, so leaving it in would pull
-    # Arch's kernel back into an image built around another one, land a
-    # stock-named kernel with no initramfs (its preset is removed below) and
-    # pay for two kernels. No Mac this edition serves has a GPU it drives:
-    # nvidia-open covers Turing and newer, and the newest NVIDIA in any Intel
-    # Mac is Kepler. The userspace stays, since nothing else here needs it gone.
-    sed -i -e '/^nvidia-open$/d' "${PROFILE_DIR}/packages.x86_64"
     # apple-bcm-firmware is deliberately NOT here. Putting it in the image
     # would mean shipping Apple's firmware ourselves; post-install-boot pulls
     # it from the repository during the install instead, where the licence
@@ -352,7 +345,7 @@ apply_macbook_overlay() {
     # mkinitcpio builds from whatever presets it finds, so the stock one has to
     # go with the stock kernel or the image build fails on a kernel that is not
     # installed.
-    rm -f "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux.preset"
+    rm -f "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux-mainstream.preset"
     _overlay_creates airootfs/etc/mkinitcpio.d/linux-t2.preset
     cat > "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux-t2.preset" <<'PRESET'
 # mkinitcpio preset file for the 'linux-t2' package on archiso
@@ -377,8 +370,8 @@ PRESET
         _overlay_stash "${entry#"${PROFILE_DIR}"/}"
         # Matched so a second pass over an already rewritten file is a no-op,
         # in case a failed restore ever leaves one behind.
-        sed -i -e 's/vmlinuz-linux\([^-]\|$\)/vmlinuz-linux-t2\1/g' \
-               -e 's/initramfs-linux\.img/initramfs-linux-t2.img/g' "$entry"
+        sed -i -e 's/vmlinuz-linux-mainstream/vmlinuz-linux-t2/g' \
+               -e 's/initramfs-linux-mainstream\.img/initramfs-linux-t2.img/g' "$entry"
     done
 
     # The boot options t2linux asks for on every entry, IOMMU passthrough and
@@ -410,8 +403,8 @@ apply_profile_overlay() {
         return 0
     fi
     _overlay_stash packages.x86_64 profiledef.sh "$_OVERLAY_ARCHISO_CONF"
-    sed -i -e 's/^nvidia-open$/nvidia-580xx-dkms/' \
-           -e 's/^nvidia-utils$/nvidia-580xx-utils\ndkms\nlinux-headers/' \
+    sed -i -e 's/^nvidia-open-dkms$/nvidia-580xx-dkms/' \
+           -e 's/^nvidia-utils$/nvidia-580xx-utils/' \
            "${PROFILE_DIR}/packages.x86_64"
     # iso_name is a whole-line replace (idempotent); the iso_label pattern
     # tolerates an existing NV_ so a re-apply can't compound to MAINSTREAM_NV_NV_.
@@ -1036,9 +1029,9 @@ _edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
 [[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
 [[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
 
-# One image cannot be both: the two editions replace the same kernel line in
-# packages.x86_64, and the second overlay to run would sed a line the first one
-# had already taken.
+# One image cannot be both: the two editions rewrite the same NVIDIA driver line
+# in packages.x86_64, and the second overlay to run would sed a line the first
+# one had already taken.
 if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_PROFILE" == true ]]; then
     echo "ERROR: --nvidia and --macbook build different images; pick one." >&2
     exit 1
