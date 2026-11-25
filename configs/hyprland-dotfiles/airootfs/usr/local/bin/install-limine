@@ -40,7 +40,7 @@ fi
 
 # --- 0. Kernel & Environment Setup ---
 # Which kernel this image carries. Editions differ: the MacBook one ships
-# linux-t2 in place of Arch's linux, and every path below puts the kernel's name
+# linux-t2 in place of linux-mainstream, and every path below puts the kernel's name
 # in a filename, so the name is read rather than assumed. pkgbase is what pacman
 # recorded for the package owning the modules, which is the only source that
 # tells the truth in here — uname reports the live ISO's kernel, not the
@@ -49,7 +49,7 @@ KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
     [[ -r "$d/pkgbase" ]] || continue
     printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
 done | sort -V | tail -n1 | cut -d' ' -f2)"
-[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux
+[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux-mainstream
 info "Target kernel package: $KERNEL_PKG"
 
 info "Removing archiso mkinitcpio configs..."
@@ -62,15 +62,13 @@ rm -f /etc/mkinitcpio.conf.d/archiso.conf || true
 # reinstalled below, and post-install-boot writes the final one either way.
 rm -f /etc/mkinitcpio.d/*.preset || true
 
-# With a network connection the kernel MUST come from the repos, not the
-# live image: install-gpu-drivers runs next and upgrades kernel-locked driver
-# packages (nvidia-open's dependency on linux is unversioned), so a target
-# left on the ISO's baked kernel would have its only matching NVIDIA modules
-# replaced by ones built for a kernel it does not have — a driverless first
-# boot that every check still reports as clean. Reinstalling linux here keeps
-# the kernel in lockstep with whatever the driver step installs minutes later.
+# The Mainstream kernel stays the image's own, with the NVIDIA module DKMS built
+# for it there; the image's package store does not list it to reinstall from.
+# Another edition's kernel comes from the repos when there is a connection, so
+# it moves in lockstep with the driver packages install-gpu-drivers upgrades.
 KERNEL_REINSTALLED=false
-if curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
+if [[ "$KERNEL_PKG" != linux-mainstream* ]] \
+   && curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
     info "Network available — reinstalling the $KERNEL_PKG kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
     #
@@ -86,7 +84,7 @@ if curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
     fi
 fi
 if [[ "$KERNEL_REINSTALLED" != true ]]; then
-    # Offline, the live image itself is the kernel source. The ISO build empties
+    # Otherwise the live image itself is the kernel source. The ISO build empties
     # /boot before squashing and the linux package ships no /boot files — the
     # image there is produced by the mkinitcpio hook during a pacman
     # transaction — but the package's own copy at /usr/lib/modules/<kver>/vmlinuz
@@ -107,31 +105,36 @@ if [[ "$KERNEL_REINSTALLED" != true ]]; then
     fi
 fi
 
-# The chosen Mainstream kernels go in before the GPU step, which builds the NVIDIA
-# module for every kernel; post-install-boot removes Arch's when it was not chosen.
+# The other chosen kernels go in before the GPU step, which builds the NVIDIA
+# module for every kernel; post-install-boot removes the ones not chosen.
 CHOICES_LIB=/usr/local/lib/mainstream-install-choices.sh
 # shellcheck source=/dev/null
 [[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
-MAINSTREAM_KERNELS=(linux-mainstream)
+CHOSEN_KERNELS=(linux-mainstream)
 if declare -F chosen_kernels >/dev/null; then
-    read -ra MAINSTREAM_KERNELS <<< "$(chosen_kernels | tr ' ' '\n' | grep '^linux-mainstream' | tr '\n' ' ')"
+    read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
 fi
 # Room on the boot partition for each one's boot image and its snapshot copies.
-MAINSTREAM_KERNEL_MIN_FREE_MIB=512
-install_mainstream_kernel() {
+KERNEL_MIN_FREE_MIB=512
+install_chosen_kernels() {
     local k free added=0
-    [[ "$KERNEL_PKG" == linux ]] || return 0
-    if (( ${#MAINSTREAM_KERNELS[@]} == 0 )); then
-        info "Only Arch's kernel was chosen."
-        return 0
-    fi
-    for k in "${MAINSTREAM_KERNELS[@]}"; do
+    # An edition with a kernel of its own (linux-t2) takes no other.
+    [[ "$KERNEL_PKG" == linux-mainstream* ]] || return 0
+    for k in "${CHOSEN_KERNELS[@]}"; do
+        # By exact name: pacman -Qq also answers for a package that only provides it.
+        [[ "$(pacman -Qq "$k" 2>/dev/null)" == "$k" ]] && continue
+        # Arch's kernel and its headers come from core, the Mainstream ones from
+        # the image's package store, where the installer fetched them.
         if ! pacman -Si "$k" &>/dev/null || ! pacman -Si "$k-headers" &>/dev/null; then
-            info "The repository does not offer $k."
+            if [[ "$k" == linux ]]; then
+                warn "Arch's kernel needs a connection to the Arch repositories, so it is left out and $KERNEL_PKG stays."
+            else
+                info "The repository does not offer $k."
+            fi
             continue
         fi
         free=$(df -Pm "$BOOT_PATH" 2>/dev/null | awk 'NR==2 {print $4}') || free=""
-        if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < MAINSTREAM_KERNEL_MIN_FREE_MIB * (added + 1) )); then
+        if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < KERNEL_MIN_FREE_MIB * (added + 1) )); then
             info "$BOOT_PATH has ${free:-unknown} MiB free, too little for $k as well; it is left out."
             continue
         fi
@@ -145,7 +148,7 @@ install_mainstream_kernel() {
         fi
     done
 }
-install_mainstream_kernel
+install_chosen_kernels
 
 # NOTE: mkinitcpio -P is intentionally NOT called here.
 # post-install runs after this and modifies mkinitcpio.conf (GPU modules, resume hook),
