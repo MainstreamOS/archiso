@@ -263,13 +263,9 @@ install_legacy_nvidia() {
         legacy_nvidia_fallback "$label"
         return
     fi
-    # linux rides with the headers for the same reason it rides with
-    # nvidia-open below: an unversioned headers upgrade fires the dkms
-    # remove hook for the installed kernel, and if the kernel itself is not
-    # carried to the same version in the same transaction, the working
-    # module is deleted and everything after builds for a kernel that is
-    # not there.
-    install_pkgs linux linux-headers dkms libva-utils
+    # The image carries dkms and the headers of the kernel it installs, so the
+    # module builds for that kernel without Arch's being pulled in beside it.
+    install_pkgs dkms libva-utils
     install_pkgs_opt libva-nvidia-driver
     # The whole NVIDIA_LOCAL_PKGS set rides one pacman -U: the *-settings package
     # depends on libxnvctrl-*xx, which exists only as a staged file (the repo DB
@@ -357,46 +353,59 @@ nvidia_ensure_module_for_target() {
         return 0
     fi
 
-    warn "nvidia module missing for kernel $k. Refreshing the database and taking the matching build."
-    pacman -Sy 2>&1 || warn "database refresh failed."
-    pacman -S --noconfirm --needed nvidia-open 2>&1 || warn "nvidia-open update failed."
-    if nvidia_module_present "$k"; then
-        info "nvidia module now present for kernel $k."
-        return 0
-    fi
+    # The DKMS driver, which the image installs, builds against the headers of
+    # the kernel installed, so there is no prebuilt build to take or swap away.
+    local dkms_driver=false
+    if _gpu_installed_nvidia_open_dkms; then
+        dkms_driver=true
+        warn "nvidia module missing for kernel $k. Building the DKMS driver for it."
+    else
+        warn "nvidia module missing for kernel $k. Refreshing the database and taking the matching build."
+        pacman -Sy 2>&1 || warn "database refresh failed."
+        pacman -S --noconfirm --needed nvidia-open 2>&1 || warn "nvidia-open update failed."
+        if nvidia_module_present "$k"; then
+            info "nvidia module now present for kernel $k."
+            return 0
+        fi
 
-    # No build matching this kernel has been published yet, so no amount of
-    # reinstalling will produce one. DKMS compiles against the headers for the
-    # kernel actually installed, so it cannot be stranded the same way.
-    #
-    # The swap has to be spelled out. The DKMS driver conflicts with the one
-    # already here, and pacman's conflict question answers itself with "no"
-    # when nothing is allowed to ask, so a single transaction would simply be
-    # refused. The toolchain goes in first and on its own: a refused swap must
-    # not also cost the headers a build would need.
-    warn "No matching build available. Falling back to the DKMS driver, which builds against this kernel."
+        # No build matching this kernel has been published yet, so no amount of
+        # reinstalling will produce one. DKMS compiles against the headers for the
+        # kernel actually installed, so it cannot be stranded the same way.
+        #
+        # The swap has to be spelled out. The DKMS driver conflicts with the one
+        # already here, and pacman's conflict question answers itself with "no"
+        # when nothing is allowed to ask, so a single transaction would simply be
+        # refused. The toolchain goes in first and on its own: a refused swap must
+        # not also cost the headers a build would need.
+        warn "No matching build available. Falling back to the DKMS driver, which builds against this kernel."
+    fi
     # The headers have to belong to the kernel being targeted. A machine booting
     # linux-lts needs linux-lts-headers, and handing that machine linux-headers
     # builds the module against a tree it will never boot, which is the same
     # stranding this function exists to undo.
-    local hdr="linux-headers"
-    [[ -r "/usr/lib/modules/$k/pkgbase" ]] && hdr="$(<"/usr/lib/modules/$k/pkgbase")-headers"
-    pacman -S --noconfirm --needed "$hdr" dkms 2>&1 \
+    local mods="${MAINSTREAM_MODULES_DIR:-/usr/lib/modules}" hdr="linux-headers" tools=(dkms)
+    [[ -r "$mods/$k/pkgbase" ]] && hdr="$(<"$mods/$k/pkgbase")-headers"
+    # A build tree already in place needs no package, and the headers the image
+    # installed are in no repository to take them from.
+    [[ -e "$mods/$k/build" ]] || tools=("$hdr" dkms)
+    pacman -S --noconfirm --needed "${tools[@]}" 2>&1 \
         || warn "could not install the DKMS toolchain ($hdr)."
-    # Fetch the replacement first: removing the prebuilt driver and then
-    # failing to install its DKMS twin leaves the target with no driver at all.
-    if ! pacman -Sw --noconfirm nvidia-open-dkms 2>&1; then
-        warn "nvidia-open-dkms is not obtainable; keeping the prebuilt driver in place."
-        note_failure "nvidia-open: DKMS package is not obtainable for kernel $k, so the card will have no driver."
-        return 1
-    fi
-    pacman -Rdd --noconfirm nvidia-open 2>&1 \
-        || warn "could not remove the prebuilt driver before the swap."
-    pacman -S --noconfirm nvidia-open-dkms 2>&1 \
-        || warn "nvidia-open-dkms install failed."
-    if nvidia_module_present "$k"; then
-        info "nvidia module built by DKMS for kernel $k."
-        return 0
+    if [[ $dkms_driver == false ]]; then
+        # Fetch the replacement first: removing the prebuilt driver and then
+        # failing to install its DKMS twin leaves the target with no driver at all.
+        if ! pacman -Sw --noconfirm nvidia-open-dkms 2>&1; then
+            warn "nvidia-open-dkms is not obtainable; keeping the prebuilt driver in place."
+            note_failure "nvidia-open: DKMS package is not obtainable for kernel $k, so the card will have no driver."
+            return 1
+        fi
+        pacman -Rdd --noconfirm nvidia-open 2>&1 \
+            || warn "could not remove the prebuilt driver before the swap."
+        pacman -S --noconfirm nvidia-open-dkms 2>&1 \
+            || warn "nvidia-open-dkms install failed."
+        if nvidia_module_present "$k"; then
+            info "nvidia module built by DKMS for kernel $k."
+            return 0
+        fi
     fi
 
     # Installing the package only queues the build. pacman's DKMS hook builds
@@ -421,31 +430,44 @@ nvidia_ensure_module_for_target() {
     return 1
 }
 
-# The chosen Mainstream kernels (install-limine) have no prebuilt NVIDIA module,
-# so the shared ladder gives each the DKMS driver. One that ends up without a
-# module while Arch's kernel has one comes back out, leaving the install as it
-# would be without it.
+# The shared ladder gives every chosen kernel (install-limine) the NVIDIA module.
+# One that ends up without a module while another kernel has one comes back out,
+# leaving the install as it would be without it.
 CHOICES_LIB="${CHOICES_LIB:-/usr/local/lib/mainstream-install-choices.sh}"
 # shellcheck source=/dev/null
 [[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
-MAINSTREAM_KERNELS=(linux-mainstream)
+CHOSEN_KERNELS=(linux-mainstream)
 if declare -F chosen_kernels >/dev/null; then
-    read -ra MAINSTREAM_KERNELS <<< "$(chosen_kernels | tr ' ' '\n' | grep '^linux-mainstream' | tr '\n' ' ')"
+    read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
 fi
 GPU_INSTALL_LIB="${GPU_INSTALL_LIB:-/usr/local/lib/gpu-driver-install.sh}"
-nvidia_mainstream_kernel() {  # $1 = kernel
-    local MAINSTREAM_KERNEL="$1"
-    [[ "$(pacman -Qq "$MAINSTREAM_KERNEL" 2>/dev/null)" == "$MAINSTREAM_KERNEL" ]] || return 0
+nvidia_chosen_kernel() {  # $1 = kernel
+    local kernel="$1"
+    [[ "$(pacman -Qq "$kernel" 2>/dev/null)" == "$kernel" ]] || return 0
     if [[ -r "$GPU_INSTALL_LIB" ]] && source "$GPU_INSTALL_LIB"; then
-        info "Building the NVIDIA module for $MAINSTREAM_KERNEL as well."
-        GPU_SUDO="" GPU_DB_REFRESH=true gpu_nvidia_modules_for_added_kernel "$MAINSTREAM_KERNEL" || true
+        info "Building the NVIDIA module for $kernel as well."
+        GPU_SUDO="" GPU_DB_REFRESH=true gpu_nvidia_modules_for_added_kernel "$kernel" || true
     else
-        info "The driver library is missing from $GPU_INSTALL_LIB, so no NVIDIA module can be built for $MAINSTREAM_KERNEL."
+        info "The driver library is missing from $GPU_INSTALL_LIB, so no NVIDIA module can be built for $kernel."
     fi
-    gpu_kernel_nvidia_ready "$MAINSTREAM_KERNEL" && return 0
-    warn "No NVIDIA driver could be built for $MAINSTREAM_KERNEL, so it was removed."
-    pacman -Rns --noconfirm "$MAINSTREAM_KERNEL" "$MAINSTREAM_KERNEL-headers" 2>&1 \
-        || note_failure "$MAINSTREAM_KERNEL has no NVIDIA driver and could not be removed; choose Arch's kernel in the boot menu."
+    gpu_kernel_nvidia_ready "$kernel" && return 0
+    warn "No NVIDIA driver could be built for $kernel, so it was removed."
+    pacman -Rns --noconfirm "$kernel" "$kernel-headers" 2>&1 \
+        || note_failure "$kernel has no NVIDIA driver and could not be removed; choose another kernel in the boot menu."
+}
+
+# The image's NVIDIA module would keep the boot setup from making a kernel
+# without one the default; finalize-install removes the rest of the stack.
+# By exact name: the DKMS build provides nvidia-open.
+remove_image_nvidia_module() {
+    local p present=()
+    for p in nvidia-open nvidia-open-dkms nvidia-580xx-dkms; do
+        [[ "$(pacman -Qq "$p" 2>/dev/null)" == "$p" ]] && present+=("$p")
+    done
+    (( ${#present[@]} > 0 )) || return 0
+    info "No NVIDIA GPU: removing the image's NVIDIA kernel module."
+    pacman -R --noconfirm "${present[@]}" 2>&1 \
+        || warn "Could not remove ${present[*]}; finalize-install tries again."
 }
 
 if $HAS_NVIDIA; then
@@ -459,17 +481,16 @@ if $HAS_NVIDIA; then
             # Turing and newer (RTX 2060+, 30xx/40xx/50xx) — the official open
             # source kernel module, same userspace as proprietary.
             #
-            # linux rides the same transaction: nvidia-open's modules are built
-            # for exactly one kernel version but its linux dependency is
-            # unversioned, so a driver upgrade against a db that has moved past
-            # the installed kernel would strip the only matching modules and
-            # leave none the target can boot with. One transaction means the
-            # pair moves together or not at all; --needed makes the kernel a
-            # no-op when it is already current.
-            install_pkgs linux "${NVIDIA_REPO_PKGS[@]}"
+            # The prebuilt nvidia-open carries modules for exactly one version of
+            # Arch's kernel and depends on linux unversioned, so the two move in
+            # one transaction or not at all. The DKMS build this image installs
+            # needs no kernel beside it, and naming linux would pull Arch's in.
+            _nv_kernel=()
+            [[ "${NVIDIA_REPO_PKGS[0]}" == nvidia-open ]] && _nv_kernel=(linux)
+            install_pkgs "${_nv_kernel[@]}" "${NVIDIA_REPO_PKGS[@]}"
             install_pkgs_opt linux-firmware-nvidia
             nvidia_ensure_module_for_target
-            info "NVIDIA Turing+ — installed nvidia-open (official open source kernel module)."
+            info "NVIDIA Turing+: installed ${NVIDIA_REPO_PKGS[0]} (official open source kernel module)."
             ;;
         nvidia-580xx) install_legacy_nvidia "Maxwell/Pascal/Volta — GTX 900/1000/Titan V" ;;
         nvidia-470xx) install_legacy_nvidia "Kepler — GTX 600/700" ;;
@@ -480,8 +501,8 @@ if $HAS_NVIDIA; then
             remove_mainline_nvidia
             ;;
     esac
-    for _mk in "${MAINSTREAM_KERNELS[@]}"; do
-        nvidia_mainstream_kernel "$_mk"
+    for _mk in "${CHOSEN_KERNELS[@]}"; do
+        nvidia_chosen_kernel "$_mk"
     done
 
     mapfile -t _nv_extra < <(nvidia_extra_pkgs)
@@ -491,12 +512,8 @@ if $HAS_NVIDIA; then
     [[ $IS_HYBRID == true ]] && install_pkgs nvidia-prime || true
 
     info "NVIDIA packages installed."
-elif [[ -n "$GPU_INFO" && "$(pacman -Qq nvidia-open 2>/dev/null)" == nvidia-open ]]; then
-    # The image's module for Arch's kernel would keep the boot setup from making a
-    # kernel without it the default; finalize-install removes the rest of the stack.
-    info "No NVIDIA GPU: removing the image's NVIDIA kernel module."
-    pacman -R --noconfirm nvidia-open 2>&1 \
-        || warn "Could not remove nvidia-open; finalize-install tries again."
+elif [[ -n "$GPU_INFO" ]]; then
+    remove_image_nvidia_module
 fi
 
 # ── Vulkan-provider catch-all ────────────────────────────────────────────────

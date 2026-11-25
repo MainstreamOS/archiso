@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Drive nvidia_ensure_module_for_target through every branch with fakes.
 set -uo pipefail
-SRC=~/Documents/GitHub/archiso/configs/hyprland-dotfiles/airootfs/usr/local/bin/install-gpu-drivers
-source ~/Documents/GitHub/dots-hyprland/sdata/lib/gpu-config.sh
+ARCHISO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AIROOTFS="$ARCHISO_ROOT/configs/hyprland-dotfiles/airootfs"
+SRC="$AIROOTFS/usr/local/bin/install-gpu-drivers"
+source "${GPU_LIB:-$AIROOTFS/usr/local/lib/gpu-config.sh}"
 # lift just the helper out of the installer, without running the installer
 eval "$(awk '/^nvidia_ensure_module_for_target\(\) \{/,/^\}/' "$SRC")"
+# The prebuilt driver unless a case says the DKMS build is installed; asking the
+# fake pacman would count as a call.
+OPEN_DKMS=0
+_gpu_installed_nvidia_open_dkms() { [[ $OPEN_DKMS == 1 ]]; }
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+export MAINSTREAM_MODULES_DIR="$TMP/modules"
 
 FAILS=0; N=0
 info() { :; }; warn() { echo "      warn: $*"; }
@@ -74,6 +83,128 @@ pacman() { TRIES=$((TRIES+1)); return 0; }
 GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
 chk nokernel-rc "$rc" "1"; chk nokernel-nopacman "$TRIES" "0"
 chk nokernel-recorded "$( [[ "${GPU_FAILURES[*]}" == *"which kernel"* ]] && echo yes || echo no )" "yes"
+
+# ---- 7. the image's DKMS driver is installed: no prebuilt step and no swap,
+# just the headers of the kernel's own package and a DKMS build for it
+gpu_target_kernel() { echo "$K"; }
+mkdir -p "$MAINSTREAM_MODULES_DIR/$K"; echo linux-mainstream > "$MAINSTREAM_MODULES_DIR/$K/pkgbase"
+OPEN_DKMS=1; BUILT=0; PAC=(); DK=()
+pacman() { PAC+=("$*"); return 0; }
+dkms() {
+    DK+=("$*")
+    case "$1" in
+        status) echo "nvidia/595.71, $K, x86_64: added" ;;
+        install) BUILT=1 ;;
+    esac
+    return 0
+}
+_gpu_modinfo() { [[ $BUILT == 1 ]]; }
+GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
+chk opendkms-rc "$rc" "0"; chk opendkms-nofail "${#GPU_FAILURES[@]}" "0"
+chk opendkms-pacman-once "${#PAC[@]}" "1"
+chk opendkms-own-headers "${PAC[0]:-}" "-S --noconfirm --needed linux-mainstream-headers dkms"
+chk opendkms-no-prebuilt "$( [[ "${PAC[*]}" == *"-Sy"* || "${PAC[*]}" == *"-Rdd"* || "${PAC[*]}" == *"-Sw"* || "${PAC[*]}" == *"nvidia-open"* ]] && echo yes || echo no )" "no"
+chk opendkms-builds-target "$( [[ " ${DK[*]} " == *"install -m nvidia -v 595.71 -k $K "* ]] && echo yes || echo no )" "yes"
+
+# ---- 8. the same, with the headers already in place: they are in no repository,
+# so only dkms is asked for, and a failed build is recorded
+mkdir -p "$MAINSTREAM_MODULES_DIR/$K/build"
+BUILT=0; PAC=(); DK=()
+dkms() { DK+=("$*"); [[ $1 == status ]] && echo "nvidia/595.71, $K, x86_64: added"; [[ $1 != install ]]; }
+GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
+chk opendkms-tree-rc "$rc" "1"
+chk opendkms-tree-dkms-only "${PAC[*]}" "-S --noconfirm --needed dkms"
+chk opendkms-tree-tried "$( [[ " ${DK[*]} " == *"install -m nvidia -v 595.71 -k $K "* ]] && echo yes || echo no )" "yes"
+chk opendkms-tree-recorded "$( [[ "${GPU_FAILURES[*]}" == *"no loadable module"* ]] && echo yes || echo no )" "yes"
+OPEN_DKMS=0; unset -f dkms
+
+# ---- 9. no NVIDIA card: the image's module goes, by exact name, on either edition
+eval "$(awk '/^remove_image_nvidia_module\(\) \{/,/^\}/' "$SRC")"
+pacman() {
+    local p
+    if [[ $1 == -Qq ]]; then
+        for p in $INSTALLED; do [[ $p == "$2" ]] && { echo "$p"; return 0; }; done
+        # the DKMS build answers for the prebuilt name it provides
+        [[ $2 == nvidia-open && " $INSTALLED " == *" nvidia-open-dkms "* ]] && { echo nvidia-open-dkms; return 0; }
+        return 1
+    fi
+    PAC+=("$*")
+}
+INSTALLED="nvidia-open-dkms nvidia-utils"; PAC=()
+remove_image_nvidia_module
+chk nonv-open-dkms "${PAC[*]:-none}" "-R --noconfirm nvidia-open-dkms"
+INSTALLED="nvidia-580xx-dkms nvidia-580xx-utils"; PAC=()
+remove_image_nvidia_module
+chk nonv-legacy-dkms "${PAC[*]:-none}" "-R --noconfirm nvidia-580xx-dkms"
+INSTALLED="mesa"; PAC=()
+remove_image_nvidia_module
+chk nonv-nothing "${PAC[*]:-none}" "none"
+
+# ---- 10. a legacy card builds the staged DKMS driver against the image's kernel
+# headers, with no Arch kernel or headers asked for beside it
+eval "$(awk '/^install_legacy_nvidia\(\) \{/,/^\}/' "$SRC")"
+NVIDIA_LOCAL_PKGS=(nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx)
+STAGED=1
+find_local_pkgs() { [[ $STAGED == 1 ]] && echo "/usr/local/share/pkgs/$1-580.95.05-1-x86_64.pkg.tar.zst"; }
+install_pkgs() { INST+=("$@"); }
+install_pkgs_opt() { INST+=("$@"); }
+install_local_pkgs() { LOCAL+=("$@"); }
+detect_dkms_version() { echo 580.95.05; }
+target_dkms_install() { DKI+=("$*"); }
+legacy_nvidia_fallback() { FALLBACK=1; }
+INST=(); LOCAL=(); DKI=(); FALLBACK=0; GPU_FAILURES=()
+install_legacy_nvidia "Maxwell/Pascal/Volta"
+chk legacy-no-arch-kernel "$( [[ " ${INST[*]} " == *" linux "* || " ${INST[*]} " == *" linux-headers "* ]] && echo yes || echo no )" "no"
+chk legacy-dkms "$( [[ " ${INST[*]} " == *" dkms "* ]] && echo yes || echo no )" "yes"
+chk legacy-local-set "${LOCAL[*]}" "${NVIDIA_LOCAL_PKGS[*]}"
+chk legacy-builds "${DKI[*]:-none}" "nvidia 580.95.05"
+chk legacy-nofail "${#GPU_FAILURES[@]}" "0"
+STAGED=0; INST=(); LOCAL=(); FALLBACK=0
+install_legacy_nvidia "Maxwell/Pascal/Volta"
+chk legacy-unstaged-fallback "$FALLBACK" "1"
+chk legacy-unstaged-nothing "${INST[*]:-none} ${LOCAL[*]:-none}" "none none"
+
+# ---- 11. every chosen kernel, Arch's included, gets the module or comes back out
+eval "$(awk '/^nvidia_chosen_kernel\(\) \{/,/^\}/' "$SRC")"
+export MAINSTREAM_MODULES_DIR="$TMP/chosen-modules"
+for _r in 7.3.6-1-mainstream:linux-mainstream 6.18.1-arch1-1:linux; do
+    mkdir -p "$MAINSTREAM_MODULES_DIR/${_r%%:*}"
+    : > "$MAINSTREAM_MODULES_DIR/${_r%%:*}/vmlinuz"
+    echo "${_r#*:}" > "$MAINSTREAM_MODULES_DIR/${_r%%:*}/pkgbase"
+done
+mkdir -p "$MAINSTREAM_MODULES_DIR/7.3.6-1-mainstream/updates/dkms"
+: > "$MAINSTREAM_MODULES_DIR/7.3.6-1-mainstream/updates/dkms/nvidia.ko.zst"
+_gpu_module_dirs() { printf '%s\n' "$MAINSTREAM_MODULES_DIR"/*/; }
+_gpu_modinfo() { return 1; }
+_gpu_module_file() { [[ -n "$(find "$MAINSTREAM_MODULES_DIR/$1" -name 'nvidia.ko*' -print -quit 2>/dev/null)" ]]; }
+GPU_INSTALL_LIB="$TMP/gpu-driver-install.sh"
+echo 'gpu_nvidia_modules_for_added_kernel() { ADDED+=("$1"); }' > "$GPU_INSTALL_LIB"
+INSTALLED="linux-mainstream linux-mainstream-headers linux linux-headers"; RM_RC=0
+pacman() {
+    local p
+    if [[ $1 == -Qq ]]; then
+        for p in $INSTALLED; do [[ $p == "$2" ]] && { echo "$p"; return 0; }; done
+        return 1
+    fi
+    PAC+=("$*")
+    return "$RM_RC"
+}
+PAC=(); ADDED=(); GPU_FAILURES=()
+nvidia_chosen_kernel linux-mainstream
+chk chosen-ready-asked "${ADDED[*]:-none}" "linux-mainstream"
+chk chosen-ready-kept "${PAC[*]:-none}" "none"
+PAC=(); ADDED=(); GPU_FAILURES=()
+nvidia_chosen_kernel linux-mainstream-performance
+chk chosen-absent-untouched "${ADDED[*]:-none} ${PAC[*]:-none}" "none none"
+PAC=(); ADDED=(); GPU_FAILURES=()
+nvidia_chosen_kernel linux
+chk chosen-arch-asked "${ADDED[*]:-none}" "linux"
+chk chosen-arch-removed "${PAC[*]:-none}" "-Rns --noconfirm linux linux-headers"
+chk chosen-arch-nofail "${#GPU_FAILURES[@]}" "0"
+PAC=(); ADDED=(); GPU_FAILURES=(); RM_RC=1
+nvidia_chosen_kernel linux
+chk chosen-stuck-recorded "$( [[ "${GPU_FAILURES[*]}" == *"choose another kernel in the boot menu"* ]] && echo yes || echo no )" "yes"
+RM_RC=0
 
 [[ $FAILS -eq 0 ]] && echo "repair: all $N assertions PASS" || echo "repair: $FAILS of $N FAILED"
 exit $FAILS
