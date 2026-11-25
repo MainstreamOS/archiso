@@ -3,6 +3,10 @@
 # hooks directory so the zzzz99 hook removes it with the other build-only files.
 set -uo pipefail
 
+# DKMS signs what it builds with a key it makes on its first build. Left here,
+# one private key would ship on the ISO and be copied to every install.
+rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
+
 dir=/usr/local/share/pkgs
 db="$dir/mainstream.db.tar.gz"
 [[ -d "$dir" ]] || exit 0
