@@ -462,8 +462,10 @@ HARDWARE_PKGS=(mainstream-tas2783-dkms)
 INSTALL_STEP_PKGS=(proton-mainstream)
 # What the installer downloads from the signed online repository instead of the
 # image carrying it (mainstream-fetch-online), however the lists above name it.
-# The kernels are fetched by choice, so they are named nowhere above.
-ONLINE_ONLY_PKGS=(zen-browser-bin)
+# The image boots linux-mainstream, and the performance kernel is fetched only
+# when Custom picks it. Its headers would otherwise come along as a provider of
+# linux-headers, which packages above depend on.
+ONLINE_ONLY_PKGS=(zen-browser-bin linux-mainstream-performance linux-mainstream-performance-headers)
 declare -a LOCAL_BUILT_PKGS=()
 mainstream_unneeded_pkgs() {
     local db="$1" dir d n b f line section
@@ -519,6 +521,13 @@ mainstream_unneeded_pkgs() {
         [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
     done
     for n in "${ONLINE_ONLY_PKGS[@]}"; do online_only[$n]=1; done
+    # The MacBook edition boots linux-t2, and its package list is swapped in only
+    # after this runs, so the list read above still names Mainstream's kernel.
+    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
+        for n in "${!base[@]}"; do
+            [[ "$n" == linux-mainstream* ]] && online_only[$n]=1
+        done
+    fi
     while (( ${#queue[@]} )); do
         n=${queue[0]}
         queue=("${queue[@]:1}")
@@ -2721,6 +2730,24 @@ verify_staged_wl() {
     [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
     warn "$why"
 }
+# Nothing installs a kernel the image does not boot from its package store, and
+# each one adds a few hundred MiB to every download of the image. A store an
+# earlier package phase filled for another edition can still hold one.
+verify_store_kernels() {
+    local store="${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs" pat f extra=() why
+    pat='linux-mainstream-performance'
+    [[ "${MACBOOK_PROFILE:-false}" == true ]] && pat='linux-mainstream'
+    for f in "$store/$pat"*.pkg.tar.zst; do
+        [[ -f "$f" ]] && extra+=("${f##*/}")
+    done
+    if (( ${#extra[@]} == 0 )); then
+        success "Verified the image's package store carries no kernel the image does not boot."
+        return 0
+    fi
+    why="The image's package store carries kernel packages the image does not boot: ${extra[*]}. Build again with --refresh to leave them out."
+    [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
+    warn "$why"
+}
 # #############################################################################
 #
 #   PHASE 2: ISO BUILD  (always runs)
@@ -2741,6 +2768,10 @@ info "════════════════════════�
 # install the image's own packages from.
 compgen -G "$PKG_OUTPUT_DIR/*.pkg.tar.zst" > /dev/null \
     || die "The bundled repo at $PKG_OUTPUT_DIR holds no packages. Run the build with --refresh to fill it."
+# A MacBook package phase leaves out the kernel the other editions boot.
+if [[ "$MACBOOK_PROFILE" != true ]] && ! repo_has_pkg "$PKG_OUTPUT_DIR" linux-mainstream; then
+    die "The bundled repo at $PKG_OUTPUT_DIR has no linux-mainstream, the kernel this image boots. Run the build with --refresh to download it."
+fi
 
 # Fix the build-time pacman.conf to point to the actual output directory. Done
 # on every build, not only when packages are rebuilt: the committed path is one
@@ -2875,6 +2906,7 @@ fi
 
 verify_plugin_stamps
 verify_staged_wl
+verify_store_kernels
 
 # The two ways this image gets booted rest on different structures, so both are
 # checked. Ventoy keeps the .iso as a file and chainloads a boot image out of
