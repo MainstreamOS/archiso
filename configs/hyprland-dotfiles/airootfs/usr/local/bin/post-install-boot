@@ -690,6 +690,19 @@ if grep -qE '^FILES=.*crypto_keyfile\.bin' /etc/mkinitcpio.conf; then
     fi
 fi
 
+# Drops the //NAME sub-entry of the Mainstream OS entry, up to the next entry,
+# leaving any other system's entries on a shared EFI partition alone.
+_limine_drop_entry() {
+    local name="$1" conf="$2"
+    [[ -f "$conf" ]] || return 0
+    awk -v name="$name" '
+        /^\/[^\/]/ { ours = ($0 ~ /^\/\+?Mainstream OS/) }
+        ours && $0 ~ "^[[:space:]]*//" name "[[:space:]]*$" { skip = 1; next }
+        skip && /^[[:space:]]*\// { skip = 0 }
+        !skip
+    ' "$conf" > "$conf.tmp" && mv -f "$conf.tmp" "$conf"
+}
+
 # Restore a standard installed-system mkinitcpio preset. The UKI is left to
 # limine-mkinitcpio, which pins its hash in limine.conf; a UKI path here would
 # let a plain mkinitcpio -P replace that file without updating its pin.
@@ -714,6 +727,7 @@ if [[ -n "$CHOSEN_KERNEL" && " ${CHOSEN_KERNELS[*]} " != *" linux "* \
     [[ "$(pacman -Qq linux-headers 2>/dev/null)" == linux-headers ]] && _arch_kernel+=(linux-headers)
     if pacman -R --noconfirm "${_arch_kernel[@]}"; then
         info "Arch's kernel was not chosen and is removed."
+        _arch_kernel_removed=true
     else
         warn "Arch's kernel could not be removed, so it stays beside $CHOSEN_KERNEL."
     fi
@@ -886,6 +900,12 @@ if [[ -n "$_fresh_conf" && -s "$_fresh_conf" ]] \
         && warn "The boot menu kept on the EFI partition was set to start without showing. It now waits 5 seconds so Mainstream OS can be chosen."
 fi
 [[ -z "$_fresh_conf" ]] || rm -f "$_fresh_conf"
+# install-limine named its placeholder entry after Arch's kernel, and
+# limine-mkinitcpio only rewrites entries for kernels it builds.
+if [[ "${_arch_kernel_removed:-}" == true ]]; then
+    _limine_drop_entry linux "$BOOT_PATH/limine.conf" \
+        && info "Removed the boot menu's placeholder entry for Arch's kernel."
+fi
 
 # limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
 # cmdline). Two cleanups leave the menu as exactly that entry + Windows:
