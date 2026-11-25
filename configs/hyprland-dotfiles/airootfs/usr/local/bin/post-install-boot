@@ -64,8 +64,8 @@ systemctl mask systemd-networkd-persistent-storage.service || true
 # 4. MKINITCPIO PREP
 # GPU detection, module injection, modprobe config, and env vars are all
 # handled by the install-gpu-drivers shellprocess which runs before this.
-# Here we only: clean up the archiso preset and restore the standard
-# linux.preset before the final mkinitcpio -P call.
+# Here we only: clean up the archiso preset and restore the installed
+# system's preset before the final mkinitcpio -P call.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -667,16 +667,23 @@ if grep -qE '^FILES=.*crypto_keyfile\.bin' /etc/mkinitcpio.conf; then
 fi
 
 # Drops the //NAME sub-entry of the Mainstream OS entry, up to the next entry,
-# leaving any other system's entries on a shared EFI partition alone.
+# leaving any other system's entries on a shared EFI partition alone. Fails when
+# there is no such sub-entry.
 _limine_drop_entry() {
     local name="$1" conf="$2"
-    [[ -f "$conf" ]] || return 0
-    awk -v name="$name" '
+    [[ -f "$conf" ]] || return 1
+    if awk -v name="$name" '
         /^\/[^\/]/ { ours = ($0 ~ /^\/\+?Mainstream OS/) }
-        ours && $0 ~ "^[[:space:]]*//" name "[[:space:]]*$" { skip = 1; next }
+        ours && $0 ~ "^[[:space:]]*//" name "[[:space:]]*$" { skip = 1; dropped = 1; next }
         skip && /^[[:space:]]*\// { skip = 0 }
         !skip
-    ' "$conf" > "$conf.tmp" && mv -f "$conf.tmp" "$conf"
+        END { exit !dropped }
+    ' "$conf" > "$conf.tmp"; then
+        mv -f "$conf.tmp" "$conf"
+    else
+        rm -f "$conf.tmp"
+        return 1
+    fi
 }
 
 # Restore a standard installed-system mkinitcpio preset. The UKI is left to
@@ -685,32 +692,35 @@ _limine_drop_entry() {
 # shellcheck source=/dev/null
 source /usr/local/lib/mainstream-install-choices.sh
 read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
-# The chosen Mainstream kernel that starts by default: the first in order of
-# preference that is installed and has the NVIDIA driver another kernel has.
+# The chosen kernel that starts by default: the first in order of preference
+# that is installed and has the NVIDIA driver another kernel has. By exact name:
+# pacman -Qq also answers for a package that only provides it.
 CHOSEN_KERNEL=""
 for _k in "${CHOSEN_KERNELS[@]}"; do
-    [[ "$_k" == linux-mainstream* && "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] || continue
+    [[ "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] || continue
     gpu_kernel_nvidia_ready "$_k" || continue
     CHOSEN_KERNEL="$_k"
     break
 done
-# Only the chosen kernels stay. Arch's goes when it was not chosen, once a chosen
-# one is in place, and before the boot loader's hook below would give it an entry.
-# By exact name: pacman -Qq also answers for a package that only provides it.
-if [[ -n "$CHOSEN_KERNEL" && " ${CHOSEN_KERNELS[*]} " != *" linux "* \
-      && "$(pacman -Qq linux 2>/dev/null)" == linux ]]; then
-    _arch_kernel=(linux)
-    [[ "$(pacman -Qq linux-headers 2>/dev/null)" == linux-headers ]] && _arch_kernel+=(linux-headers)
-    if pacman -R --noconfirm "${_arch_kernel[@]}"; then
-        info "Arch's kernel was not chosen and is removed."
-        _arch_kernel_removed=true
-    else
-        warn "Arch's kernel could not be removed, so it stays beside $CHOSEN_KERNEL."
-    fi
+# Only the chosen kernels stay: once a chosen one is in place, every other one
+# goes, the image's own included, before the boot loader's hook below would give
+# it an entry. An edition's own kernel (linux-t2) is never in this list.
+if [[ -n "$CHOSEN_KERNEL" ]]; then
+    for _k in linux linux-mainstream linux-mainstream-performance; do
+        [[ " ${CHOSEN_KERNELS[*]} " == *" $_k "* ]] && continue
+        [[ "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] || continue
+        _kernel_pkgs=("$_k")
+        [[ "$(pacman -Qq "$_k-headers" 2>/dev/null)" == "$_k-headers" ]] && _kernel_pkgs+=("$_k-headers")
+        if pacman -R --noconfirm "${_kernel_pkgs[@]}"; then
+            info "$_k was not chosen and is removed."
+        else
+            warn "$_k could not be removed, so it stays beside $CHOSEN_KERNEL."
+        fi
+    done
 fi
 # Which kernel the system carries as its own. Editions differ: the MacBook one
-# ships linux-t2 in place of Arch's linux, and the preset below names the kernel
-# in three separate filenames.
+# ships linux-t2 in place of linux-mainstream, and the preset below names the
+# kernel in three separate filenames.
 KERNEL_PKG="$(installed_edition_kernel)"
 # No fallback preset on either firmware: UEFI boots the UKI, and on BIOS the
 # boot menu starts the images limine-mkinitcpio builds, which has its own
@@ -754,8 +764,10 @@ fi
 # stray "EFI fallback" entry gets added.
 write_limine_defaults "$BOOT_PATH"
 # The default Mainstream kernel picked above is listed first in this system's
-# block and so is the entry default_entry starts.
-MAINSTREAM_KERNEL="$CHOSEN_KERNEL"
+# block and so is the entry default_entry starts. Arch's kernel is picked first
+# only when no Mainstream kernel stays, so the order is left to the boot loader.
+MAINSTREAM_KERNEL=""
+[[ "$CHOSEN_KERNEL" == linux-mainstream* ]] && MAINSTREAM_KERNEL="$CHOSEN_KERNEL"
 MAINSTREAM_KERNEL_DEFAULT=false
 if [[ -n "$MAINSTREAM_KERNEL" ]]; then
     MAINSTREAM_KERNEL_DEFAULT=true
@@ -876,12 +888,13 @@ if [[ -n "$_fresh_conf" && -s "$_fresh_conf" ]] \
         && warn "The boot menu kept on the EFI partition was set to start without showing. It now waits 5 seconds so Mainstream OS can be chosen."
 fi
 [[ -z "$_fresh_conf" ]] || rm -f "$_fresh_conf"
-# install-limine named its placeholder entry after Arch's kernel, and
-# limine-mkinitcpio only rewrites entries for kernels it builds.
-if [[ "${_arch_kernel_removed:-}" == true ]]; then
-    _limine_drop_entry linux "$BOOT_PATH/limine.conf" \
-        && info "Removed the boot menu's placeholder entry for Arch's kernel."
-fi
+# install-limine named its placeholder entry after the image's kernel, which this
+# step or the GPU step can remove, and limine-mkinitcpio only rewrites installed ones.
+for _k in linux linux-mainstream linux-mainstream-performance; do
+    [[ "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] && continue
+    _limine_drop_entry "$_k" "$BOOT_PATH/limine.conf" \
+        && info "Removed the boot menu's placeholder entry for $_k."
+done
 
 # limine-mkinitcpio-hook owns the OS entry (machine-id tracked, real UKI hash +
 # cmdline). Two cleanups leave the menu as exactly that entry + Windows:
