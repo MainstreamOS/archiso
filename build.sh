@@ -1700,21 +1700,18 @@ build_local_pkg "mpv-mpris-mainstream"
 # (and drift from) those versions; the loop below skips anything it supplied.
 download_mainstream_repo_pkgs "$PKG_OUTPUT_DIR"
 
-# Arch's own packages for the 2012-2015 Macs whose Broadcom chip only the
-# out-of-tree wl driver serves. Those machines have no Wi-Fi until it is
-# built, so the install cannot fetch it: the files ride on the image and
-# post-install-boot installs them by PCI match. The headers come from the
-# build host's package database, while pacstrap syncs on its own, so the two
-# can name different kernels; the finished image is checked for that.
+# The wl driver for the 2012-2015 Broadcom Macs, which have no Wi-Fi to fetch it
+# with. Staged alone: dkms and the Mainstream kernel's headers are in the live
+# root and reach the target with it.
 download_arch_repo_pkgs() {
     local dir="$1"; shift
     info "Staging Arch repo packages for offline install: $*"
     rm -f "$dir"/broadcom-wl-dkms-[0-9]*.pkg.tar.zst* "$dir"/dkms-[0-9]*.pkg.tar.zst* \
         "$dir"/linux-headers-[0-9]*.pkg.tar.zst* "$dir"/pahole-[0-9]*.pkg.tar.zst* 2>/dev/null || true
-    pacman -Sw --noconfirm --cachedir "$dir" "$@" 2>&1 | grep -v "is up to date" \
+    pacman -Sw --noconfirm -dd --cachedir "$dir" "$@" 2>&1 | grep -v "is up to date" \
         || warn "Could not stage $*; Macs with a BCM4360 or BCM4331 will need a wired connection after install."
 }
-download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms dkms linux-headers pahole
+download_arch_repo_pkgs "$PKG_OUTPUT_DIR" broadcom-wl-dkms
 
 # The image builds its own NVIDIA module, so an offline set an earlier build
 # staged for Mainstream's kernel would only ride along.
@@ -2711,24 +2708,16 @@ die_rejecting_iso() {
     fi
     die "$@"
 }
-# The offline Broadcom driver set is only good for the kernel its headers
-# belong to. Staged for another one, the image's own prune hook drops the whole
-# set, and the Macs it is for get no Wi-Fi driver from an offline install.
-verify_staged_headers() {
-    local img f v staged="" why
-    img="$(image_pkg_version linux)"
-    # An edition built around another kernel does not install Arch's.
-    [[ -n "$img" ]] || return 0
-    for f in "$PKG_OUTPUT_DIR"/linux-headers-[0-9]*.pkg.tar.zst; do
-        [[ -f "$f" ]] || continue
-        v=$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}') || true
-        if [[ "$v" == "$img" ]]; then
-            success "Verified the staged linux-headers match the image's kernel $img."
-            return 0
-        fi
-        staged+="${staged:+, }${v:-unreadable}"
-    done
-    why="The image installed linux $img, but the linux-headers staged for the offline Broadcom Wi-Fi driver are ${staged:-missing}, so a 2012-2015 Mac gets no Wi-Fi driver from an offline install. Update the build host's package database (pacman -Syu), then build again with --refresh."
+# Without the staged wl driver a 2012-2015 Mac gets no Wi-Fi driver from an
+# offline install. The MacBook edition takes it from the repositories instead.
+verify_staged_wl() {
+    local why
+    [[ "${MACBOOK_PROFILE:-false}" == true ]] && return 0
+    if compgen -G "${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs/broadcom-wl-dkms-[0-9]*.pkg.tar.zst" >/dev/null; then
+        success "Verified the image carries the offline Broadcom wl driver."
+        return 0
+    fi
+    why="The image carries no broadcom-wl-dkms package, so a 2012-2015 Mac gets no Wi-Fi driver from an offline install. Look for the staging warning or the prune hook's message in the build log, then build again with --refresh."
     [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
     warn "$why"
 }
@@ -2885,7 +2874,7 @@ if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
 fi
 
 verify_plugin_stamps
-verify_staged_headers
+verify_staged_wl
 
 # The two ways this image gets booted rest on different structures, so both are
 # checked. Ventoy keeps the .iso as a file and chainloads a boot image out of

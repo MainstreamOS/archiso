@@ -1,8 +1,8 @@
 # remove from airootfs!
 # Calamares copies the live root onto the target, so a bundled package the live
 # root already has installed reaches every install without its file, and the
-# ISO would otherwise carry it twice. The wl driver set goes too on an image
-# whose kernel it was not built for.
+# ISO would otherwise carry it twice. The wl driver goes too on an image
+# without the Mainstream kernel's headers to build it against.
 
 [Trigger]
 Operation = Install
