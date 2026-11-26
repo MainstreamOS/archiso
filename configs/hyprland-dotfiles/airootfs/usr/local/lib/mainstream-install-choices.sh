@@ -55,10 +55,18 @@ install_choice_list() {
     printf '%s\n' "${out[*]}"
 }
 
+# machine_has_t2: an Apple T2 chip (106b:1801/1802), whose keyboard and trackpad
+# only Mainstream's kernels drive.
+machine_has_t2() {
+    if [[ -n "${MAINSTREAM_LSPCI_N:-}" ]]; then cat "$MAINSTREAM_LSPCI_N"; else lspci -n 2>/dev/null; fi \
+        | grep -qE ' 106b:180[12]( |$)'
+}
+
 # chosen_kernels: the kernels to install, the preferred boot default first.
 # Without the choices file that is Mainstream's, which the image carries. The
 # performance kernel turns into Mainstream's on a CPU that cannot start it,
 # since such a machine would not boot, and an empty choice means Mainstream's.
+# A T2 Mac keeps Mainstream's as its default even when only Arch's was chosen.
 chosen_kernels() {
     local k out=() seen=" "
     for k in $(install_choice_list KERNELS linux-mainstream \
@@ -69,6 +77,9 @@ chosen_kernels() {
         out+=("$k")
     done
     (( ${#out[@]} )) || out=(linux-mainstream)
+    if [[ " ${out[*]}" != *" linux-mainstream"* ]] && machine_has_t2; then
+        out=(linux-mainstream "${out[@]}")
+    fi
     printf '%s\n' "${out[*]}"
 }
 
@@ -78,10 +89,9 @@ chosen_protons() {
     install_choice_list PROTONS mainstream mainstream ge cachyos
 }
 
-# The installed system's own kernel, which names its preset: Arch's linux or the
-# MacBook edition's linux-t2 when it is installed, otherwise the newest
-# Mainstream kernel. pkgbase is what pacman recorded; uname would name the live
-# kernel.
+# The installed system's own kernel, which names its preset: Arch's linux when
+# it is installed, otherwise the newest Mainstream kernel. pkgbase is what pacman
+# recorded; uname would name the live kernel.
 installed_edition_kernel() {
     local d own="" mainstream=""
     for d in "${MAINSTREAM_MODULES_DIR:-/usr/lib/modules}"/*/; do

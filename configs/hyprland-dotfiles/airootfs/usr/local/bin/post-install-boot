@@ -569,18 +569,15 @@ if [[ -r "$MAC_LIB" ]]; then
         info "Detected Apple hardware, applying Mac quirks..."
         mac_report | while read -r line; do info "  $line"; done || true
         # Nothing has refreshed the sync databases yet: the only refresh in
-        # this script belongs to the Limine step further down. arch-mact2 in
-        # particular was written into pacman.conf minutes ago and has no
-        # database on disk at all, so `pacman -Sl arch-mact2` fails and the
-        # firmware install below is skipped on the one edition built to carry
-        # it. Refresh here, and only when a package step is actually coming.
+        # this script belongs to the Limine step further down. Refresh here, and
+        # only when a package step is actually coming.
         if mac_needs_wl_driver || mac_needs_apple_firmware || mac_has_t2; then
             pacman -Sy --noconfirm >/dev/null 2>&1 \
                 || warn "Pacman database refresh failed before the Mac package steps."
         fi
         # A machine that needs the wl driver has no Wi-Fi to fetch it, so the image
         # carries it to build against the Mainstream kernel's headers. The sync repos
-        # serve a wired install without them (linux-t2 on the MacBook edition).
+        # serve a wired install without them.
         if mac_needs_wl_driver; then
             wl_files=()
             if [[ "$(pacman -Qq linux-mainstream-headers 2>/dev/null)" == linux-mainstream-headers ]]; then
@@ -609,16 +606,6 @@ if [[ -r "$MAC_LIB" ]]; then
         # On a T2 Mac whose kernel drives it this also writes the T2 boot options,
         # before the boot image below is built from /etc/kernel/cmdline.
         mac_apply_autoconfig
-        # The MacBook edition carries the arch-mact2 repository, which packages
-        # the Wi-Fi and Bluetooth firmware this machine needs. A few megabytes
-        # from there beats 850 MB of recovery image from Apple, so it is tried
-        # first; the fetch below still runs and does nothing if the files
-        # arrived, and is the only route on every other edition.
-        if mac_needs_apple_firmware && pacman -Sl arch-mact2 >/dev/null 2>&1; then
-            info "Installing Apple Wi-Fi and Bluetooth firmware from arch-mact2..."
-            pacman -S --noconfirm --needed apple-bcm-firmware 2>&1 \
-                || note_failure "apple-bcm-firmware install failed; falling back to the fetch from Apple"
-        fi
         mac_fetch_firmware_now
         info "Mac configuration complete."
     fi
@@ -712,7 +699,7 @@ for _k in "${CHOSEN_KERNELS[@]}"; do
 done
 # Only the chosen kernels stay: once a chosen one is in place, every other one
 # goes, the image's own included, before the boot loader's hook below would give
-# it an entry. An edition's own kernel (linux-t2) is never in this list.
+# it an entry.
 if [[ -n "$CHOSEN_KERNEL" ]]; then
     for _k in linux linux-mainstream linux-mainstream-performance; do
         [[ " ${CHOSEN_KERNELS[*]} " == *" $_k "* ]] && continue
@@ -726,9 +713,8 @@ if [[ -n "$CHOSEN_KERNEL" ]]; then
         fi
     done
 fi
-# Which kernel the system carries as its own. Editions differ: the MacBook one
-# ships linux-t2 in place of linux-mainstream, and the preset below names the
-# kernel in three separate filenames.
+# Which kernel the system carries as its own; the preset below names it in
+# three separate filenames.
 KERNEL_PKG="$(installed_edition_kernel)"
 # No fallback preset on either firmware: UEFI boots the UKI, and on BIOS the
 # boot menu starts the images limine-mkinitcpio builds, which has its own

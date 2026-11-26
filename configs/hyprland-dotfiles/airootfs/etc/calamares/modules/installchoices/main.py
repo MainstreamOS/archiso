@@ -103,12 +103,6 @@ def boot_free_mib(root):
     return st.f_bavail * st.f_frsize // (1024 * 1024)
 
 
-def edition_kernel(root):
-    """The kernel the image installs; an edition with its own (linux-t2) takes no other."""
-    kernels = target_kernels(root)
-    return kernels[0] if kernels else "linux-mainstream"
-
-
 def run():
     gs = libcalamares.globalstorage
     method = gs.value("installmethod_choice")
@@ -132,19 +126,18 @@ def run():
     # Only the kernels the target lacks: the store does not list the image's own,
     # so fetch-online would download it again.
     wanted = []
-    if edition_kernel(root).startswith("linux-mainstream"):
-        present = target_kernels(root)
-        added = [k for k in kernels if k not in present]
-        free = boot_free_mib(root)
-        for k in added:
-            if not k.startswith("linux-mainstream"):
-                continue
-            # install-limine would leave it out, so the download would be wasted.
-            if free is not None and free < KERNEL_MIN_FREE_MIB * (added.index(k) + 1):
-                libcalamares.utils.debug("the boot partition has %d MiB free, too little for %s as well; "
-                                         "it is not downloaded" % (free, k))
-                continue
-            wanted.append(k)
+    present = target_kernels(root)
+    added = [k for k in kernels if k not in present]
+    free = boot_free_mib(root)
+    for k in added:
+        if not k.startswith("linux-mainstream"):
+            continue
+        # install-limine would leave it out, so the download would be wasted.
+        if free is not None and free < KERNEL_MIN_FREE_MIB * (added.index(k) + 1):
+            libcalamares.utils.debug("the boot partition has %d MiB free, too little for %s as well; "
+                                     "it is not downloaded" % (free, k))
+            continue
+        wanted.append(k)
     if wanted and os.access(FETCH_ONLINE, os.X_OK):
         args = [FETCH_ONLINE, root]
         for k in wanted:

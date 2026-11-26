@@ -27,7 +27,6 @@ mkroot() {
     done
 }
 mkroot "$TMP/root-mainstream" 7.3.6-1-mainstream:linux-mainstream
-mkroot "$TMP/root-t2" 6.18.1-1-t2:linux-t2
 mkroot "$TMP/root-empty"
 mkroot "$TMP/root-both" 7.3.6-1-mainstream:linux-mainstream 6.18.1-arch1-1:linux
 
@@ -61,8 +60,6 @@ cmd, args = sys.argv[2], sys.argv[3:]
 if cmd == "resolve":
     method, v3, items = args[0], args[1] == "1", set(args[2:])
     print(" ".join(m.resolve(method, items, v3)[1]))
-elif cmd == "edition":
-    print(m.edition_kernel(args[0]))
 elif cmd == "freemib":
     print(m.boot_free_mib(args[0]))
 elif cmd == "run":
@@ -93,10 +90,6 @@ chk resolve-custom-all "$(choices resolve custom 1 kernel:linux kernel:linux-mai
     "linux-mainstream-performance linux-mainstream linux"
 chk resolve-custom-none "$(choices resolve custom 1 apps:flatpak)" "linux-mainstream"
 
-chk edition-mainstream "$(choices edition "$TMP/root-mainstream")" "linux-mainstream"
-chk edition-t2 "$(choices edition "$TMP/root-t2")" "linux-t2"
-chk edition-empty "$(choices edition "$TMP/root-empty")" "linux-mainstream"
-
 : > "$TMP/fetch.log"
 chk run-default-kernels "$(choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "linux-mainstream"
 chk run-unknown-method "$(choices run bogus 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "linux-mainstream"
@@ -116,9 +109,9 @@ chk run-roomy-esp-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-per
 mkdir -p "$TMP/root-mainstream/boot"
 chk boot-free-mib-reads "$(choices freemib "$TMP/root-mainstream" | grep -cE '^[0-9]+$')" "1"
 : > "$TMP/fetch.log"
-chk run-t2-kernels "$(choices run custom 1 "$TMP/root-t2" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance)" \
+chk run-empty-target-kernels "$(choices run custom 1 "$TMP/root-empty" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance)" \
     "linux-mainstream-performance"
-chk run-t2-no-fetch "$(cat "$TMP/fetch.log")" ""
+chk run-empty-target-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
 
 # ---- 2. the shared choices library the install steps read
 # shellcheck source=/dev/null
@@ -126,6 +119,9 @@ source "$CHOICES_LIB"
 printf 'flags\t\t: fpu sse2 avx avx2 bmi1 bmi2 f16c fma movbe xsave abm\n' > "$TMP/cpuinfo-v3"
 printf 'flags\t\t: fpu sse2 avx\n' > "$TMP/cpuinfo-v2"
 MAINSTREAM_CPUINFO="$TMP/cpuinfo-v3"
+printf '00:02.0 0300: 8086:3e9b\n' > "$TMP/lspci-plain"
+printf '00:02.0 0300: 8086:3e9b\n02:00.1 0880: 106b:1801 (rev 01)\n' > "$TMP/lspci-t2"
+MAINSTREAM_LSPCI_N="$TMP/lspci-plain"
 MAINSTREAM_CHOICES_FILE="$TMP/missing/choices.conf"
 chk chosen-no-file "$(chosen_kernels)" "linux-mainstream"
 MAINSTREAM_CHOICES_FILE="$TMP/choices.conf"
@@ -137,10 +133,18 @@ printf 'KERNELS=linux-mainstream-performance linux-mainstream\n' > "$MAINSTREAM_
 chk chosen-perf-v3 "$(chosen_kernels)" "linux-mainstream-performance linux-mainstream"
 MAINSTREAM_CPUINFO="$TMP/cpuinfo-v2"
 chk chosen-perf-no-v3 "$(chosen_kernels)" "linux-mainstream"
+MAINSTREAM_CPUINFO="$TMP/cpuinfo-v3"
+# Arch's kernel has no T2 drivers, so a T2 Mac keeps Mainstream's as its default.
+printf 'KERNELS=linux\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-arch-only "$(chosen_kernels)" "linux"
+MAINSTREAM_LSPCI_N="$TMP/lspci-t2"
+chk chosen-t2-arch-only "$(chosen_kernels)" "linux-mainstream linux"
+printf 'KERNELS=linux-mainstream-performance linux\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-t2-perf-kept "$(chosen_kernels)" "linux-mainstream-performance linux"
+MAINSTREAM_LSPCI_N="$TMP/lspci-plain"
 
 chk edition-lib-none "$(MAINSTREAM_MODULES_DIR="$TMP/missing" installed_edition_kernel)" "linux-mainstream"
 chk edition-lib-mainstream "$(MAINSTREAM_MODULES_DIR="$TMP/root-mainstream/usr/lib/modules" installed_edition_kernel)" "linux-mainstream"
-chk edition-lib-t2 "$(MAINSTREAM_MODULES_DIR="$TMP/root-t2/usr/lib/modules" installed_edition_kernel)" "linux-t2"
 chk edition-lib-arch "$(MAINSTREAM_MODULES_DIR="$TMP/root-both/usr/lib/modules" installed_edition_kernel)" "linux"
 
 # Fake pacman for the steps below: INSTALLED and REPO are word lists, -Qq answers
@@ -183,10 +187,7 @@ chk limine-perf "${PAC[*]:-none}" "-S --needed --noconfirm linux-mainstream-perf
 FREE=300; PAC=()
 install_chosen_kernels
 chk limine-perf-no-room "${PAC[*]:-none}" "none"
-FREE=2048; KERNEL_PKG=linux-t2; CHOSEN_KERNELS=(linux-mainstream linux); PAC=()
-install_chosen_kernels
-chk limine-t2-alone "${PAC[*]:-none}" "none"
-KERNEL_PKG=linux-mainstream
+FREE=2048
 
 # ---- 4. post-install-boot keeps only the chosen kernels, and the boot menu only theirs
 eval "pick_kernels() {

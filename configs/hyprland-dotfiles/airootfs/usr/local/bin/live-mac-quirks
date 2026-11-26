@@ -22,7 +22,7 @@ mac_apply_session_quirks
 NOTICE=/run/mainstream-mac-notice
 if [ "$(mac_class)" = t2 ] && ! mac_has_t2_support; then
     printf '%s\n' \
-        "This Mac has Apple's T2 chip. Its built-in keyboard, trackpad and Wi-Fi need a driver this image does not carry, so they will not work here or after installing. Plug in a USB keyboard and mouse, and for the internet a USB Ethernet adapter, a phone sharing its connection over USB, or a USB Wi-Fi stick. The MacBook edition of Mainstream carries that driver, and everything else on the machine works either way." \
+        "This Mac has Apple's T2 chip. Its built-in keyboard, trackpad and Wi-Fi need a driver this image does not carry, so they will not work here or after installing. Plug in a USB keyboard and mouse, and for the internet a USB Ethernet adapter, a phone sharing its connection over USB, or a USB Wi-Fi stick. Everything else on the machine works." \
         > "$NOTICE" 2>/dev/null || true
 elif mac_needs_apple_firmware && ! mac_apple_firmware_present; then
     printf '%s\n' \

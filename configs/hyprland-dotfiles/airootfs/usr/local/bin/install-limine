@@ -39,9 +39,8 @@ if ! boot_layout_detect; then
 fi
 
 # --- 0. Kernel & Environment Setup ---
-# Which kernel this image carries. Editions differ: the MacBook one ships
-# linux-t2 in place of linux-mainstream, and every path below puts the kernel's name
-# in a filename, so the name is read rather than assumed. pkgbase is what pacman
+# Which kernel this image carries. Every path below puts the kernel's name in a
+# filename, so the name is read rather than assumed. pkgbase is what pacman
 # recorded for the package owning the modules, which is the only source that
 # tells the truth in here — uname reports the live ISO's kernel, not the
 # target's. Highest version wins if an image somehow carries two.
@@ -118,8 +117,6 @@ fi
 KERNEL_MIN_FREE_MIB=512
 install_chosen_kernels() {
     local k free added=0
-    # An edition with a kernel of its own (linux-t2) takes no other.
-    [[ "$KERNEL_PKG" == linux-mainstream* ]] || return 0
     for k in "${CHOSEN_KERNELS[@]}"; do
         # By exact name: pacman -Qq also answers for a package that only provides it.
         [[ "$(pacman -Qq "$k" 2>/dev/null)" == "$k" ]] && continue
