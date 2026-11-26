@@ -242,8 +242,8 @@ _OVERLAY_ARCHISO_CONF="airootfs/etc/mkinitcpio.conf.d/archiso.conf"
 
 # Everything an edition rewrites goes through here first, so restore_profile_
 # overlay can put the tree back whatever the build did afterwards. The name in
-# the backup carries the path with its separators flattened, because two of the
-# files an edition touches are both called pacman.conf.
+# the backup carries the path with its separators flattened, so two files of
+# the same name in different directories cannot collide.
 _overlay_stash() {
     local rel
     for rel in "$@"; do
@@ -260,18 +260,11 @@ _overlay_creates() {
 }
 
 # ── MacBook edition overlay ─────────────────────────────────────────────────
-# --macbook: the same profile built around the T2 kernel instead of
-# Mainstream's, so an Intel Mac has a working built-in keyboard and trackpad in
-# the installer itself. Nothing in mainline drives the T2's input transport,
-# and the trackpad additionally needs changes to two in-tree HID drivers, so a
-# module cannot stand in for the kernel here.
-#
-# The pieces come from arch-mact2, the community repository the rest of the T2
-# ecosystem builds on. It is unsigned, which is why this is a separate image:
-# the repository is added only to a machine that is a Mac, and never to the
-# standard edition. The kernel is added to both the build-time config, so
-# pacstrap can resolve it, and to the installed system's config, so a Mac can
-# take updates to it afterwards.
+# --macbook: the standard image with the T2 Mac's own pieces added, so an Intel
+# Mac has a working built-in keyboard and trackpad in the installer itself. The
+# kernel is Mainstream's, which carries the T2 drivers; this edition adds the
+# fan daemon and the audio profile for them from [mainstream], and the boot
+# options the T2 wants on every live entry.
 # Accepted as 1, true, yes or on, because the value gets typed on a command line
 # and a build that silently ignored it would be tested for the wrong thing.
 if [[ "${MACBOOK_TEST_FIRMWARE:-}" =~ ^([1]|[Tt]rue|[Yy]es|[Oo]n)$ ]]; then
@@ -280,33 +273,24 @@ else
     MACBOOK_TEST_FIRMWARE=false
 fi
 
-_MACBOOK_REPO_BLOCK='
+MACBOOK_PKGS=(apple-t2-audio-config t2fanrd)
+# Only for MACBOOK_TEST_FIRMWARE: the community repository that packages Apple's
+# firmware, read by pacstrap while the image is built and never by an install.
+_MACBOOK_TEST_FIRMWARE_REPO='
 [arch-mact2]
 SigLevel = Never
 Server = https://mirror.funami.tech/arch-mact2/os/x86_64
 '
 apply_macbook_overlay() {
-    _overlay_stash packages.x86_64 profiledef.sh pacman.conf \
-        airootfs/etc/pacman.conf airootfs/etc/mkinitcpio.d/linux-mainstream.preset
+    _overlay_stash packages.x86_64 profiledef.sh
 
-    # The T2 kernel replaces Mainstream's rather than joining it: two kernels
-    # would pay for the second one three times over in the image, on every
-    # download, for a machine that only ever boots one of them. linux-firmware
-    # is left alone by the anchors. Its headers and the DKMS NVIDIA driver go
-    # too: no Intel Mac has an NVIDIA GPU newer than Kepler, and the driver
-    # covers Turing and newer. The userspace stays.
-    sed -i -e 's/^linux-mainstream$/linux-t2/' \
-           -e '/^linux-mainstream-headers$/d' \
-           -e '/^nvidia-open-dkms$/d' \
-           "${PROFILE_DIR}/packages.x86_64"
+    printf '%s\n' "${MACBOOK_PKGS[@]}" >> "${PROFILE_DIR}/packages.x86_64"
     # apple-bcm-firmware is deliberately NOT here. Putting it in the image
-    # would mean shipping Apple's firmware ourselves; post-install-boot pulls
-    # it from the repository during the install instead, where the licence
-    # question belongs to whoever packaged it rather than to us. The cost is
-    # that a T2 Mac has no Wi-Fi until it is installed, so the install needs a
-    # wire or a tethered phone, which is where Omarchy sits too.
-    printf '%s\n' apple-t2-audio-config t2fanrd \
-        >> "${PROFILE_DIR}/packages.x86_64"
+    # would mean shipping Apple's firmware ourselves; the install reads it from
+    # macOS on the disk or fetches Apple's recovery image instead. The cost is
+    # that a T2 Mac without macOS on it has no Wi-Fi until it is installed, so
+    # the install needs a wire or a tethered phone, which is where Omarchy sits
+    # too.
 
     # The exception, for testing only, and deliberately not in --help: a
     # published recipe for building an image full of firmware we may not pass on
@@ -319,6 +303,8 @@ apply_macbook_overlay() {
     # release name, and the build refuses to sign it.
     local _iso_name="mainstreamos-desktop-linux-macbook"
     if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
+        _overlay_stash pacman.conf
+        printf '%s' "$_MACBOOK_TEST_FIRMWARE_REPO" >> "${PROFILE_DIR}/pacman.conf"
         printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
         _iso_name="${_iso_name}-testfw"
         warn "MACBOOK_TEST_FIRMWARE is set: Apple's Wi-Fi and Bluetooth firmware is being baked into this image."
@@ -326,51 +312,15 @@ apply_macbook_overlay() {
         warn "  The ISO is named ...-macbook-testfw so it cannot be mistaken for a release."
     fi
 
-    # Both configs: the first is what pacstrap reads while the image is built,
-    # the second is what the installed system reads forever after.
-    printf '%s' "$_MACBOOK_REPO_BLOCK" >> "${PROFILE_DIR}/pacman.conf"
-    printf '%s' "$_MACBOOK_REPO_BLOCK" >> "${PROFILE_DIR}/airootfs/etc/pacman.conf"
-
-    # mkinitcpio builds from whatever presets it finds, so the stock one has to
-    # go with the stock kernel or the image build fails on a kernel that is not
-    # installed.
-    rm -f "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux-mainstream.preset"
-    _overlay_creates airootfs/etc/mkinitcpio.d/linux-t2.preset
-    cat > "${PROFILE_DIR}/airootfs/etc/mkinitcpio.d/linux-t2.preset" <<'PRESET'
-# mkinitcpio preset file for the 'linux-t2' package on archiso
-
-PRESETS=('archiso')
-
-ALL_kver='/boot/vmlinuz-linux-t2'
-archiso_config='/etc/mkinitcpio.conf.d/archiso.conf'
-
-archiso_image="/boot/initramfs-linux-t2.img"
-PRESET
-
-    # Every bootloader entry names the kernel by filename, and mkarchiso copies
-    # whatever the installed kernel is called. Swapping the package without
-    # these leaves every entry pointing at a vmlinuz that is not on the image,
-    # so nothing boots at all.
-    local entry
-    for entry in "${PROFILE_DIR}"/efiboot/loader/entries/*.conf \
-                 "${PROFILE_DIR}"/syslinux/archiso_sys-linux.cfg \
-                 "${PROFILE_DIR}"/syslinux/archiso_pxe-linux.cfg; do
-        [[ -f "$entry" ]] || continue
-        _overlay_stash "${entry#"${PROFILE_DIR}"/}"
-        # Matched so a second pass over an already rewritten file is a no-op,
-        # in case a failed restore ever leaves one behind.
-        sed -i -e 's/vmlinuz-linux-mainstream/vmlinuz-linux-t2/g' \
-               -e 's/initramfs-linux-mainstream\.img/initramfs-linux-t2.img/g' "$entry"
-    done
-
     # The boot options t2linux asks for on every entry, IOMMU passthrough and
     # in-order suspend and resume for the T2's devices, with the T2's Bluetooth
-    # driver held back as their live ISO does. Every live entry reads them from
-    # this one setting, so a profile without it has to stop the build rather
-    # than quietly boot a Mac without them.
+    # driver held back as their live ISO does, and the T2 bridge's keyboard and
+    # camera drivers loaded, since nothing loads them on its own. Every live entry
+    # reads them from this one setting, so a profile without it has to stop the
+    # build rather than quietly boot a Mac without them.
     grep -q '^kernel_params_x86_64="' "${PROFILE_DIR}/profiledef.sh" \
         || die "profiledef.sh has no kernel_params_x86_64 for the T2 boot options"
-    sed -i -e 's/^kernel_params_x86_64="\(.*\)"$/kernel_params_x86_64="\1 intel_iommu=on iommu=pt pm_async=off modprobe.blacklist=hci_bcm4377"/' \
+    sed -i -e 's/^kernel_params_x86_64="\(.*\)"$/kernel_params_x86_64="\1 intel_iommu=on iommu=pt pm_async=off modprobe.blacklist=hci_bcm4377 modules_load=t2bce_vhci,t2bce_ave"/' \
         "${PROFILE_DIR}/profiledef.sh"
 
     # The volume label is left at MAINSTREAM_MB_ either way: mkarchiso stamps it
@@ -379,7 +329,7 @@ PRESET
     sed -i -e "s/^iso_name=.*/iso_name=\"${_iso_name}\"/" \
            -e 's/^iso_label="MAINSTREAM_\(MB_\)\?/iso_label="MAINSTREAM_MB_/' \
            "${PROFILE_DIR}/profiledef.sh"
-    info "MacBook overlay applied: linux-t2 kernel, arch-mact2 repository; iso_name → ${_iso_name}."
+    info "MacBook overlay applied: ${MACBOOK_PKGS[*]} and the T2 boot options; iso_name → ${_iso_name}."
 }
 
 apply_profile_overlay() {
@@ -501,6 +451,8 @@ mainstream_unneeded_pkgs() {
     rm -rf "$dir"
 
     seeds=("${METAPKGS[@]}" "${AUR_DEPS[@]%%::*}" "${LOCAL_BUILT_PKGS[@]}" "${WELCOME_PKGS[@]}" "${HARDWARE_PKGS[@]}" "${INSTALL_STEP_PKGS[@]}")
+    # The MacBook edition's own packages join its list only after this runs.
+    [[ "${MACBOOK_PROFILE:-false}" == true ]] && seeds+=("${MACBOOK_PKGS[@]}")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' \
         "$PROFILE_DIR/packages.x86_64")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -nE \
@@ -521,13 +473,6 @@ mainstream_unneeded_pkgs() {
         [[ -n "${by_provide[$f]:-}" ]] && queue+=("${by_provide[$f]}")
     done
     for n in "${ONLINE_ONLY_PKGS[@]}"; do online_only[$n]=1; done
-    # The MacBook edition boots linux-t2, and its package list is swapped in only
-    # after this runs, so the list read above still names Mainstream's kernel.
-    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
-        for n in "${!base[@]}"; do
-            [[ "$n" == linux-mainstream* ]] && online_only[$n]=1
-        done
-    fi
     while (( ${#queue[@]} )); do
         n=${queue[0]}
         queue=("${queue[@]:1}")
@@ -868,10 +813,10 @@ RELEASE_VERSION=""
 # Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
 # (NVIDIA_DEPS). Standard ISO omits them to stay slim.
 NVIDIA_PROFILE=false
-# MacBook edition (--macbook): the same profile built around the T2 kernel and
-# the Apple firmware, so an Intel Mac has a keyboard, a trackpad and Wi-Fi. Kept
-# to its own image because those pieces come from a third-party repository and
-# have no business on a machine that is not a Mac.
+# MacBook edition (--macbook): the standard image with the T2 Mac's fan daemon,
+# audio profile and boot options, so an Intel Mac has a keyboard, a trackpad
+# and sound in the installer. Kept to its own image while the T2 support is
+# tested.
 MACBOOK_PROFILE=false
 # Backup dir for the --nvidia profile overlay (set/cleared by apply/restore).
 _OVERLAY_BAK_DIR=""
@@ -947,12 +892,12 @@ Edition options:
   --nvidia        Build the legacy-NVIDIA edition: also includes the legacy
                   NVIDIA prebuilts for full accelerated support on pre-Turing
                   cards. Omit for the standard (slim) ISO.
-  --macbook       Build the MacBook edition: the T2 kernel and the arch-mact2
-                  repository, so an Intel Mac has a keyboard and a trackpad.
-                  Wi-Fi firmware is fetched during the install, not shipped, so
-                  the install itself needs a wire or a tethered phone.
-                  Experimental, and a separate image so none of it reaches a
-                  machine that is not a Mac.
+  --macbook       Build the MacBook edition: the standard image with the T2
+                  fan daemon, audio profile and boot options, so a T2 Mac has
+                  a keyboard and a trackpad. Wi-Fi firmware is read from macOS
+                  on the disk or fetched during the install, not shipped, so a
+                  Mac without macOS needs a wire or a tethered phone to install.
+                  Experimental, and a separate image while it is tested.
 
 Environment:
   DOTFILES_REPO   Where the dotfiles come from (default: the GitHub remote).
@@ -2731,31 +2676,39 @@ verify_image_kernel() {
         [[ -z "$v" ]] \
             || die_rejecting_iso "The image installed Arch's $p $v, for a kernel it does not boot. A package in its list depends on $p by name."
     done
+    want=linux-mainstream
+    [[ -n "$(image_pkg_version linux-mainstream)" ]] \
+        || die_rejecting_iso "The image did not install linux-mainstream, the kernel it boots."
+    for d in "$air"/usr/lib/modules/*/; do
+        [[ -r "${d}pkgbase" && "$(<"${d}pkgbase")" == linux-mainstream ]] && rel="${d%/}"
+    done
+    if [[ -z "$rel" ]] || ! find "$rel/updates/dkms" -name 'nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
+        die_rejecting_iso "The image carries no nvidia kernel module for linux-mainstream: the DKMS build produced nothing, so NVIDIA cards would start the live session on software rendering."
+    fi
+    success "Verified the image carries a built nvidia kernel module for linux-mainstream."
+    # Packages that depend on linux-headers by name would otherwise pull in
+    # Arch's headers for a kernel the system does not have.
+    if ! awk '/^%PROVIDES%$/ { p = 1; next } /^$/ { p = 0 }
+              p && /^linux-headers([<>=]|$)/ { found = 1 } END { exit !found }' \
+            "$air"/var/lib/pacman/local/linux-mainstream-headers-[0-9]*/desc 2>/dev/null; then
+        why="The image's linux-mainstream-headers does not provide linux-headers, so a package that depends on linux-headers installs Arch's headers for a kernel the system does not have. Build again once [mainstream] publishes headers that provide it."
+        [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
+        warn "$why"
+    fi
     if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
-        want=linux-t2
-        [[ -n "$(image_pkg_version linux-t2)" ]] \
-            || die_rejecting_iso "The MacBook edition did not install linux-t2."
-        [[ -z "$(image_pkg_version linux-mainstream)" ]] \
-            || die_rejecting_iso "The MacBook edition installed linux-mainstream beside linux-t2."
-    else
-        want=linux-mainstream
-        [[ -n "$(image_pkg_version linux-mainstream)" ]] \
-            || die_rejecting_iso "The image did not install linux-mainstream, the kernel it boots."
-        for d in "$air"/usr/lib/modules/*/; do
-            [[ -r "${d}pkgbase" && "$(<"${d}pkgbase")" == linux-mainstream ]] && rel="${d%/}"
+        for p in "${MACBOOK_PKGS[@]}"; do
+            [[ -n "$(image_pkg_version "$p")" ]] \
+                || die_rejecting_iso "The MacBook edition did not install $p."
         done
-        if [[ -z "$rel" ]] || ! find "$rel/updates/dkms" -name 'nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
-            die_rejecting_iso "The image carries no nvidia kernel module for linux-mainstream: the DKMS build produced nothing, so NVIDIA cards would start the live session on software rendering."
-        fi
-        success "Verified the image carries a built nvidia kernel module for linux-mainstream."
-        # Packages that depend on linux-headers by name would otherwise pull in
-        # Arch's headers for a kernel the system does not have.
-        if ! awk '/^%PROVIDES%$/ { p = 1; next } /^$/ { p = 0 }
-                  p && /^linux-headers([<>=]|$)/ { found = 1 } END { exit !found }' \
-                "$air"/var/lib/pacman/local/linux-mainstream-headers-[0-9]*/desc 2>/dev/null; then
-            why="The image's linux-mainstream-headers does not provide linux-headers, so a package that depends on linux-headers installs Arch's headers for a kernel the system does not have. Build again once [mainstream] publishes headers that provide it."
+        # The edition exists for the T2 drivers, and its kernel is the same
+        # package as everyone else's, so a build before [mainstream] carries a
+        # kernel with them would make a MacBook image that cannot drive a T2.
+        if ! grep -qs -e '/t2bce_core\.ko' "$rel/modules.dep" "$rel/modules.builtin"; then
+            why="The image's linux-mainstream has no T2 drivers (t2bce_core), so the MacBook edition would start a T2 Mac without its keyboard, trackpad or audio."
             [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
             warn "$why"
+        else
+            success "Verified the MacBook edition's kernel carries the T2 drivers."
         fi
     fi
     for f in "$bootdir"/*; do
@@ -2771,10 +2724,9 @@ verify_image_kernel() {
     success "Verified the image boots $want and installs no Arch kernel."
 }
 # Without the staged wl driver a 2012-2015 Mac gets no Wi-Fi driver from an
-# offline install. The MacBook edition takes it from the repositories instead.
+# offline install.
 verify_staged_wl() {
     local why
-    [[ "${MACBOOK_PROFILE:-false}" == true ]] && return 0
     if compgen -G "${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs/broadcom-wl-dkms-[0-9]*.pkg.tar.zst" >/dev/null; then
         success "Verified the image carries the offline Broadcom wl driver."
         return 0
@@ -2789,7 +2741,6 @@ verify_staged_wl() {
 verify_store_kernels() {
     local store="${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs" pat f extra=() why
     pat='linux-mainstream-performance'
-    [[ "${MACBOOK_PROFILE:-false}" == true ]] && pat='linux-mainstream'
     for f in "$store/$pat"*.pkg.tar.zst; do
         [[ -f "$f" ]] && extra+=("${f##*/}")
     done
@@ -2821,8 +2772,7 @@ info "════════════════════════�
 # install the image's own packages from.
 compgen -G "$PKG_OUTPUT_DIR/*.pkg.tar.zst" > /dev/null \
     || die "The bundled repo at $PKG_OUTPUT_DIR holds no packages. Run the build with --refresh to fill it."
-# A MacBook package phase leaves out the kernel the other editions boot.
-if [[ "$MACBOOK_PROFILE" != true ]] && ! repo_has_pkg "$PKG_OUTPUT_DIR" linux-mainstream; then
+if ! repo_has_pkg "$PKG_OUTPUT_DIR" linux-mainstream; then
     die "The bundled repo at $PKG_OUTPUT_DIR has no linux-mainstream, the kernel this image boots. Run the build with --refresh to download it."
 fi
 

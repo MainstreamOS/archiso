@@ -11,7 +11,7 @@ FAILS=0; N=0
 chk() { N=$((N+1)); [[ "$2" == "$3" ]] || { echo "  FAIL [$1] got '$2' want '$3'"; FAILS=$((FAILS+1)); }; }
 
 # lift the pieces out of build.sh, without running the build
-eval "$(grep -E '^(WELCOME_PKGS|HARDWARE_PKGS|INSTALL_STEP_PKGS|ONLINE_ONLY_PKGS)=\(' "$BUILD")"
+eval "$(grep -E '^(WELCOME_PKGS|HARDWARE_PKGS|INSTALL_STEP_PKGS|ONLINE_ONLY_PKGS|MACBOOK_PKGS)=\(' "$BUILD")"
 for f in mainstream_unneeded_pkgs image_pkg_version verify_image_kernel verify_store_kernels; do
     eval "$(awk "/^$f\\(\\) \\{/,/^\\}/" "$BUILD")"
 done
@@ -36,6 +36,8 @@ mkpkg mainstream-tas2783-dkms 1.0-1 mainstream-tas2783-dkms "dkms linux-headers"
 mkpkg proton-mainstream 10.0-1 proton-mainstream
 mkpkg zen-browser-bin 1.0-1 zen-browser-bin
 mkpkg unseeded-thing 1.0-1 unseeded-thing
+mkpkg t2fanrd r21.01df44d-1 t2fanrd
+mkpkg apple-t2-audio-config 0.4.r21.ga973d53-1 apple-t2-audio-config "alsa-ucm-conf"
 tar czf "$TMP/mainstream.db.tar.gz" -C "$TMP/db" .
 METAPKGS=(); AUR_DEPS=(); LOCAL_BUILT_PKGS=()
 PROFILE_DIR="$ARCHISO_ROOT/configs/hyprland-dotfiles"
@@ -44,10 +46,11 @@ unneeded() { mainstream_unneeded_pkgs "$TMP/mainstream.db.tar.gz" | cut -d' ' -f
 
 MACBOOK_PROFILE=false
 chk store-standard "$(unneeded)" \
-    "linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin "
+    "apple-t2-audio-config linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin "
+# The MacBook edition keeps Mainstream's kernel like the standard one, and its T2 packages too.
 MACBOOK_PROFILE=true
 chk store-macbook "$(unneeded)" \
-    "linux-mainstream linux-mainstream-headers linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin "
+    "linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin "
 
 # ---- 2. the finished image boots only its own kernel and leaves DKMS's key behind
 WORK_DIR="$TMP/work"; RELEASE_VERSION=""
@@ -89,12 +92,37 @@ chk image-no-nvidia "$(verdict verify_image_kernel)" "rejected"
 standard_image; : > "$BOOTDIR/vmlinuz-linux-mainstream-performance"
 chk image-extra-boot-kernel "$(verdict verify_image_kernel)" "rejected"
 
-MACBOOK_PROFILE=true
-rm -rf "$WORK_DIR"; installed linux-t2 6.18.1-1
-mkdir -p "$BOOTDIR"; : > "$BOOTDIR/vmlinuz-linux-t2"; : > "$BOOTDIR/initramfs-linux-t2.img"
+# The MacBook edition boots linux-mainstream like the standard one, with the T2
+# packages installed and the T2 drivers in its kernel.
+macbook_image() {
+    standard_image
+    installed t2fanrd r21.01df44d-1
+    installed apple-t2-audio-config 0.4.r21.ga973d53-1
+    echo 'kernel/drivers/staging/t2bce/t2bce_core.ko.zst:' > "$AIR/usr/lib/modules/7.3.6-1-mainstream/modules.dep"
+}
+image_says() { ( verify_image_kernel ) 2>&1 | grep -oE '^(REJECTED|warn)' | head -1; }
+MACBOOK_PROFILE=true; RELEASE_VERSION=""
+macbook_image
 chk image-macbook "$(verdict verify_image_kernel)" "passed"
-installed linux-mainstream 7.3.6-1
-chk image-macbook-mainstream "$(verdict verify_image_kernel)" "rejected"
+chk image-macbook-t2-verified "$( (verify_image_kernel) 2>&1 | grep -c 'carries the T2 drivers')" "1"
+macbook_image; rm -rf "$AIR/var/lib/pacman/local/t2fanrd-"*
+chk image-macbook-no-fanrd "$(verdict verify_image_kernel)" "rejected"
+macbook_image; rm -rf "$AIR/var/lib/pacman/local/apple-t2-audio-config-"*
+chk image-macbook-no-audio "$(verdict verify_image_kernel)" "rejected"
+macbook_image; installed linux-t2 7.3.5-1; : > "$BOOTDIR/vmlinuz-linux-t2"
+chk image-macbook-t2-kernel "$(verdict verify_image_kernel)" "rejected"
+macbook_image; rm -rf "$AIR/usr/lib/modules/7.3.6-1-mainstream/updates/dkms/nvidia.ko.zst"
+chk image-macbook-no-nvidia "$(verdict verify_image_kernel)" "rejected"
+# A kernel without the T2 drivers is a warning on a test build and refused on a release.
+macbook_image; : > "$AIR/usr/lib/modules/7.3.6-1-mainstream/modules.dep"
+chk image-macbook-no-t2bce "$(image_says)" "warn"
+RELEASE_VERSION=4.2.0
+chk image-macbook-no-t2bce-release "$(image_says)" "REJECTED"
+RELEASE_VERSION=""
+# The standard edition does not ask for the T2 pieces.
+MACBOOK_PROFILE=false
+standard_image
+chk image-standard-no-t2-asked "$(verdict verify_image_kernel)" "passed"
 
 # ---- 3. the store holds no kernel the image does not boot; refused on a release
 STORE="$AIR/usr/local/share/pkgs"
@@ -107,11 +135,53 @@ store_with linux-mainstream-performance-headers
 chk store-standard-perf "$(store_verdict)" "warn"
 RELEASE_VERSION=4.2.0
 chk store-standard-perf-release "$(store_verdict)" "REJECTED"
-MACBOOK_PROFILE=true
-store_with linux-mainstream-headers
-chk store-macbook-mainstream "$(store_verdict)" "REJECTED"
-store_with proton-mainstream
-chk store-macbook-clean "$(store_verdict)" "ok"
+MACBOOK_PROFILE=true; RELEASE_VERSION=""
+store_with linux-mainstream-headers t2fanrd
+chk store-macbook-own "$(store_verdict)" "ok"
+store_with linux-mainstream-performance-headers
+chk store-macbook-perf "$(store_verdict)" "warn"
+
+# ---- 4. the MacBook overlay adds the T2 pieces to the standard profile and puts it back
+eval "$(awk "/^_MACBOOK_TEST_FIRMWARE_REPO='\$/,/^'\$/" "$BUILD")"
+for f in _overlay_stash _overlay_creates apply_macbook_overlay apply_profile_overlay restore_profile_overlay; do
+    eval "$(awk "/^$f\\(\\) \\{/,/^\\}/" "$BUILD")"
+done
+info() { :; }; die() { echo "DIED: $*"; exit 1; }
+SRC="$ARCHISO_ROOT/configs/hyprland-dotfiles"
+PROFILE_DIR="$TMP/profile"
+fresh_profile() {
+    rm -rf "$PROFILE_DIR" "$TMP/overlay-bak"
+    mkdir -p "$PROFILE_DIR/airootfs/etc"
+    cp "$SRC/packages.x86_64" "$SRC/profiledef.sh" "$SRC/pacman.conf" "$PROFILE_DIR/"
+    cp "$SRC/airootfs/etc/pacman.conf" "$PROFILE_DIR/airootfs/etc/"
+    _OVERLAY_BAK_PATH="$TMP/overlay-bak"; _OVERLAY_BAK_DIR=""
+}
+listed() { grep -qx "$1" "$PROFILE_DIR/packages.x86_64" && echo yes || echo no; }
+unchanged() { cmp -s "$SRC/$1" "$PROFILE_DIR/$1" && echo yes || echo no; }
+NVIDIA_PROFILE=false; MACBOOK_PROFILE=true; MACBOOK_TEST_FIRMWARE=false
+fresh_profile
+apply_profile_overlay >/dev/null
+chk overlay-keeps-kernel "$(listed linux-mainstream) $(listed linux-mainstream-headers) $(listed nvidia-open-dkms)" "yes yes yes"
+chk overlay-adds-t2 "$(listed t2fanrd) $(listed apple-t2-audio-config)" "yes yes"
+chk overlay-no-t2-kernel "$(grep -c 'linux-t2' "$PROFILE_DIR/packages.x86_64")" "0"
+chk overlay-no-apple-firmware "$(listed apple-bcm-firmware)" "no"
+chk overlay-pacman-confs "$(unchanged pacman.conf) $(unchanged airootfs/etc/pacman.conf)" "yes yes"
+chk overlay-t2-params "$(grep -c '^kernel_params_x86_64=".* intel_iommu=on iommu=pt pm_async=off modprobe.blacklist=hci_bcm4377 modules_load=t2bce_vhci,t2bce_ave"$' "$PROFILE_DIR/profiledef.sh")" "1"
+chk overlay-name "$(grep -c '^iso_name="mainstreamos-desktop-linux-macbook"$' "$PROFILE_DIR/profiledef.sh")" "1"
+restore_profile_overlay
+chk overlay-restored "$(unchanged packages.x86_64) $(unchanged profiledef.sh) $(unchanged pacman.conf) $(unchanged airootfs/etc/pacman.conf)" "yes yes yes yes"
+# The test-firmware build reads Apple's firmware from arch-mact2 while it is built,
+# and the installed system's pacman.conf still never names that repository.
+MACBOOK_TEST_FIRMWARE=true
+fresh_profile
+apply_profile_overlay >/dev/null 2>&1
+chk testfw-build-repo "$(grep -c '^\[arch-mact2\]$' "$PROFILE_DIR/pacman.conf")" "1"
+chk testfw-installed-conf "$(unchanged airootfs/etc/pacman.conf)" "yes"
+chk testfw-firmware "$(listed apple-bcm-firmware)" "yes"
+chk testfw-name "$(grep -c '^iso_name="mainstreamos-desktop-linux-macbook-testfw"$' "$PROFILE_DIR/profiledef.sh")" "1"
+restore_profile_overlay
+chk testfw-restored "$(unchanged packages.x86_64) $(unchanged profiledef.sh) $(unchanged pacman.conf)" "yes yes yes"
+MACBOOK_TEST_FIRMWARE=false
 
 [[ $FAILS -eq 0 ]] && echo "build-kernels: all $N assertions PASS" || echo "build-kernels: $FAILS of $N FAILED"
 exit $FAILS
