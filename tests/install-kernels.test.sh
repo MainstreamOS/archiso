@@ -63,10 +63,14 @@ if cmd == "resolve":
     print(" ".join(m.resolve(method, items, v3)[1]))
 elif cmd == "edition":
     print(m.edition_kernel(args[0]))
+elif cmd == "freemib":
+    print(m.boot_free_mib(args[0]))
 elif cmd == "run":
     method, v3, root, fetch, items = args[0], args[1] == "1", args[2], args[3], args[4:]
     m.cpu_runs_x86_64_v3 = lambda: v3
     m.FETCH_ONLINE = fetch
+    if os.environ.get("BOOT_FREE_MIB"):
+        m.boot_free_mib = lambda root: int(os.environ["BOOT_FREE_MIB"])
     lc.globalstorage = GlobalStorage({
         "installmethod_choice": method,
         "rootMountPoint": root,
@@ -77,7 +81,7 @@ elif cmd == "run":
     with open(os.path.join(root, m.CHOICES_FILE.lstrip("/"))) as f:
         print([l.split("=", 1)[1].strip() for l in f if l.startswith("KERNELS=")][0])
 PY
-choices() { python3 -I "$TMP/drive.py" "$CHOICES_PY" "$@"; }
+choices() { python3 -I -B "$TMP/drive.py" "$CHOICES_PY" "$@"; }
 
 for method in default console os-only developer gaming; do
     chk "resolve-$method" "$(choices resolve "$method" 1 kernel:linux kernel:linux-mainstream-performance)" "linux-mainstream"
@@ -103,6 +107,14 @@ chk run-custom-kernels "$(choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/
     kernel:linux kernel:linux-mainstream kernel:linux-mainstream-performance)" \
     "linux-mainstream-performance linux-mainstream linux"
 chk run-custom-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+# install-limine leaves out a kernel the boot partition has no room for, so it is not fetched.
+: > "$TMP/fetch.log"
+BOOT_FREE_MIB=300 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
+chk run-small-esp-no-fetch "$(cat "$TMP/fetch.log")" ""
+BOOT_FREE_MIB=600 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
+chk run-roomy-esp-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+mkdir -p "$TMP/root-mainstream/boot"
+chk boot-free-mib-reads "$(choices freemib "$TMP/root-mainstream" | grep -cE '^[0-9]+$')" "1"
 : > "$TMP/fetch.log"
 chk run-t2-kernels "$(choices run custom 1 "$TMP/root-t2" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance)" \
     "linux-mainstream-performance"

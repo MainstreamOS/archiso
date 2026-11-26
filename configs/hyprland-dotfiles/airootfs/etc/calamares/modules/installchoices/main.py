@@ -14,6 +14,8 @@ CPUINFO = "/proc/cpuinfo"
 KERNELS = ("linux-mainstream-performance", "linux-mainstream", "linux")
 PROTONS = ("mainstream", "ge", "cachyos")
 METHODS = ("default", "custom", "console", "os-only", "developer", "gaming")
+# install-limine's room on the boot partition for each kernel it adds.
+KERNEL_MIN_FREE_MIB = 512
 
 
 def pretty_name():
@@ -89,6 +91,18 @@ def target_kernels(root):
     return names
 
 
+def boot_free_mib(root):
+    """Free MiB where install-limine puts the boot images: the EFI partition on UEFI."""
+    path = os.path.join(root, "boot/efi")
+    if not os.path.ismount(path):
+        path = os.path.join(root, "boot")
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize // (1024 * 1024)
+
+
 def edition_kernel(root):
     """The kernel the image installs; an edition with its own (linux-t2) takes no other."""
     kernels = target_kernels(root)
@@ -120,7 +134,17 @@ def run():
     wanted = []
     if edition_kernel(root).startswith("linux-mainstream"):
         present = target_kernels(root)
-        wanted = [k for k in kernels if k.startswith("linux-mainstream") and k not in present]
+        added = [k for k in kernels if k not in present]
+        free = boot_free_mib(root)
+        for k in added:
+            if not k.startswith("linux-mainstream"):
+                continue
+            # install-limine would leave it out, so the download would be wasted.
+            if free is not None and free < KERNEL_MIN_FREE_MIB * (added.index(k) + 1):
+                libcalamares.utils.debug("the boot partition has %d MiB free, too little for %s as well; "
+                                         "it is not downloaded" % (free, k))
+                continue
+            wanted.append(k)
     if wanted and os.access(FETCH_ONLINE, os.X_OK):
         args = [FETCH_ONLINE, root]
         for k in wanted:
