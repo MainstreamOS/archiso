@@ -574,7 +574,7 @@ if [[ -r "$MAC_LIB" ]]; then
         # database on disk at all, so `pacman -Sl arch-mact2` fails and the
         # firmware install below is skipped on the one edition built to carry
         # it. Refresh here, and only when a package step is actually coming.
-        if mac_needs_wl_driver || mac_needs_apple_firmware; then
+        if mac_needs_wl_driver || mac_needs_apple_firmware || mac_has_t2; then
             pacman -Sy --noconfirm >/dev/null 2>&1 \
                 || warn "Pacman database refresh failed before the Mac package steps."
         fi
@@ -598,8 +598,16 @@ if [[ -r "$MAC_LIB" ]]; then
                     || note_failure "wl driver install failed (no bundled driver for this kernel, sync repos unreachable)"
             fi
         fi
-        # On the MacBook edition this also writes the T2 boot options, before the
-        # boot image below is built from /etc/kernel/cmdline.
+        # The T2 drivers' fan control and audio profile, from the image's store
+        # when it carries them; anything not offered is skipped.
+        read -ra t2_pkgs <<< "$(mac_t2_packages)"
+        if (( ${#t2_pkgs[@]} > 0 )); then
+            info "Installing the Apple T2 packages: ${t2_pkgs[*]}"
+            pacman -S --noconfirm --needed "${t2_pkgs[@]}" 2>&1 \
+                || note_failure "installing ${t2_pkgs[*]} for the T2 failed"
+        fi
+        # On a T2 Mac whose kernel drives it this also writes the T2 boot options,
+        # before the boot image below is built from /etc/kernel/cmdline.
         mac_apply_autoconfig
         # The MacBook edition carries the arch-mact2 repository, which packages
         # the Wi-Fi and Bluetooth firmware this machine needs. A few megabytes
