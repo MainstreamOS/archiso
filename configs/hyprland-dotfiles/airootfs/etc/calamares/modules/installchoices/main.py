@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Records the Custom app list's kernel, app source and Proton checkboxes for the
-# install steps, and fetches the chosen Mainstream kernels before install-limine.
+# install steps, and fetches the chosen Mainstream kernels before install-limine,
+# with the NVIDIA driver an older card needs before install-gpu-drivers.
 
 import os
 import subprocess
@@ -10,6 +11,7 @@ import libcalamares
 CHOICES_FILE = "/etc/mainstream-install/choices.conf"
 FETCH_ONLINE = "/usr/local/bin/mainstream-fetch-online"
 CPUINFO = "/proc/cpuinfo"
+PCI_DEVICES = "/sys/bus/pci/devices"
 # Order of preference: the first one installed becomes the default.
 KERNELS = ("linux-mainstream-performance", "linux-mainstream", "linux")
 PROTONS = ("mainstream", "ge", "cachyos")
@@ -70,6 +72,26 @@ def resolve(method, items, v3):
             kernels.append(k)
     protons = [p for p in PROTONS if "proton:" + p in items]
     return apps, kernels or ["linux-mainstream"], protons
+
+
+def has_nvidia_display():
+    """Whether an NVIDIA display controller is present. fetch-online works out
+    whether its driver has to be downloaded."""
+    try:
+        entries = os.listdir(PCI_DEVICES)
+    except OSError:
+        return False
+    for d in entries:
+        try:
+            with open(os.path.join(PCI_DEVICES, d, "vendor")) as f:
+                vendor = f.read().strip()
+            with open(os.path.join(PCI_DEVICES, d, "class")) as f:
+                cls = f.read().strip()
+        except OSError:
+            continue
+        if vendor == "0x10de" and cls.startswith("0x03"):
+            return True
+    return False
 
 
 def target_kernels(root):
@@ -138,16 +160,20 @@ def run():
                                      "it is not downloaded" % (free, k))
             continue
         wanted.append(k)
-    if wanted and os.access(FETCH_ONLINE, os.X_OK):
-        args = [FETCH_ONLINE, root]
-        for k in wanted:
-            args += ["--kernel", k]
+    args = [FETCH_ONLINE, root]
+    for k in wanted:
+        args += ["--kernel", k]
+    if has_nvidia_display():
+        args.append("--nvidia")
+    if len(args) > 2 and os.access(FETCH_ONLINE, os.X_OK):
         try:
-            result = subprocess.run(args, timeout=1800, stdout=subprocess.PIPE,
+            # An older NVIDIA card's driver is several hundred MB on top of the kernels.
+            result = subprocess.run(args, timeout=3600, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
             for line in result.stdout.splitlines():
                 libcalamares.utils.debug(line)
         except (OSError, subprocess.SubprocessError) as e:
-            # The boot loader step then keeps the image's kernel.
-            libcalamares.utils.warning("could not download the chosen kernels: %s" % e)
+            # The boot loader step then keeps the image's kernel, and an older
+            # NVIDIA card runs on nouveau until the system update.
+            libcalamares.utils.warning("could not download the chosen kernels or the NVIDIA driver: %s" % e)
     return None

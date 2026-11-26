@@ -11,8 +11,8 @@ FAILS=0; N=0
 chk() { N=$((N+1)); [[ "$2" == "$3" ]] || { echo "  FAIL [$1] got '$2' want '$3'"; FAILS=$((FAILS+1)); }; }
 
 # lift the pieces out of build.sh, without running the build
-eval "$(grep -E '^(WELCOME_PKGS|HARDWARE_PKGS|INSTALL_STEP_PKGS|ONLINE_ONLY_PKGS|MACBOOK_PKGS)=\(' "$BUILD")"
-for f in mainstream_unneeded_pkgs image_pkg_version verify_image_kernel verify_store_kernels; do
+eval "$(grep -E '^(WELCOME_PKGS|HARDWARE_PKGS|INSTALL_STEP_PKGS|LEGACY_NVIDIA_PKGS|ONLINE_ONLY_PKGS|MACBOOK_PKGS)=\(' "$BUILD")"
+for f in legacy_edition_keeps mainstream_unneeded_pkgs image_pkg_version verify_image_kernel verify_store_kernels; do
     eval "$(awk "/^$f\\(\\) \\{/,/^\\}/" "$BUILD")"
 done
 
@@ -38,6 +38,14 @@ mkpkg zen-browser-bin 1.0-1 zen-browser-bin
 mkpkg unseeded-thing 1.0-1 unseeded-thing
 mkpkg t2fanrd r21.01df44d-1 t2fanrd
 mkpkg apple-t2-audio-config 0.4.r21.ga973d53-1 apple-t2-audio-config "alsa-ucm-conf"
+# A GTX 900 to Titan V card's driver provides nvidia-utils, which packages.x86_64
+# names, as [mainstream] publishes it.
+mkpkg nvidia-580xx-utils 580.196.07-1 nvidia-580xx-utils "egl-wayland vulkan-swrast" "nvidia-utils nvidia-libgl"
+mkpkg nvidia-580xx-dkms 580.196.07-1 nvidia-580xx-utils "dkms nvidia-580xx-utils=580.196.07" "NVIDIA-MODULE"
+mkpkg opencl-nvidia-580xx 580.196.07-1 nvidia-580xx-utils "" "opencl-nvidia"
+mkpkg lib32-nvidia-580xx-utils 580.196.07-1 lib32-nvidia-580xx-utils "lib32-vulkan-swrast" "lib32-nvidia-libgl lib32-nvidia-utils=580.196.07"
+mkpkg nvidia-580xx-settings 580.196.07-1 nvidia-580xx-settings "nvidia-utils libxnvctrl-580xx" "nvidia-settings"
+mkpkg libxnvctrl-580xx 580.196.07-1 nvidia-580xx-settings "" "libxnvctrl"
 tar czf "$TMP/mainstream.db.tar.gz" -C "$TMP/db" .
 METAPKGS=(); AUR_DEPS=(); LOCAL_BUILT_PKGS=()
 PROFILE_DIR="$ARCHISO_ROOT/configs/hyprland-dotfiles"
@@ -45,12 +53,31 @@ PKG_OUTPUT_DIR="$TMP/out"; mkdir -p "$PKG_OUTPUT_DIR"
 unneeded() { mainstream_unneeded_pkgs "$TMP/mainstream.db.tar.gz" | cut -d' ' -f1 | LC_ALL=C sort | tr '\n' ' '; }
 
 MACBOOK_PROFILE=false
+sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' '; }
+LEGACY_NV="lib32-nvidia-580xx-utils libxnvctrl-580xx nvidia-580xx-dkms nvidia-580xx-settings nvidia-580xx-utils opencl-nvidia-580xx"
+# shellcheck disable=SC2086
 chk store-standard "$(unneeded)" \
-    "apple-t2-audio-config linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin "
+    "$(sorted apple-t2-audio-config $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
 # The MacBook edition keeps Mainstream's kernel like the standard one, and its T2 packages too.
 MACBOOK_PROFILE=true
+# shellcheck disable=SC2086
 chk store-macbook "$(unneeded)" \
-    "linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin "
+    "$(sorted $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin)"
+MACBOOK_PROFILE=false
+# The legacy edition names the driver's AUR bases; it builds and stages them itself.
+AUR_DEPS=(nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings nvidia-470xx-utils lib32-nvidia-470xx-utils nvidia-390xx-utils)
+# shellcheck disable=SC2086
+chk store-legacy-edition "$(unneeded)" \
+    "$(sorted apple-t2-audio-config $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
+AUR_DEPS=(); MACBOOK_PROFILE=true
+# Not downloaded on any edition, and only the legacy edition keeps the copies it
+# built itself in the store.
+NVIDIA_PROFILE=true
+chk keeps-legacy-edition "$(legacy_edition_keeps nvidia-580xx-utils && legacy_edition_keeps libxnvctrl-580xx && echo yes || echo no)" "yes"
+chk keeps-legacy-edition-only-its-own "$(legacy_edition_keeps zen-browser-bin && echo yes || echo no)" "no"
+NVIDIA_PROFILE=false
+chk keeps-standard "$(legacy_edition_keeps nvidia-580xx-utils && echo yes || echo no)" "no"
+unset NVIDIA_PROFILE
 
 # ---- 2. the finished image boots only its own kernel and leaves DKMS's key behind
 WORK_DIR="$TMP/work"; RELEASE_VERSION=""

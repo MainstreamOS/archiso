@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drive install-gpu-drivers' NVIDIA steps and the live session's nouveau through
-# every branch with fakes.
+# Drive install-gpu-drivers' NVIDIA steps, the live session's nouveau and fetch-online's
+# NVIDIA pick through every branch with fakes.
 set -uo pipefail
 ARCHISO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AIROOTFS="$ARCHISO_ROOT/configs/hyprland-dotfiles/airootfs"
@@ -161,9 +161,48 @@ chk legacy-local-set "${LOCAL[*]}" "${NVIDIA_LOCAL_PKGS[*]}"
 chk legacy-builds "${DKI[*]:-none}" "nvidia 580.95.05"
 chk legacy-nofail "${#GPU_FAILURES[@]}" "0"
 STAGED=0; INST=(); LOCAL=(); FALLBACK=0
-install_legacy_nvidia "Maxwell/Pascal/Volta"
-chk legacy-unstaged-fallback "$FALLBACK" "1"
-chk legacy-unstaged-nothing "${INST[*]:-none} ${LOCAL[*]:-none}" "none none"
+# Nothing staged, as on the standard edition: the branch comes from the
+# repository through the shared library, run as the chroot's root.
+eval "$(awk '/^install_repo_legacy_nvidia\(\) \{/,/^\}/' "$SRC")"
+GPU_INSTALL_LIB="$TMP/legacy-lib.sh"
+cat > "$GPU_INSTALL_LIB" <<'LIB'
+gpu_nvidia_install_legacy() {
+    LIB_CALLS+=("install sudo=${GPU_SUDO-unset}")
+    [[ $LIB_RC == 1 ]] && NVIDIA_DRIVER_FAMILY=nouveau
+    return "$LIB_RC"
+}
+LIB
+repo_legacy() {  # repo_legacy <family> <library rc>
+    NVIDIA_DRIVER_FAMILY="$1"; LIB_RC="$2"; INST=(); LOCAL=(); LIB_CALLS=(); FALLBACK=0; GPU_FAILURES=()
+    install_legacy_nvidia "label"
+}
+repo_legacy nvidia-580xx 0
+chk repo-580-library "${LIB_CALLS[*]:-none}" "install sudo="
+chk repo-580-extras "${INST[*]:-none}" "libva-nvidia-driver libva-utils linux-firmware-nvidia"
+chk repo-580-no-fallback "$FALLBACK ${LOCAL[*]:-none}" "0 none"
+# It built for no kernel: the library took it back off, nouveau's userspace goes in.
+repo_legacy nvidia-580xx 1
+chk repo-buildfail-mesa "${INST[*]:-none}" "mesa lib32-mesa"
+chk repo-buildfail-no-fallback "$FALLBACK" "0"
+# Not offered or not downloadable: the offline fallback.
+repo_legacy nvidia-580xx 2
+chk repo-offline-fallback "$FALLBACK ${INST[*]:-none}" "1 none"
+GPU_INSTALL_LIB="$TMP/no-such-lib.sh"
+repo_legacy nvidia-580xx 0
+chk repo-nolib-fallback "$FALLBACK ${LIB_CALLS[*]:-none}" "1 none"
+
+# The offline fallback: nouveau now, a note for the system update, and no
+# word about another edition.
+eval "$(awk '/^legacy_nvidia_fallback\(\) \{/,/^\}/' "$SRC")"
+remove_nvidia_driver() { REMOVED=1; }
+gpu_nvidia_mark_pending() { LIB_CALLS+=("pending $NVIDIA_DRIVER_FAMILY sudo=${GPU_SUDO-unset}"); }
+NVIDIA_DRIVER_FAMILY=nvidia-580xx; INST=(); LIB_CALLS=(); REMOVED=0; GPU_FAILURES=()
+legacy_nvidia_fallback "Maxwell"
+chk fallback-nouveau "${INST[*]:-none} $REMOVED" "mesa lib32-mesa 1"
+chk fallback-pending "${LIB_CALLS[*]:-none}" "pending nvidia-580xx sudo="
+chk fallback-says-update "$( [[ "${GPU_FAILURES[*]}" == *"installs with the next system update once the computer is online"* ]] && echo yes || echo no )" "yes"
+chk fallback-no-edition "$( [[ "${GPU_FAILURES[*]}" == *edition* || "${GPU_FAILURES[*]}" == *ISO* ]] && echo yes || echo no )" "no"
+unset -f gpu_nvidia_mark_pending
 
 # ---- 11. every chosen kernel, Arch's included, gets the module or comes back out
 eval "$(awk '/^nvidia_chosen_kernel\(\) \{/,/^\}/' "$SRC")"
@@ -206,6 +245,116 @@ PAC=(); ADDED=(); GPU_FAILURES=(); RM_RC=1
 nvidia_chosen_kernel linux
 chk chosen-stuck-recorded "$( [[ "${GPU_FAILURES[*]}" == *"choose another kernel in the boot menu"* ]] && echo yes || echo no )" "yes"
 RM_RC=0
+
+# ---- 12. an older card on the standard edition, end to end: install-gpu-drivers'
+# own steps, the real shared library, and a stand-in pacman and DKMS
+eval "$(awk '/^install_legacy_nvidia\(\) \{/,/^\}/' "$SRC")"
+eval "$(awk '/^legacy_nvidia_fallback\(\) \{/,/^\}/' "$SRC")"
+eval "$(awk '/^remove_nvidia_driver\(\) \{/,/^\}/' "$SRC")"
+export MAINSTREAM_MODULES_DIR="$TMP/e2e-modules"
+KM=7.3.6-1-mainstream
+GPU_NVIDIA_PENDING="$TMP/e2e-state/nvidia-driver-pending"
+# The real library, then the stand-ins for what it would read off this machine.
+GPU_INSTALL_LIB="$TMP/e2e-lib.sh"
+printf 'source %q\n_gpu_kernel_headers_present() { [[ -d "$MAINSTREAM_MODULES_DIR/$1/build" ]]; }\n' \
+    "$AIROOTFS/usr/local/lib/gpu-driver-install.sh" > "$GPU_INSTALL_LIB"
+set_of() {
+    case "$1" in
+        580xx) echo "nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx" ;;
+    esac
+}
+has_pkg() { [[ " $INSTALLED " == *" $1 "* ]]; }
+pacman() {
+    local op="$1" p t pkgs=()
+    shift
+    for p in "$@"; do [[ "$p" == -* ]] || pkgs+=("$p"); done
+    case "$op" in
+        -Q|-Qq) has_pkg "${pkgs[0]}" && echo "${pkgs[0]}" ;;
+        -Si) [[ " $REPO " == *" ${pkgs[0]} "* ]] ;;
+        -Sw) echo "$op ${pkgs[*]}" >> "$TMP/e2e-pac.log"
+             for p in "${pkgs[@]}"; do [[ " $REPO " == *" $p "* ]] || return 1; done ;;
+        -Rdd|-Rns|-R)
+            echo "$op ${pkgs[*]}" >> "$TMP/e2e-pac.log"
+            for p in "${pkgs[@]}"; do
+                INSTALLED="${INSTALLED/ $p / }"
+                [[ "$p" == *-dkms ]] && find "$MAINSTREAM_MODULES_DIR" -name 'nvidia.ko*' -delete
+            done
+            return 0 ;;
+        -S)
+            echo "$op ${pkgs[*]}" >> "$TMP/e2e-pac.log"
+            for p in "${pkgs[@]}"; do
+                [[ " $REPO " == *" $p "* ]] || return 1
+                # The conflict question answers itself with no.
+                if [[ "$p" == nvidia-*xx-* ]] && { has_pkg nvidia-utils || has_pkg nvidia-open-dkms; }; then return 1; fi
+            done
+            for p in "${pkgs[@]}"; do
+                has_pkg "$p" || INSTALLED+="$p "
+                if [[ "$p" == nvidia-*xx-dkms && $DKMS_OK == 1 ]]; then
+                    for t in "$MAINSTREAM_MODULES_DIR"/*/build; do : > "${t%/build}/nvidia.ko.zst"; done
+                fi
+            done ;;
+        *) echo "unexpected pacman $op" >> "$TMP/e2e-pac.log"; return 1 ;;
+    esac
+}
+dkms() {
+    case "$1" in
+        status) [[ "$INSTALLED" == *-dkms* ]] && echo "nvidia/580.196.07, $KM, x86_64: added" ;;
+        install) [[ $DKMS_OK == 1 ]] ;;
+    esac
+}
+find_local_pkgs() { :; }
+e2e() {  # e2e <generation> <offered> <dkms builds>
+    rm -rf "${MAINSTREAM_MODULES_DIR:?}" "${TMP:?}/e2e-state"; : > "$TMP/e2e-pac.log"
+    mkdir -p "$MAINSTREAM_MODULES_DIR/$KM/build" "$TMP/e2e-state"
+    : > "$MAINSTREAM_MODULES_DIR/$KM/vmlinuz"; echo linux-mainstream > "$MAINSTREAM_MODULES_DIR/$KM/pkgbase"
+    : > "$MAINSTREAM_MODULES_DIR/$KM/nvidia.ko.zst"
+    INSTALLED=" linux-mainstream linux-mainstream-headers dkms nvidia-open-dkms nvidia-utils "
+    REPO="linux-mainstream linux-mainstream-headers dkms egl-wayland"
+    [[ "$2" == offered ]] && REPO+=" $(set_of 580xx)"
+    DKMS_OK="$3"; NVIDIA_GEN="$1"; INST=(); GPU_FAILURES=()
+    gpu_classify_nvidia_driver
+    install_legacy_nvidia "label" >/dev/null 2>&1
+}
+_gpu_installed_nvidia_branch() { local b; for b in 580xx 470xx 390xx; do has_pkg "nvidia-$b-dkms" && { printf '%s' "$b"; return 0; }; done; printf ''; }
+e2e maxwell offered 1
+chk e2e-online-sequence "$(cat "$TMP/e2e-pac.log")" "-Sw $(set_of 580xx)
+-Rdd nvidia-open-dkms nvidia-utils
+-S linux-mainstream linux-mainstream-headers dkms
+-S $(set_of 580xx) egl-wayland"
+chk e2e-online-module "$(nvidia_module_present $KM && echo yes || echo no)" "yes"
+chk e2e-online-family "$NVIDIA_DRIVER_FAMILY $(has_pkg nvidia-utils && echo mainline-left)" "nvidia-580xx "
+chk e2e-online-vaapi "${INST[*]:-none}" "libva-nvidia-driver libva-utils linux-firmware-nvidia"
+chk e2e-online-nofail "${#GPU_FAILURES[@]}" "0"
+chk e2e-online-no-pending "$( [[ -e "$GPU_NVIDIA_PENDING" ]] && echo there || echo none )" "none"
+e2e maxwell missing 1
+chk e2e-offline-nouveau "${INST[*]:-none}" "mesa lib32-mesa"
+chk e2e-offline-mainline-off "$(cat "$TMP/e2e-pac.log")" "-Rns nvidia-open-dkms nvidia-utils"
+chk e2e-offline-pending "$(cat "$GPU_NVIDIA_PENDING" 2>/dev/null)" "nvidia-580xx"
+chk e2e-offline-said "$( [[ "${GPU_FAILURES[*]}" == *"next system update"* ]] && echo yes || echo no )" "yes"
+# The module does not build for the image's kernel: nothing NVIDIA is left, the
+# card falls to nouveau and the kernel stays, since no kernel has a module.
+e2e maxwell offered 0
+chk e2e-buildfail-nothing-left "$INSTALLED" " linux-mainstream linux-mainstream-headers dkms egl-wayland "
+chk e2e-buildfail-family "$NVIDIA_DRIVER_FAMILY" "nouveau"
+chk e2e-buildfail-nouveau "${INST[*]:-none}" "mesa lib32-mesa"
+chk e2e-buildfail-no-pending "$( [[ -e "$GPU_NVIDIA_PENDING" ]] && echo there || echo none )" "none"
+chk e2e-buildfail-said "$( [[ "${GPU_FAILURES[*]}" == *"nvidia-580xx did not build for any installed kernel"* ]] && echo yes || echo no )" "yes"
+chk e2e-buildfail-kernel-ready "$(gpu_kernel_nvidia_ready linux-mainstream && echo yes || echo no)" "yes"
+# Kepler and Fermi stay on nouveau, also where the legacy edition's image left its
+# 580xx on the target: that driver cannot drive them and comes off with the rest.
+for _g in kepler fermi; do
+    : > "$TMP/e2e-pac.log"
+    INSTALLED=" linux-mainstream dkms $(set_of 580xx) "; NVIDIA_GEN="$_g"
+    gpu_classify_nvidia_driver
+    chk "e2e-$_g-nouveau" "$NVIDIA_DRIVER_FAMILY ${#NVIDIA_LOCAL_PKGS[@]}" "nouveau 0"
+    remove_nvidia_driver >/dev/null 2>&1
+    chk "e2e-$_g-edition-driver-off" "$(cat "$TMP/e2e-pac.log")" "-Rns $(set_of 580xx)"
+done
+# A Maxwell card there keeps the edition's driver.
+INSTALLED=" linux-mainstream dkms $(set_of 580xx) "; NVIDIA_GEN=maxwell
+gpu_classify_nvidia_driver
+chk e2e-maxwell-edition "$NVIDIA_DRIVER_FAMILY" "nvidia-580xx"
+unset -f pacman dkms find_local_pkgs _gpu_installed_nvidia_branch
 
 # ---- 13. the live session: nouveau for an older card that drives the screen
 LIVE="$AIROOTFS/usr/local/bin/live-nouveau"
@@ -252,6 +401,28 @@ live_pci 0000:00:02.0,0x8086,1 0000:01:00.0,0x10de,0
 chk live-hybrid-igpu "$(live "$OPTIMUS")" "|"
 live_pci 0000:00:02.0,0x8086,0 0000:01:00.0,0x10de,1
 chk live-hybrid-mux "$(live "$OPTIMUS")" "modprobe nouveau;udevadm settle --timeout=15;|maxwell loaded"
+
+# ---- 14. fetch-online asks for the branch an older card needs, when the image lacks it
+FETCH="$AIROOTFS/usr/local/bin/mainstream-fetch-online"
+printf '#!/bin/sh\nexit 22\n' > "$TMP/live-bin/curl"; chmod +x "$TMP/live-bin/curl"
+fetch() {  # fetch <lspci> <args...>; prints fetch-online's own lines
+    local lspci="$1"; shift
+    FIX_LSPCI="$lspci" GPU_LIB="$TMP/live-lib.sh" PATH="$TMP/live-bin:$PATH" \
+        bash "$FETCH" "$TMP/fetch-root" "$@" 2>&1 | sed 's/^\[fetch-online\] //' | tr '\n' ';'
+}
+mkdir -p "$TMP/fetch-root"
+chk fetch-maxwell "$(fetch "$GTX1060" --nvidia)" \
+    "the NVIDIA card needs nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx.;could not reach the [mainstream] repository; using what the image carries.;"
+# Kepler stays on nouveau: only the kernel is fetched.
+chk fetch-kepler-with-kernel "$(fetch "$GT710" --kernel linux-mainstream-performance --nvidia)" \
+    "could not reach the [mainstream] repository; using what the image carries.;"
+chk fetch-kepler "$(fetch "$GT710" --nvidia)" "nothing to fetch.;"
+chk fetch-turing "$(fetch "$RTX2080" --nvidia)" "nothing to fetch.;"
+chk fetch-not-asked "$(fetch "$GT710")" "nothing to fetch.;"
+# The legacy edition stages the branch in the store: nothing to download.
+mkdir -p "$TMP/fetch-root/usr/local/share/pkgs"
+: > "$TMP/fetch-root/usr/local/share/pkgs/nvidia-580xx-dkms-580.196.07-1-x86_64.pkg.tar.zst"
+chk fetch-staged "$(fetch "$GTX1060" --nvidia)" "nothing to fetch.;"
 
 [[ $FAILS -eq 0 ]] && echo "repair: all $N assertions PASS" || echo "repair: $FAILS of $N FAILED"
 exit $FAILS

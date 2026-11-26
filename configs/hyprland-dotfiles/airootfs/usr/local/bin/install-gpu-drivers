@@ -228,39 +228,68 @@ detect_dkms_version() {
     printf '%s\n' "$v"
 }
 
-# The standard image carries the mainline driver, whose userspace blacklists
-# nouveau. A card left on nouveau cannot use it, so it comes off the target.
-remove_mainline_nvidia() {
+# The image's NVIDIA driver, mainline on the standard edition and 580xx on the
+# legacy one, blacklists nouveau. A card left on nouveau cannot use it, so it
+# comes off the target.
+remove_nvidia_driver() {
     local p present=()
-    for p in nvidia-open nvidia-open-dkms nvidia-dkms nvidia-utils; do
+    for p in nvidia-open nvidia-open-dkms nvidia-dkms nvidia-utils \
+             nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx; do
         # pacman -Q also answers for a package that only provides the name.
         [[ "$(pacman -Qq "$p" 2>/dev/null)" == "$p" ]] && present+=("$p")
     done
     [[ ${#present[@]} -eq 0 ]] && return 0
-    info "Removing the mainline NVIDIA driver so nouveau can load: ${present[*]}"
+    info "Removing the image's NVIDIA driver so nouveau can load: ${present[*]}"
     pacman -Rns --noconfirm "${present[@]}" 2>&1 \
         || warn "Could not remove ${present[*]}; nouveau stays blacklisted until they are gone."
 }
 
-# Standard edition has no legacy NVIDIA prebuilts: fall back to nouveau so the
-# target still boots, and breadcrumb the user to the NVIDIA (legacy) edition.
-# Never runs on the NVIDIA edition (prebuilts present there).
+# Offline with nothing staged: nouveau for now, and a note the system update
+# reads to install the branch once the repository can be reached.
 legacy_nvidia_fallback() {
     local gen="$1"
-    warn "Legacy NVIDIA ($gen): proprietary prebuilts not on this edition — falling back to nouveau."
+    warn "Legacy NVIDIA ($gen): NVIDIA's driver could not be downloaded, so the card uses nouveau for now."
     install_pkgs mesa lib32-mesa
-    remove_mainline_nvidia
-    note_failure "Legacy NVIDIA ($gen): proprietary drivers are not on this (standard) edition — installed nouveau as a fallback. For full acceleration, reinstall using the MainstreamOS NVIDIA (legacy) edition ISO."
+    remove_nvidia_driver
+    if declare -F gpu_nvidia_mark_pending >/dev/null; then
+        GPU_SUDO="" gpu_nvidia_mark_pending
+    fi
+    note_failure "Legacy NVIDIA ($gen): NVIDIA's driver could not be downloaded during the install, so the card uses the open source nouveau driver for now. NVIDIA's driver installs with the next system update once the computer is online."
 }
 
-# Install one of the frozen legacy NVIDIA DKMS branches (580xx/470xx/390xx) from
-# the staged prebuilts named by the classifier's NVIDIA_LOCAL_PKGS array, then
-# build the module against the target kernel. Falls back to nouveau when the
-# prebuilts are not staged (standard edition). $1 is the human-readable label.
+# The frozen branch from the [mainstream] repository, which the live session
+# fetched into the target's package store when it could (mainstream-fetch-online
+# --nvidia). The shared library takes the image's driver off, installs the
+# branch and has DKMS build it for every installed kernel.
+install_repo_legacy_nvidia() {
+    local label="$1" rc=2
+    if [[ -r "$GPU_INSTALL_LIB" ]] && source "$GPU_INSTALL_LIB"; then
+        GPU_SUDO="" gpu_nvidia_install_legacy; rc=$?
+    else
+        warn "The driver library is missing from $GPU_INSTALL_LIB, so NVIDIA's driver cannot be installed."
+    fi
+    case "$rc" in
+        0)
+            # The branch ships no VA-API driver of its own.
+            install_pkgs_opt libva-nvidia-driver libva-utils
+            install_pkgs_opt linux-firmware-nvidia
+            info "NVIDIA $label: installed $NVIDIA_DRIVER_FAMILY from the repository." ;;
+        1)
+            # It built for no kernel and came back off, as the note says.
+            install_pkgs mesa lib32-mesa ;;
+        *)
+            legacy_nvidia_fallback "$label" ;;
+    esac
+}
+
+# Install one of the frozen legacy NVIDIA DKMS branches (580xx/470xx/390xx)
+# named by the classifier's NVIDIA_LOCAL_PKGS array: from the prebuilts the
+# legacy edition stages, or else from the repository. $1 is the human-readable
+# label.
 install_legacy_nvidia() {
     local label="$1" dkms_pkg="${NVIDIA_LOCAL_PKGS[0]}"
     if [[ -z "$(find_local_pkgs "$dkms_pkg")" ]]; then
-        legacy_nvidia_fallback "$label"
+        install_repo_legacy_nvidia "$label"
         return
     fi
     # The image carries dkms and the headers of the kernel it installs, so the
@@ -473,7 +502,7 @@ remove_image_nvidia_module() {
 if $HAS_NVIDIA; then
     # NVIDIA_GEN (set by gpu_detect) -> driver family + package sets. The caller
     # owns the install: nvidia-open from the repo, a frozen legacy branch from
-    # staged prebuilts, or nouveau for pre-Fermi.
+    # the repo or the legacy edition's staged prebuilts, or nouveau for pre-Fermi.
     gpu_classify_nvidia_driver
     info "NVIDIA generation $NVIDIA_GEN -> driver family $NVIDIA_DRIVER_FAMILY"
     case "$NVIDIA_DRIVER_FAMILY" in
@@ -496,9 +525,10 @@ if $HAS_NVIDIA; then
         nvidia-470xx) install_legacy_nvidia "Kepler — GTX 600/700" ;;
         nvidia-390xx) install_legacy_nvidia "Fermi — GTX 400/500" ;;
         nouveau|*)
-            # Pre-Fermi (Tesla / older) — nouveau is the only realistic option.
+            # Kepler, Fermi and older. Kepler's and Fermi's branches predate the
+            # GBM the session needs, so nouveau is the better driver for them too.
             install_pkgs mesa lib32-mesa
-            remove_mainline_nvidia
+            remove_nvidia_driver
             ;;
     esac
     for _mk in "${CHOSEN_KERNELS[@]}"; do

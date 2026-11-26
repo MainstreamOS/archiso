@@ -2,7 +2,9 @@
 # Adds packages from the signed online [mainstream] repository to the target's
 # local package folder. Runs in the live session: the target chroot cannot check
 # the signature reliably. Failures only mean the install keeps what the image has.
-#   mainstream-fetch-online ROOT [--kernel NAME]... [PACKAGE...]
+#   mainstream-fetch-online ROOT [--kernel NAME]... [--nvidia] [PACKAGE...]
+# --nvidia adds the frozen NVIDIA branch an older card needs, when the image
+# does not stage it.
 set -uo pipefail
 
 REPO_URL=https://github.com/MainstreamOS/packages/releases/download/mainstream-repo
@@ -12,9 +14,10 @@ KEY_FILE="${MAINSTREAM_KEY_FILE:-/usr/local/share/mainstream.pub}"
 log() { printf '[fetch-online] %s\n' "$*"; }
 
 ROOT="${1:-}"
-[[ -n "$ROOT" && -d "$ROOT" ]] || { log "usage: ${0##*/} ROOT [--kernel NAME] [PACKAGE...]"; exit 2; }
+[[ -n "$ROOT" && -d "$ROOT" ]] || { log "usage: ${0##*/} ROOT [--kernel NAME] [--nvidia] [PACKAGE...]"; exit 2; }
 shift
 wanted=()
+nvidia=false
 while (( $# )); do
     case "$1" in
         --kernel)
@@ -22,12 +25,40 @@ while (( $# )); do
             shift 2 || shift
             [[ "$k" == linux-mainstream* ]] && wanted+=("$k" "$k-headers")
             ;;
+        --nvidia) nvidia=true; shift ;;
         *) wanted+=("$1"); shift ;;
     esac
 done
+STORE="$ROOT/usr/local/share/pkgs"
+
+# The packages of the frozen branch gpu-config.sh picks for this card, one per
+# line, or nothing: a Turing or newer card runs the image's own driver, and the
+# legacy edition stages its prebuilts in the store.
+nvidia_packages() {
+    local lib="${GPU_LIB:-/usr/local/lib/gpu-config.sh}" f
+    [[ -r "$lib" ]] || return 0
+    (
+        # shellcheck source=/dev/null
+        source "$lib" || exit 0
+        gpu_detect >/dev/null 2>&1 || exit 0
+        [[ $HAS_NVIDIA == true ]] || exit 0
+        gpu_classify_nvidia_driver
+        (( ${#NVIDIA_LOCAL_PKGS[@]} )) || exit 0
+        for f in "$STORE/${NVIDIA_LOCAL_PKGS[0]}"-[0-9]*.pkg.tar.zst; do
+            [[ -e "$f" ]] && exit 0
+        done
+        printf '%s\n' "${NVIDIA_LOCAL_PKGS[@]}"
+    )
+}
+if [[ $nvidia == true ]]; then
+    mapfile -t nv < <(nvidia_packages)
+    if (( ${#nv[@]} )); then
+        log "the NVIDIA card needs ${nv[*]}."
+        wanted+=("${nv[@]}")
+    fi
+fi
 (( ${#wanted[@]} )) || { log "nothing to fetch."; exit 0; }
 
-STORE="$ROOT/usr/local/share/pkgs"
 # On the target's disk: the live session's writable space is a small tmpfs.
 WORK="$ROOT/var/cache/mainstream-fetch-online"
 rm -rf "$WORK" && mkdir -p "$WORK" "$STORE" || { log "could not prepare $WORK."; exit 0; }

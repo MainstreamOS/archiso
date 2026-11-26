@@ -414,9 +414,16 @@ INSTALL_STEP_PKGS=(proton-mainstream)
 # image carrying it (mainstream-fetch-online), however the lists above name it.
 # The image boots linux-mainstream, and the performance kernel is fetched only
 # when Custom picks it. Its headers would otherwise come along as a provider of
-# linux-headers, which packages above depend on.
-ONLINE_ONLY_PKGS=(zen-browser-bin linux-mainstream-performance linux-mainstream-performance-headers)
+# linux-headers, which packages above depend on. A GTX 900 to Titan V card's
+# driver is fetched by --nvidia for that card alone; it provides nvidia-utils,
+# which would otherwise bring it along for every card. The legacy edition builds
+# and stages its own, which legacy_edition_keeps spares.
+LEGACY_NVIDIA_PKGS=(nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx opencl-nvidia-580xx)
+ONLINE_ONLY_PKGS=(zen-browser-bin linux-mainstream-performance linux-mainstream-performance-headers "${LEGACY_NVIDIA_PKGS[@]}")
 declare -a LOCAL_BUILT_PKGS=()
+legacy_edition_keeps() {  # <package>
+    [[ "${NVIDIA_PROFILE:-false}" == true && " ${LEGACY_NVIDIA_PKGS[*]} " == *" $1 "* ]]
+}
 mainstream_unneeded_pkgs() {
     local db="$1" dir d n b f line section
     local -A deps=() base=() by_provide=() needed=() entry_dir=() online_only=()
@@ -591,8 +598,12 @@ download_mainstream_repo_pkgs() {
         return 0
     fi
     if [[ -n "$unneeded" ]]; then
-        info "Not bundling what nothing on the ISO installs: $(cut -d' ' -f1 <<< "$unneeded" | sort | paste -sd' ')"
         unneeded_dirs=$(cut -d' ' -f2 <<< "$unneeded" | tr ':' '_')
+        # Not downloaded, and the legacy edition's own builds of them stay.
+        unneeded=$(while read -r uname udir; do
+            if [[ -n "$uname" ]] && ! legacy_edition_keeps "$uname"; then printf '%s %s\n' "$uname" "$udir"; fi
+        done <<< "$unneeded")
+        [[ -z "$unneeded" ]] || info "Not bundling what nothing on the ISO installs: $(cut -d' ' -f1 <<< "$unneeded" | sort | paste -sd' ')"
         # This folder outlives the build, so a copy an earlier build downloaded
         # would otherwise stay on the image.
         while read -r uname _; do

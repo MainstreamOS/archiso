@@ -66,6 +66,7 @@ elif cmd == "run":
     method, v3, root, fetch, items = args[0], args[1] == "1", args[2], args[3], args[4:]
     m.cpu_runs_x86_64_v3 = lambda: v3
     m.FETCH_ONLINE = fetch
+    m.PCI_DEVICES = os.environ["PCI_DEVICES"]
     if os.environ.get("BOOT_FREE_MIB"):
         m.boot_free_mib = lambda root: int(os.environ["BOOT_FREE_MIB"])
     lc.globalstorage = GlobalStorage({
@@ -79,6 +80,15 @@ elif cmd == "run":
         print([l.split("=", 1)[1].strip() for l in f if l.startswith("KERNELS=")][0])
 PY
 choices() { python3 -I -B "$TMP/drive.py" "$CHOICES_PY" "$@"; }
+# The display devices the installer sees: none of this machine's own.
+pcidev() {  # pcidev <dir> <slot> <vendor> <class>
+    mkdir -p "$1/$2"; echo "$3" > "$1/$2/vendor"; echo "$4" > "$1/$2/class"
+}
+export PCI_DEVICES="$TMP/pci-none"; mkdir -p "$PCI_DEVICES"
+pcidev "$TMP/pci-nvidia" 0000:00:02.0 0x8086 0x030000
+pcidev "$TMP/pci-nvidia" 0000:01:00.0 0x10de 0x030200
+pcidev "$TMP/pci-intel" 0000:00:02.0 0x8086 0x030000
+pcidev "$TMP/pci-intel" 0000:00:1f.3 0x10de 0x040300
 
 for method in default console os-only developer gaming; do
     chk "resolve-$method" "$(choices resolve "$method" 1 kernel:linux kernel:linux-mainstream-performance)" "linux-mainstream"
@@ -112,6 +122,17 @@ chk boot-free-mib-reads "$(choices freemib "$TMP/root-mainstream" | grep -cE '^[
 chk run-empty-target-kernels "$(choices run custom 1 "$TMP/root-empty" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance)" \
     "linux-mainstream-performance"
 chk run-empty-target-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+# An NVIDIA display device: fetch-online decides whether its driver is needed,
+# with the chosen kernels or on its own. A non-display NVIDIA function is not one.
+: > "$TMP/fetch.log"
+PCI_DEVICES="$TMP/pci-nvidia" choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" >/dev/null
+chk run-nvidia-fetch "$(cat "$TMP/fetch.log")" "--nvidia"
+: > "$TMP/fetch.log"
+PCI_DEVICES="$TMP/pci-nvidia" choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
+chk run-nvidia-kernel-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance --nvidia"
+: > "$TMP/fetch.log"
+PCI_DEVICES="$TMP/pci-intel" choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" >/dev/null
+chk run-no-nvidia-no-fetch "$(cat "$TMP/fetch.log")" ""
 
 # ---- 2. the shared choices library the install steps read
 # shellcheck source=/dev/null
