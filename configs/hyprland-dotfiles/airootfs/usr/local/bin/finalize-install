@@ -35,13 +35,18 @@ _ms_health() {
         >> /var/log/mainstream-install/health.log 2>/dev/null || true
 }
 
+_pkg_installed() {
+    # By exact name: pacman -Qq also answers for a package that only provides it.
+    [[ "$(pacman -Qq "$1" 2>/dev/null)" == "$1" ]]
+}
+
 remove_pkgs() {
     # Filter to packages that are actually installed first: pacman -Rns is
     # all-or-nothing, so one absent name ("target not found") would abort the
     # whole removal and silently prune NOTHING.
     local installed=() p
     for p in "$@"; do
-        pacman -Qq "$p" >/dev/null 2>&1 && installed+=("$p")
+        _pkg_installed "$p" && installed+=("$p")
     done
     [[ ${#installed[@]} -eq 0 ]] && return 0
     info "Removing: ${installed[*]}"
@@ -61,7 +66,7 @@ remove_pkgs() {
     while (( removed_any )); do
         removed_any=0
         for p in "${installed[@]}"; do
-            pacman -Qq "$p" >/dev/null 2>&1 || continue
+            _pkg_installed "$p" || continue
             if pacman -Rns --noconfirm "$p" >/dev/null 2>&1; then
                 info "  removed $p"
                 removed_any=1
@@ -69,7 +74,7 @@ remove_pkgs() {
         done
     done
     for p in "${installed[@]}"; do
-        if pacman -Qq "$p" >/dev/null 2>&1; then
+        if _pkg_installed "$p"; then
             warn "Kept $p — still required by an installed package."
         fi
     done

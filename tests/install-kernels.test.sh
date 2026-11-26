@@ -274,5 +274,24 @@ INSTALLED="linux-mainstream linux-mainstream-headers"; REMOVED=()
 prune_headers
 chk headers-provider-kept "${REMOVED[*]:-none}" "none"
 
+# ---- 6. finalize-install removes packages by their exact names
+# On the legacy edition nvidia-580xx-utils provides nvidia-utils, and naming that in
+# one batch made pacman refuse the whole removal.
+eval "$(awk '/^_pkg_installed\(\) \{/,/^\}/' "$FINALIZE")"
+eval "$(awk '/^remove_pkgs\(\) \{/,/^\}/' "$FINALIZE")"
+pacman() {
+    case "$1" in
+        -Qq)
+            [[ " $INSTALLED " == *" $2 "* ]] && { echo "$2"; return 0; }
+            [[ $2 == nvidia-utils && " $INSTALLED " == *" nvidia-580xx-utils "* ]] && { echo nvidia-580xx-utils; return 0; }
+            return 1 ;;
+        -Rns) shift; echo "$*" >> "$TMP/rns.log" ;;
+    esac
+}
+INSTALLED="nvidia-580xx-dkms nvidia-580xx-utils"; WARN=()
+remove_pkgs nvidia-utils nvidia-580xx-dkms nvidia-580xx-utils >/dev/null
+chk remove-exact-names "$(cat "$TMP/rns.log")" "--noconfirm nvidia-580xx-dkms nvidia-580xx-utils"
+chk remove-no-warning "${#WARN[@]}" "0"
+
 [[ $FAILS -eq 0 ]] && echo "install-kernels: all $N assertions PASS" || echo "install-kernels: $FAILS of $N FAILED"
 exit $FAILS
