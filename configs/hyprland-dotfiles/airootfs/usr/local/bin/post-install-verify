@@ -126,7 +126,13 @@ fi
 # with nothing driving it: no device node, no outputs, and every other check
 # here still passing. Asking pacman cannot see it. Ask the kernel.
 if lspci 2>/dev/null | grep -iqE "VGA|3D|Display" && lspci 2>/dev/null | grep -iq "NVIDIA"; then
-    if pacman -Qq nvidia-open &>/dev/null || pacman -Qq nvidia-open-dkms &>/dev/null; then
+    # The legacy edition's DKMS drivers count too. By exact name: pacman -Qq also
+    # answers for a package that only provides one of these names.
+    _nv_driver=""
+    for _p in nvidia-open nvidia-open-dkms nvidia nvidia-dkms nvidia-580xx-dkms nvidia-470xx-dkms nvidia-390xx-dkms; do
+        [[ "$(pacman -Qq "$_p" 2>/dev/null)" == "$_p" ]] && { _nv_driver=$_p; break; }
+    done
+    if [[ -n "$_nv_driver" ]]; then
         # Same library the install used, so this asks the question the same way.
         if [[ -r /usr/local/lib/gpu-config.sh ]] && source /usr/local/lib/gpu-config.sh; then
             _kver="$(gpu_target_kernel)"
@@ -150,7 +156,7 @@ if lspci 2>/dev/null | grep -iqE "VGA|3D|Display" && lspci 2>/dev/null | grep -i
             skip "NVIDIA module check (shared GPU library unavailable)"
         fi
     else
-        skip "NVIDIA module check (no open driver installed)"
+        skip "NVIDIA module check (no NVIDIA kernel driver installed)"
     fi
 fi
 
