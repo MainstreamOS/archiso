@@ -412,14 +412,14 @@ HARDWARE_PKGS=(mainstream-tas2783-dkms)
 INSTALL_STEP_PKGS=(proton-mainstream)
 # What the installer downloads from the signed online repository instead of the
 # image carrying it (mainstream-fetch-online), however the lists above name it.
-# The image boots linux-mainstream, and the performance kernel is fetched only
+# The image boots mainstream, and the performance kernel is fetched only
 # when Custom picks it. Its headers would otherwise come along as a provider of
 # linux-headers, which packages above depend on. A GTX 900 to Titan V card's
 # driver is fetched by --nvidia for that card alone; it provides nvidia-utils,
 # which would otherwise bring it along for every card. The legacy edition builds
 # and stages its own, which legacy_edition_keeps spares.
 LEGACY_NVIDIA_PKGS=(nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx opencl-nvidia-580xx)
-ONLINE_ONLY_PKGS=(zen-browser-bin linux-mainstream-performance linux-mainstream-performance-headers "${LEGACY_NVIDIA_PKGS[@]}")
+ONLINE_ONLY_PKGS=(zen-browser-bin mainstream-performance mainstream-performance-headers "${LEGACY_NVIDIA_PKGS[@]}")
 declare -a LOCAL_BUILT_PKGS=()
 legacy_edition_keeps() {  # <package>
     [[ "${NVIDIA_PROFILE:-false}" == true && " ${LEGACY_NVIDIA_PKGS[*]} " == *" $1 "* ]]
@@ -2687,22 +2687,22 @@ verify_image_kernel() {
         [[ -z "$v" ]] \
             || die_rejecting_iso "The image installed Arch's $p $v, for a kernel it does not boot. A package in its list depends on $p by name."
     done
-    want=linux-mainstream
-    [[ -n "$(image_pkg_version linux-mainstream)" ]] \
-        || die_rejecting_iso "The image did not install linux-mainstream, the kernel it boots."
+    want=mainstream
+    [[ -n "$(image_pkg_version "$want")" ]] \
+        || die_rejecting_iso "The image did not install $want, the kernel it boots."
     for d in "$air"/usr/lib/modules/*/; do
-        [[ -r "${d}pkgbase" && "$(<"${d}pkgbase")" == linux-mainstream ]] && rel="${d%/}"
+        [[ -r "${d}pkgbase" && "$(<"${d}pkgbase")" == "$want" ]] && rel="${d%/}"
     done
     if [[ -z "$rel" ]] || ! find "$rel/updates/dkms" -name 'nvidia.ko*' -print -quit 2>/dev/null | grep -q .; then
-        die_rejecting_iso "The image carries no nvidia kernel module for linux-mainstream: the DKMS build produced nothing, so NVIDIA cards would start the live session on software rendering."
+        die_rejecting_iso "The image carries no nvidia kernel module for $want: the DKMS build produced nothing, so NVIDIA cards would start the live session on software rendering."
     fi
-    success "Verified the image carries a built nvidia kernel module for linux-mainstream."
+    success "Verified the image carries a built nvidia kernel module for $want."
     # Packages that depend on linux-headers by name would otherwise pull in
     # Arch's headers for a kernel the system does not have.
     if ! awk '/^%PROVIDES%$/ { p = 1; next } /^$/ { p = 0 }
               p && /^linux-headers([<>=]|$)/ { found = 1 } END { exit !found }' \
-            "$air"/var/lib/pacman/local/linux-mainstream-headers-[0-9]*/desc 2>/dev/null; then
-        why="The image's linux-mainstream-headers does not provide linux-headers, so a package that depends on linux-headers installs Arch's headers for a kernel the system does not have. Build again once [mainstream] publishes headers that provide it."
+            "$air"/var/lib/pacman/local/"$want"-headers-[0-9]*/desc 2>/dev/null; then
+        why="The image's $want-headers does not provide linux-headers, so a package that depends on linux-headers installs Arch's headers for a kernel the system does not have. Build again once [mainstream] publishes headers that provide it."
         [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
         warn "$why"
     fi
@@ -2715,7 +2715,7 @@ verify_image_kernel() {
         # package as everyone else's, so a build before [mainstream] carries a
         # kernel with them would make a MacBook image that cannot drive a T2.
         if ! grep -qs -e '/t2bce_core\.ko' "$rel/modules.dep" "$rel/modules.builtin"; then
-            why="The image's linux-mainstream has no T2 drivers (t2bce_core), so the MacBook edition would start a T2 Mac without its keyboard, trackpad or audio."
+            why="The image's $want kernel has no T2 drivers (t2bce_core), so the MacBook edition would start a T2 Mac without its keyboard, trackpad or audio."
             [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
             warn "$why"
         else
@@ -2750,10 +2750,14 @@ verify_staged_wl() {
 # each one adds a few hundred MiB to every download of the image. A store an
 # earlier package phase filled for another edition can still hold one.
 verify_store_kernels() {
-    local store="${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs" pat f extra=() why
-    pat='linux-mainstream-performance'
-    for f in "$store/$pat"*.pkg.tar.zst; do
-        [[ -f "$f" ]] && extra+=("${f##*/}")
+    local store="${WORK_DIR}/x86_64/airootfs/usr/local/share/pkgs" name f extra=() why
+    # By name: mainstream-* would also match mainstream-system and the rest. A
+    # store an earlier build filled can still hold them under their linux- names.
+    for name in mainstream-performance mainstream-performance-eac \
+            linux-mainstream linux-mainstream-performance linux-mainstream-performance-eac; do
+        for f in "$store/$name"-[0-9]*.pkg.tar.zst "$store/$name"-headers-[0-9]*.pkg.tar.zst; do
+            [[ -f "$f" ]] && extra+=("${f##*/}")
+        done
     done
     if (( ${#extra[@]} == 0 )); then
         success "Verified the image's package store carries no kernel the image does not boot."
@@ -2783,8 +2787,8 @@ info "════════════════════════�
 # install the image's own packages from.
 compgen -G "$PKG_OUTPUT_DIR/*.pkg.tar.zst" > /dev/null \
     || die "The bundled repo at $PKG_OUTPUT_DIR holds no packages. Run the build with --refresh to fill it."
-if ! repo_has_pkg "$PKG_OUTPUT_DIR" linux-mainstream; then
-    die "The bundled repo at $PKG_OUTPUT_DIR has no linux-mainstream, the kernel this image boots. Run the build with --refresh to download it."
+if ! repo_has_pkg "$PKG_OUTPUT_DIR" mainstream; then
+    die "The bundled repo at $PKG_OUTPUT_DIR has no mainstream, the kernel this image boots. Run the build with --refresh to download it."
 fi
 
 # Fix the build-time pacman.conf to point to the actual output directory. Done

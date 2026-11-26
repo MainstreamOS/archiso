@@ -28,10 +28,10 @@ mkpkg() {  # name version base [depends] [provides]
         [[ -n "${5:-}" ]] && printf '%%PROVIDES%%\n%s\n\n' "${5// /$'\n'}"
     } > "$d/desc"
 }
-mkpkg linux-mainstream 7.3.6-1 linux-mainstream
-mkpkg linux-mainstream-headers 7.3.6-1 linux-mainstream "" "linux-headers=7.3.6"
-mkpkg linux-mainstream-performance 7.3.6-1 linux-mainstream-performance
-mkpkg linux-mainstream-performance-headers 7.3.6-1 linux-mainstream-performance "" "linux-headers=7.3.6"
+mkpkg mainstream 7.3.6-1 mainstream
+mkpkg mainstream-headers 7.3.6-1 mainstream "" "linux-headers=7.3.6"
+mkpkg mainstream-performance 7.3.6-1 mainstream-performance
+mkpkg mainstream-performance-headers 7.3.6-1 mainstream-performance "" "linux-headers=7.3.6"
 mkpkg mainstream-tas2783-dkms 1.0-1 mainstream-tas2783-dkms "dkms linux-headers"
 mkpkg proton-mainstream 10.0-1 proton-mainstream
 mkpkg zen-browser-bin 1.0-1 zen-browser-bin
@@ -57,18 +57,18 @@ sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' '; }
 LEGACY_NV="lib32-nvidia-580xx-utils libxnvctrl-580xx nvidia-580xx-dkms nvidia-580xx-settings nvidia-580xx-utils opencl-nvidia-580xx"
 # shellcheck disable=SC2086
 chk store-standard "$(unneeded)" \
-    "$(sorted apple-t2-audio-config $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
+    "$(sorted apple-t2-audio-config $LEGACY_NV mainstream-performance mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
 # The MacBook edition keeps Mainstream's kernel like the standard one, and its T2 packages too.
 MACBOOK_PROFILE=true
 # shellcheck disable=SC2086
 chk store-macbook "$(unneeded)" \
-    "$(sorted $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers unseeded-thing zen-browser-bin)"
+    "$(sorted $LEGACY_NV mainstream-performance mainstream-performance-headers unseeded-thing zen-browser-bin)"
 MACBOOK_PROFILE=false
 # The legacy edition names the driver's AUR bases; it builds and stages them itself.
 AUR_DEPS=(nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings nvidia-470xx-utils lib32-nvidia-470xx-utils nvidia-390xx-utils)
 # shellcheck disable=SC2086
 chk store-legacy-edition "$(unneeded)" \
-    "$(sorted apple-t2-audio-config $LEGACY_NV linux-mainstream-performance linux-mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
+    "$(sorted apple-t2-audio-config $LEGACY_NV mainstream-performance mainstream-performance-headers t2fanrd unseeded-thing zen-browser-bin)"
 AUR_DEPS=(); MACBOOK_PROFILE=true
 # Not downloaded on any edition, and only the legacy edition keeps the copies it
 # built itself in the store.
@@ -94,13 +94,13 @@ installed() {  # name version [provides]
 }
 standard_image() {
     rm -rf "$WORK_DIR"
-    installed linux-mainstream 7.3.6-1
-    installed linux-mainstream-headers 7.3.6-1 linux-headers=7.3.6
+    installed mainstream 7.3.6-1
+    installed mainstream-headers 7.3.6-1 linux-headers=7.3.6
     mkdir -p "$AIR/usr/lib/modules/7.3.6-1-mainstream/updates/dkms" "$AIR/var/lib/dkms" "$BOOTDIR"
-    echo linux-mainstream > "$AIR/usr/lib/modules/7.3.6-1-mainstream/pkgbase"
+    echo mainstream > "$AIR/usr/lib/modules/7.3.6-1-mainstream/pkgbase"
     : > "$AIR/usr/lib/modules/7.3.6-1-mainstream/updates/dkms/nvidia.ko.zst"
-    : > "$BOOTDIR/vmlinuz-linux-mainstream"
-    : > "$BOOTDIR/initramfs-linux-mainstream.img"
+    : > "$BOOTDIR/vmlinuz-mainstream"
+    : > "$BOOTDIR/initramfs-mainstream.img"
 }
 verdict() { local out; out=$( ( "$@" ) 2>&1 ); [[ "$out" == *REJECTED:* ]] && echo rejected || echo passed; }
 
@@ -116,10 +116,17 @@ standard_image; installed linux 6.18.1.arch1-1
 chk image-arch-kernel "$(verdict verify_image_kernel)" "rejected"
 standard_image; rm -f "$AIR/usr/lib/modules/7.3.6-1-mainstream/updates/dkms/nvidia.ko.zst"
 chk image-no-nvidia "$(verdict verify_image_kernel)" "rejected"
-standard_image; : > "$BOOTDIR/vmlinuz-linux-mainstream-performance"
+standard_image; : > "$BOOTDIR/vmlinuz-mainstream-performance"
 chk image-extra-boot-kernel "$(verdict verify_image_kernel)" "rejected"
+# Headers that do not provide linux-headers are a warning on a test build.
+standard_image; rm -rf "$AIR/var/lib/pacman/local/mainstream-headers-"*; installed mainstream-headers 7.3.6-1
+chk image-headers-no-provide "$( (verify_image_kernel) 2>&1 | grep -c 'does not provide linux-headers')" "1"
+# An image built from the packages under their old names boots no kernel by today's name.
+standard_image; rm -rf "$AIR/var/lib/pacman/local/mainstream-"*; installed linux-mainstream 7.3.6-1
+echo linux-mainstream > "$AIR/usr/lib/modules/7.3.6-1-mainstream/pkgbase"
+chk image-old-name "$(verdict verify_image_kernel)" "rejected"
 
-# The MacBook edition boots linux-mainstream like the standard one, with the T2
+# The MacBook edition boots mainstream like the standard one, with the T2
 # packages installed and the T2 drivers in its kernel.
 macbook_image() {
     standard_image
@@ -156,17 +163,28 @@ STORE="$AIR/usr/local/share/pkgs"
 store_with() { rm -rf "$STORE"; mkdir -p "$STORE"; local f; for f in "$@"; do : > "$STORE/$f-7.3.6-1-x86_64.pkg.tar.zst"; done; }
 store_verdict() { ( verify_store_kernels ) 2>&1 | grep -oE '^(REJECTED|warn|ok)' | head -1; }
 MACBOOK_PROFILE=false; RELEASE_VERSION=""
-store_with linux-mainstream-headers
+store_with mainstream-headers
 chk store-standard-own "$(store_verdict)" "ok"
-store_with linux-mainstream-performance-headers
+store_with mainstream-performance-headers
 chk store-standard-perf "$(store_verdict)" "warn"
 RELEASE_VERSION=4.2.0
 chk store-standard-perf-release "$(store_verdict)" "REJECTED"
 MACBOOK_PROFILE=true; RELEASE_VERSION=""
-store_with linux-mainstream-headers t2fanrd
+store_with mainstream-headers t2fanrd
 chk store-macbook-own "$(store_verdict)" "ok"
-store_with linux-mainstream-performance-headers
+store_with mainstream-performance-headers
 chk store-macbook-perf "$(store_verdict)" "warn"
+MACBOOK_PROFILE=false
+# By name: Mainstream's other packages are not kernels, and a store from before
+# the rename can still hold the old kernel packages.
+store_with mainstream mainstream-headers mainstream-system mainstream-performance-tools
+chk store-other-packages "$(store_verdict)" "ok"
+store_with mainstream-performance-eac
+chk store-eac "$(store_verdict)" "warn"
+store_with linux-mainstream-headers
+chk store-old-name "$(store_verdict)" "warn"
+store_with linux-mainstream-performance
+chk store-old-perf "$(store_verdict)" "warn"
 
 # ---- 4. the MacBook overlay adds the T2 pieces to the standard profile and puts it back
 eval "$(awk "/^_MACBOOK_TEST_FIRMWARE_REPO='\$/,/^'\$/" "$BUILD")"
@@ -188,7 +206,7 @@ unchanged() { cmp -s "$SRC/$1" "$PROFILE_DIR/$1" && echo yes || echo no; }
 NVIDIA_PROFILE=false; MACBOOK_PROFILE=true; MACBOOK_TEST_FIRMWARE=false
 fresh_profile
 apply_profile_overlay >/dev/null
-chk overlay-keeps-kernel "$(listed linux-mainstream) $(listed linux-mainstream-headers) $(listed nvidia-open-dkms)" "yes yes yes"
+chk overlay-keeps-kernel "$(listed mainstream) $(listed mainstream-headers) $(listed nvidia-open-dkms)" "yes yes yes"
 chk overlay-adds-t2 "$(listed t2fanrd) $(listed apple-t2-audio-config)" "yes yes"
 chk overlay-no-t2-kernel "$(grep -c 'linux-t2' "$PROFILE_DIR/packages.x86_64")" "0"
 chk overlay-no-apple-firmware "$(listed apple-bcm-firmware)" "no"

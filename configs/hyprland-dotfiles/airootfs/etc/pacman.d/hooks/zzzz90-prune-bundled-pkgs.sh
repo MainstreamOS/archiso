@@ -15,9 +15,9 @@ db="$dir/mainstream.db.tar.gz"
 # without matching ones post-install-boot takes it from the repositories.
 # By exact name: pacman -Q answers with a provider.
 wl_unused=true
-hver=$(pacman -Q linux-mainstream-headers 2>/dev/null) || hver=""
-if [[ "$hver" == "linux-mainstream-headers "* \
-      && "$(pacman -Q linux-mainstream 2>/dev/null)" == "linux-mainstream ${hver#* }" ]]; then
+hver=$(pacman -Q mainstream-headers 2>/dev/null) || hver=""
+if [[ "$hver" == "mainstream-headers "* \
+      && "$(pacman -Q mainstream 2>/dev/null)" == "mainstream ${hver#* }" ]]; then
     wl_unused=false
 elif [[ -n "$hver" ]]; then
     echo "The live root's $hver does not match its kernel, so the offline wl driver is left out."

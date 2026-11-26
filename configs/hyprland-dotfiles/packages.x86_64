@@ -4,8 +4,8 @@
 # ==============================================================================
 base
 base-devel
-linux-mainstream
-linux-mainstream-headers
+mainstream
+mainstream-headers
 linux-firmware
 linux-firmware-marvell
 sudo
