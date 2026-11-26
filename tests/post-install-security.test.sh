@@ -104,10 +104,10 @@ chk limine-fresh-no-boot-order \
     "$(grep -q '^BOOT_ORDER=' "$LIMINE_DEFAULTS_FILE" && echo yes || echo no)" "no"
 
 # 4d. The kernel order post-install-boot sets survives a later rewrite.
-printf 'BOOT_ORDER="linux-mainstream, *, *fallback, Snapshots"\n' >> "$LIMINE_DEFAULTS_FILE"
+printf 'BOOT_ORDER="mainstream, *, *fallback, Snapshots"\n' >> "$LIMINE_DEFAULTS_FILE"
 write_limine_defaults
 chk limine-keep-boot-order \
-    "$(grep -cxF 'BOOT_ORDER="linux-mainstream, *, *fallback, Snapshots"' "$LIMINE_DEFAULTS_FILE")" "1"
+    "$(grep -cxF 'BOOT_ORDER="mainstream, *, *fallback, Snapshots"' "$LIMINE_DEFAULTS_FILE")" "1"
 
 # ---------------------------------------------------------------------------
 # 5. _apply_hibernation_policy / _setup_btrfs_swapfile_hibernation

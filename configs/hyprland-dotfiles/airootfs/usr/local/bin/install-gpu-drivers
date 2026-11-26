@@ -465,7 +465,7 @@ nvidia_ensure_module_for_target() {
 CHOICES_LIB="${CHOICES_LIB:-/usr/local/lib/mainstream-install-choices.sh}"
 # shellcheck source=/dev/null
 [[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
-CHOSEN_KERNELS=(linux-mainstream)
+CHOSEN_KERNELS=(mainstream)
 if declare -F chosen_kernels >/dev/null; then
     read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
 fi

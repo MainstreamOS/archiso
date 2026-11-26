@@ -39,6 +39,10 @@ if ! boot_layout_detect; then
 fi
 
 # --- 0. Kernel & Environment Setup ---
+# The kernel names and the kernels picked in the app list.
+CHOICES_LIB=/usr/local/lib/mainstream-install-choices.sh
+# shellcheck source=/dev/null
+[[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
 # Which kernel this image carries. Every path below puts the kernel's name in a
 # filename, so the name is read rather than assumed. pkgbase is what pacman
 # recorded for the package owning the modules, which is the only source that
@@ -48,7 +52,7 @@ KERNEL_PKG="$(for d in /usr/lib/modules/*/; do
     [[ -r "$d/pkgbase" ]] || continue
     printf '%s %s\n' "$(basename "$d")" "$(<"$d/pkgbase")"
 done | sort -V | tail -n1 | cut -d' ' -f2)"
-[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=linux-mainstream
+[[ -n "$KERNEL_PKG" ]] || KERNEL_PKG=mainstream
 info "Target kernel package: $KERNEL_PKG"
 
 info "Removing archiso mkinitcpio configs..."
@@ -66,7 +70,7 @@ rm -f /etc/mkinitcpio.d/*.preset || true
 # Another edition's kernel comes from the repos when there is a connection, so
 # it moves in lockstep with the driver packages install-gpu-drivers upgrades.
 KERNEL_REINSTALLED=false
-if [[ "$KERNEL_PKG" != linux-mainstream* ]] \
+if ! { declare -F is_mainstream_kernel >/dev/null && is_mainstream_kernel "$KERNEL_PKG"; } \
    && curl -fsS --max-time 8 -o /dev/null https://archlinux.org &>/dev/null; then
     info "Network available — reinstalling the $KERNEL_PKG kernel..."
     # The --overwrite "*" ensures we clean up any symlink mess from the live environment
@@ -106,10 +110,7 @@ fi
 
 # The other chosen kernels go in before the GPU step, which builds the NVIDIA
 # module for every kernel; post-install-boot removes the ones not chosen.
-CHOICES_LIB=/usr/local/lib/mainstream-install-choices.sh
-# shellcheck source=/dev/null
-[[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
-CHOSEN_KERNELS=(linux-mainstream)
+CHOSEN_KERNELS=(mainstream)
 if declare -F chosen_kernels >/dev/null; then
     read -ra CHOSEN_KERNELS <<< "$(chosen_kernels)"
 fi

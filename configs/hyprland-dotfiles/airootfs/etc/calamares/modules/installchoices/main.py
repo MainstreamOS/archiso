@@ -13,7 +13,9 @@ FETCH_ONLINE = "/usr/local/bin/mainstream-fetch-online"
 CPUINFO = "/proc/cpuinfo"
 PCI_DEVICES = "/sys/bus/pci/devices"
 # Order of preference: the first one installed becomes the default.
-KERNELS = ("linux-mainstream-performance", "linux-mainstream", "linux")
+KERNELS = ("mainstream-performance", "mainstream", "linux")
+# Mainstream's kernels, by name: mainstream* would also match mainstream-system.
+MAINSTREAM_KERNELS = ("mainstream-performance", "mainstream", "mainstream-performance-eac")
 PROTONS = ("mainstream", "ge", "cachyos")
 METHODS = ("default", "custom", "console", "os-only", "developer", "gaming")
 # install-limine's room on the boot partition for each kernel it adds.
@@ -59,19 +61,19 @@ def resolve(method, items, v3):
     """(app source, kernels, protons). Without the Custom app list the install
     keeps today's defaults."""
     if method != "custom":
-        return "native", ["linux-mainstream"], ["mainstream"]
+        return "native", ["mainstream"], ["mainstream"]
     apps = "flatpak" if "apps:flatpak" in items else "native"
     kernels = []
     for k in KERNELS:
         if "kernel:" + k not in items:
             continue
         # A CPU without x86-64-v3 would not boot the performance kernel.
-        if k == "linux-mainstream-performance" and not v3:
-            k = "linux-mainstream"
+        if k == "mainstream-performance" and not v3:
+            k = "mainstream"
         if k not in kernels:
             kernels.append(k)
     protons = [p for p in PROTONS if "proton:" + p in items]
-    return apps, kernels or ["linux-mainstream"], protons
+    return apps, kernels or ["mainstream"], protons
 
 
 def has_nvidia_display():
@@ -94,6 +96,13 @@ def has_nvidia_display():
     return False
 
 
+def kernel_name(name):
+    """A kernel's package name, also when a module tree names it with the old linux- prefix."""
+    if name.startswith("linux-") and name[len("linux-"):] in MAINSTREAM_KERNELS:
+        return name[len("linux-"):]
+    return name
+
+
 def target_kernels(root):
     """The packages of the kernels whose modules are in the target."""
     modules = os.path.join(root, "usr/lib/modules")
@@ -105,7 +114,7 @@ def target_kernels(root):
     for d in entries:
         try:
             with open(os.path.join(modules, d, "pkgbase")) as f:
-                name = f.read().strip()
+                name = kernel_name(f.read().strip())
         except OSError:
             continue
         if name and name not in names:
@@ -152,7 +161,7 @@ def run():
     added = [k for k in kernels if k not in present]
     free = boot_free_mib(root)
     for k in added:
-        if not k.startswith("linux-mainstream"):
+        if k not in MAINSTREAM_KERNELS:
             continue
         # install-limine would leave it out, so the download would be wasted.
         if free is not None and free < KERNEL_MIN_FREE_MIB * (added.index(k) + 1):

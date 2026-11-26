@@ -16,6 +16,9 @@ log() { printf '[fetch-online] %s\n' "$*"; }
 ROOT="${1:-}"
 [[ -n "$ROOT" && -d "$ROOT" ]] || { log "usage: ${0##*/} ROOT [--kernel NAME] [--nvidia] [PACKAGE...]"; exit 2; }
 shift
+CHOICES_LIB="${CHOICES_LIB:-/usr/local/lib/mainstream-install-choices.sh}"
+# shellcheck source=/dev/null
+[[ -r "$CHOICES_LIB" ]] && source "$CHOICES_LIB"
 wanted=()
 nvidia=false
 while (( $# )); do
@@ -23,7 +26,10 @@ while (( $# )); do
         --kernel)
             k="${2:-}"
             shift 2 || shift
-            [[ "$k" == linux-mainstream* ]] && wanted+=("$k" "$k-headers")
+            if declare -F is_mainstream_kernel >/dev/null && is_mainstream_kernel "$k"; then
+                k="$(mainstream_kernel_name "$k")"
+                wanted+=("$k" "$k-headers")
+            fi
             ;;
         --nvidia) nvidia=true; shift ;;
         *) wanted+=("$1"); shift ;;

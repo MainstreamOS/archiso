@@ -88,7 +88,7 @@ chk nokernel-recorded "$( [[ "${GPU_FAILURES[*]}" == *"which kernel"* ]] && echo
 # ---- 7. the image's DKMS driver is installed: no prebuilt step and no swap,
 # just the headers of the kernel's own package and a DKMS build for it
 gpu_target_kernel() { echo "$K"; }
-mkdir -p "$MAINSTREAM_MODULES_DIR/$K"; echo linux-mainstream > "$MAINSTREAM_MODULES_DIR/$K/pkgbase"
+mkdir -p "$MAINSTREAM_MODULES_DIR/$K"; echo mainstream > "$MAINSTREAM_MODULES_DIR/$K/pkgbase"
 OPEN_DKMS=1; BUILT=0; PAC=(); DK=()
 pacman() { PAC+=("$*"); return 0; }
 dkms() {
@@ -103,7 +103,7 @@ _gpu_modinfo() { [[ $BUILT == 1 ]]; }
 GPU_FAILURES=(); nvidia_ensure_module_for_target; rc=$?
 chk opendkms-rc "$rc" "0"; chk opendkms-nofail "${#GPU_FAILURES[@]}" "0"
 chk opendkms-pacman-once "${#PAC[@]}" "1"
-chk opendkms-own-headers "${PAC[0]:-}" "-S --noconfirm --needed linux-mainstream-headers dkms"
+chk opendkms-own-headers "${PAC[0]:-}" "-S --noconfirm --needed mainstream-headers dkms"
 chk opendkms-no-prebuilt "$( [[ "${PAC[*]}" == *"-Sy"* || "${PAC[*]}" == *"-Rdd"* || "${PAC[*]}" == *"-Sw"* || "${PAC[*]}" == *"nvidia-open"* ]] && echo yes || echo no )" "no"
 chk opendkms-builds-target "$( [[ " ${DK[*]} " == *"install -m nvidia -v 595.71 -k $K "* ]] && echo yes || echo no )" "yes"
 
@@ -207,7 +207,7 @@ unset -f gpu_nvidia_mark_pending
 # ---- 11. every chosen kernel, Arch's included, gets the module or comes back out
 eval "$(awk '/^nvidia_chosen_kernel\(\) \{/,/^\}/' "$SRC")"
 export MAINSTREAM_MODULES_DIR="$TMP/chosen-modules"
-for _r in 7.3.6-1-mainstream:linux-mainstream 6.18.1-arch1-1:linux; do
+for _r in 7.3.6-1-mainstream:mainstream 6.18.1-arch1-1:linux; do
     mkdir -p "$MAINSTREAM_MODULES_DIR/${_r%%:*}"
     : > "$MAINSTREAM_MODULES_DIR/${_r%%:*}/vmlinuz"
     echo "${_r#*:}" > "$MAINSTREAM_MODULES_DIR/${_r%%:*}/pkgbase"
@@ -219,7 +219,7 @@ _gpu_modinfo() { return 1; }
 _gpu_module_file() { [[ -n "$(find "$MAINSTREAM_MODULES_DIR/$1" -name 'nvidia.ko*' -print -quit 2>/dev/null)" ]]; }
 GPU_INSTALL_LIB="$TMP/gpu-driver-install.sh"
 echo 'gpu_nvidia_modules_for_added_kernel() { ADDED+=("$1"); }' > "$GPU_INSTALL_LIB"
-INSTALLED="linux-mainstream linux-mainstream-headers linux linux-headers"; RM_RC=0
+INSTALLED="mainstream mainstream-headers linux linux-headers"; RM_RC=0
 pacman() {
     local p
     if [[ $1 == -Qq ]]; then
@@ -230,11 +230,11 @@ pacman() {
     return "$RM_RC"
 }
 PAC=(); ADDED=(); GPU_FAILURES=()
-nvidia_chosen_kernel linux-mainstream
-chk chosen-ready-asked "${ADDED[*]:-none}" "linux-mainstream"
+nvidia_chosen_kernel mainstream
+chk chosen-ready-asked "${ADDED[*]:-none}" "mainstream"
 chk chosen-ready-kept "${PAC[*]:-none}" "none"
 PAC=(); ADDED=(); GPU_FAILURES=()
-nvidia_chosen_kernel linux-mainstream-performance
+nvidia_chosen_kernel mainstream-performance
 chk chosen-absent-untouched "${ADDED[*]:-none} ${PAC[*]:-none}" "none none"
 PAC=(); ADDED=(); GPU_FAILURES=()
 nvidia_chosen_kernel linux
@@ -306,10 +306,10 @@ find_local_pkgs() { :; }
 e2e() {  # e2e <generation> <offered> <dkms builds>
     rm -rf "${MAINSTREAM_MODULES_DIR:?}" "${TMP:?}/e2e-state"; : > "$TMP/e2e-pac.log"
     mkdir -p "$MAINSTREAM_MODULES_DIR/$KM/build" "$TMP/e2e-state"
-    : > "$MAINSTREAM_MODULES_DIR/$KM/vmlinuz"; echo linux-mainstream > "$MAINSTREAM_MODULES_DIR/$KM/pkgbase"
+    : > "$MAINSTREAM_MODULES_DIR/$KM/vmlinuz"; echo mainstream > "$MAINSTREAM_MODULES_DIR/$KM/pkgbase"
     : > "$MAINSTREAM_MODULES_DIR/$KM/nvidia.ko.zst"
-    INSTALLED=" linux-mainstream linux-mainstream-headers dkms nvidia-open-dkms nvidia-utils "
-    REPO="linux-mainstream linux-mainstream-headers dkms egl-wayland"
+    INSTALLED=" mainstream mainstream-headers dkms nvidia-open-dkms nvidia-utils "
+    REPO="mainstream mainstream-headers dkms egl-wayland"
     [[ "$2" == offered ]] && REPO+=" $(set_of 580xx)"
     DKMS_OK="$3"; NVIDIA_GEN="$1"; INST=(); GPU_FAILURES=()
     gpu_classify_nvidia_driver
@@ -319,7 +319,7 @@ _gpu_installed_nvidia_branch() { local b; for b in 580xx 470xx 390xx; do has_pkg
 e2e maxwell offered 1
 chk e2e-online-sequence "$(cat "$TMP/e2e-pac.log")" "-Sw $(set_of 580xx)
 -Rdd nvidia-open-dkms nvidia-utils
--S linux-mainstream linux-mainstream-headers dkms
+-S mainstream mainstream-headers dkms
 -S $(set_of 580xx) egl-wayland"
 chk e2e-online-module "$(nvidia_module_present $KM && echo yes || echo no)" "yes"
 chk e2e-online-family "$NVIDIA_DRIVER_FAMILY $(has_pkg nvidia-utils && echo mainline-left)" "nvidia-580xx "
@@ -334,24 +334,24 @@ chk e2e-offline-said "$( [[ "${GPU_FAILURES[*]}" == *"next system update"* ]] &&
 # The module does not build for the image's kernel: nothing NVIDIA is left, the
 # card falls to nouveau and the kernel stays, since no kernel has a module.
 e2e maxwell offered 0
-chk e2e-buildfail-nothing-left "$INSTALLED" " linux-mainstream linux-mainstream-headers dkms egl-wayland "
+chk e2e-buildfail-nothing-left "$INSTALLED" " mainstream mainstream-headers dkms egl-wayland "
 chk e2e-buildfail-family "$NVIDIA_DRIVER_FAMILY" "nouveau"
 chk e2e-buildfail-nouveau "${INST[*]:-none}" "mesa lib32-mesa"
 chk e2e-buildfail-no-pending "$( [[ -e "$GPU_NVIDIA_PENDING" ]] && echo there || echo none )" "none"
 chk e2e-buildfail-said "$( [[ "${GPU_FAILURES[*]}" == *"nvidia-580xx did not build for any installed kernel"* ]] && echo yes || echo no )" "yes"
-chk e2e-buildfail-kernel-ready "$(gpu_kernel_nvidia_ready linux-mainstream && echo yes || echo no)" "yes"
+chk e2e-buildfail-kernel-ready "$(gpu_kernel_nvidia_ready mainstream && echo yes || echo no)" "yes"
 # Kepler and Fermi stay on nouveau, also where the legacy edition's image left its
 # 580xx on the target: that driver cannot drive them and comes off with the rest.
 for _g in kepler fermi; do
     : > "$TMP/e2e-pac.log"
-    INSTALLED=" linux-mainstream dkms $(set_of 580xx) "; NVIDIA_GEN="$_g"
+    INSTALLED=" mainstream dkms $(set_of 580xx) "; NVIDIA_GEN="$_g"
     gpu_classify_nvidia_driver
     chk "e2e-$_g-nouveau" "$NVIDIA_DRIVER_FAMILY ${#NVIDIA_LOCAL_PKGS[@]}" "nouveau 0"
     remove_nvidia_driver >/dev/null 2>&1
     chk "e2e-$_g-edition-driver-off" "$(cat "$TMP/e2e-pac.log")" "-Rns $(set_of 580xx)"
 done
 # A Maxwell card there keeps the edition's driver.
-INSTALLED=" linux-mainstream dkms $(set_of 580xx) "; NVIDIA_GEN=maxwell
+INSTALLED=" mainstream dkms $(set_of 580xx) "; NVIDIA_GEN=maxwell
 gpu_classify_nvidia_driver
 chk e2e-maxwell-edition "$NVIDIA_DRIVER_FAMILY" "nvidia-580xx"
 unset -f pacman dkms find_local_pkgs _gpu_installed_nvidia_branch
@@ -408,15 +408,20 @@ printf '#!/bin/sh\nexit 22\n' > "$TMP/live-bin/curl"; chmod +x "$TMP/live-bin/cu
 fetch() {  # fetch <lspci> <args...>; prints fetch-online's own lines
     local lspci="$1"; shift
     FIX_LSPCI="$lspci" GPU_LIB="$TMP/live-lib.sh" PATH="$TMP/live-bin:$PATH" \
+        CHOICES_LIB="$AIROOTFS/usr/local/lib/mainstream-install-choices.sh" \
         bash "$FETCH" "$TMP/fetch-root" "$@" 2>&1 | sed 's/^\[fetch-online\] //' | tr '\n' ';'
 }
 mkdir -p "$TMP/fetch-root"
 chk fetch-maxwell "$(fetch "$GTX1060" --nvidia)" \
     "the NVIDIA card needs nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings libxnvctrl-580xx.;could not reach the [mainstream] repository; using what the image carries.;"
 # Kepler stays on nouveau: only the kernel is fetched.
-chk fetch-kepler-with-kernel "$(fetch "$GT710" --kernel linux-mainstream-performance --nvidia)" \
+chk fetch-kepler-with-kernel "$(fetch "$GT710" --kernel mainstream-performance --nvidia)" \
     "could not reach the [mainstream] repository; using what the image carries.;"
 chk fetch-kepler "$(fetch "$GT710" --nvidia)" "nothing to fetch.;"
+# A kernel named the old way is still fetched; a package that is not a kernel is not.
+chk fetch-old-kernel-name "$(fetch "$GT710" --kernel linux-mainstream-performance)" \
+    "could not reach the [mainstream] repository; using what the image carries.;"
+chk fetch-not-a-kernel "$(fetch "$GT710" --kernel mainstream-system)" "nothing to fetch.;"
 chk fetch-turing "$(fetch "$RTX2080" --nvidia)" "nothing to fetch.;"
 chk fetch-not-asked "$(fetch "$GT710")" "nothing to fetch.;"
 # The legacy edition stages the branch in the store: nothing to download.

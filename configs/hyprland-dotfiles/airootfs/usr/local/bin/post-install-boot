@@ -580,7 +580,7 @@ if [[ -r "$MAC_LIB" ]]; then
         # serve a wired install without them.
         if mac_needs_wl_driver; then
             wl_files=()
-            if [[ "$(pacman -Qq linux-mainstream-headers 2>/dev/null)" == linux-mainstream-headers ]]; then
+            if [[ "$(pacman -Qq mainstream-headers 2>/dev/null)" == mainstream-headers ]]; then
                 for f in /usr/local/share/pkgs/broadcom-wl-dkms-[0-9]*.pkg.tar.zst; do
                     [[ -f "$f" ]] && wl_files+=("$f")
                 done
@@ -701,7 +701,7 @@ done
 # goes, the image's own included, before the boot loader's hook below would give
 # it an entry.
 if [[ -n "$CHOSEN_KERNEL" ]]; then
-    for _k in linux linux-mainstream linux-mainstream-performance; do
+    for _k in "${INSTALLER_KERNELS[@]}"; do
         [[ " ${CHOSEN_KERNELS[*]} " == *" $_k "* ]] && continue
         [[ "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] || continue
         _kernel_pkgs=("$_k")
@@ -734,7 +734,9 @@ done
 # Mainstream's kernels arrived while mkinitcpio's own hook was still in place,
 # which built images in /boot that nothing uses: limine-mkinitcpio below builds
 # their boot images itself, and the preset above rebuilds the system's own.
-rm -f /boot/initramfs-linux-mainstream*.img
+for _k in "${MAINSTREAM_KERNEL_PACKAGES[@]}"; do
+    rm -f "/boot/initramfs-$_k.img" "/boot/initramfs-$_k-fallback.img"
+done
 
 # ---------------------------------------------------------------------------
 # ENSURE VALID MACHINE-ID (required by limine-mkinitcpio-hook)
@@ -761,7 +763,7 @@ write_limine_defaults "$BOOT_PATH"
 # block and so is the entry default_entry starts. Arch's kernel is picked first
 # only when no Mainstream kernel stays, so the order is left to the boot loader.
 MAINSTREAM_KERNEL=""
-[[ "$CHOSEN_KERNEL" == linux-mainstream* ]] && MAINSTREAM_KERNEL="$CHOSEN_KERNEL"
+is_mainstream_kernel "$CHOSEN_KERNEL" && MAINSTREAM_KERNEL="$CHOSEN_KERNEL"
 MAINSTREAM_KERNEL_DEFAULT=false
 if [[ -n "$MAINSTREAM_KERNEL" ]]; then
     MAINSTREAM_KERNEL_DEFAULT=true
@@ -845,7 +847,10 @@ while :; do
     elif [[ "$IS_UEFI" == true ]]; then
         # limine-mkinitcpio skips a kernel whose UKI fails to build, and a reused
         # partition can hold an older one, so only a pin that matches proves this build.
+        # Named after CUSTOM_UKI_NAME and the kernel, or the kernel alone when its name
+        # starts with that prefix, as limine-entry-tool does (mainstream.efi).
         _uki="/boot/efi/EFI/Linux/mainstream_${KERNEL_PKG}.efi"
+        [[ "$KERNEL_PKG" == mainstream* ]] && _uki="/boot/efi/EFI/Linux/${KERNEL_PKG}.efi"
         _uki_rel=${_uki#/boot/efi/}
         _pins=$(grep -ioE "^[[:space:]]*(image_)?path:[[:space:]]*boot\(\):/+${_uki_rel//./\\.}#[0-9a-f]{128}" \
             /boot/efi/limine.conf 2>/dev/null) || _pins=""
@@ -884,7 +889,7 @@ fi
 [[ -z "$_fresh_conf" ]] || rm -f "$_fresh_conf"
 # install-limine named its placeholder entry after the image's kernel, which this
 # step or the GPU step can remove, and limine-mkinitcpio only rewrites installed ones.
-for _k in linux linux-mainstream linux-mainstream-performance; do
+for _k in "${INSTALLER_KERNELS[@]}"; do
     [[ "$(pacman -Qq "$_k" 2>/dev/null)" == "$_k" ]] && continue
     _limine_drop_entry "$_k" "$BOOT_PATH/limine.conf" \
         && info "Removed the boot menu's placeholder entry for $_k."

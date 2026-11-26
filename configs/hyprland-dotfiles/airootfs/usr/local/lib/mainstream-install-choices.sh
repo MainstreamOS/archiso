@@ -1,9 +1,37 @@
 #!/usr/bin/env bash
-# The kernel, app source and Proton picked in the app list, which the
-# installchoices step writes before the boot loader step.
+# Mainstream's kernel names, and the kernel, app source and Proton picked in the
+# app list, which the installchoices step writes before the boot loader step.
 
 MAINSTREAM_CHOICES_FILE="${MAINSTREAM_CHOICES_FILE:-/etc/mainstream-install/choices.conf}"
 MAINSTREAM_CPUINFO="${MAINSTREAM_CPUINFO:-/proc/cpuinfo}"
+
+# Mainstream's kernel packages, the performance one first. Named by these lists,
+# never by a pattern: mainstream* also matches mainstream-system and the rest.
+MAINSTREAM_DEFAULT_KERNEL=mainstream
+MAINSTREAM_PERFORMANCE_KERNEL=mainstream-performance
+MAINSTREAM_KERNEL_PACKAGES=("$MAINSTREAM_PERFORMANCE_KERNEL" "$MAINSTREAM_DEFAULT_KERNEL" mainstream-performance-eac)
+# The kernels the installer offers, in order of preference.
+INSTALLER_KERNELS=("$MAINSTREAM_PERFORMANCE_KERNEL" "$MAINSTREAM_DEFAULT_KERNEL" linux)
+
+# mainstream_kernel_name NAME: the package name of a kernel, also when it is named
+# with the linux- prefix a choices file or an older image may still use.
+mainstream_kernel_name() {
+    case "$1" in
+        linux-mainstream|linux-mainstream-performance|linux-mainstream-performance-eac)
+            printf '%s\n' "${1#linux-}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# is_mainstream_kernel NAME: one of Mainstream's kernels, by either name.
+is_mainstream_kernel() {
+    local k name
+    name="$(mainstream_kernel_name "$1")"
+    for k in "${MAINSTREAM_KERNEL_PACKAGES[@]}"; do
+        [[ "$name" == "$k" ]] && return 0
+    done
+    return 1
+}
 
 # install_choice KEY DEFAULT ALLOWED...: the stored value when it is one of
 # ALLOWED, otherwise DEFAULT. Parsed rather than sourced: the file names packages.
@@ -49,6 +77,7 @@ install_choice_list() {
     line=" $(sed -n "s/^${key}=//p" "$MAINSTREAM_CHOICES_FILE" | tail -n1) "
     for allowed in "$@"; do
         for word in $line; do
+            [[ "$key" == KERNELS ]] && word="$(mainstream_kernel_name "$word")"
             [[ "$word" == "$allowed" ]] && { out+=("$allowed"); break; }
         done
     done
@@ -68,17 +97,17 @@ machine_has_t2() {
 # since such a machine would not boot, and an empty choice means Mainstream's.
 # A T2 Mac keeps Mainstream's as its default even when only Arch's was chosen.
 chosen_kernels() {
-    local k out=() seen=" "
-    for k in $(install_choice_list KERNELS linux-mainstream \
-            linux-mainstream-performance linux-mainstream linux); do
-        [[ "$k" == linux-mainstream-performance ]] && ! cpu_runs_x86_64_v3 && k=linux-mainstream
+    local k out=() seen=" " own=false
+    for k in $(install_choice_list KERNELS "$MAINSTREAM_DEFAULT_KERNEL" "${INSTALLER_KERNELS[@]}"); do
+        [[ "$k" == "$MAINSTREAM_PERFORMANCE_KERNEL" ]] && ! cpu_runs_x86_64_v3 && k=$MAINSTREAM_DEFAULT_KERNEL
         [[ "$seen" == *" $k "* ]] && continue
         seen+="$k "
         out+=("$k")
+        is_mainstream_kernel "$k" && own=true
     done
-    (( ${#out[@]} )) || out=(linux-mainstream)
-    if [[ " ${out[*]}" != *" linux-mainstream"* ]] && machine_has_t2; then
-        out=(linux-mainstream "${out[@]}")
+    (( ${#out[@]} )) || { out=("$MAINSTREAM_DEFAULT_KERNEL"); own=true; }
+    if [[ $own != true ]] && machine_has_t2; then
+        out=("$MAINSTREAM_DEFAULT_KERNEL" "${out[@]}")
     fi
     printf '%s\n' "${out[*]}"
 }
@@ -93,16 +122,17 @@ chosen_protons() {
 # it is installed, otherwise the newest Mainstream kernel. pkgbase is what pacman
 # recorded; uname would name the live kernel.
 installed_edition_kernel() {
-    local d own="" mainstream=""
+    local d base own="" mainstream=""
     for d in "${MAINSTREAM_MODULES_DIR:-/usr/lib/modules}"/*/; do
         [[ -r "$d/pkgbase" ]] || continue
-        if [[ "$(<"$d/pkgbase")" == linux-mainstream* ]]; then
-            mainstream+="$(basename "$d") $(<"$d/pkgbase")"$'\n'
+        base="$(<"$d/pkgbase")"
+        if is_mainstream_kernel "$base"; then
+            mainstream+="$(basename "$d") $base"$'\n'
         else
-            own+="$(basename "$d") $(<"$d/pkgbase")"$'\n'
+            own+="$(basename "$d") $base"$'\n'
         fi
     done
     [[ -n "$own" ]] || own="$mainstream"
     own=$(printf '%s' "$own" | sort -V | tail -n1 | cut -d' ' -f2)
-    printf '%s\n' "${own:-linux-mainstream}"
+    printf '%s\n' "${own:-$MAINSTREAM_DEFAULT_KERNEL}"
 }

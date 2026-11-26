@@ -26,9 +26,12 @@ mkroot() {
         echo "${r#*:}" > "$root/usr/lib/modules/${r%%:*}/pkgbase"
     done
 }
-mkroot "$TMP/root-mainstream" 7.3.6-1-mainstream:linux-mainstream
+mkroot "$TMP/root-mainstream" 7.3.6-1-mainstream:mainstream
 mkroot "$TMP/root-empty"
-mkroot "$TMP/root-both" 7.3.6-1-mainstream:linux-mainstream 6.18.1-arch1-1:linux
+mkroot "$TMP/root-both" 7.3.6-1-mainstream:mainstream 6.18.1-arch1-1:linux
+# Module trees of the kernels' packages before they lost the linux- prefix.
+mkroot "$TMP/root-old" 7.3.6-1-mainstream:linux-mainstream
+mkroot "$TMP/root-old-both" 7.3.6-1-mainstream:linux-mainstream 6.18.1-arch1-1:linux
 
 # ---- 1. installchoices: the kernels each method records, and what it downloads
 mkdir -p "$TMP/bin"
@@ -91,48 +94,54 @@ pcidev "$TMP/pci-intel" 0000:00:02.0 0x8086 0x030000
 pcidev "$TMP/pci-intel" 0000:00:1f.3 0x10de 0x040300
 
 for method in default console os-only developer gaming; do
-    chk "resolve-$method" "$(choices resolve "$method" 1 kernel:linux kernel:linux-mainstream-performance)" "linux-mainstream"
+    chk "resolve-$method" "$(choices resolve "$method" 1 kernel:linux kernel:mainstream-performance)" "mainstream"
 done
-chk resolve-custom-perf "$(choices resolve custom 1 kernel:linux-mainstream-performance)" "linux-mainstream-performance"
-chk resolve-custom-perf-no-v3 "$(choices resolve custom 0 kernel:linux-mainstream-performance)" "linux-mainstream"
-chk resolve-custom-m-a "$(choices resolve custom 1 kernel:linux kernel:linux-mainstream)" "linux-mainstream linux"
-chk resolve-custom-all "$(choices resolve custom 1 kernel:linux kernel:linux-mainstream kernel:linux-mainstream-performance)" \
-    "linux-mainstream-performance linux-mainstream linux"
-chk resolve-custom-none "$(choices resolve custom 1 apps:flatpak)" "linux-mainstream"
+chk resolve-custom-perf "$(choices resolve custom 1 kernel:mainstream-performance)" "mainstream-performance"
+chk resolve-custom-perf-no-v3 "$(choices resolve custom 0 kernel:mainstream-performance)" "mainstream"
+chk resolve-custom-m-a "$(choices resolve custom 1 kernel:linux kernel:mainstream)" "mainstream linux"
+chk resolve-custom-all "$(choices resolve custom 1 kernel:linux kernel:mainstream kernel:mainstream-performance)" \
+    "mainstream-performance mainstream linux"
+chk resolve-custom-none "$(choices resolve custom 1 apps:flatpak)" "mainstream"
 
 : > "$TMP/fetch.log"
-chk run-default-kernels "$(choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "linux-mainstream"
-chk run-unknown-method "$(choices run bogus 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "linux-mainstream"
+chk run-default-kernels "$(choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "mainstream"
+chk run-unknown-method "$(choices run bogus 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux)" "mainstream"
 chk run-default-no-fetch "$(cat "$TMP/fetch.log")" ""
 # Only the Mainstream kernels the target lacks: Arch's comes from core in
 # install-limine, and the image's own is already there.
 chk run-custom-kernels "$(choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" \
-    kernel:linux kernel:linux-mainstream kernel:linux-mainstream-performance)" \
-    "linux-mainstream-performance linux-mainstream linux"
-chk run-custom-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+    kernel:linux kernel:mainstream kernel:mainstream-performance)" \
+    "mainstream-performance mainstream linux"
+chk run-custom-fetch "$(cat "$TMP/fetch.log")" "--kernel mainstream-performance"
 # install-limine leaves out a kernel the boot partition has no room for, so it is not fetched.
 : > "$TMP/fetch.log"
-BOOT_FREE_MIB=300 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
+BOOT_FREE_MIB=300 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:mainstream-performance >/dev/null
 chk run-small-esp-no-fetch "$(cat "$TMP/fetch.log")" ""
-BOOT_FREE_MIB=600 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
-chk run-roomy-esp-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+BOOT_FREE_MIB=600 choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:mainstream-performance >/dev/null
+chk run-roomy-esp-fetch "$(cat "$TMP/fetch.log")" "--kernel mainstream-performance"
 mkdir -p "$TMP/root-mainstream/boot"
 chk boot-free-mib-reads "$(choices freemib "$TMP/root-mainstream" | grep -cE '^[0-9]+$')" "1"
 : > "$TMP/fetch.log"
-chk run-empty-target-kernels "$(choices run custom 1 "$TMP/root-empty" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance)" \
-    "linux-mainstream-performance"
-chk run-empty-target-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance"
+chk run-empty-target-kernels "$(choices run custom 1 "$TMP/root-empty" "$TMP/bin/fetch-online" kernel:mainstream-performance)" \
+    "mainstream-performance"
+chk run-empty-target-fetch "$(cat "$TMP/fetch.log")" "--kernel mainstream-performance"
 # An NVIDIA display device: fetch-online decides whether its driver is needed,
 # with the chosen kernels or on its own. A non-display NVIDIA function is not one.
 : > "$TMP/fetch.log"
 PCI_DEVICES="$TMP/pci-nvidia" choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" >/dev/null
 chk run-nvidia-fetch "$(cat "$TMP/fetch.log")" "--nvidia"
 : > "$TMP/fetch.log"
-PCI_DEVICES="$TMP/pci-nvidia" choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:linux-mainstream-performance >/dev/null
-chk run-nvidia-kernel-fetch "$(cat "$TMP/fetch.log")" "--kernel linux-mainstream-performance --nvidia"
+PCI_DEVICES="$TMP/pci-nvidia" choices run custom 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" kernel:mainstream-performance >/dev/null
+chk run-nvidia-kernel-fetch "$(cat "$TMP/fetch.log")" "--kernel mainstream-performance --nvidia"
 : > "$TMP/fetch.log"
 PCI_DEVICES="$TMP/pci-intel" choices run default 1 "$TMP/root-mainstream" "$TMP/bin/fetch-online" >/dev/null
 chk run-no-nvidia-no-fetch "$(cat "$TMP/fetch.log")" ""
+# A target whose kernel carries the old name already has the Mainstream kernel.
+: > "$TMP/fetch.log"
+choices run custom 1 "$TMP/root-old" "$TMP/bin/fetch-online" kernel:mainstream kernel:mainstream-performance >/dev/null
+chk run-old-target-fetch "$(cat "$TMP/fetch.log")" "--kernel mainstream-performance"
+# The old item names are not offered any more and choose nothing.
+chk resolve-old-items "$(choices resolve custom 1 kernel:linux kernel:linux-mainstream-performance)" "linux"
 
 # ---- 2. the shared choices library the install steps read
 # shellcheck source=/dev/null
@@ -144,29 +153,50 @@ printf '00:02.0 0300: 8086:3e9b\n' > "$TMP/lspci-plain"
 printf '00:02.0 0300: 8086:3e9b\n02:00.1 0880: 106b:1801 (rev 01)\n' > "$TMP/lspci-t2"
 MAINSTREAM_LSPCI_N="$TMP/lspci-plain"
 MAINSTREAM_CHOICES_FILE="$TMP/missing/choices.conf"
-chk chosen-no-file "$(chosen_kernels)" "linux-mainstream"
+chk chosen-no-file "$(chosen_kernels)" "mainstream"
 MAINSTREAM_CHOICES_FILE="$TMP/choices.conf"
 printf 'KERNELS=\n' > "$MAINSTREAM_CHOICES_FILE"
-chk chosen-empty "$(chosen_kernels)" "linux-mainstream"
-printf 'KERNELS=linux linux-mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
-chk chosen-m-a "$(chosen_kernels)" "linux-mainstream linux"
-printf 'KERNELS=linux-mainstream-performance linux-mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
-chk chosen-perf-v3 "$(chosen_kernels)" "linux-mainstream-performance linux-mainstream"
+chk chosen-empty "$(chosen_kernels)" "mainstream"
+printf 'KERNELS=linux mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-m-a "$(chosen_kernels)" "mainstream linux"
+printf 'KERNELS=mainstream-performance mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-perf-v3 "$(chosen_kernels)" "mainstream-performance mainstream"
 MAINSTREAM_CPUINFO="$TMP/cpuinfo-v2"
-chk chosen-perf-no-v3 "$(chosen_kernels)" "linux-mainstream"
+chk chosen-perf-no-v3 "$(chosen_kernels)" "mainstream"
 MAINSTREAM_CPUINFO="$TMP/cpuinfo-v3"
 # Arch's kernel has no T2 drivers, so a T2 Mac keeps Mainstream's as its default.
 printf 'KERNELS=linux\n' > "$MAINSTREAM_CHOICES_FILE"
 chk chosen-arch-only "$(chosen_kernels)" "linux"
 MAINSTREAM_LSPCI_N="$TMP/lspci-t2"
-chk chosen-t2-arch-only "$(chosen_kernels)" "linux-mainstream linux"
-printf 'KERNELS=linux-mainstream-performance linux\n' > "$MAINSTREAM_CHOICES_FILE"
-chk chosen-t2-perf-kept "$(chosen_kernels)" "linux-mainstream-performance linux"
+chk chosen-t2-arch-only "$(chosen_kernels)" "mainstream linux"
+printf 'KERNELS=mainstream-performance linux\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-t2-perf-kept "$(chosen_kernels)" "mainstream-performance linux"
 MAINSTREAM_LSPCI_N="$TMP/lspci-plain"
 
-chk edition-lib-none "$(MAINSTREAM_MODULES_DIR="$TMP/missing" installed_edition_kernel)" "linux-mainstream"
-chk edition-lib-mainstream "$(MAINSTREAM_MODULES_DIR="$TMP/root-mainstream/usr/lib/modules" installed_edition_kernel)" "linux-mainstream"
+chk edition-lib-none "$(MAINSTREAM_MODULES_DIR="$TMP/missing" installed_edition_kernel)" "mainstream"
+chk edition-lib-mainstream "$(MAINSTREAM_MODULES_DIR="$TMP/root-mainstream/usr/lib/modules" installed_edition_kernel)" "mainstream"
 chk edition-lib-arch "$(MAINSTREAM_MODULES_DIR="$TMP/root-both/usr/lib/modules" installed_edition_kernel)" "linux"
+# The old names, from a choices file or a module tree, still count as Mainstream's.
+printf 'KERNELS=linux-mainstream-performance linux-mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-old-names "$(chosen_kernels)" "mainstream-performance mainstream"
+printf 'KERNELS=linux linux-mainstream\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-old-and-arch "$(chosen_kernels)" "mainstream linux"
+MAINSTREAM_LSPCI_N="$TMP/lspci-t2"
+printf 'KERNELS=linux-mainstream-performance linux\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-t2-old-perf-kept "$(chosen_kernels)" "mainstream-performance linux"
+MAINSTREAM_LSPCI_N="$TMP/lspci-plain"
+printf 'KERNELS=mainstream-system mainstream-audio\n' > "$MAINSTREAM_CHOICES_FILE"
+chk chosen-not-kernels "$(chosen_kernels)" "mainstream"
+chk edition-lib-old "$(MAINSTREAM_MODULES_DIR="$TMP/root-old/usr/lib/modules" installed_edition_kernel)" "linux-mainstream"
+chk edition-lib-old-arch "$(MAINSTREAM_MODULES_DIR="$TMP/root-old-both/usr/lib/modules" installed_edition_kernel)" "linux"
+for k in mainstream mainstream-performance mainstream-performance-eac linux-mainstream linux-mainstream-performance-eac; do
+    chk "is-kernel-$k" "$(is_mainstream_kernel "$k" && echo yes || echo no)" "yes"
+done
+for k in linux mainstream-system mainstream-audio mainstream-headers linux-mainstream-headers linux-zen; do
+    chk "not-kernel-$k" "$(is_mainstream_kernel "$k" && echo yes || echo no)" "no"
+done
+chk kernel-name-old "$(mainstream_kernel_name linux-mainstream-performance)" "mainstream-performance"
+chk kernel-name-other "$(mainstream_kernel_name linux-zen)" "linux-zen"
 
 # Fake pacman for the steps below: INSTALLED and REPO are word lists, -Qq answers
 # by exact name, and the Mainstream kernels' headers answer for linux-headers.
@@ -175,8 +205,8 @@ pacman() {
     case "$1" in
         -Qq)
             for p in $INSTALLED; do [[ $p == "$2" ]] && { echo "$p"; return 0; }; done
-            [[ $2 == linux-headers && " $INSTALLED " == *" linux-mainstream-headers "* ]] \
-                && { echo linux-mainstream-headers; return 0; }
+            [[ $2 == linux-headers && " $INSTALLED " == *" mainstream-headers "* ]] \
+                && { echo mainstream-headers; return 0; }
             return 1 ;;
         -Si) [[ " $REPO " == *" $2 "* ]] ;;
         *) PAC+=("$*") ;;
@@ -188,27 +218,40 @@ eval "$(awk '/^install_chosen_kernels\(\) \{/,/^\}/' "$INSTALL_LIMINE")"
 timeout() { shift 5; "$@"; }
 df() { printf 'Filesystem 1048576-blocks Used Available Capacity Mounted on\n/dev/x 4096 0 %s 0%% /boot\n' "$FREE"; }
 BOOT_PATH=/boot; KERNEL_MIN_FREE_MIB=512; FREE=2048
-KERNEL_PKG=linux-mainstream
-INSTALLED="linux-mainstream linux-mainstream-headers"
-REPO="linux-mainstream-performance linux-mainstream-performance-headers"
+KERNEL_PKG=mainstream
+INSTALLED="mainstream mainstream-headers"
+REPO="mainstream-performance mainstream-performance-headers"
 
-CHOSEN_KERNELS=(linux-mainstream); PAC=(); WARN=()
+CHOSEN_KERNELS=(mainstream); PAC=(); WARN=()
 install_chosen_kernels
 chk limine-default "${PAC[*]:-none}" "none"
-CHOSEN_KERNELS=(linux-mainstream linux); PAC=(); WARN=()
+CHOSEN_KERNELS=(mainstream linux); PAC=(); WARN=()
 install_chosen_kernels
 chk limine-arch-offline "${PAC[*]:-none}" "none"
-chk limine-arch-offline-warns "$( [[ "${WARN[*]}" == *"needs a connection"*"linux-mainstream stays"* ]] && echo yes || echo no )" "yes"
+chk limine-arch-offline-warns "$( [[ "${WARN[*]}" == *"needs a connection"*"mainstream stays"* ]] && echo yes || echo no )" "yes"
 REPO="$REPO linux linux-headers"; PAC=(); WARN=()
 install_chosen_kernels
 chk limine-arch-online "${PAC[*]:-none}" "-S --needed --noconfirm linux linux-headers"
-CHOSEN_KERNELS=(linux-mainstream-performance); PAC=()
+CHOSEN_KERNELS=(mainstream-performance); PAC=()
 install_chosen_kernels
-chk limine-perf "${PAC[*]:-none}" "-S --needed --noconfirm linux-mainstream-performance linux-mainstream-performance-headers"
+chk limine-perf "${PAC[*]:-none}" "-S --needed --noconfirm mainstream-performance mainstream-performance-headers"
 FREE=300; PAC=()
 install_chosen_kernels
 chk limine-perf-no-room "${PAC[*]:-none}" "none"
 FREE=2048
+# Only a kernel that is not Mainstream's is reinstalled from the repositories.
+eval "reinstall_step() {
+$(awk '/^KERNEL_REINSTALLED=false$/,/^fi$/' "$INSTALL_LIMINE")
+}"
+curl() { :; }
+for KERNEL_PKG in mainstream mainstream-performance linux-mainstream; do
+    PAC=(); reinstall_step
+    chk "limine-keeps-own-$KERNEL_PKG" "${PAC[*]:-none} $KERNEL_REINSTALLED" "none false"
+done
+KERNEL_PKG=linux-zen; PAC=(); reinstall_step
+chk limine-reinstalls-other "${PAC[*]:-none}" "-S --noconfirm --overwrite * linux-zen"
+unset -f curl
+KERNEL_PKG=mainstream
 
 # ---- 4. post-install-boot keeps only the chosen kernels, and the boot menu only theirs
 eval "pick_kernels() {
@@ -217,29 +260,29 @@ $(awk '/^CHOSEN_KERNEL=""$/,/^fi$/' "$POST_BOOT")
 NOT_READY=""
 gpu_kernel_nvidia_ready() { [[ " $NOT_READY " != *" $1 "* ]]; }
 
-CHOSEN_KERNELS=(linux-mainstream); INSTALLED="linux-mainstream linux-mainstream-headers"; PAC=()
+CHOSEN_KERNELS=(mainstream); INSTALLED="mainstream mainstream-headers"; PAC=()
 pick_kernels
-chk boot-default "$CHOSEN_KERNEL ${PAC[*]:-none}" "linux-mainstream none"
-CHOSEN_KERNELS=(linux-mainstream-performance)
-INSTALLED="linux-mainstream linux-mainstream-headers linux-mainstream-performance linux-mainstream-performance-headers"; PAC=()
+chk boot-default "$CHOSEN_KERNEL ${PAC[*]:-none}" "mainstream none"
+CHOSEN_KERNELS=(mainstream-performance)
+INSTALLED="mainstream mainstream-headers mainstream-performance mainstream-performance-headers"; PAC=()
 pick_kernels
-chk boot-perf "$CHOSEN_KERNEL" "linux-mainstream-performance"
-chk boot-perf-drops-image "${PAC[*]:-none}" "-R --noconfirm linux-mainstream linux-mainstream-headers"
-CHOSEN_KERNELS=(linux-mainstream linux); INSTALLED="linux-mainstream linux-mainstream-headers linux linux-headers"; PAC=()
+chk boot-perf "$CHOSEN_KERNEL" "mainstream-performance"
+chk boot-perf-drops-image "${PAC[*]:-none}" "-R --noconfirm mainstream mainstream-headers"
+CHOSEN_KERNELS=(mainstream linux); INSTALLED="mainstream mainstream-headers linux linux-headers"; PAC=()
 pick_kernels
-chk boot-m-a "$CHOSEN_KERNEL ${PAC[*]:-none}" "linux-mainstream none"
+chk boot-m-a "$CHOSEN_KERNEL ${PAC[*]:-none}" "mainstream none"
 CHOSEN_KERNELS=(linux); PAC=()
 pick_kernels
 chk boot-arch "$CHOSEN_KERNEL" "linux"
-chk boot-arch-drops-image "${PAC[*]:-none}" "-R --noconfirm linux-mainstream linux-mainstream-headers"
+chk boot-arch-drops-image "${PAC[*]:-none}" "-R --noconfirm mainstream mainstream-headers"
 # Arch's kernel could not be installed: nothing is chosen, so the image's stays.
-INSTALLED="linux-mainstream linux-mainstream-headers"; PAC=()
+INSTALLED="mainstream mainstream-headers"; PAC=()
 pick_kernels
 chk boot-arch-missing "${CHOSEN_KERNEL:-none} ${PAC[*]:-none}" "none none"
 # A chosen kernel without the NVIDIA module another one has is not made the default.
-CHOSEN_KERNELS=(linux-mainstream-performance)
-INSTALLED="linux-mainstream linux-mainstream-headers linux-mainstream-performance linux-mainstream-performance-headers"
-NOT_READY="linux-mainstream-performance"; PAC=()
+CHOSEN_KERNELS=(mainstream-performance)
+INSTALLED="mainstream mainstream-headers mainstream-performance mainstream-performance-headers"
+NOT_READY="mainstream-performance"; PAC=()
 pick_kernels
 chk boot-not-ready "${CHOSEN_KERNEL:-none} ${PAC[*]:-none}" "none none"
 NOT_READY=""
@@ -254,30 +297,30 @@ write_conf() {
 timeout: 5
 /+Mainstream OS\\
 comment: Mainstream OS\\
-    //linux-mainstream-performance
+    //mainstream-performance
         protocol: efi
-        path: boot():///EFI/Linux/mainstream_linux-mainstream-performance.efi
-    //linux-mainstream
+        path: boot():///EFI/Linux/mainstream-performance.efi
+    //mainstream
         protocol: linux
-        kernel_path: boot():///vmlinuz-linux-mainstream
+        kernel_path: boot():///vmlinuz-mainstream
     //Snapshots
 /Windows
-    //linux-mainstream
+    //mainstream
         protocol: efi
 CONF
 }
 # The GPU step removed the image's kernel: its placeholder goes, the rest stays.
-write_conf; INSTALLED="linux-mainstream-performance linux-mainstream-performance-headers"
+write_conf; INSTALLED="mainstream-performance mainstream-performance-headers"
 drop_gone_entries
 ours() { sed -n '/^\/+Mainstream OS/,/^\/Windows/p' "$BOOT_PATH/limine.conf"; }
-chk menu-drops-gone "$(ours | grep -c '//linux-mainstream$')" "0"
-chk menu-drops-whole-entry "$(ours | grep -c 'vmlinuz-linux-mainstream')" "0"
-chk menu-keeps-other-os "$(sed -n '/^\/Windows/,$p' "$BOOT_PATH/limine.conf" | grep -c '//linux-mainstream$')" "1"
-chk menu-keeps-installed "$(grep -c '//linux-mainstream-performance$' "$BOOT_PATH/limine.conf")" "1"
+chk menu-drops-gone "$(ours | grep -c '//mainstream$')" "0"
+chk menu-drops-whole-entry "$(ours | grep -c 'vmlinuz-mainstream')" "0"
+chk menu-keeps-other-os "$(sed -n '/^\/Windows/,$p' "$BOOT_PATH/limine.conf" | grep -c '//mainstream$')" "1"
+chk menu-keeps-installed "$(grep -c '//mainstream-performance$' "$BOOT_PATH/limine.conf")" "1"
 chk menu-keeps-snapshots "$(grep -c '//Snapshots$' "$BOOT_PATH/limine.conf")" "1"
-write_conf; INSTALLED="linux-mainstream linux-mainstream-performance"
+write_conf; INSTALLED="mainstream mainstream-performance"
 drop_gone_entries
-chk menu-keeps-all "$(ours | grep -c '//linux-mainstream')" "2"
+chk menu-keeps-all "$(ours | grep -c '//mainstream')" "2"
 
 # ---- 5. finalize-install keeps Arch's headers while Arch's kernel is there
 eval "prune_headers() {
@@ -286,13 +329,13 @@ $(awk '/^# Arch.s headers stay with Arch.s kernel/,/^fi$/' "$FINALIZE")
 remove_pkgs() { REMOVED+=("$@"); }
 # Nothing registered with DKMS, as on a machine without an NVIDIA card.
 dkms() { :; }
-INSTALLED="linux-mainstream linux-mainstream-headers linux linux-headers"; REMOVED=()
+INSTALLED="mainstream mainstream-headers linux linux-headers"; REMOVED=()
 prune_headers
 chk headers-arch-kept "${REMOVED[*]:-none}" "none"
-INSTALLED="linux-mainstream linux-mainstream-headers linux-headers"; REMOVED=()
+INSTALLED="mainstream mainstream-headers linux-headers"; REMOVED=()
 prune_headers
 chk headers-orphan-removed "${REMOVED[*]:-none}" "linux-headers"
-INSTALLED="linux-mainstream linux-mainstream-headers"; REMOVED=()
+INSTALLED="mainstream mainstream-headers"; REMOVED=()
 prune_headers
 chk headers-provider-kept "${REMOVED[*]:-none}" "none"
 
@@ -314,6 +357,18 @@ INSTALLED="nvidia-580xx-dkms nvidia-580xx-utils"; WARN=()
 remove_pkgs nvidia-utils nvidia-580xx-dkms nvidia-580xx-utils >/dev/null
 chk remove-exact-names "$(cat "$TMP/rns.log")" "--noconfirm nvidia-580xx-dkms nvidia-580xx-utils"
 chk remove-no-warning "${#WARN[@]}" "0"
+
+# The boot image post-install-boot checks after the build, named as limine-entry-tool
+# names it: a kernel whose name starts with the prefix keeps its name alone.
+uki_for() {
+    local KERNEL_PKG=$1 _uki
+    eval "$(grep -E '^[[:space:]]*(_uki="/boot/efi/EFI/Linux/|\[\[ "\$KERNEL_PKG" == mainstream\* \]\])' "$POST_BOOT")"
+    printf '%s' "$_uki"
+}
+chk uki-mainstream "$(uki_for mainstream)" "/boot/efi/EFI/Linux/mainstream.efi"
+chk uki-performance "$(uki_for mainstream-performance)" "/boot/efi/EFI/Linux/mainstream-performance.efi"
+chk uki-arch "$(uki_for linux)" "/boot/efi/EFI/Linux/mainstream_linux.efi"
+chk uki-old-name "$(uki_for linux-mainstream)" "/boot/efi/EFI/Linux/mainstream_linux-mainstream.efi"
 
 [[ $FAILS -eq 0 ]] && echo "install-kernels: all $N assertions PASS" || echo "install-kernels: $FAILS of $N FAILED"
 exit $FAILS
