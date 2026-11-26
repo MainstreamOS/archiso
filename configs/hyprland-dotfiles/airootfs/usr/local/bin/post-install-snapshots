@@ -206,6 +206,9 @@ if [[ -d /.snapshots ]] \
             "$_n" "$(date -u '+%F %T')" > "/.snapshots/$_n/info.xml"
         log "Registered the install baseline with snapper as snapshot $_n."
         _baseline_registered=1
+        # snapperd keeps the empty list it read with the new config. Stopped, it
+        # starts again on the next call and reads this snapshot.
+        systemctl stop snapperd.service 2>/dev/null || true
         btrfs subvolume delete /.install-baseline &>/dev/null || true
     else
         log "WARN: could not hand the install baseline to snapper; leaving it in place."
