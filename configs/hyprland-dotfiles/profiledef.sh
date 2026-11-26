@@ -47,6 +47,7 @@ file_permissions=(
   ["/usr/local/lib/wifi-country.sh"]="0:0:644"
   ["/usr/local/bin/mainstream-mac-firmware"]="0:0:755"
   ["/usr/local/bin/live-mac-quirks"]="0:0:755"
+  ["/usr/local/bin/live-nouveau"]="0:0:755"
   ["/usr/local/bin/dotfiles-first-login"]="0:0:755"
   ["/usr/local/bin/calamares-autostart"]="0:0:755"
   ["/usr/local/bin/calamares-launch"]="0:0:755"

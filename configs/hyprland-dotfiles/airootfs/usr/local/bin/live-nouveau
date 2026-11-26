@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Loads nouveau for an NVIDIA card the image's NVIDIA driver cannot drive, so
+# the live session runs on the card instead of in software rendering. The
+# image carries NVIDIA's driver for Turing and newer only; the installed
+# system downloads 580xx for a GTX 900 to Titan V, and older cards stay on
+# nouveau. Runs before the display manager. Nothing here outlives the session.
+set -uo pipefail
+
+GPU_LIB="${GPU_LIB:-/usr/local/lib/gpu-config.sh}"
+NOTICE="${MAINSTREAM_NOUVEAU_NOTICE:-/run/mainstream-live-nouveau}"
+[[ -r "$GPU_LIB" ]] || exit 0
+# shellcheck source=/dev/null
+source "$GPU_LIB"
+
+gpu_detect || exit 0
+gpu_live_needs_nouveau || exit 0
+echo "NVIDIA $NVIDIA_GEN card: loading nouveau for the live session"
+# nvidia-utils blacklists nouveau, which only keeps it from loading by itself.
+if modprobe nouveau; then
+    # The compositor looks for its GPUs once, as it starts.
+    udevadm settle --timeout=15 || true
+    state=loaded
+else
+    echo "nouveau did not load, so the session runs in software rendering" >&2
+    state=failed
+fi
+# live-setup tells the person what the session runs on.
+printf '%s %s\n' "$NVIDIA_GEN" "$state" > "$NOTICE" 2>/dev/null || true

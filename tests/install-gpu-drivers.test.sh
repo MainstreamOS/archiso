@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Drive nvidia_ensure_module_for_target through every branch with fakes.
+# Drive install-gpu-drivers' NVIDIA steps and the live session's nouveau through
+# every branch with fakes.
 set -uo pipefail
 ARCHISO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AIROOTFS="$ARCHISO_ROOT/configs/hyprland-dotfiles/airootfs"
@@ -205,6 +206,52 @@ PAC=(); ADDED=(); GPU_FAILURES=(); RM_RC=1
 nvidia_chosen_kernel linux
 chk chosen-stuck-recorded "$( [[ "${GPU_FAILURES[*]}" == *"choose another kernel in the boot menu"* ]] && echo yes || echo no )" "yes"
 RM_RC=0
+
+# ---- 13. the live session: nouveau for an older card that drives the screen
+LIVE="$AIROOTFS/usr/local/bin/live-nouveau"
+mkdir -p "$TMP/live-bin" "$TMP/live-drm"
+printf '#!/bin/sh\necho "modprobe $*" >> "%s"\nexit "${MODPROBE_RC:-0}"\n' "$TMP/live.log" > "$TMP/live-bin/modprobe"
+printf '#!/bin/sh\necho "udevadm $*" >> "%s"\n' "$TMP/live.log" > "$TMP/live-bin/udevadm"
+chmod +x "$TMP/live-bin/modprobe" "$TMP/live-bin/udevadm"
+# The real library, reading fixtures instead of this machine.
+cat > "$TMP/live-lib.sh" <<LIB
+source "$AIROOTFS/usr/local/lib/gpu-config.sh"
+_gpu_lspci_nn() { printf '%s\n' "\$FIX_LSPCI"; }
+_gpu_lspci() { printf '%s\n' "\$FIX_LSPCI"; }
+_gpu_sys_vendor() { :; }
+_gpu_installed_nvidia_branch() { printf '%s' "\${FIX_BRANCH:-}"; }
+LIB
+live_pci() {  # live_pci <slot,vendor,boot_vga>...
+    local d slot vendor boot e
+    rm -rf "${TMP:?}/live-pci"; mkdir -p "$TMP/live-pci"
+    for e in "$@"; do
+        IFS=, read -r slot vendor boot <<<"$e"
+        d="$TMP/live-pci/$slot"; mkdir -p "$d"
+        echo 0x030000 > "$d/class"; echo "$vendor" > "$d/vendor"; echo "$boot" > "$d/boot_vga"
+    done
+}
+live() {  # live <lspci>; prints what ran, then the notice
+    : > "$TMP/live.log"; rm -f "$TMP/live-notice"
+    FIX_LSPCI="$1" GPU_LIB="$TMP/live-lib.sh" MAINSTREAM_NOUVEAU_NOTICE="$TMP/live-notice" \
+        GPU_PCI_DEVICES_PATH="$TMP/live-pci" GPU_DRM_PATH="$TMP/live-drm" PATH="$TMP/live-bin:$PATH" \
+        bash "$LIVE" >/dev/null 2>&1
+    printf '%s|%s' "$(tr '\n' ';' < "$TMP/live.log")" "$(cat "$TMP/live-notice" 2>/dev/null)"
+}
+GTX1060="01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GP106 [GeForce GTX 1060 6GB] [10de:1c03] (rev a1)"
+GT710="01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GK208B [GeForce GT 710] [10de:128b] (rev a1)"
+RTX2080="01:00.0 VGA compatible controller [0300]: NVIDIA Corporation TU104 [GeForce RTX 2080] [10de:1e87] (rev a1)"
+OPTIMUS="00:02.0 VGA compatible controller [0300]: Intel Corporation HD Graphics 630 [8086:591b] (rev 04)
+01:00.0 3D controller [0302]: NVIDIA Corporation GP107M [GeForce GTX 1050 Mobile] [10de:1c8d] (rev a1)"
+live_pci 0000:01:00.0,0x10de,1
+chk live-maxwell "$(live "$GTX1060")" "modprobe nouveau;udevadm settle --timeout=15;|maxwell loaded"
+chk live-kepler "$(live "$GT710")" "modprobe nouveau;udevadm settle --timeout=15;|kepler loaded"
+chk live-turing "$(live "$RTX2080")" "|"
+chk live-legacy-edition "$(FIX_BRANCH=580xx live "$GTX1060")" "|"
+chk live-failed "$(MODPROBE_RC=1 live "$GT710")" "modprobe nouveau;|kepler failed"
+live_pci 0000:00:02.0,0x8086,1 0000:01:00.0,0x10de,0
+chk live-hybrid-igpu "$(live "$OPTIMUS")" "|"
+live_pci 0000:00:02.0,0x8086,0 0000:01:00.0,0x10de,1
+chk live-hybrid-mux "$(live "$OPTIMUS")" "modprobe nouveau;udevadm settle --timeout=15;|maxwell loaded"
 
 [[ $FAILS -eq 0 ]] && echo "repair: all $N assertions PASS" || echo "repair: $FAILS of $N FAILED"
 exit $FAILS

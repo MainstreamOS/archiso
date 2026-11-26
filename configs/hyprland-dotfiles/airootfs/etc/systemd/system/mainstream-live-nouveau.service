@@ -1,0 +1,14 @@
+[Unit]
+Description=Run an older NVIDIA card on nouveau in the live session
+# Before the login screen, so the session starts on the card.
+After=systemd-udev-trigger.service local-fs.target
+Before=sddm.service display-manager.service
+ConditionPathExists=/run/archiso
+ConditionPathExists=/usr/local/lib/gpu-config.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/live-nouveau
+
+[Install]
+WantedBy=multi-user.target

@@ -172,35 +172,33 @@ fc-cache -fv 2>/dev/null || true
 hyprctl reload 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 6. Warn pre-Turing NVIDIA users (Fermi 0x06C0..just below Turing 0x1E02) that
-#    they get only software rendering here and should use the NVIDIA (legacy)
-#    edition. Standard edition only: the legacy edition ships the nvidia-580xx
-#    live driver and serves Kepler/Fermi at install, so skip it there — detected
-#    via nvidia-580xx-utils being installed.
+# 6. Tell the owner of an older NVIDIA card what this session runs it on.
+#    live-nouveau leaves the card's generation and whether nouveau loaded.
+#    Only a GTX 900 to Titan V card gets NVIDIA's driver on the installed
+#    system; older ones run on nouveau there as well.
 # ---------------------------------------------------------------------------
-if command -v notify-send &>/dev/null && ! pacman -Qq nvidia-580xx-utils &>/dev/null; then
-    NV_ID=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' \
-            | grep -oE '\[10de:[0-9a-fA-F]{4}\]' | grep -oE '[0-9a-fA-F]{4}' | tail -1 || true)
-    if [[ -n "$NV_ID" ]]; then
-        NV_DEC=$((16#$NV_ID))
-        # Same ladder as gpu-config.sh. The Tesla parts at 0x06E0-0x0DBF and
-        # 0x10C0-0x10DF are pre-Fermi and get nouveau on either edition.
-        if (( NV_DEC >= 1728 && NV_DEC < 7682 )) \
-           && ! (( (NV_DEC >= 16#06e0 && NV_DEC <= 16#0dbf) \
-                || (NV_DEC >= 16#10c0 && NV_DEC <= 16#10df) )); then
-            # notify-send no-ops if Quickshell hasn't claimed the notifications
-            # bus name yet — wait (bounded) for it before sending.
-            if command -v busctl &>/dev/null; then
-                for _ in $(seq 1 30); do
-                    busctl --user list --no-pager 2>/dev/null \
-                        | grep -q 'org.freedesktop.Notifications' && break
-                    sleep 0.5
-                done
-            fi
-            notify-send -u critical -t 0 -i dialog-warning \
-                "Legacy NVIDIA GPU — wrong edition" \
-                "This GPU isn't accelerated on the standard edition, so the desktop is running in slow software mode. For full acceleration, download and reinstall using the MainstreamOS NVIDIA (legacy) edition ISO." \
-                2>/dev/null || true
+NOUVEAU_NOTICE=/run/mainstream-live-nouveau
+if command -v notify-send &>/dev/null && [[ -s "$NOUVEAU_NOTICE" ]]; then
+    read -r NV_GEN NV_STATE < "$NOUVEAU_NOTICE"
+    NV_BODY=""
+    if [[ "$NV_STATE" != loaded ]]; then
+        NV_BODY="No driver could start for your NVIDIA graphics card in this live session, so the desktop runs in slow software mode."
+    elif [[ "$NV_GEN" == maxwell ]]; then
+        NV_BODY="This live session runs your NVIDIA graphics card on the open source nouveau driver, which is slower than NVIDIA's own."
+    fi
+    if [[ -n "$NV_BODY" && "$NV_GEN" == maxwell ]]; then
+        NV_BODY+=" Installing downloads NVIDIA's driver for it, so connect to the internet before you start."
+    fi
+    if [[ -n "$NV_BODY" ]]; then
+        # notify-send no-ops if Quickshell hasn't claimed the notifications
+        # bus name yet, so wait (bounded) for it before sending.
+        if command -v busctl &>/dev/null; then
+            for _ in $(seq 1 30); do
+                busctl --user list --no-pager 2>/dev/null \
+                    | grep -q 'org.freedesktop.Notifications' && break
+                sleep 0.5
+            done
         fi
+        notify-send -u normal -t 0 -i dialog-information "Older NVIDIA graphics card" "$NV_BODY" 2>/dev/null || true
     fi
 fi

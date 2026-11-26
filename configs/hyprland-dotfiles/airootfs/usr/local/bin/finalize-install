@@ -434,6 +434,10 @@ rm -f /etc/systemd/system/choose-mirror.service \
 rm -f /etc/systemd/system/multi-user.target.wants/mainstream-live-mac-quirks.service \
       /etc/systemd/system/mainstream-live-mac-quirks.service \
       /usr/local/bin/live-mac-quirks
+# The live session's nouveau for an older NVIDIA card is the same case.
+rm -f /etc/systemd/system/multi-user.target.wants/mainstream-live-nouveau.service \
+      /etc/systemd/system/mainstream-live-nouveau.service \
+      /usr/local/bin/live-nouveau
 # The BIOS partition-layout unit is the same case: it only prepares the
 # installer's configuration, and only in the live session.
 rm -f /etc/systemd/system/multi-user.target.wants/mainstream-bios-partition-layout.service \
