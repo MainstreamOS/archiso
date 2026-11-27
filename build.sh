@@ -2053,9 +2053,6 @@ if su "$BUILD_USER" -c "git clone --depth=1 --recurse-submodules --shallow-submo
                 /usr/local/bin/sddm-bg-helper
                 /usr/share/polkit-1/actions/org.illogicalimpulse.sddm-bg.policy
                 /usr/share/polkit-1/rules.d/50-sddm-bg.rules
-                # post-install-system writes these two units itself.
-                /etc/systemd/system/pacman-keyring-init.service
-                /etc/systemd/system/pacman-keyring-init.timer
             )
             _unshipped=()
             while read -r _mode _src _dst; do

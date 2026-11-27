@@ -26,52 +26,12 @@ info "Initializing pacman keyring (best-effort in chroot)..."
 pacman-key --init 2>/dev/null || true
 pacman-key --populate archlinux 2>/dev/null || true
 
-# Create a first-boot oneshot that (re-)initializes the keyring with proper
-# entropy and a running gpg-agent (unlike the unreliable chroot attempt), then
-# trusts the [mainstream] key and switches its repo to GitHub. Logic lives in
-# /usr/local/bin/mainstream-keyring-init.
+# A first-boot oneshot that (re-)initializes the keyring with proper entropy and
+# a running gpg-agent (unlike the unreliable chroot attempt), then trusts the
+# [mainstream] key and switches its repo to GitHub. Logic lives in
+# /usr/local/bin/mainstream-keyring-init; its units come with the image, built
+# from the same dotfiles an update installs them from.
 info "Scheduling pacman keyring init + [mainstream] repo switch for first boot..."
-cat > /etc/systemd/system/pacman-keyring-init.service << 'KEYRINGEOF'
-[Unit]
-Description=Initialize the pacman keyring and keep [mainstream] on the signed GitHub repo
-# gpg signature validity needs a synced clock, so this wants
-# systemd-time-wait-sync, but it must NOT gate the boot. It is triggered by
-# pacman-keyring-init.timer, NOT WantedBy=multi-user.target. A oneshot wanted
-# by multi-user.target makes multi-user.target WAIT for it; because this unit
-# blocks on the NTP round trip (about 40s on first boot) that froze
-# multi-user.target to roughly 45s. That delayed power-profiles-daemon
-# (After=multi-user.target, dbus-activated), which the quickshell bar
-# synchronously activates at startup via UtilButtons' PowerProfiles binding,
-# so the bar could not paint for about 21s. Off the critical path,
-# multi-user.target reaches early and this keyring work runs in the background
-# after the desktop is already up.
-# No ConditionPathExists gate and no self-disable: the script is idempotent
-# and exits in milliseconds once the keyring and the repo verify, so leaving
-# the timer armed is what lets a machine that breaks later heal itself.
-After=network-online.target systemd-time-wait-sync.service
-Wants=network-online.target systemd-time-wait-sync.service
-
-[Service]
-Type=oneshot
-# RemainAfterExit=yes would leave the unit active, and a timer that fires at
-# an already-active unit does nothing, which turns every later tick into a
-# no-op.
-RemainAfterExit=no
-ExecStart=/usr/local/bin/mainstream-keyring-init
-KEYRINGEOF
-cat > /etc/systemd/system/pacman-keyring-init.timer << 'KEYRINGTIMEREOF'
-[Unit]
-Description=Trigger the pacman keyring check off the boot-critical path
-
-[Timer]
-OnBootSec=20
-OnUnitActiveSec=6h
-AccuracySec=2s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-KEYRINGTIMEREOF
 systemctl enable pacman-keyring-init.timer 2>/dev/null || true
 info "Pacman keyring init + [mainstream] repo switch scheduled (timer, off critical path)."
 
