@@ -259,12 +259,22 @@ _overlay_creates() {
     printf '%s\n' "$@" >> "$_OVERLAY_BAK_DIR/.created"
 }
 
-# ── MacBook edition overlay ─────────────────────────────────────────────────
-# --macbook: the standard image with the T2 Mac's own pieces added, so an Intel
-# Mac has a working built-in keyboard and trackpad in the installer itself. The
-# kernel is Mainstream's, which carries the T2 drivers; this edition adds the
-# fan daemon and the audio profile for them from [mainstream], and the boot
-# options the T2 wants on every live entry.
+# ── T2 test firmware overlay ────────────────────────────────────────────────
+# Apple's Wi-Fi and Bluetooth firmware is deliberately NOT in the image.
+# Putting it there would mean shipping Apple's firmware ourselves; the install
+# reads it from macOS on the disk or fetches Apple's recovery image instead. The
+# cost is that a T2 Mac without macOS on it has no Wi-Fi until it is installed,
+# so the install needs a wire or a tethered phone, which is where Omarchy sits
+# too.
+#
+# The exception, for testing only, and deliberately not in --help: a published
+# recipe for building an image full of firmware we may not pass on reads as an
+# invitation, whoever it was written for. Set MACBOOK_TEST_FIRMWARE=1 to take it.
+# It exists because a tester with no wire cannot reach the installer at all, and
+# finding out whether the machine works past that point needs an image whose
+# live session already has Wi-Fi. The artifact is renamed so it cannot be
+# mistaken for a release, the live root is rebuilt on every build so it is never
+# reused under a release name, and the build refuses to sign it.
 # Accepted as 1, true, yes or on, because the value gets typed on a command line
 # and a build that silently ignored it would be tested for the wrong thing.
 if [[ "${MACBOOK_TEST_FIRMWARE:-}" =~ ^([1]|[Tt]rue|[Yy]es|[Oo]n)$ ]]; then
@@ -273,72 +283,31 @@ else
     MACBOOK_TEST_FIRMWARE=false
 fi
 
-MACBOOK_PKGS=(apple-t2-audio-config t2fanrd)
-# Only for MACBOOK_TEST_FIRMWARE: the community repository that packages Apple's
-# firmware, read by pacstrap while the image is built and never by an install.
+# The community repository that packages Apple's firmware, read by pacstrap
+# while the image is built and never by an install.
 _MACBOOK_TEST_FIRMWARE_REPO='
 [arch-mact2]
 SigLevel = Never
 Server = https://mirror.funami.tech/arch-mact2/os/x86_64
 '
-apply_macbook_overlay() {
-    _overlay_stash packages.x86_64 profiledef.sh
-
-    printf '%s\n' "${MACBOOK_PKGS[@]}" >> "${PROFILE_DIR}/packages.x86_64"
-    # apple-bcm-firmware is deliberately NOT here. Putting it in the image
-    # would mean shipping Apple's firmware ourselves; the install reads it from
-    # macOS on the disk or fetches Apple's recovery image instead. The cost is
-    # that a T2 Mac without macOS on it has no Wi-Fi until it is installed, so
-    # the install needs a wire or a tethered phone, which is where Omarchy sits
-    # too.
-
-    # The exception, for testing only, and deliberately not in --help: a
-    # published recipe for building an image full of firmware we may not pass on
-    # reads as an invitation, whoever it was written for. Set
-    # MACBOOK_TEST_FIRMWARE=1 to take it. It exists because a tester with no
-    # wire cannot reach the installer at all, and finding out whether the
-    # machine works past that point needs an image whose live session already
-    # has Wi-Fi. The artifact is renamed so it cannot be mistaken for a release,
-    # the live root is rebuilt on every build so it is never reused under a
-    # release name, and the build refuses to sign it.
-    local _iso_name="mainstreamos-desktop-linux-macbook"
-    if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
-        _overlay_stash pacman.conf
-        printf '%s' "$_MACBOOK_TEST_FIRMWARE_REPO" >> "${PROFILE_DIR}/pacman.conf"
-        printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
-        _iso_name="${_iso_name}-testfw"
-        warn "MACBOOK_TEST_FIRMWARE is set: Apple's Wi-Fi and Bluetooth firmware is being baked into this image."
-        warn "  That firmware is not ours to redistribute. Test on your own machines and do not publish the artifact."
-        warn "  The ISO is named ...-macbook-testfw so it cannot be mistaken for a release."
-    fi
-
-    # The boot options t2linux asks for on every entry, IOMMU passthrough and
-    # in-order suspend and resume for the T2's devices, with the T2's Bluetooth
-    # driver held back as their live ISO does, and the T2 bridge's keyboard and
-    # camera drivers loaded, since nothing loads them on its own. Every live entry
-    # reads them from this one setting, so a profile without it has to stop the
-    # build rather than quietly boot a Mac without them.
-    grep -q '^kernel_params_x86_64="' "${PROFILE_DIR}/profiledef.sh" \
-        || die "profiledef.sh has no kernel_params_x86_64 for the T2 boot options"
-    sed -i -e 's/^kernel_params_x86_64="\(.*\)"$/kernel_params_x86_64="\1 intel_iommu=on iommu=pt pm_async=off modprobe.blacklist=hci_bcm4377 modules_load=t2bce_vhci,t2bce_ave"/' \
+apply_test_firmware_overlay() {
+    _overlay_stash packages.x86_64 profiledef.sh pacman.conf
+    printf '%s' "$_MACBOOK_TEST_FIRMWARE_REPO" >> "${PROFILE_DIR}/pacman.conf"
+    printf '%s\n' apple-bcm-firmware >> "${PROFILE_DIR}/packages.x86_64"
+    sed -i -e 's/^iso_name=.*/iso_name="mainstreamos-desktop-linux-macbook-testfw"/' \
         "${PROFILE_DIR}/profiledef.sh"
-
-    # The volume label is left at MAINSTREAM_MB_ either way: mkarchiso stamps it
-    # into every boot entry, and the field is short enough that a suffix risks
-    # overrunning it.
-    sed -i -e "s/^iso_name=.*/iso_name=\"${_iso_name}\"/" \
-           -e 's/^iso_label="MAINSTREAM_\(MB_\)\?/iso_label="MAINSTREAM_MB_/' \
-           "${PROFILE_DIR}/profiledef.sh"
-    info "MacBook overlay applied: ${MACBOOK_PKGS[*]} and the T2 boot options; iso_name → ${_iso_name}."
+    warn "MACBOOK_TEST_FIRMWARE is set: Apple's Wi-Fi and Bluetooth firmware is being baked into this image."
+    warn "  That firmware is not ours to redistribute. Test on your own machines and do not publish the artifact."
+    warn "  The ISO is named ...-macbook-testfw so it cannot be mistaken for a release."
 }
 
 apply_profile_overlay() {
-    [[ "${NVIDIA_PROFILE:-false}" == true || "${MACBOOK_PROFILE:-false}" == true ]] || return 0
+    [[ "${NVIDIA_PROFILE:-false}" == true || "${MACBOOK_TEST_FIRMWARE:-false}" == true ]] || return 0
     mkdir "$_OVERLAY_BAK_PATH" \
         || die "Could not create the overlay backup at $_OVERLAY_BAK_PATH; the profile is left as it was."
     _OVERLAY_BAK_DIR="$_OVERLAY_BAK_PATH"
-    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
-        apply_macbook_overlay
+    if [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
+        apply_test_firmware_overlay
         return 0
     fi
     _overlay_stash packages.x86_64 profiledef.sh "$_OVERLAY_ARCHISO_CONF"
@@ -458,8 +427,6 @@ mainstream_unneeded_pkgs() {
     rm -rf "$dir"
 
     seeds=("${METAPKGS[@]}" "${AUR_DEPS[@]%%::*}" "${LOCAL_BUILT_PKGS[@]}" "${WELCOME_PKGS[@]}" "${HARDWARE_PKGS[@]}" "${INSTALL_STEP_PKGS[@]}")
-    # The MacBook edition's own packages join its list only after this runs.
-    [[ "${MACBOOK_PROFILE:-false}" == true ]] && seeds+=("${MACBOOK_PKGS[@]}")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' \
         "$PROFILE_DIR/packages.x86_64")
     mapfile -t -O "${#seeds[@]}" seeds < <(sed -nE \
@@ -824,11 +791,6 @@ RELEASE_VERSION=""
 # Legacy-NVIDIA edition (--nvidia): also build the legacy NVIDIA prebuilts
 # (NVIDIA_DEPS). Standard ISO omits them to stay slim.
 NVIDIA_PROFILE=false
-# MacBook edition (--macbook): the standard image with the T2 Mac's fan daemon,
-# audio profile and boot options, so an Intel Mac has a keyboard, a trackpad
-# and sound in the installer. Kept to its own image while the T2 support is
-# tested.
-MACBOOK_PROFILE=false
 # Backup dir for the --nvidia profile overlay (set/cleared by apply/restore).
 _OVERLAY_BAK_DIR=""
 # Where that backup lives. Beside the checkout rather than in /tmp, so it is
@@ -869,8 +831,8 @@ for arg in "$@"; do
             info "Legacy-NVIDIA edition requested — legacy NVIDIA prebuilts will be included."
             ;;
         --macbook)
-            MACBOOK_PROFILE=true
-            info "MacBook edition requested — the T2 kernel and Apple firmware will be included."
+            echo "ERROR: there is no --macbook edition any more. The standard image carries the T2 support, with an Intel Mac with T2 entry in its boot menu." >&2
+            exit 1
             ;;
         --release)
             _WANT_RELEASE_VERSION=true
@@ -903,12 +865,6 @@ Edition options:
   --nvidia        Build the legacy-NVIDIA edition: also includes the legacy
                   NVIDIA prebuilts for full accelerated support on pre-Turing
                   cards. Omit for the standard (slim) ISO.
-  --macbook       Build the MacBook edition: the standard image with the T2
-                  fan daemon, audio profile and boot options, so a T2 Mac has
-                  a keyboard and a trackpad. Wi-Fi firmware is read from macOS
-                  on the disk or fetched during the install, not shipped, so a
-                  Mac without macOS needs a wire or a tethered phone to install.
-                  Experimental, and a separate image while it is tested.
 
 Environment:
   DOTFILES_REPO   Where the dotfiles come from (default: the GitHub remote).
@@ -948,10 +904,9 @@ Examples:
   sudo ./build.sh --refresh --nvidia  # Rebuild packages incl. legacy NVIDIA + ISO
   sudo ./build.sh --release 1.3.0     # Release: clean rebuild cut as 1.3.0
   sudo ./build.sh --release 1.3.0 --nvidia   # Release: same, NVIDIA edition
-  sudo ./build.sh --release 1.3.0 --macbook  # Release: same, MacBook edition
   sudo CALAMARES_REF=v3.4.3 ./build.sh --cleancal
                                       # Rebuild calamares from a pinned ref.
-  sudo DOTFILES_REPO=/home/you/dots-hyprland ./build.sh --refresh --macbook
+  sudo DOTFILES_REPO=/home/you/dots-hyprland ./build.sh --refresh
                                       # Build from a local dotfiles clone. Needs
                                       # a package phase, and the path must be
                                       # absolute: a leading ~ is not expanded
@@ -980,14 +935,11 @@ done
 
 # Names the image in the status file, whether the build succeeds or fails.
 _edition="standard"; [[ "$NVIDIA_PROFILE" == true ]] && _edition="legacy-nvidia"
-[[ "$MACBOOK_PROFILE" == true ]] && _edition="macbook"
-[[ "$MACBOOK_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
+[[ "$MACBOOK_TEST_FIRMWARE" == true ]] && _edition="macbook-testfw"
 
-# One image cannot be both: the two editions rewrite the same NVIDIA driver line
-# in packages.x86_64, and the second overlay to run would sed a line the first
-# one had already taken.
-if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_PROFILE" == true ]]; then
-    echo "ERROR: --nvidia and --macbook build different images; pick one." >&2
+# The profile takes one overlay, so the test firmware goes on the standard image only.
+if [[ "$NVIDIA_PROFILE" == true && "$MACBOOK_TEST_FIRMWARE" == true ]]; then
+    echo "ERROR: MACBOOK_TEST_FIRMWARE builds on the standard image; drop --nvidia." >&2
     exit 1
 fi
 
@@ -1371,9 +1323,9 @@ if [[ "$CLEAN_BUILD" == true ]]; then
         if [[ "${NVIDIA_PROFILE:-false}" == true ]]; then
             info "Removing previous legacy-NVIDIA output from $OUT_DIR ..."
             find "$OUT_DIR" -maxdepth 1 -name '*legacy-nvidia*' -delete 2>/dev/null || true
-        elif [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
-            info "Removing previous MacBook output from $OUT_DIR ..."
-            find "$OUT_DIR" -maxdepth 1 -name '*macbook*' -delete 2>/dev/null || true
+        elif [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]]; then
+            info "Removing previous T2 test firmware output from $OUT_DIR ..."
+            find "$OUT_DIR" -maxdepth 1 -name '*macbook-testfw*' -delete 2>/dev/null || true
         else
             info "Removing previous standard-edition output from $OUT_DIR ..."
             find "$OUT_DIR" -maxdepth 1 \
@@ -2706,21 +2658,13 @@ verify_image_kernel() {
         [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
         warn "$why"
     fi
-    if [[ "${MACBOOK_PROFILE:-false}" == true ]]; then
-        for p in "${MACBOOK_PKGS[@]}"; do
-            [[ -n "$(image_pkg_version "$p")" ]] \
-                || die_rejecting_iso "The MacBook edition did not install $p."
-        done
-        # The edition exists for the T2 drivers, and its kernel is the same
-        # package as everyone else's, so a build before [mainstream] carries a
-        # kernel with them would make a MacBook image that cannot drive a T2.
-        if ! grep -qs -e '/t2bce_core\.ko' "$rel/modules.dep" "$rel/modules.builtin"; then
-            why="The image's $want kernel has no T2 drivers (t2bce_core), so the MacBook edition would start a T2 Mac without its keyboard, trackpad or audio."
-            [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
-            warn "$why"
-        else
-            success "Verified the MacBook edition's kernel carries the T2 drivers."
-        fi
+    # The Intel Mac with T2 boot entry is only as good as the kernel behind it.
+    if ! grep -qs -e '/t2bce_core\.ko' "$rel/modules.dep" "$rel/modules.builtin"; then
+        why="The image's $want kernel has no T2 drivers (t2bce_core), so a T2 Mac would start without its keyboard, trackpad or audio."
+        [[ -n "$RELEASE_VERSION" ]] && die_rejecting_iso "$why"
+        warn "$why"
+    else
+        success "Verified the image's kernel carries the T2 drivers."
     fi
     for f in "$bootdir"/*; do
         [[ -e "$f" ]] || continue
@@ -2985,10 +2929,9 @@ fi
 if [[ -n "${DOTS_TAG:-}" ]]; then
     _REL_BASE="mainstream"
     [[ "${NVIDIA_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-legacy-nvidia"
-    [[ "${MACBOOK_PROFILE:-false}" == true ]] && _REL_BASE="mainstream-macbook"
     # A tagged build carrying the firmware is still a test artifact, and this is
     # the name a release would otherwise be published under.
-    [[ "${MACBOOK_PROFILE:-false}" == true && "${MACBOOK_TEST_FIRMWARE:-false}" == true ]] \
+    [[ "${MACBOOK_TEST_FIRMWARE:-false}" == true ]] \
         && _REL_BASE="mainstream-macbook-testfw"
     _NEW_ISO_PATH="$(dirname "${ISO_PATH}")/${_REL_BASE}-${DOTS_TAG}.iso"
     if [[ "${_NEW_ISO_PATH}" != "${ISO_PATH}" ]]; then

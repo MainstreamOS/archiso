@@ -296,6 +296,13 @@ if ! lspci -nn 2>/dev/null | grep -iE "Network controller|Wireless" | grep -q "\
     remove_pkgs broadcom-wl-dkms broadcom-wl
 fi
 
+# The image carries the T2's fan control and audio profile for the Macs that
+# have the chip; nothing else uses them.
+if _pci_ids=$(lspci -n 2>/dev/null) && ! grep -qE ' 106b:180[12]' <<<"$_pci_ids"; then
+    info "No Apple T2 chip, so its fan control and audio profile are removed."
+    remove_pkgs t2fanrd apple-t2-audio-config
+fi
+
 # Arch's headers stay with Arch's kernel, so a DKMS module added later builds for
 # it too. By exact name: the Mainstream kernels' headers provide linux-headers.
 if [[ "$(pacman -Qq linux-headers 2>/dev/null)" == linux-headers \

@@ -28,6 +28,8 @@ intel-ucode
 # ==============================================================================
 sof-firmware
 alsa-ucm-conf
+apple-t2-audio-config
+t2fanrd
 thermald
 fprintd
 b43-fwcutter
