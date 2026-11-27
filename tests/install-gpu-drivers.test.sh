@@ -153,6 +153,11 @@ install_local_pkgs() { LOCAL+=("$@"); }
 detect_dkms_version() { echo 580.95.05; }
 target_dkms_install() { DKI+=("$*"); }
 legacy_nvidia_fallback() { FALLBACK=1; }
+# The image's database leaves GPU drivers out; LISTED is what it lists anyway.
+LISTED=""
+pacman() { [[ $1 == -Si ]] && { [[ " $LISTED " == *" $2 "* ]]; return; }; PAC+=("$*"); }
+INFO=()
+info() { INFO+=("$*"); }
 INST=(); LOCAL=(); DKI=(); FALLBACK=0; GPU_FAILURES=()
 install_legacy_nvidia "Maxwell/Pascal/Volta"
 chk legacy-no-arch-kernel "$( [[ " ${INST[*]} " == *" linux "* || " ${INST[*]} " == *" linux-headers "* ]] && echo yes || echo no )" "no"
@@ -160,6 +165,15 @@ chk legacy-dkms "$( [[ " ${INST[*]} " == *" dkms "* ]] && echo yes || echo no )"
 chk legacy-local-set "${LOCAL[*]}" "${NVIDIA_LOCAL_PKGS[*]}"
 chk legacy-builds "${DKI[*]:-none}" "nvidia 580.95.05"
 chk legacy-nofail "${#GPU_FAILURES[@]}" "0"
+chk legacy-says-installed "$(printf '%s\n' "${INFO[@]}" | grep -c 'installed nvidia-580xx-dkms')" "1"
+# A staged set pacman refuses is a failure, and nothing says it was installed.
+install_local_pkgs() { LOCAL+=("$@"); return 1; }
+INST=(); LOCAL=(); DKI=(); INFO=(); GPU_FAILURES=()
+install_legacy_nvidia "Maxwell/Pascal/Volta"
+chk legacy-refused-noted "${#GPU_FAILURES[@]} ${DKI[*]:-none}" "1 none"
+chk legacy-refused-silent "$(printf '%s\n' "${INFO[@]}" | grep -c 'installed')" "0"
+install_local_pkgs() { LOCAL+=("$@"); }
+info() { :; }
 STAGED=0; INST=(); LOCAL=(); FALLBACK=0
 # Nothing staged, as on the standard edition: the branch comes from the
 # repository through the shared library, run as the chroot's root.
@@ -187,6 +201,12 @@ chk repo-buildfail-no-fallback "$FALLBACK" "0"
 # Not offered or not downloadable: the offline fallback.
 repo_legacy nvidia-580xx 2
 chk repo-offline-fallback "$FALLBACK ${INST[*]:-none}" "1 none"
+# Fetched into the store for this install, so the store's database lists it: the
+# library swaps it in for the image's driver rather than a bare pacman -U beside it.
+STAGED=1; LISTED="nvidia-580xx-dkms"
+repo_legacy nvidia-580xx 0
+chk fetched-through-library "${LIB_CALLS[*]:-none} / ${LOCAL[*]:-none}" "install sudo= / none"
+STAGED=0; LISTED=""
 GPU_INSTALL_LIB="$TMP/no-such-lib.sh"
 repo_legacy nvidia-580xx 0
 chk repo-nolib-fallback "$FALLBACK ${LIB_CALLS[*]:-none}" "1 none"

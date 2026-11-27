@@ -287,8 +287,11 @@ install_repo_legacy_nvidia() {
 # legacy edition stages, or else from the repository. $1 is the human-readable
 # label.
 install_legacy_nvidia() {
-    local label="$1" dkms_pkg="${NVIDIA_LOCAL_PKGS[0]}"
-    if [[ -z "$(find_local_pkgs "$dkms_pkg")" ]]; then
+    local label="$1" dkms_pkg="${NVIDIA_LOCAL_PKGS[0]}" installed=false
+    # The image's own database leaves GPU drivers out, so a branch it lists was
+    # fetched from [mainstream] for this install, and the library swaps it in for
+    # the image's driver. Only the legacy edition's prebuilts sit there unlisted.
+    if [[ -z "$(find_local_pkgs "$dkms_pkg")" ]] || pacman -Si "$dkms_pkg" >/dev/null 2>&1; then
         install_repo_legacy_nvidia "$label"
         return
     fi
@@ -300,6 +303,7 @@ install_legacy_nvidia() {
     # depends on libxnvctrl-*xx, which exists only as a staged file (the repo DB
     # excludes GPU packages), and one unresolvable dep aborts the transaction.
     if install_local_pkgs "${NVIDIA_LOCAL_PKGS[@]}"; then
+        installed=true
         local ver; ver=$(detect_dkms_version "$dkms_pkg" || echo "")
         if [[ -n "$ver" ]]; then
             target_dkms_install nvidia "$ver"
@@ -310,7 +314,7 @@ install_legacy_nvidia() {
         note_failure "$dkms_pkg: staged packages present but pacman -U failed — $label GPU has no kernel driver."
     fi
     install_pkgs_opt linux-firmware-nvidia
-    info "NVIDIA $label — installed $dkms_pkg."
+    if $installed; then info "NVIDIA $label: installed $dkms_pkg."; fi
 }
 
 pacman -Sy 2>/dev/null || warn "pacman -Sy failed — using cached db."
